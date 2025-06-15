@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name            = "volkit"
+version         = "0.1.0"
+description     = "GARCH helpers in C"
+requires-python = ">=3.8"
+
+[tool.setuptools]
+packages = []
+
+[[tool.setuptools.ext-modules]]
+name         = "volkit"
+sources      = ["python/volkit_module.c", "core/volkit_core.c"]
+include-dirs = ["core"]

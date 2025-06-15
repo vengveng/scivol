@@ -14,7 +14,7 @@ MANAGER = bindingManager.FunctionBindingManager()
 
 from utils.tools import ModelResult, CombinedModelResult, DataHandler
 
-class CVM():
+class VolatilityModel():
     # Scipy objects here
     def fit(self, residuals, distr='normal', framework='QMLE', multivar=None):
         assert residuals is not None
@@ -106,7 +106,7 @@ class CVM():
     def _std(*args, **kwargs):
         pass
 
-class GARCH(CVM):
+class GARCH(VolatilityModel):
 
     SPECIAL = [(1, 1, 'normal'), (1, 1, None)]
 
