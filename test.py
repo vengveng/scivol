@@ -76,7 +76,7 @@ print(res_garch.summary())
 # print(f"CVM('garch', 'normal') fit execution time: {cvm_time:.6f} seconds")
 
 # Timing GARCH(1,1)
-m = GARCH(3, 3)
+m = GARCH(1, 1)
 start_time = time.time()
 res_garch = m.fit(residuals, 'studentt')
 end_time = time.time()
@@ -84,3 +84,4 @@ garch_time = end_time - start_time
 print(f"GARCH(1,1) fit_normal execution time: {garch_time:.6f} seconds")
 print(res_garch.summary())
 print(f"Data shape: {residuals.shape}")
+

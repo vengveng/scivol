@@ -186,6 +186,8 @@ class GARCH(VolatilityModel):
                 return likelihood
             
         result = minimize(max_likelihood, initial_parameters, method='Nelder-Mead', bounds=optimization_bounds, options={'maxfev': int(1e5)}) 
+        # result = minimize(max_likelihood, initial_parameters, method='SLSQP', bounds=optimization_bounds, options={'maxfev': int(1e5), 'disp': True}) 
+        # result = minimize(max_likelihood, initial_parameters, method='trust-constr', bounds=optimization_bounds, options={'disp': True}) 
         result.fun += constant_ll
         return result
     

@@ -9,9 +9,11 @@ description     = "GARCH helpers in C"
 requires-python = ">=3.8"
 
 [tool.setuptools]
-packages = []
+package-dir = {"" = "src"}
+packages = ["volkit"]
 
 [[tool.setuptools.ext-modules]]
-name         = "volkit"
-sources      = ["python/volkit_module.c", "core/volkit_core.c"]
-include-dirs = ["core"]
+name              = "volkit._core"
+sources           = ["src/volkit/_core.c", "core/volkit_core.c"]
+include-dirs      = ["core"]
+extra-compile-args = ["-O3", "-ffast-math"]

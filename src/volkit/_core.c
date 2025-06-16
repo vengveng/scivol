@@ -135,31 +135,31 @@ py_any_studentt_likelihood(PyObject *self,
 
 /* ---- Method table & module init ----------------------------------- */
 static PyMethodDef Methods[] = {
-    {"garch_variance_pq",      (PyCFunction)py_garch_variance_pq,
+    {"_garch_variance_pq",      (PyCFunction)py_garch_variance_pq,
                                METH_FASTCALL, "Internal pointer API"},
-    {"normal_likelihood",      (PyCFunction)py_normal_likelihood,
+    {"_normal_likelihood",      (PyCFunction)py_normal_likelihood,
                                METH_FASTCALL, "Internal pointer API"},
     /* add the rest here */
-    {"special_garch_oo_normal", (PyCFunction)py_special_garch_oo_normal,
+    {"_special_garch_oo_normal", (PyCFunction)py_special_garch_oo_normal,
                                METH_FASTCALL, "Internal pointer API"},
-    {"special_garch_oo_normal_variance", (PyCFunction)py_special_garch_oo_normal_variance,
+    {"_special_garch_oo_normal_variance", (PyCFunction)py_special_garch_oo_normal_variance,
                                METH_FASTCALL, "Internal pointer API"},
-    {"general_garch_pq_std_err_robust", (PyCFunction)py_general_garch_pq_std_err_robust,
+    {"_general_garch_pq_std_err_robust", (PyCFunction)py_general_garch_pq_std_err_robust,
                                METH_FASTCALL, "Internal pointer API"},
-    {"special_garch_11_std_err_robust", (PyCFunction)py_special_garch_11_std_err_robust,
+    {"_special_garch_11_std_err_robust", (PyCFunction)py_special_garch_11_std_err_robust,
                                METH_FASTCALL, "Internal pointer API"},
-    {"any_studentt_likelihood", (PyCFunction)py_any_studentt_likelihood,
+    {"_any_studentt_likelihood", (PyCFunction)py_any_studentt_likelihood,
                                METH_FASTCALL, "Internal pointer API"},
     {NULL, NULL, 0, NULL}
 };
 
 static struct PyModuleDef moddef = {
     PyModuleDef_HEAD_INIT,
-    .m_name = "volkit",
-    .m_doc  = "Thin pointer-level wrappers around volkit_core",
+    .m_name = "volkit._core",
+    .m_doc  = "Internal pointer-level helpers",
     .m_size = -1,
     .m_methods = Methods,
 };
 
 PyMODINIT_FUNC
-PyInit_volkit(void) { return PyModule_Create(&moddef); }
+PyInit__core(void){ return PyModule_Create(&moddef); }
