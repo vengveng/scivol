@@ -45,19 +45,24 @@ class CompositeSpec:
 
         groups: Dict[str, Optional[Component]] = {'mean': None, 'volatility': None, 'density': None}
         for comp in flat:
-            key = comp.role.name.lower()
-            if groups[key] is not None:
+            role = comp.role.name.lower()
+            if groups[role] is not None:
                 # special case: we allow replacing the placeholder Normal
-                if key == "density" and isinstance(groups[key], Normal) and not isinstance(comp, Normal):
-                    groups[key] = comp
+                if role == "density" and isinstance(groups[role], Normal) and not isinstance(comp, Normal):
+                    groups[role] = comp
                     continue
-                raise ValueError(f"Multiple components with role {key} are not allowed.")
-            groups[key] = comp
+                raise ValueError(f"Multiple components with role {role} are not allowed.")
+            groups[role] = comp
 
         if groups['density'] is None:
             groups['density'] = Normal()
 
-        return cast(List[Component], [groups[r] for r in CANONICAL if groups[r] is not None])
+        components: List[Component] = []
+        for role in CANONICAL:
+            comp = groups[role]
+            if comp is not None:
+                components.append(comp)
+        return components
 
     def __str__(self): return self._sig
     def __hash__(self): return hash(self._sig)
