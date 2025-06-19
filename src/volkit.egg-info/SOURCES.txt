@@ -4,6 +4,9 @@ core/volkit_core.c
 core/volkit_core.h
 src/volkit/__init__.py
 src/volkit/_core.c
+src/volkit/_core.pyi
+src/volkit/garch_lib2.py
+src/volkit/py.typed
 src/volkit.egg-info/PKG-INFO
 src/volkit.egg-info/SOURCES.txt
 src/volkit.egg-info/dependency_links.txt
