@@ -20,6 +20,11 @@ from .components import (
     CompositeSpec,
     Component,
 )
+from ._kernels.__init__ import (
+    get_special_kernel,
+    get_general_kernel,
+)
+from .estimators import MLE
 
 __all__: list[str] = [
     "Role",
@@ -29,5 +34,8 @@ __all__: list[str] = [
     "StudentT",
     "CompositeSpec",
     "Component",
+    "get_special_kernel",
+    "get_general_kernel",
+    "MLE",
     " __version__",
 ]

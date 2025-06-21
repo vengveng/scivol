@@ -145,7 +145,7 @@ class CompositeSpec:
                 components_list.append(comp)
         return components_list
     
-    def _build_slice_map(self) -> Dict[Component, slice]:
+    def _slice_map(self) -> Dict[Component, slice]:
         """Pre-compute parameter slices for each component"""
         slice_map = {}
         offset = 0

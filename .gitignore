@@ -7,7 +7,7 @@ __pycache__/
 localdev/
 python/
 *.ipynb
-*.egg-info/
+volkit.egg-info/
 dist/
 *.gz
 *.whl

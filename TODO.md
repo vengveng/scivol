@@ -2,6 +2,16 @@
 
 ## Version 0.1 (Target: October 2024)
 
+
+- [] Homemade solver
+- [] 
+- []
+- []
+- []
+- []
+- []
+- []
+
 - [x] **Basic GARCH Model Implementation**
 
   - [x] Implement GARCH and GJR model with Normal distribution

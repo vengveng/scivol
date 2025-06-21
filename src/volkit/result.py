@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-from typing import Dict, Optional, Any, Protocol, runtime_checkable
+from typing import Dict, Optional, Any, Protocol, runtime_checkable, TYPE_CHECKING
 import numpy as np
 from datetime import datetime
 
-from volkit import Role, CompositeSpec, Component
+from volkit import Role
+
+if TYPE_CHECKING:
+    from volkit import CompositeSpec, Component
+
+
 
 @runtime_checkable
 class OptimizeResultLike(Protocol):
@@ -25,7 +30,6 @@ class EstimationResult:
         # Components were mutated in-place during fitting
         self._component_map: Dict[Role, Component] = {c.role: c for c in spec.components}
 
-    # --------------------------------------------------------------------- #
     # Scalars
     # --------------------------------------------------------------------- #
     @property
@@ -48,7 +52,6 @@ class EstimationResult:
     def convergence_message(self) -> str:
         return self.optimization_result.message
 
-    # --------------------------------------------------------------------- #
     # Information criteria
     # --------------------------------------------------------------------- #
     @property
@@ -66,7 +69,6 @@ class EstimationResult:
         k = len(self.params)
         return 2 * k * np.log(np.log(self.n_obs)) - 2 * self.loglikelihood
 
-    # --------------------------------------------------------------------- #
     # Component shorthands
     # --------------------------------------------------------------------- #
     @property
@@ -87,10 +89,8 @@ class EstimationResult:
     def has_component(self, role: Role) -> bool:
         return role in self._component_map
     
-
-
-
-    # Enhanced summary with type hints
+    # Pretty printer
+    # --------------------------------------------------------------------- #
     def summary(self) -> None:
         """Print comprehensive estimation summary"""
         print("="*60)
