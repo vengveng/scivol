@@ -1,19 +1,3 @@
-# """
-# volkit
-# ------
-
-# High-performance volatility-model helpers.
-# The compiled extension lives in `volkit._core`.
-# """
-
-# from importlib.metadata import version as _v
-
-# __version__ = _v(__name__)
-
-# from . import _core as _core
-
-# __all__: list[str] = []
-
 """
 volkit
 ------
@@ -34,6 +18,7 @@ from .components import (
     Normal,
     StudentT,
     CompositeSpec,
+    Component,
 )
 
 __all__: list[str] = [
@@ -43,5 +28,6 @@ __all__: list[str] = [
     "Normal",
     "StudentT",
     "CompositeSpec",
+    "Component",
     " __version__",
 ]

@@ -8,6 +8,7 @@ src/volkit/_core.pyi
 src/volkit/components.py
 src/volkit/garch_lib2.py
 src/volkit/py.typed
+src/volkit/result.py
 src/volkit/roles.py
 src/volkit/structure.py
 src/volkit.egg-info/PKG-INFO
