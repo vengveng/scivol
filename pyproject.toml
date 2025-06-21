@@ -1,19 +1,31 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=69", "wheel", "numpy>=1.22"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name            = "volkit"
 version         = "0.1.0"
 description     = "GARCH helpers in C"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-packages = ["volkit"]
+[tool.setuptools.packages.find]
+where = [""]
 
+# -------------------------------------------------------------------
+# Every compiled module needs *double* brackets:
+# [[tool.setuptools.ext-modules]]
+# -------------------------------------------------------------------
 [[tool.setuptools.ext-modules]]
-name              = "volkit._core"
-sources           = ["src/volkit/_core.c", "core/volkit_core.c"]
-include-dirs      = ["core"]
+name = "volkit._core"
+
+# You can break long arrays across lines – commas are required
+sources = [
+  "volkit/_core.c",
+  "volkit/_csrc/volkit_core.c",
+  "volkit/_csrc/compute_variance.c",
+  "volkit/_csrc/cvm_lib.c",
+  "volkit/_csrc/garch_asympt.c",
+]
+
+include-dirs       = ["volkit/_csrc"]
 extra-compile-args = ["-O3", "-ffast-math"]

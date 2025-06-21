@@ -9,7 +9,7 @@ from volkit import get_special_kernel, get_general_kernel
 
 
 if TYPE_CHECKING:
-    from .result import EstimationResult
+    from ..result import EstimationResult
 
 class Estimator(ABC):
     
