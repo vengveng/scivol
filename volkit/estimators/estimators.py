@@ -1,14 +1,20 @@
-# src/volkit/estimators/base.py
+# volkit/estimators/mle.py  (or estimators.py)
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Union, Dict, Any, Optional, TYPE_CHECKING, Tuple
-import numpy as np
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
 import warnings
+
+import numpy as np
 from scipy.optimize import minimize
-from volkit import CompositeSpec, Component, Role
-from volkit import get_special_kernel, get_general_kernel
 
+# ── intra-package imports (relative) ──────────────────────────────────
+# from ..structure import CompositeSpec
+from ..components import Component, CompositeSpec
+from ..roles import Role
+from .._kernels import get_special_kernel, get_general_kernel
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # avoid hard dependency at import-time
     from ..result import EstimationResult
 
 class Estimator(ABC):

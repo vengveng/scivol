@@ -1,16 +1,18 @@
 """
-volkit
-------
-High-performance volatility models.
+volkit  –  High-performance volatility models
 """
 
 from importlib.metadata import version as _v
-__version__ = _v(__name__)
 
-# low-level C extension (leave as is)
-from . import _core as _core
+__version__: str = _v("volkit")
 
-# ------- public Python API -------
+# ── optional native extension ─────────────────────────────────────────
+try:
+    from . import _core as _core  # noqa: F401  (used for side effects)
+except ModuleNotFoundError:       # pure-Python fallback
+    _core = None                  # noqa: F401
+
+# ── public Python API ────────────────────────────────────────────────
 from .roles import Role
 from .components import (
     ARMA,
@@ -20,10 +22,7 @@ from .components import (
     CompositeSpec,
     Component,
 )
-from ._kernels.__init__ import (
-    get_special_kernel,
-    get_general_kernel,
-)
+from ._kernels import get_special_kernel, get_general_kernel
 from .estimators import MLE
 
 __all__: list[str] = [
@@ -37,5 +36,5 @@ __all__: list[str] = [
     "get_special_kernel",
     "get_general_kernel",
     "MLE",
-    " __version__",
+    "__version__",
 ]

@@ -47,7 +47,7 @@ def test_duplicate_role_raises():
 # ------------------------------------------------------------------
 def test_slice_map_matches_parameter_lengths():
     spec = CompositeSpec(ARMA(1, 0), GARCH(1, 1))
-    slices = spec._build_slice_map()
+    slices = spec._slice_map()
     theta_len = sum(comp.n_params for comp in spec.components)
     # end of last slice == total length
     assert max(sl.stop for sl in slices.values()) == theta_len

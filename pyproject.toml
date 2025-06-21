@@ -8,24 +8,18 @@ version         = "0.1.0"
 description     = "GARCH helpers in C"
 requires-python = ">=3.9"
 
-[tool.setuptools.packages.find]
-where = [""]
+[tool.setuptools]
+packages = [
+  "volkit",
+  "volkit._kernels",
+  "volkit.estimators",
+]
 
-# -------------------------------------------------------------------
-# Every compiled module needs *double* brackets:
-# [[tool.setuptools.ext-modules]]
-# -------------------------------------------------------------------
 [[tool.setuptools.ext-modules]]
 name = "volkit._core"
-
-# You can break long arrays across lines – commas are required
 sources = [
   "volkit/_core.c",
   "volkit/_csrc/volkit_core.c",
-  "volkit/_csrc/compute_variance.c",
-  "volkit/_csrc/cvm_lib.c",
-  "volkit/_csrc/garch_asympt.c",
 ]
-
 include-dirs       = ["volkit/_csrc"]
 extra-compile-args = ["-O3", "-ffast-math"]
