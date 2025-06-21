@@ -2,14 +2,14 @@ import numpy as np
 import pytest
 
 # import objects from your package
-from volkit.components import (
+from volkit import (
     ARMA,
     GARCH,
     Normal,
     StudentT,
     CompositeSpec,
+    Role,
 )
-from volkit.roles import Role
 
 
 # ------------------------------------------------------------------

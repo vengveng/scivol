@@ -21,9 +21,10 @@ class Component(ABC):
     def link(self, *others: Union[Component, CompositeSpec]) -> CompositeSpec:
         return CompositeSpec(self, *others)
     
+    # Sugar methods for linking components
+    # -------------------------------------------------------
     def __add__(self, other: Union[Component, CompositeSpec]) -> CompositeSpec:
         return self.link(other)
-    
     
     def __sub__(self, other: Union[Component, CompositeSpec]) -> CompositeSpec:
         return self.__add__(other)
@@ -39,9 +40,45 @@ class Component(ABC):
     
     def __neg__(self) -> Component:
         return self
+    # -------------------------------------------------------
+
+
+    # Component helpers for CompositeSpec view
+    # -------------------------------------------------------
+
+    def get_component(self, role: Role):
+        return self.spec.get_component(role)
+
+    def has_role(self, role: Role) -> bool:
+        return self.spec.has_role(role)
+
+    def _as_spec(self) -> CompositeSpec:
+        """Internal helper: view this single component as a CompositeSpec."""
+        return CompositeSpec(self)
     
+    @property
+    def total_params(self) -> int:
+        return self.spec.total_params
+
+    @property
+    def spec(self) -> CompositeSpec:
+        """Public view: returns a CompositeSpec(self)."""
+        return self._as_spec()
+
+    # Proxy repr / comparison to the spec so the implicit +Normal is visible
+    def __hash__(self) -> int:
+        return hash(self.spec)
+
+    def __eq__(self, other) -> bool:
+        if isinstance(other, Component):
+            return self.spec == other.spec
+        if isinstance(other, CompositeSpec):
+            return self.spec == other
+        return NotImplemented
+    # -------------------------------------------------------
+
     def __str__(self) -> str:
-        return self.signature
+        return str(self.spec)
 
 
 
@@ -50,7 +87,7 @@ class CompositeSpec:
 
     def __init__(self, *components: Union[Component, CompositeSpec]):
         self.components: List[Component] = self._canonicalize(components)
-        self._sig: str = '+'.join(str(c) for c in self.components)
+        self._sig: str = '+'.join(c.signature for c in self.components)
 
     def _canonicalize(self, components: Tuple[Union[Component, CompositeSpec], ...]) -> List[Component]:
         flat: List[Component] = []
