@@ -5,9 +5,13 @@ core/volkit_core.h
 src/volkit/__init__.py
 src/volkit/_core.c
 src/volkit/_core.pyi
+src/volkit/components.py
 src/volkit/garch_lib2.py
 src/volkit/py.typed
+src/volkit/roles.py
+src/volkit/structure.py
 src/volkit.egg-info/PKG-INFO
 src/volkit.egg-info/SOURCES.txt
 src/volkit.egg-info/dependency_links.txt
 src/volkit.egg-info/top_level.txt
+tests/test_spec_core.py

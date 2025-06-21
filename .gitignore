@@ -1,3 +1,8 @@
 __pycache__/
 .vscode/
 .DS_Store
+*.so
+*.pyd
+.pytest_cache/
+localdev/
+python/
