@@ -7,3 +7,5 @@ __pycache__/
 localdev/
 python/
 *.ipynb
+*.egg-info/
+dist/
