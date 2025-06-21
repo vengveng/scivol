@@ -9,3 +9,5 @@ python/
 *.ipynb
 *.egg-info/
 dist/
+*.gz
+*.whl
