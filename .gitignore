@@ -9,5 +9,8 @@ python/
 *.ipynb
 volkit.egg-info/
 dist/
+build/
+examples/
+lint.py
 *.gz
 *.whl

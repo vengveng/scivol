@@ -59,6 +59,8 @@ class MLE(Estimator):
         return result
     
     def _fit_joint(self, prep: Dict[str, Any], **kwargs) -> EstimationResult:
+
+        from ..result import EstimationResult
         
         spec = prep['spec']
         data = prep['data']

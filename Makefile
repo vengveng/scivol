@@ -1,7 +1,10 @@
 b:
 	rm -rf build/ dist/
-	python -m build
+	python -m build -w
 	python -m pip install --force-reinstall dist/volkit-*.whl
+
+dev:
+	pip install -e . --no-build-isolation --config-settings="--build-option=build_ext --build-option=--inplace"
 
 t:
 	pytest -q tests/test_spec_core.py

@@ -8,7 +8,7 @@ import numpy as np
 
 # ── intra-package imports (relative) ──────────────────────────────────
 from ..spec import CompositeSpec
-from ..components import Component
+from ..components.base import Component
 
 if TYPE_CHECKING:  # avoid hard dependency at import-time
     from ..result import EstimationResult

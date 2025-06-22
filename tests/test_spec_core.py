@@ -1,3 +1,4 @@
+# tests/test_spec_core.py
 import numpy as np
 import pytest
 

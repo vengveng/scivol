@@ -2,29 +2,22 @@
 from importlib.metadata import version as _v
 __version__ = _v("volkit")
 
-# optional C extension
-try:
-    from . import _core as _core
-except ModuleNotFoundError:
-    _core = None  # pure-python mode
-
-# public API ---------------------------------------------------------
-from .roles import Role
 from .components import ARMA, GARCH, Normal, StudentT, Component
 from .spec import CompositeSpec
 from .estimators import MLE
 from ._kernels import get_special_kernel, get_general_kernel
+from .roles import Role
 
-__all__ = [
-    "Role",
-    "Component",
+__all__: list[str] = [
     "ARMA",
-    "GARCH",
-    "Normal",
-    "StudentT",
+    "Component",
     "CompositeSpec",
-    "MLE",
-    "get_special_kernel",
+    "GARCH",
     "get_general_kernel",
+    "get_special_kernel",
+    "MLE",
+    "Normal",
+    "Role",
+    "StudentT",
     "__version__",
 ]

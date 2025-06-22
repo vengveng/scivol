@@ -5,7 +5,7 @@
 
 - [] Homemade solver
 - [] Fit on component
-- []
+- [] Finite diff errors
 - []
 - []
 - []

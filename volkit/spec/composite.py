@@ -1,9 +1,10 @@
-
+# volkit/spec/composite.py
 from __future__ import annotations
 from typing import Union, Tuple, List, Dict, Optional
 from ..roles import Role
 from .._mixins import FitsMixin
-from ..components import Component, Normal
+from ..components.base import Component
+from ..components.density import Normal
 
 SPECIAL_KERNELS = {'boom'}
 CANONICAL = ("mean", "volatility", "density")
@@ -48,6 +49,10 @@ class CompositeSpec(FitsMixin):
                 components_list.append(comp)
         return components_list
     
+    @property
+    def slice_map(self) -> Dict[Component, slice]:
+        return self._slice_map()
+    
     def _slice_map(self) -> Dict[Component, slice]:
         """Pre-compute parameter slices for each component"""
         slice_map = {}
@@ -82,3 +87,14 @@ class CompositeSpec(FitsMixin):
         return CompositeSpec(self, *others)
     
     def has_special_kernel(self): return self._sig in SPECIAL_KERNELS
+
+    def __lt__(self, other: Union[Component, CompositeSpec]) -> CompositeSpec:
+        return self.__add__(other)
+
+    def __lshift__(self, other: Union[Component, CompositeSpec]) -> CompositeSpec:
+        return self.__add__(other)
+
+    def __rlshift__(self, other: Union[Component, CompositeSpec]) -> CompositeSpec:
+        return CompositeSpec(other, self)
+
+    __sub__ = __add__

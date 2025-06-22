@@ -1,6 +1,15 @@
-from ..components.base import Component
-from ..components.mean import ARMA
-from ..components.vol import GARCH
-from ..components.density import Normal, StudentT
+# volkit/components/__init__.py
+from __future__ import annotations
 
-__all__ = ["Component", "ARMA", "GARCH", "Normal", "StudentT"]
+from .base import Component
+from .mean import ARMA
+from .vol import GARCH
+from .density import Normal, StudentT
+
+__all__: list[str] = [
+    "Component",
+    "ARMA",
+    "GARCH",
+    "Normal",
+    "StudentT",
+]

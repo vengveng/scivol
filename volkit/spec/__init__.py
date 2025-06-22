@@ -1,3 +1,6 @@
-from ..spec.composite import CompositeSpec
+# volkit/spec/__init__.py
+from __future__ import annotations
 
-__all__ = ["CompositeSpec"]
+from .composite import CompositeSpec
+
+__all__: list[str] = ["CompositeSpec"]

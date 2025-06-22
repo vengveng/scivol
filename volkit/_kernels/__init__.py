@@ -1,12 +1,4 @@
-"""
-volkit._kernels  -  run-time kernel registry
-
-Public API
-----------
-get_special_kernel(uid: str)
-get_general_kernel()
-"""
-
+# volkit/_kernels/__init__.py
 from __future__ import annotations
 
 import importlib

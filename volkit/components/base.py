@@ -1,11 +1,16 @@
 # volkit/components/base.py
 from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Union, Tuple, List, Dict, Optional, Any
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, List, Union
+
+import numpy as np
+
 from ..roles import Role
 from .._mixins import FitsMixin
-from ..spec.composite import CompositeSpec
-import numpy as np
+
+if TYPE_CHECKING:
+    from ..spec.composite import CompositeSpec
 
 class Component(FitsMixin, ABC):
     role: Role
@@ -35,6 +40,7 @@ class Component(FitsMixin, ABC):
     def unpack(self, flat_params: np.ndarray) -> Dict[str, Any]: ...
 
     def link(self, *others: Union[Component, CompositeSpec]) -> CompositeSpec:
+        from ..spec.composite import CompositeSpec
         return CompositeSpec(self, *others)
     
     # def fit(self, data: np.ndarray) -> EstimationResult:
@@ -52,6 +58,7 @@ class Component(FitsMixin, ABC):
 
     def _as_spec(self) -> CompositeSpec:
         """Internal helper: view this single component as a CompositeSpec."""
+        from ..spec.composite import CompositeSpec
         return CompositeSpec(self)
     
     @property
@@ -68,6 +75,8 @@ class Component(FitsMixin, ABC):
         return hash(self.spec)
 
     def __eq__(self, other) -> bool:
+        from ..spec.composite import CompositeSpec
+        
         if isinstance(other, Component):
             return self.spec == other.spec
         if isinstance(other, CompositeSpec):
@@ -105,6 +114,7 @@ class Component(FitsMixin, ABC):
         return self.__add__(other)
 
     def __rlshift__(self, other) -> CompositeSpec:
+        from ..spec.composite import CompositeSpec
         return CompositeSpec(other, self)
     
     def __neg__(self) -> Component:

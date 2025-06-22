@@ -11,8 +11,10 @@ requires-python = ">=3.9"
 [tool.setuptools]
 packages = [
   "volkit",
-  "volkit._kernels",
+  "volkit.components",
+  "volkit.spec",
   "volkit.estimators",
+  "volkit._kernels",
 ]
 
 [[tool.setuptools.ext-modules]]
