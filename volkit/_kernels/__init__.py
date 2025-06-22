@@ -15,28 +15,22 @@ from typing import Callable, Dict, Optional
 
 import numpy as np
 
-from volkit import CompositeSpec, GARCH, Role, StudentT
-# from volkit.roles import Role
-# from volkit.components import GARCH, StudentT
-# from volkit.structure import CompositeSpec
+from ..spec import CompositeSpec
+from ..components import GARCH, StudentT
+from ..roles import Role
 
 # ------------------------------------------------------------------ #
 # Internal storage
 # ------------------------------------------------------------------ #
 _SPECIAL: Dict[str, Callable[[np.ndarray, np.ndarray], float]] = {}
-_GENERAL: Optional[
-    Callable[[np.ndarray, np.ndarray, CompositeSpec], float]
-] = None
-
+_GENERAL: Optional[Callable[[np.ndarray, np.ndarray, CompositeSpec], float]] = None
 
 def _register_special(uid: str, func: Callable[[np.ndarray, np.ndarray], float]):
     _SPECIAL[uid] = func
 
-
 def _set_general(func: Callable[[np.ndarray, np.ndarray, CompositeSpec], float]):
     global _GENERAL
     _GENERAL = func
-
 
 # ------------------------------------------------------------------ #
 # 1.  Attempt to import compiled extension
@@ -58,7 +52,6 @@ except ModuleNotFoundError:
 if HAVE_CORE:
     # -------- special: GARCH(1,1)+Normal ---------------------------
     if hasattr(_c, "_special_garch_oo_normal"):
-
         def _garch11_normal(y: np.ndarray, theta: np.ndarray) -> float:
             return _c._special_garch_oo_normal(y, theta)
 

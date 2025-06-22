@@ -7,6 +7,9 @@ t:
 	pytest -q tests/test_spec_core.py
 	pytest -q tests/test_component_view.py 
 	pytest -q tests/test_result_core.py
+	pytest -q tests/test_fit_mixins.py
+	pytest -q tests/test_mle_core.py
+	
 
 f:
 	rm -rf build/ dist/

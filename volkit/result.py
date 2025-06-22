@@ -4,10 +4,11 @@ from typing import Dict, Optional, Any, Protocol, runtime_checkable, TYPE_CHECKI
 import numpy as np
 from datetime import datetime
 
-from volkit import Role
+from .roles import Role
 
 if TYPE_CHECKING:
-    from volkit import CompositeSpec, Component
+    from .components import Component
+    from .spec import CompositeSpec
 
 
 

@@ -1,40 +1,30 @@
-"""
-volkit  –  High-performance volatility models
-"""
-
+# volkit/__init__.py
 from importlib.metadata import version as _v
+__version__ = _v("volkit")
 
-__version__: str = _v("volkit")
-
-# ── optional native extension ─────────────────────────────────────────
+# optional C extension
 try:
-    from . import _core as _core  # noqa: F401  (used for side effects)
-except ModuleNotFoundError:       # pure-Python fallback
-    _core = None                  # noqa: F401
+    from . import _core as _core
+except ModuleNotFoundError:
+    _core = None  # pure-python mode
 
-# ── public Python API ────────────────────────────────────────────────
+# public API ---------------------------------------------------------
 from .roles import Role
-from .components import (
-    ARMA,
-    GARCH,
-    Normal,
-    StudentT,
-    CompositeSpec,
-    Component,
-)
-from ._kernels import get_special_kernel, get_general_kernel
+from .components import ARMA, GARCH, Normal, StudentT, Component
+from .spec import CompositeSpec
 from .estimators import MLE
+from ._kernels import get_special_kernel, get_general_kernel
 
-__all__: list[str] = [
+__all__ = [
     "Role",
+    "Component",
     "ARMA",
     "GARCH",
     "Normal",
     "StudentT",
     "CompositeSpec",
-    "Component",
+    "MLE",
     "get_special_kernel",
     "get_general_kernel",
-    "MLE",
     "__version__",
 ]

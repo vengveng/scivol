@@ -32,8 +32,8 @@ def garch_pq_normal_py(
     spec,  # CompositeSpec, but typed loosely to avoid circular imports
 ) -> float:
     # read p, q from the volatility component
-    from volkit.components import GARCH
-    from volkit.roles import Role
+    from ..components import GARCH
+    from ..roles import Role
 
     vol = spec.get_component(Role.VOLATILITY)
     assert isinstance(vol, GARCH)

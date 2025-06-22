@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from volkit.components import GARCH, Normal, CompositeSpec, Role
+from volkit import GARCH, Normal, CompositeSpec, Role
 
 # ------------------------------------------------------------------
 # 1. Lone component auto-adds Normal in __str__
