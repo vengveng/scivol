@@ -21,8 +21,11 @@ packages = [
 name = "volkit._core"
 sources = [
   "volkit/_core.c",
-  "volkit/_csrc/volkit_core.c",
-  "volkit/_csrc/variance_garch.c"
+  "volkit/_csrc/variance_garch.c",
+  "volkit/_csrc/likelihood_garch.c",
+  "volkit/_csrc/likelihood_normal.c",
+  "volkit/_csrc/likelihood_studentt.c",
+  "volkit/_csrc/errors_garch.c",
 ]
 include-dirs       = ["volkit/_csrc"]
 extra-compile-args = ["-O3", "-ffast-math"]

@@ -1,3 +1,4 @@
+// volkit/_csrc/variance_garch.c
 #include <stddef.h>
 #include <stdlib.h>
 #include <math.h>
@@ -15,7 +16,7 @@ void garch_variance_pq(const double* __restrict parameters,
 
     size_t max_lag = (p > q) ? p : q;
     for (size_t i = 1; i < max_lag; ++i) {
-        sigma2[i] = parameters[0];
+        // sigma2[i] = parameters[0];
         for (size_t j = 1; j <= p; ++j) {
             if (i >= j) {
                 sigma2[i] += parameters[j] * residuals2[i - j];
@@ -30,7 +31,7 @@ void garch_variance_pq(const double* __restrict parameters,
     }
 
     for (size_t i = max_lag; i < n; ++i) {
-        sigma2[i] = parameters[0];
+        // sigma2[i] = parameters[0];
         for (size_t j = 1; j <= p; ++j) {
             sigma2[i] += parameters[j] * residuals2[i - j];
         }
