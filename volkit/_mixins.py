@@ -12,12 +12,10 @@ if TYPE_CHECKING:
 
 class FitsMixin:
     """
-    Adds a .fit(...) convenience wrapper that delegates to the default
-    estimator (MLE) and returns an EstimationResult.
+    Adds a .fit(...) convenience wrapper that delegates to the default estimator (MLE) and returns an EstimationResult.
     """
 
-    # the concrete class will supply .spec  (Component already has it,
-    # CompositeSpec can return self)
+    # the concrete class will supply .spec  (Component already has it, CompositeSpec can return self)
     @property
     @abstractmethod
     def spec(self) -> CompositeSpec: ...
@@ -37,10 +35,10 @@ class FitsMixin:
         from .estimators import MLE
 
         if estimator is None:
-            est = MLE()            # default
+            est = MLE()
         elif callable(estimator) and not isinstance(estimator, MLE):
-            est = estimator()              # user gave a class/factory
+            est = estimator()
         else:
-            est = estimator                # user passed an instance
+            est = estimator
 
         return est.fit(self.spec, data, **kwargs)

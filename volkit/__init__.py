@@ -2,10 +2,17 @@
 from importlib.metadata import version as _v
 __version__ = _v("volkit")
 
+try:
+    from . import _core as _core
+except ModuleNotFoundError:
+    raise ImportError(
+        "volkit was installed without its compiled core."
+        "Build wheels or run `pip install .` with a C compiler."
+    )
+
 from .components import ARMA, GARCH, Normal, StudentT, Component
 from .spec import CompositeSpec
 from .estimators import MLE
-from ._kernels import get_special_kernel, get_general_kernel
 from .roles import Role
 
 __all__: list[str] = [
@@ -13,8 +20,6 @@ __all__: list[str] = [
     "Component",
     "CompositeSpec",
     "GARCH",
-    "get_general_kernel",
-    "get_special_kernel",
     "MLE",
     "Normal",
     "Role",

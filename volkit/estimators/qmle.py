@@ -11,7 +11,7 @@ from scipy.optimize import minimize
 from ..spec import CompositeSpec
 from ..components import Component
 from ..roles import Role
-from .._kernels import get_special_kernel, get_general_kernel
+from .._kernels import get_routine
 from .base import Estimator
 
 if TYPE_CHECKING:  # avoid hard dependency at import-time

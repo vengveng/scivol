@@ -1,3 +1,4 @@
+# src/volkit/_core.pyi
 """
 Stub file for the compiled extension **volkit._core**
 
@@ -15,64 +16,94 @@ from typing import Any, Union
 import ctypes
 
 _IntPtr = Union[int, ctypes.c_void_p, ctypes._Pointer[Any]]
-_Size    = Union[int, ctypes.c_size_t]
+_Size = Union[int, ctypes.c_size_t]
 
-# ── General GARCH(p,q) helpers ────────────────────────────────────────────
+# ── GARCH variance computation ────────────────────────────────────────────
+
 def _garch_variance_pq(
-    theta_ptr  : _IntPtr,
-    resid2_ptr : _IntPtr,
-    sigma2_ptr : _IntPtr,
-    n: _Size,
-    p: _Size,
-    q: _Size,
-) -> None: ...
+    theta_ptr: _IntPtr,   # GARCH parameters [omega, alpha1, ..., alphap, beta1, ..., betaq]
+    eps2_ptr: _IntPtr,    # Squared residuals/returns
+    sigma2_ptr: _IntPtr,  # Output: conditional variances (modified in-place)
+    n: _Size,             # Number of observations
+    p: _Size,             # GARCH order (number of alpha parameters)
+    q: _Size,             # ARCH order (number of beta parameters)
+) -> None:
+    """Compute GARCH(p,q) conditional variances"""
+    ...
 
-def _normal_likelihood(
-    sigma2_ptr : _IntPtr,
-    resid2_ptr : _IntPtr,
-    n: _Size,
-) -> float: ...
+def _garch_variance_11(
+    theta_ptr: _IntPtr,   # GARCH(1,1) parameters [omega, alpha, beta]
+    eps2_ptr: _IntPtr,    # Squared residuals/returns
+    sigma2_ptr: _IntPtr,  # Output: conditional variances (modified in-place)
+    n: _Size,             # Number of observations
+) -> None:
+    """Compute GARCH(1,1) conditional variances (optimized)"""
+    ...
 
-def _general_garch_pq_std_err_robust(
-    resid2_ptr : _IntPtr,
-    sigma2_ptr : _IntPtr,
-    OPG_ptr    : _IntPtr,
-    HESS_ptr   : _IntPtr,
-    n: _Size,
-    p: _Size,
-    q: _Size,
-) -> None: ...
+# ── GARCH log-likelihood computation ──────────────────────────────────────
 
-# ── Special GARCH(1,1) helpers ────────────────────────────────────────────
-def _special_garch_oo_normal(
-    theta_ptr  : _IntPtr,
-    resid2_ptr : _IntPtr,
-    sigma2_ptr : _IntPtr,
-    n: _Size,
-) -> float: ...
+def _garch_ll_11_normal(
+    theta_ptr: _IntPtr,   # GARCH(1,1) parameters [omega, alpha, beta]
+    eps2_ptr: _IntPtr,    # Squared residuals/returns
+    sigma2_ptr: _IntPtr,  # Working array for conditional variances
+    n: _Size,             # Number of observations
+) -> float:
+    """Compute GARCH(1,1) + Normal log-likelihood (optimized)"""
+    ...
 
-def _special_garch_oo_normal_variance(
-    theta_ptr  : _IntPtr,
-    resid2_ptr : _IntPtr,
-    sigma2_ptr : _IntPtr,
-    n: _Size,
-) -> None: ...
+def _garch_ll_pq_normal(
+    theta_ptr: _IntPtr,   # GARCH parameters [omega, alpha1, ..., alphap, beta1, ..., betaq]
+    eps2_ptr: _IntPtr,    # Squared residuals/returns
+    sigma2_ptr: _IntPtr,  # Working array for conditional variances
+    n: _Size,             # Number of observations
+    p: _Size,             # GARCH order (number of alpha parameters)
+    q: _Size,             # ARCH order (number of beta parameters)
+) -> float:
+    """Compute GARCH(p,q) + Normal log-likelihood"""
+    ...
 
-def _special_garch_11_std_err_robust(
-    resid2_ptr : _IntPtr,
-    sigma2_ptr : _IntPtr,
-    OPG_ptr    : _IntPtr,
-    HESS_ptr   : _IntPtr,
-    n: _Size,
-) -> None: ...
+# ── Pure likelihood functions ─────────────────────────────────────────────
 
-# ── Student-t likelihood ─────────────────────────────────────────────────
-def _any_studentt_likelihood(
-    sigma2_ptr : _IntPtr,
-    r2os2_ptr  : _IntPtr,
-    n: _Size,
-    nu: float,
-) -> float: ...
+def _normal_ll(
+    sigma2_ptr: _IntPtr,  # Conditional variances
+    eps2_ptr: _IntPtr,    # Squared residuals/returns
+    n: _Size,             # Number of observations
+) -> float:
+    """Compute Normal log-likelihood given variances"""
+    ...
+
+def _studentt_ll(
+    sigma2_ptr: _IntPtr,  # Conditional variances
+    r2os2_ptr: _IntPtr,   # Residuals squared over sigma squared (eps2/sigma2)
+    n: _Size,             # Number of observations
+    nu: float,            # Degrees of freedom parameter
+) -> float:
+    """Compute Student-t log-likelihood given variances"""
+    ...
+
+# ── Standard error computation (OPG & Hessian) ────────────────────────────
+
+def _garch_opg_hess_pq(
+    eps2_ptr: _IntPtr,    # Squared residuals/returns
+    sigma2_ptr: _IntPtr,  # Conditional variances
+    OPG_ptr: _IntPtr,     # Output: Outer Product of Gradients matrix (modified in-place)
+    HESS_ptr: _IntPtr,    # Output: Hessian matrix (modified in-place)
+    n: _Size,             # Number of observations
+    p: _Size,             # GARCH order (number of alpha parameters)
+    q: _Size,             # ARCH order (number of beta parameters)
+) -> None:
+    """Compute GARCH(p,q) OPG and Hessian matrices for robust standard errors"""
+    ...
+
+def _garch_opg_hess_11(
+    eps2_ptr: _IntPtr,    # Squared residuals/returns
+    sigma2_ptr: _IntPtr,  # Conditional variances
+    OPG_ptr: _IntPtr,     # Output: Outer Product of Gradients matrix (modified in-place)
+    HESS_ptr: _IntPtr,    # Output: Hessian matrix (modified in-place)
+    n: _Size,             # Number of observations
+) -> None:
+    """Compute GARCH(1,1) OPG and Hessian matrices for robust standard errors (optimized)"""
+    ...
 
 # Nothing is meant for star-import; keep top-level clean
 __all__: list[str] = []
