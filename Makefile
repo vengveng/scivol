@@ -4,6 +4,7 @@ b:
 	python -m pip install --force-reinstall dist/volkit-*.whl
 
 dev:
+	rm -rf build/ dist/
 	pip install -e . --no-build-isolation --config-settings="--build-option=build_ext --build-option=--inplace"
 
 t:

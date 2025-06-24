@@ -87,3 +87,8 @@ def test_hash_equality_contract():
     s3 = CompositeSpec(GARCH(2, 1))
     assert s1 == s2 and hash(s1) == hash(s2)
     assert s1 != s3 and hash(s1) != hash(s3)
+
+
+def test_arrow_syntax_on_composite():
+    spec = GARCH(1, 2) << ARMA(1, 1) <- StudentT()
+    assert str(spec) == "ARMA(1,1)+GARCH(1,2)+StudentT"

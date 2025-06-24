@@ -43,6 +43,23 @@ py_normal_likelihood(PyObject *self,
 }
 
 static PyObject *
+py_garch_variance_11(PyObject *self,
+                           PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 4) { BAD_ARITY("special_garch_oo_normal", 4, nargs); return NULL; }
+
+    const double *theta  = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *eps2   = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *sigma2 = (double *)      PyLong_AsVoidPtr(args[2]);
+    size_t n  = PyLong_AsSize_t(args[3]);
+    if (PyErr_Occurred()) return NULL;
+
+    double ll = special_garch_oo_normal(theta, eps2, sigma2, n);
+    return PyFloat_FromDouble(ll);
+
+}
+
+static PyObject *
 py_special_garch_oo_normal(PyObject *self,
                            PyObject *const *args, Py_ssize_t nargs)
 {
@@ -137,19 +154,28 @@ py_any_studentt_likelihood(PyObject *self,
 static PyMethodDef Methods[] = {
     {"_garch_variance_pq",      (PyCFunction)py_garch_variance_pq,
                                METH_FASTCALL, "Internal pointer API"},
+
     {"_normal_likelihood",      (PyCFunction)py_normal_likelihood,
                                METH_FASTCALL, "Internal pointer API"},
-    /* add the rest here */
+
     {"_special_garch_oo_normal", (PyCFunction)py_special_garch_oo_normal,
                                METH_FASTCALL, "Internal pointer API"},
+
+    {"_garch_variance_11",      (PyCFunction)py_garch_variance_11,
+                                 METH_FASTCALL, "Internal pointer API"},
+
     {"_special_garch_oo_normal_variance", (PyCFunction)py_special_garch_oo_normal_variance,
                                METH_FASTCALL, "Internal pointer API"},
+
     {"_general_garch_pq_std_err_robust", (PyCFunction)py_general_garch_pq_std_err_robust,
                                METH_FASTCALL, "Internal pointer API"},
+
     {"_special_garch_11_std_err_robust", (PyCFunction)py_special_garch_11_std_err_robust,
                                METH_FASTCALL, "Internal pointer API"},
+
     {"_any_studentt_likelihood", (PyCFunction)py_any_studentt_likelihood,
                                METH_FASTCALL, "Internal pointer API"},
+                               
     {NULL, NULL, 0, NULL}
 };
 
