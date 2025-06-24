@@ -115,10 +115,10 @@ PyObject *const *args, Py_ssize_t nargs)
 }
 
 static PyObject *
-py_garch_opg_hess_oq(PyObject *self,
+py_garch_opg_hess_pq(PyObject *self,
     PyObject *const *args, Py_ssize_t nargs)
     {
-        if (nargs != 7) { BAD_ARITY("garch_opg_hess_oq", 7, nargs); return NULL; }
+        if (nargs != 7) { BAD_ARITY("garch_opg_hess_pq", 7, nargs); return NULL; }
     
         const double *eps2   = (const double *)PyLong_AsVoidPtr(args[0]);
         const double *sigma2 = (const double *)PyLong_AsVoidPtr(args[1]);
@@ -129,7 +129,7 @@ py_garch_opg_hess_oq(PyObject *self,
         size_t q  = PyLong_AsSize_t(args[6]);
         if (PyErr_Occurred()) return NULL;
     
-        garch_opg_hess_oq(eps2, sigma2, OPG, HESS, n, p, q);
+        garch_opg_hess_pq(eps2, sigma2, OPG, HESS, n, p, q);
         Py_RETURN_NONE;
     
     }
@@ -174,7 +174,7 @@ static PyMethodDef Methods[] = {
     {"_studentt_ll",            (PyCFunction)py_studentt_ll,
                                METH_FASTCALL, "Internal pointer API"},
 
-    {"_garch_opg_hess_oq", (PyCFunction)py_garch_opg_hess_oq,
+    {"_garch_opg_hess_pq", (PyCFunction)py_garch_opg_hess_pq,
                                METH_FASTCALL, "Internal pointer API"},
 
     {"_garch_opg_hess_11", (PyCFunction)py_garch_opg_hess_11,

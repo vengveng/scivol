@@ -16,5 +16,5 @@ t:
 	
 
 f:
-	rm -rf build/ dist/
+	rm -rf build/ dist/ 
 	python -m build
