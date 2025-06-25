@@ -33,6 +33,8 @@ class CompositeSpec(FitsMixin):
             role = comp.role.name.lower()
             if groups[role] is not None:
                 # special case: we allow replacing the placeholder Normal
+                if isinstance(comp, Normal) and isinstance(groups[role], Normal):
+                    continue
                 if role == "density" and isinstance(groups[role], Normal) and not isinstance(comp, Normal):
                     groups[role] = comp
                     continue

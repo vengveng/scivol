@@ -14,12 +14,14 @@ from .components import ARMA, GARCH, Normal, StudentT, Component
 from .spec import CompositeSpec
 from .estimators import MLE
 from .roles import Role
+from ._kernels import get_routine
 
 __all__: list[str] = [
     "ARMA",
     "Component",
     "CompositeSpec",
     "GARCH",
+    "get_routine",
     "MLE",
     "Normal",
     "Role",

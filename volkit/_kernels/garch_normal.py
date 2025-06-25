@@ -12,8 +12,7 @@ from ..spec.composite import CompositeSpec
 from ..result import EstimationResult
 from .routine import Routine
 
-_CACHE: Dict[Tuple[int, int], Routine] = {}      # keyed by (p,q)
-
+_CACHE: Dict[Tuple[int, int], Routine] = {}
 
 def _build(p: int, q: int) -> Routine:
     uid = f"GARCH({p},{q})+Normal"
@@ -23,35 +22,49 @@ def _build(p: int, q: int) -> Routine:
 
     # pick the best C function
     try:
-        cfunc = getattr(_core, f"_garch_ll_{p}{q}_normal")   # fused
-        fused = True
+        cfunc = getattr(_core, f"_garch_ll_{p}{q}_normal")
+        special = True
     except AttributeError:
-        cfunc = _core._garch_ll_pq_normal                    # generic
-        fused = False
+        cfunc = _core._garch_ll_pq_normal
+        special = False
 
-    def fit(y: NDArray[np.float64], **_) -> EstimationResult:
-        y  = np.ascontiguousarray(y, np.float64)
-        n  = y.size
-        e2 = y * y
-        h  = np.empty_like(e2)
+    def fit(resid: NDArray[np.float64], **_) -> EstimationResult:
 
-        e2_ptr, h_ptr = e2.ctypes.data, h.ctypes.data
-        def ll(theta):
-            ptr = np.ascontiguousarray(theta, np.float64).ctypes.data
-            if fused:
-                return cfunc(ptr, e2_ptr, h_ptr, n) # type: ignore
-            return cfunc(ptr, e2_ptr, h_ptr, n, p, q)
+        def _as_cptr(arr: NDArray[np.float64]) -> int:
+            return np.ascontiguousarray(arr, dtype=np.float64).ctypes.data
+        
+        n = resid.size
+        sigma2 = np.zeros(len(resid), dtype=np.float64)
+        sigma2[0] = np.sum(resid**2) / len(resid)
+        resid2 = resid**2
+        constant_ll = -0.5 * n * np.log(2 * np.pi)
+
+
+        sigma2_c = _as_cptr(sigma2)
+        resid2_c = _as_cptr(resid2)
+
+        if special:
+            def objective(theta: NDArray[np.float64]) -> float:
+                theta_ptr = _as_cptr(theta)
+                return cfunc(theta_ptr, resid2_c, sigma2_c, n) # type: ignore
+            
+        else:
+            def objective(theta: NDArray[np.float64]) -> float:
+                theta_ptr = _as_cptr(theta)
+                return cfunc(theta_ptr, resid2_c, sigma2_c, n, p, q)
 
         from scipy.optimize import minimize
         res = minimize(
-            lambda th: -ll(th),
-            vol.default_start(y),
-            method="Nelder-Mead",
-            bounds=vol.bounds(),
-            options={"maxfev": 50000},
+            fun     = objective,
+            x0      = vol.default_start(resid),
+            method  = "Nelder-Mead",
+            bounds  = vol.bounds(),
+            options = {"maxfev": 50000},
         )
+
+        res.fun = -res.fun + constant_ll
         vol.unpack(res.x)
-        return EstimationResult(spec, res, y)
+        return EstimationResult(spec, res, resid)
 
     return Routine(
         uid=uid,
@@ -66,8 +79,8 @@ def get_routine(uid: str) -> Routine:
     """
     Parse 'GARCH(p,q)+Normal', build or fetch the specialised Routine.
     """
-    m = re.match(r"GARCH\((\d+),(\d+)\)\+Normal$", uid)
-    if not m:
+    model = re.match(r"GARCH\((\d+),(\d+)\)\+Normal$", uid)
+    if not model:
         raise RuntimeError(f"garch_normal cannot handle uid '{uid}'")
-    p, q = map(int, m.groups())
+    p, q = map(int, model.groups())
     return _CACHE.setdefault((p, q), _build(p, q))
