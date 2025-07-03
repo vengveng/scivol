@@ -105,5 +105,124 @@ def _garch_opg_hess_11(
     """Compute GARCH(1,1) OPG and Hessian matrices for robust standard errors (optimized)"""
     ...
 
+def _garch_ll_grad_hess_pq_normal(
+    theta_ptr: _IntPtr,   # GARCH parameters [omega, alpha1, ..., alphap, beta1, ..., betaq]
+    eps2_ptr: _IntPtr,    # Squared residuals/returns
+    sigma2_ptr: _IntPtr,  # Working array for conditional variances
+    grad_ptr: _IntPtr,    # Output: gradient vector (modified in-place)
+    hess_ptr: _IntPtr,    # Output: Hessian matrix (modified in-place)
+    nll_ptr: _IntPtr,     # Output: negative log-likelihood (scalar)
+    n: _Size,             # Number of observations
+    p: _Size,             # GARCH order (number of alpha parameters)
+    q: _Size,             # ARCH order (number of beta parameters)
+) -> None:
+    """Compute GARCH(p,q) + Normal log-likelihood with gradient and Hessian"""
+    ...
+
+
+# void garch_ll_grad_hess_11_normal(
+#         const double * __restrict params,  /* [ω, α, β] */
+#         const double * __restrict resid2,
+#         double       * __restrict sigma2,   /* n        */
+#         double       * __restrict grad,     /* 3        */
+#         double       * __restrict hess,     /* 3×3      */
+#         double       * __restrict nll,      /* scalar   */
+#         size_t n)
+
+def _garch_ll_grad_hess_11_normal(
+    theta_ptr: _IntPtr,   # GARCH(1,1) parameters [omega, alpha, beta]
+    eps2_ptr: _IntPtr,    # Squared residuals/returns
+    sigma2_ptr: _IntPtr,  # Working array for conditional variances
+    grad_ptr: _IntPtr,    # Output: gradient vector (modified in-place)
+    hess_ptr: _IntPtr,    # Output: Hessian matrix (modified in-place)
+    nll_ptr: _IntPtr,     # Output: negative log-likelihood (scalar)
+    n: _Size,             # Number of observations
+) -> None:
+    """Compute GARCH(1,1) + Normal log-likelihood with gradient and Hessian (optimized)"""
+    ...
+
+
+# // __attribute__((visibility("default"), hot, flatten))
+# // void garch_ll_grad_11_normal(
+# //         const double * __restrict params,   /* [ω, α, β]          */
+# //         const double * __restrict resid2,   /* ε_t², length n     */
+# //         double       * __restrict sigma2,   /* working buffer n   */
+# //         double       * __restrict grad,     /* output length 3    */
+# //         size_t n)
+
+# // __attribute__((visibility("default"), hot, flatten))
+# // void garch_ll_hess_11_normal(
+# //         const double * __restrict params,   /* [ω, α, β]          */
+# //         const double * __restrict resid2,   /* ε_t², length n     */
+# //         double       * __restrict sigma2,   /* working buffer n   */
+# //         double       * __restrict hess,     /* output 3 × 3 row-major */
+# //         size_t n)
+
+def _garch_ll_grad_11_normal(
+    theta_ptr: _IntPtr,   # GARCH(1,1) parameters [omega, alpha, beta]
+    eps2_ptr: _IntPtr,    # Squared residuals/returns
+    sigma2_ptr: _IntPtr,  # Working array for conditional variances
+    grad_ptr: _IntPtr,    # Output: gradient vector (modified in-place)
+    n: _Size,             # Number of observations
+) -> None:
+    """Compute GARCH(1,1) + Normal log-likelihood gradient (optimized)"""
+    ...
+
+def _garch_ll_hess_11_normal(
+    theta_ptr: _IntPtr,   # GARCH(1,1) parameters [omega, alpha, beta]
+    eps2_ptr: _IntPtr,    # Squared residuals/returns
+    sigma2_ptr: _IntPtr,  # Working array for conditional variances
+    hess_ptr: _IntPtr,    # Output: Hessian matrix (modified in-place)
+    n: _Size,             # Number of observations
+) -> None:
+    """Compute GARCH(1,1) + Normal log-likelihood Hessian (optimized)"""
+    ...
+
+
+
+# // __attribute__((visibility("default"), hot, flatten))
+# // void garch_ll_grad_pq_normal(
+# //         const double * __restrict params,
+# //         const double * __restrict resid2,
+# //         double       * __restrict sigma2,
+# //         double       * __restrict grad,
+# //         size_t n,
+# //         size_t p,
+# //         size_t q)
+
+# // __attribute__((visibility("default"), hot, flatten))
+# // void garch_ll_hess_pq_normal(
+# //         const double * __restrict params,
+# //         const double * __restrict resid2,
+# //         double       * __restrict sigma2,
+# //         double       * __restrict hess,
+# //         size_t n,
+# //         size_t p,
+# //         size_t q)
+
+def _garch_ll_grad_pq_normal(
+    theta_ptr: _IntPtr,   # GARCH parameters [omega, alpha1, ..., alphap, beta1, ..., betaq]
+    eps2_ptr: _IntPtr,    # Squared residuals/returns
+    sigma2_ptr: _IntPtr,  # Working array for conditional variances
+    grad_ptr: _IntPtr,    # Output: gradient vector (modified in-place)
+    n: _Size,             # Number of observations
+    p: _Size,             # GARCH order (number of alpha parameters)
+    q: _Size,             # ARCH order (number of beta parameters)
+) -> None:
+    """Compute GARCH(p,q) + Normal log-likelihood gradient"""
+    ...
+
+def _garch_ll_hess_pq_normal(
+    theta_ptr: _IntPtr,   # GARCH parameters [omega, alpha1, ..., alphap, beta1, ..., betaq]
+    eps2_ptr: _IntPtr,    # Squared residuals/returns
+    sigma2_ptr: _IntPtr,  # Working array for conditional variances
+    hess_ptr: _IntPtr,    # Output: Hessian matrix (modified in-place)
+    n: _Size,             # Number of observations
+    p: _Size,             # GARCH order (number of alpha parameters)
+    q: _Size,             # ARCH order (number of beta parameters)
+) -> None:
+    """Compute GARCH(p,q) + Normal log-likelihood Hessian"""
+    ...
+
 # Nothing is meant for star-import; keep top-level clean
 __all__: list[str] = []

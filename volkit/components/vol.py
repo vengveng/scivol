@@ -21,22 +21,27 @@ class GARCH(Component):
     def n_params(self): return 1 + self.p + self.q
     
     def default_start(self, data: np.ndarray) -> np.ndarray:
-        """Heuristic starting values"""
         self._data = data
-        omega = max(1e-6, 0.01 * np.var(data))
-        alpha = [0.05 / self.p] * self.p if self.p else []
-        beta  = [0.90 / self.q] * self.q if self.q else []
-        
-        persistence = sum(alpha) + sum(beta)
-        if persistence >= 0.99:
-            scale = 0.95 / persistence
-            alpha = [a * scale for a in alpha]
-            beta  = [b * scale for b in beta]
+
+        min_positive   = 1e-8
+        persist_target = 0.90
+        beta_share     = 0.80
+
+        omega = max(min_positive, 0.01 * np.var(data))
+
+        total_beta  = persist_target * beta_share
+        total_alpha = persist_target * (1.0 - beta_share)
+
+        alpha = ([max(min_positive, total_alpha / self.p)] * self.p) if self.p else []
+        beta  = ([max(min_positive, total_beta  / self.q)] * self.q) if self.q else []
 
         return np.array([omega] + alpha + beta)
     
     def bounds(self) -> List[Tuple[float, float]]:
         """Parameter bounds for optimization"""
+        # omega_bound  = [(0.0, 1.0)]
+        # alpha_bounds = [(0.0, 1.0)] * self.p  
+        # beta_bounds  = [(0.0, 1.0)] * self.q
         omega_bound  = [(1e-8, 1.0)]
         alpha_bounds = [(1e-8, 0.99)] * self.p  
         beta_bounds  = [(1e-8, 0.99)] * self.q
