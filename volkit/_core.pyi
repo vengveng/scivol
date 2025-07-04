@@ -224,5 +224,58 @@ def _garch_ll_hess_pq_normal(
     """Compute GARCH(p,q) + Normal log-likelihood Hessian"""
     ...
 
+
+def _garch_ll_11_studentt(
+    theta_ptr: _IntPtr,
+    eps2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+) -> float: ...
+
+def _garch_ll_pq_studentt(
+    theta_ptr: _IntPtr,
+    eps2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> float: ...
+
+def _garch_ll_grad_11_studentt(
+    theta_ptr: _IntPtr,
+    eps2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+) -> None: ...
+
+def _garch_ll_hess_11_studentt(
+    theta_ptr: _IntPtr,
+    eps2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+) -> None: ...
+
+def _garch_ll_grad_pq_studentt(
+    theta_ptr: _IntPtr,
+    eps2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None: ...
+
+def _garch_ll_hess_pq_studentt(
+    theta_ptr: _IntPtr,
+    eps2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None: ...
+
 # Nothing is meant for star-import; keep top-level clean
 __all__: list[str] = []

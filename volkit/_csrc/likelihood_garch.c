@@ -409,211 +409,6 @@ void garch_ll_hess_pq_normal(
 }
 
 
-
-
-
-
-
-
-
-__attribute__((visibility("default"), hot, flatten))
-void garch_ll_grad_hess_pq_normal(
-        const double * restrict params,
-        const double * restrict resid2,
-        double       * restrict sigma2,   /* n      */
-        double       * restrict grad,     /* K      */
-        double       * restrict hess,     /* K×K    */
-        double       * restrict nll,      /* scalar */
-        size_t n,
-        size_t p,
-        size_t q)
-{
-    const size_t K = 1 + p + q;
-
-    /* ---- parameter blocks ------------------------------------------ */
-    const double  omega = params[0];
-    const double *alpha = params + 1;
-    const double *beta  = params + 1 + p;
-
-    /* ---- workspace for  dσ²ₜ/dθᵢ  (n × K, zero-initialised) -------- */
-    double *dsig = (double *)calloc((size_t)n * K, sizeof(double));
-    if (!dsig) return;                        /* allocation failed */
-
-    /* ---- clear outputs --------------------------------------------- */
-    *nll = 0.0;
-    memset(grad, 0, K * sizeof(double));
-    memset(hess, 0, K * K * sizeof(double));
-
-    /* =================================================================
-     *  t = 0          (keeps Python-provided sigma2[0])
-     * ================================================================= */
-    {
-        const double s2       = sigma2[0];            /* already seeded  */
-        const double inv_s2   = 1.0 / s2;
-        const double res_over = resid2[0] * inv_s2;
-
-        *nll += 0.5 * (log(s2) + res_over);
-
-        /* dσ²₀/dω = 1, others 0 */
-        double *dsig0 = dsig;       /* row 0 */
-        dsig0[0] = 1.0;
-
-        const double c_grad  = (1.0 - res_over) * 0.5 * inv_s2;
-        const double c_hess = 0.5 * inv_s2 * inv_s2;
-
-        for (size_t i = 0; i < K; ++i) {
-            const double g_i = c_grad * dsig0[i];
-            grad[i] += g_i;
-
-            size_t row = i * K;
-            for (size_t j = 0; j < K; ++j) {
-                hess[row + j] += g_i * (c_grad * dsig0[j])      /* OPG  */
-                               + c_hess * dsig0[i] * dsig0[j];   /* info */;
-            }
-        }
-    }
-
-    /* =================================================================
-     *  t = 1 … n-1
-     * ================================================================= */
-    for (size_t t = 1; t < n; ++t) {
-
-        /* ---- 1. variance recursion σ²ₜ ----------------------------- */
-        double s2 = omega;
-
-        for (size_t j = 1; j <= p && t >= j; ++j)
-            s2 += alpha[j-1] * resid2[t - j];
-
-        for (size_t k = 1; k <= q && t >= k; ++k)
-            s2 += beta[k-1]  * sigma2[t - k];
-
-        sigma2[t] = s2;
-
-        /* ---- 2. derivative recursion dσ²ₜ/dθᵢ ---------------------- */
-        double *dsig_t = dsig + t * K;
-
-        /* ω contribution */
-        dsig_t[0] = 1.0;
-
-        /* carry-over through β terms */
-        for (size_t k = 1; k <= q && t >= k; ++k) {
-            const double *dsig_prev = dsig + (t - k) * K;
-            const double b          = beta[k-1];
-            for (size_t i = 0; i < K; ++i)
-                dsig_t[i] += b * dsig_prev[i];
-        }
-
-        /* direct α and β partials */
-        for (size_t j = 1; j <= p; ++j)
-            dsig_t[j] += (t >= j) ? resid2[t - j] : 0.0;
-
-        for (size_t k = 1; k <= q; ++k)
-            dsig_t[p + k] += (t >= k) ? sigma2[t - k] : 0.0;
-
-        /* ---- 3. contribution to nll / grad / Hessian --------------- */
-        const double inv_s2   = 1.0 / s2;
-        const double res_over = resid2[t] * inv_s2;
-
-        *nll += 0.5 * (log(s2) + res_over);
-
-        const double c_grad  = (1.0 - res_over) * 0.5 * inv_s2;
-        const double c_hess = 0.5 * inv_s2 * inv_s2;
-
-        for (size_t i = 0; i < K; ++i) {
-            const double g_i = c_grad * dsig_t[i];
-            grad[i] += g_i;
-
-            size_t row = i * K;
-            for (size_t j = 0; j < K; ++j) {
-                const double g_j = c_grad * dsig_t[j];
-                hess[row + j] += g_i * g_j
-                               + c_hess * dsig_t[i] * dsig_t[j];
-            }
-        }
-    }
-
-    /* ---- clean up --------------------------------------------------- */
-    free(dsig);
-}
-
-
-__attribute__((visibility("default"), hot, flatten))
-void garch_ll_grad_hess_11_normal(
-        const double * __restrict params,  /* [ω, α, β] */
-        const double * __restrict resid2,
-        double       * __restrict sigma2,   /* n        */
-        double       * __restrict grad,     /* 3        */
-        double       * __restrict hess,     /* 3×3      */
-        double       * __restrict nll,      /* scalar   */
-        size_t n)
-{
-    const double omega = params[0];
-    const double alpha = params[1];
-    const double beta  = params[2];
-
-    /* reset outputs */
-    *nll = 0.0;
-    dzeros(grad, 3);
-    dzeros(hess, 9);
-
-    /* ring buffer for dσ²/dθ */
-    double d_prev[3] = {1.0, 0.0, 0.0};   /* for t=0 */
-
-    /* t = 0 explicitly (sigma2[0] supplied by Python) */
-    {
-        const double s2      = sigma2[0];
-        const double inv_s2  = 1.0 / s2;
-        const double res_os  = resid2[0] * inv_s2;
-        *nll += 0.5 * (log(s2) + res_os);
-
-        const double c_grad  = 0.5 * (1.0 - res_os) * inv_s2;
-        const double c_hess  = 0.5 * inv_s2 * inv_s2;
-        for (size_t i = 0; i < 3; ++i) {
-            const double g_i = c_grad * d_prev[i];
-            grad[i] += g_i;
-            size_t row = i * 3;
-            for (size_t j = 0; j < 3; ++j) {
-                const double g_j = c_grad * d_prev[j];
-                hess[row + j] += g_i * g_j + c_hess * d_prev[i] * d_prev[j];
-            }
-        }
-    }
-
-    /* t = 1 .. n-1 */
-    for (size_t t = 1; t < n; ++t) {
-        /* σ² recursion */
-        sigma2[t] = omega + alpha * resid2[t-1] + beta * sigma2[t-1];
-        const double s2     = sigma2[t];
-        const double inv_s2 = 1.0 / s2;
-        const double res_os = resid2[t] * inv_s2;
-        *nll += 0.5 * (log(s2) + res_os);
-
-        /* derivative recursion */
-        double d_curr[3];
-        d_curr[0] = 1.0 + beta * d_prev[0];             /* ω     */
-        d_curr[1] = resid2[t-1] + beta * d_prev[1];      /* α₁    */
-        d_curr[2] = sigma2[t-1]  + beta * d_prev[2];     /* β₁    */
-
-        const double c_grad = 0.5 * (1.0 - res_os) * inv_s2;
-        const double c_hess = 0.5 * inv_s2 * inv_s2;
-
-        for (size_t i = 0; i < 3; ++i) {
-            const double g_i = c_grad * d_curr[i];
-            grad[i] += g_i;
-            size_t row = i * 3;
-            for (size_t j = 0; j < 3; ++j) {
-                const double g_j = c_grad * d_curr[j];
-                hess[row + j] += g_i * g_j + c_hess * d_curr[i] * d_curr[j];
-            }
-        }
-        /* roll */
-        d_prev[0] = d_curr[0];
-        d_prev[1] = d_curr[1];
-        d_prev[2] = d_curr[2];
-    }
-}
-
-
 // -----------------------
 // -- GARCH | Student-t --
 // -----------------------
@@ -732,3 +527,597 @@ double garch_ll_pq_studentt(const double* __restrict parameters,
 
 
 
+
+
+
+
+
+static inline double digamma_approx(double x)
+{
+    double result = 0.0;
+    /* raise argument into (8,∞) */
+    while (x < 8.0) {
+        result -= 1.0 / x;
+        x += 1.0;
+    }
+    const double inv = 1.0 / x;
+    const double inv2 = inv * inv;
+    /* Abramowitz & Stegun 6.3.18 with 3 correction terms */
+    result += log(x) - 0.5 * inv - inv2 * (1.0 / 12.0 - inv2 * (1.0 / 120.0 - inv2 / 252.0));
+    return result;
+}
+
+static inline double trigamma_approx(double x)
+{
+    double result = 0.0;
+
+    /* Raise argument into the asymptotic region (x ≥ 5) */
+    while (x < 5.0) {
+        result += 1.0 / (x * x);   /* exact recurrence: ψ′(x) = ψ′(x+1) + 1/x² */
+        x += 1.0;
+    }
+
+    const double inv  = 1.0 / x;
+    const double inv2 = inv * inv;
+    const double inv4 = inv2 * inv2;
+    const double inv6 = inv4 * inv2;
+    const double inv8 = inv4 * inv4;
+
+    /* six-term asymptotic expansion */
+    result +=  inv
+            + 0.5          * inv2          /* 1/(2x²)   */
+            + (1.0 / 6.0)  * inv * inv2    /* 1/(6x³)   */
+            - (1.0 / 30.0) * inv4 * inv    /* −1/(30x⁵) */
+            + (1.0 / 42.0) * inv6 * inv    /* 1/(42x⁷)  */
+            - (1.0 / 30.0) * inv8 * inv;   /* −1/(30x⁹) */
+
+    return result;
+}
+
+// Convenience macros -----------------------------------------------------------
+#define MAX(a,b) ((a) > (b) ? (a) : (b))
+
+// -----------------------------------------------------------------------------
+//  GARCH(1,1) | Student‑t | Gradient (−LL)
+// -----------------------------------------------------------------------------
+__attribute__((visibility("default"), hot, flatten))
+void garch_ll_grad_11_studentt(const double * __restrict params,
+                               const double * __restrict resid2,
+                               double       * __restrict sigma2,
+                               double       * __restrict grad,
+                               size_t n)
+{
+    /* parameter blocks */
+    const double omega = params[0];
+    const double alpha = params[1];
+    const double beta  = params[2];
+    const double nu    = params[3];
+
+    const double inv_nu_minus_2 = 1.0 / (nu - 2.0);
+
+    /* clear output */
+    dzeros(grad, 4);
+
+    /* derivative of σ²₀ wrt parameters */
+    double d_prev[3] = { 1.0, 0.0, 0.0 };
+
+    /* ---- t = 0 ------------------------------------------------------------ */
+    {
+        const double inv_sigma2        = 1.0 / sigma2[0];
+        const double res_over_sigma2   = resid2[0] * inv_sigma2;
+        const double one_plus_tail     = 1.0 + res_over_sigma2 * inv_nu_minus_2;
+
+        /* S_t (∂ℒ/∂σ²) for −LL */
+        const double s_grad_variance = 0.5 * inv_sigma2
+                                     - 0.5 * (nu + 1.0) * resid2[0]
+                                       * inv_nu_minus_2 * inv_sigma2 * inv_sigma2
+                                       / one_plus_tail;
+
+        /* accumulate gradient for ω, α, β */
+        for (size_t i = 0; i < 3; ++i)
+            grad[i] += s_grad_variance * d_prev[i];
+
+        /* gradient wrt ν */
+        const double g_nu_single = -0.5 * digamma_approx(0.5 * (nu + 1.0))
+                                   + 0.5 * digamma_approx(0.5 * nu)
+                                   + 0.5 * inv_nu_minus_2
+                                   + 0.5 * log(one_plus_tail)
+                                   - 0.5 * (nu + 1.0) * resid2[0]
+                                         * inv_nu_minus_2 * inv_nu_minus_2
+                                         * inv_sigma2 / one_plus_tail;
+        grad[3] += g_nu_single;
+    }
+
+    /* ---- t = 1 … n‑1 ------------------------------------------------------ */
+    for (size_t t = 1; t < n; ++t) {
+        /* 1. variance recursion */
+        sigma2[t] = omega + alpha * resid2[t - 1] + beta * sigma2[t - 1];
+
+        /* 2. derivative recursion */
+        double d_curr[3];
+        d_curr[0] = 1.0             + beta * d_prev[0];
+        d_curr[1] = resid2[t - 1]   + beta * d_prev[1];
+        d_curr[2] = sigma2[t - 1]   + beta * d_prev[2];
+
+        /* 3. scalar kernels */
+        const double inv_sigma2      = 1.0 / sigma2[t];
+        const double res_over_sigma2 = resid2[t] * inv_sigma2;
+        const double one_plus_tail   = 1.0 + res_over_sigma2 * inv_nu_minus_2;
+
+        const double s_grad_variance = 0.5 * inv_sigma2
+                                     - 0.5 * (nu + 1.0) * resid2[t]
+                                       * inv_nu_minus_2 * inv_sigma2 * inv_sigma2
+                                       / one_plus_tail;
+
+        for (size_t i = 0; i < 3; ++i)
+            grad[i] += s_grad_variance * d_curr[i];
+
+        const double g_nu_single = -0.5 * digamma_approx(0.5 * (nu + 1.0))
+                                   + 0.5 * digamma_approx(0.5 * nu)
+                                   + 0.5 * inv_nu_minus_2
+                                   + 0.5 * log(one_plus_tail)
+                                   - 0.5 * (nu + 1.0) * resid2[t]
+                                         * inv_nu_minus_2 * inv_nu_minus_2
+                                         * inv_sigma2 / one_plus_tail;
+        grad[3] += g_nu_single;
+
+        /* 4. roll forward */
+        memcpy(d_prev, d_curr, 3 * sizeof(double));
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  GARCH(1,1) | Student‑t | Hessian (−LL)
+// -----------------------------------------------------------------------------
+__attribute__((visibility("default"), hot, flatten))
+void garch_ll_hess_11_studentt(const double * __restrict params,
+                               const double * __restrict resid2,
+                               double       * __restrict sigma2,
+                               double       * __restrict hess,
+                               size_t n)
+{
+    /* parameter blocks */
+    const double omega = params[0];
+    const double alpha = params[1];
+    const double beta  = params[2];
+    const double nu    = params[3];
+
+    const double inv_nu_minus_2   = 1.0 / (nu - 2.0);
+    const double inv_nu_minus_2_2 = inv_nu_minus_2 * inv_nu_minus_2;
+    const double inv_nu_minus_2_3 = inv_nu_minus_2_2 * inv_nu_minus_2;
+
+    const size_t K = 4;                    /* ω α β ν */
+    dzeros(hess, K * K);
+
+    /* derivative and second‑derivative state */
+    double d_prev[3]        = { 1.0, 0.0, 0.0 };
+    double C_prev[3][3];    memset(C_prev, 0, sizeof(C_prev));
+
+    /* ---- t = 0 ------------------------------------------------------------ */
+    {
+        const double inv_sigma2      = 1.0 / sigma2[0];
+        const double res_over_sigma2 = resid2[0] * inv_sigma2;
+        const double one_plus_tail   = 1.0 + res_over_sigma2 * inv_nu_minus_2;
+
+        const double S_var = 0.5 * inv_sigma2
+                            - 0.5 * (nu + 1.0) * resid2[0]
+                              * inv_nu_minus_2 * inv_sigma2 * inv_sigma2
+                              / one_plus_tail;
+
+        const double H_var = -0.5 * inv_sigma2 * inv_sigma2
+                             + (nu + 1.0) * resid2[0] * inv_nu_minus_2
+                               * inv_sigma2 * inv_sigma2 * inv_sigma2
+                               / one_plus_tail
+                             - 0.5 * (nu + 1.0) * resid2[0] * resid2[0]
+                               * inv_nu_minus_2_2 * inv_sigma2 * inv_sigma2
+                               * inv_sigma2 * inv_sigma2
+                               / (one_plus_tail * one_plus_tail);
+
+        const double dS_dnu = 0.5 * inv_nu_minus_2_2
+                              - 0.5 * resid2[0] * inv_nu_minus_2_2
+                                * inv_sigma2 / one_plus_tail
+                              + 0.5 * (nu + 1.0) * resid2[0] * resid2[0]
+                                * inv_nu_minus_2_3 * inv_sigma2 * inv_sigma2
+                                / (one_plus_tail * one_plus_tail);
+
+        const double H_nu_nu = -0.25 * trigamma_approx(0.5 * (nu + 1.0))
+                               + 0.25 * trigamma_approx(0.5 * nu)
+                               - 0.5  * inv_nu_minus_2_2
+                               + 0.5  * resid2[0] * inv_nu_minus_2_2
+                                 * inv_sigma2 / one_plus_tail
+                               - 0.5  * (nu + 1.0) * resid2[0] * resid2[0]
+                                 * inv_nu_minus_2_3 * inv_sigma2 * inv_sigma2
+                                 / (one_plus_tail * one_plus_tail);
+
+        {
+            for (size_t i = 0; i < 3; ++i) {
+                const double d_i = d_prev[i];
+
+                for (size_t j = 0; j < 3; ++j)
+                    hess[i*4 + j] += H_var * d_i * d_prev[j]
+                                    + S_var * C_prev[i][j];
+
+                const double cross = dS_dnu * d_i;
+                hess[i*4 + 3] += cross;
+                hess[3*4 + i] += cross;
+            }
+            hess[3*4 + 3] += H_nu_nu;
+        }
+    }
+
+    /* ---- t = 1 … n‑1 ------------------------------------------------------ */
+    for (size_t t = 1; t < n; ++t) {
+        /* 1. variance recursion */
+        sigma2[t] = omega + alpha * resid2[t - 1] + beta * sigma2[t - 1];
+
+        /* 2. derivative recursion */
+        double d_curr[3];
+        d_curr[0] = 1.0             + beta * d_prev[0];
+        d_curr[1] = resid2[t - 1]   + beta * d_prev[1];
+        d_curr[2] = sigma2[t - 1]   + beta * d_prev[2];
+
+        /* 3. second‑order recursion */
+        double C_curr[3][3];
+        for (size_t i = 0; i < 3; ++i) {
+            for (size_t j = 0; j < 3; ++j) {
+                double value = beta * C_prev[i][j];
+                if (i == 2) value += d_prev[j];      /* β in first slot */
+                if (j == 2) value += d_prev[i];      /* β in second slot */
+                C_curr[i][j] = value;
+            }
+        }
+
+        /* 4. scalar kernels */
+        const double inv_sigma2      = 1.0 / sigma2[t];
+        const double res_over_sigma2 = resid2[t] * inv_sigma2;
+        const double one_plus_tail   = 1.0 + res_over_sigma2 * inv_nu_minus_2;
+
+        const double S_var = 0.5 * inv_sigma2
+                            - 0.5 * (nu + 1.0) * resid2[t]
+                              * inv_nu_minus_2 * inv_sigma2 * inv_sigma2
+                              / one_plus_tail;
+
+        const double H_var = -0.5 * inv_sigma2 * inv_sigma2
+                             + (nu + 1.0) * resid2[t] * inv_nu_minus_2
+                               * inv_sigma2 * inv_sigma2 * inv_sigma2
+                               / one_plus_tail
+                             - 0.5 * (nu + 1.0) * resid2[t] * resid2[t]
+                               * inv_nu_minus_2_2 * inv_sigma2 * inv_sigma2
+                               * inv_sigma2 * inv_sigma2
+                               / (one_plus_tail * one_plus_tail);
+
+        const double dS_dnu = 0.5 * inv_nu_minus_2_2
+                              - 0.5 * resid2[t] * inv_nu_minus_2_2
+                                * inv_sigma2 / one_plus_tail
+                              + 0.5 * (nu + 1.0) * resid2[t] * resid2[t]
+                                * inv_nu_minus_2_3 * inv_sigma2 * inv_sigma2
+                                / (one_plus_tail * one_plus_tail);
+
+        const double H_nu_nu = -0.25 * trigamma_approx(0.5 * (nu + 1.0))
+                               + 0.25 * trigamma_approx(0.5 * nu)
+                               - 0.5  * inv_nu_minus_2_2
+                               + 0.5  * resid2[t] * inv_nu_minus_2_2
+                                 * inv_sigma2 / one_plus_tail
+                               - 0.5  * (nu + 1.0) * resid2[t] * resid2[t]
+                                 * inv_nu_minus_2_3 * inv_sigma2 * inv_sigma2
+                                 / (one_plus_tail * one_plus_tail);
+
+        {
+            for (size_t i = 0; i < 3; ++i) {
+                const double d_i = d_curr[i];
+
+                for (size_t j = 0; j < 3; ++j)
+                    hess[i*4 + j] += H_var * d_i * d_curr[j]
+                                    + S_var * C_curr[i][j];
+
+                const double cross = dS_dnu * d_i;
+                hess[i*4 + 3] += cross;
+                hess[3*4 + i] += cross;
+            }
+            hess[3*4 + 3] += H_nu_nu;
+        }
+
+        /* 5. roll forward */
+        memcpy(d_prev, d_curr, 3 * sizeof(double));
+        memcpy(C_prev, C_curr, sizeof(C_prev));
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  GARCH(p,q) | Student‑t | Gradient (−LL)
+// -----------------------------------------------------------------------------
+__attribute__((visibility("default"), hot, flatten))
+void garch_ll_grad_pq_studentt(const double * __restrict params,
+                               const double * __restrict resid2,
+                               double       * __restrict sigma2,
+                               double       * __restrict grad,
+                               size_t n,
+                               size_t p,
+                               size_t q)
+{
+    const size_t K = 1 + p + q + 1;          /* +1 for ν */
+
+    /* parameter blocks */
+    const double  omega = params[0];
+    const double *alpha = params + 1;
+    const double *beta  = params + 1 + p;
+    const double  nu    = params[K - 1];
+    const double  inv_nu_minus_2 = 1.0 / (nu - 2.0);
+
+    /* clear output */
+    dzeros(grad, K);
+
+    /* ring buffers for D_t derivatives (size q+1) */
+    const size_t ring = q + 1;
+    double *d_buf = (double *)calloc(ring * K, sizeof(double));
+    if (!d_buf) return;
+
+    /* ===== t = 0 ========================================================== */
+    {
+        double *d0 = d_buf;      /* derivatives of σ²₀ */
+        d0[0] = 1.0;
+
+        const double inv_sigma2      = 1.0 / sigma2[0];
+        const double res_over_sigma2 = resid2[0] * inv_sigma2;
+        const double one_plus_tail   = 1.0 + res_over_sigma2 * inv_nu_minus_2;
+
+        const double S_var = 0.5 * inv_sigma2
+                            - 0.5 * (nu + 1.0) * resid2[0]
+                              * inv_nu_minus_2 * inv_sigma2 * inv_sigma2
+                              / one_plus_tail;
+
+        for (size_t i = 0; i < K - 1; ++i)      /* skip ν for now */
+            grad[i] += S_var * d0[i];
+
+        const double g_nu_single = -0.5 * digamma_approx(0.5 * (nu + 1.0))
+                                   + 0.5 * digamma_approx(0.5 * nu)
+                                   + 0.5 * inv_nu_minus_2
+                                   + 0.5 * log(one_plus_tail)
+                                   - 0.5 * (nu + 1.0) * resid2[0]
+                                         * inv_nu_minus_2 * inv_nu_minus_2
+                                         * inv_sigma2 / one_plus_tail;
+        grad[K - 1] += g_nu_single;
+    }
+
+    /* ===== t = 1 … n‑1 ==================================================== */
+    for (size_t t = 1; t < n; ++t) {
+        /* 1. σ² recursion --------------------------------------------------- */
+        double sigma2_t = omega;
+        for (size_t j = 1; j <= p && t >= j; ++j)
+            sigma2_t += alpha[j - 1] * resid2[t - j];
+        for (size_t k = 1; k <= q && t >= k; ++k)
+            sigma2_t += beta[k - 1]  * sigma2[t - k];
+        sigma2[t] = sigma2_t;
+
+        /* 2. D_t recursion -------------------------------------------------- */
+        double *d_t = d_buf + (t % ring) * K;
+        memset(d_t, 0, K * sizeof(double));
+        d_t[0] = 1.0;                             /* ω derivative */
+
+        for (size_t k = 1; k <= q && t >= k; ++k) {
+            const double *d_prev = d_buf + ((t - k) % ring) * K;
+            const double  beta_k = beta[k - 1];
+            for (size_t i = 0; i < K; ++i)
+                d_t[i] += beta_k * d_prev[i];
+        }
+        for (size_t j = 1; j <= p && t >= j; ++j)
+            d_t[j] += resid2[t - j];
+        for (size_t k = 1; k <= q && t >= k; ++k)
+            d_t[p + k] += sigma2[t - k];          /* β‑block */
+
+        /* 3. scalar kernels -------------------------------------------------- */
+        const double inv_sigma2      = 1.0 / sigma2_t;
+        const double res_over_sigma2 = resid2[t] * inv_sigma2;
+        const double one_plus_tail   = 1.0 + res_over_sigma2 * inv_nu_minus_2;
+
+        const double S_var = 0.5 * inv_sigma2
+                            - 0.5 * (nu + 1.0) * resid2[t]
+                              * inv_nu_minus_2 * inv_sigma2 * inv_sigma2
+                              / one_plus_tail;
+
+        for (size_t i = 0; i < K - 1; ++i)
+            grad[i] += S_var * d_t[i];
+
+        const double g_nu_single = -0.5 * digamma_approx(0.5 * (nu + 1.0))
+                                   + 0.5 * digamma_approx(0.5 * nu)
+                                   + 0.5 * inv_nu_minus_2
+                                   + 0.5 * log(one_plus_tail)
+                                   - 0.5 * (nu + 1.0) * resid2[t]
+                                         * inv_nu_minus_2 * inv_nu_minus_2
+                                         * inv_sigma2 / one_plus_tail;
+        grad[K - 1] += g_nu_single;
+    }
+
+    free(d_buf);
+}
+
+// -----------------------------------------------------------------------------
+//  GARCH(p,q) | Student‑t | Hessian (−LL)
+// -----------------------------------------------------------------------------
+__attribute__((visibility("default"), hot, flatten))
+void garch_ll_hess_pq_studentt(const double * __restrict params,
+                               const double * __restrict resid2,
+                               double       * __restrict sigma2,
+                               double       * __restrict hess,
+                               size_t n,
+                               size_t p,
+                               size_t q)
+{
+    const size_t K = 1 + p + q + 1;          /* +1 for ν */
+
+    /* parameter blocks */
+    const double  omega = params[0];
+    const double *alpha = params + 1;
+    const double *beta  = params + 1 + p;
+    const double  nu    = params[K - 1];
+    const double  inv_nu_minus_2   = 1.0 / (nu - 2.0);
+    const double  inv_nu_minus_2_2 = inv_nu_minus_2 * inv_nu_minus_2;
+    const double  inv_nu_minus_2_3 = inv_nu_minus_2_2 * inv_nu_minus_2;
+
+    /* clear output */
+    dzeros(hess, K * K);
+
+    /* ring buffers --------------------------------------------------------- */
+    const size_t ring = q + 1;
+    double *d_buf = (double *)calloc(ring * K, sizeof(double));
+    double *C_buf = (double *)calloc(ring * K * K, sizeof(double));
+    if (!d_buf || !C_buf) { free(d_buf); free(C_buf); return; }
+
+    /* helper: map lag ℓ (1‑based) -> β parameter index */
+    const size_t beta_base = 1 + p;     /* first β index */
+
+    /* ===== t = 0 ========================================================== */
+    {
+        double *D0 = d_buf;     /* first block */
+        D0[0] = 1.0;
+
+        double *C0 = C_buf;     /* all zeros */
+
+        const double inv_sigma2      = 1.0 / sigma2[0];
+        const double res_over_sigma2 = resid2[0] * inv_sigma2;
+        const double one_plus_tail   = 1.0 + res_over_sigma2 * inv_nu_minus_2;
+
+        const double S_var = 0.5 * inv_sigma2
+                            - 0.5 * (nu + 1.0) * resid2[0]
+                              * inv_nu_minus_2 * inv_sigma2 * inv_sigma2
+                              / one_plus_tail;
+
+        const double H_var = -0.5 * inv_sigma2 * inv_sigma2
+                             + (nu + 1.0) * resid2[0] * inv_nu_minus_2
+                               * inv_sigma2 * inv_sigma2 * inv_sigma2
+                               / one_plus_tail
+                             - 0.5 * (nu + 1.0) * resid2[0] * resid2[0]
+                               * inv_nu_minus_2_2 * inv_sigma2 * inv_sigma2
+                               * inv_sigma2 * inv_sigma2
+                               / (one_plus_tail * one_plus_tail);
+
+        const double dS_dnu = 0.5 * inv_nu_minus_2_2
+                              - 0.5 * resid2[0] * inv_nu_minus_2_2
+                                * inv_sigma2 / one_plus_tail
+                              + 0.5 * (nu + 1.0) * resid2[0] * resid2[0]
+                                * inv_nu_minus_2_3 * inv_sigma2 * inv_sigma2
+                                / (one_plus_tail * one_plus_tail);
+
+        const double H_nu_nu = -0.25 * trigamma_approx(0.5 * (nu + 1.0))
+                               + 0.25 * trigamma_approx(0.5 * nu)
+                               - 0.5  * inv_nu_minus_2_2
+                               + 0.5  * resid2[0] * inv_nu_minus_2_2
+                                 * inv_sigma2 / one_plus_tail
+                               - 0.5  * (nu + 1.0) * resid2[0] * resid2[0]
+                                 * inv_nu_minus_2_3 * inv_sigma2 * inv_sigma2
+                                 / (one_plus_tail * one_plus_tail);
+
+        {
+            for (size_t i = 0; i < K - 1; ++i) {
+                const double d_i = D0[i];
+                for (size_t j = 0; j < K - 1; ++j)
+                    hess[i*K + j] += H_var * d_i * D0[j]
+                                    + S_var * C0[i*K + j];
+
+                const double cross = dS_dnu * d_i;
+                hess[i*K + (K-1)] += cross;
+                hess[(K-1)*K + i] += cross;
+            }
+            hess[(K-1)*K + (K-1)] += H_nu_nu;
+        }
+    }
+
+    /* ===== t = 1 … n‑1 ==================================================== */
+    for (size_t t = 1; t < n; ++t) {
+        /* 1. σ² recursion */
+        double sigma2_t = omega;
+        for (size_t j = 1; j <= p && t >= j; ++j)
+            sigma2_t += alpha[j - 1] * resid2[t - j];
+        for (size_t k = 1; k <= q && t >= k; ++k)
+            sigma2_t += beta[k - 1]  * sigma2[t - k];
+        sigma2[t] = sigma2_t;
+
+        /* 2. D_t recursion */
+        double *D_t = d_buf + (t % ring) * K;
+        memset(D_t, 0, K * sizeof(double));
+        D_t[0] = 1.0;
+        for (size_t k = 1; k <= q && t >= k; ++k) {
+            const double *D_prev = d_buf + ((t - k) % ring) * K;
+            const double  beta_k = beta[k - 1];
+            for (size_t i = 0; i < K; ++i)
+                D_t[i] += beta_k * D_prev[i];
+        }
+        for (size_t j = 1; j <= p && t >= j; ++j)
+            D_t[j] += resid2[t - j];
+        for (size_t k = 1; k <= q && t >= k; ++k)
+            D_t[p + k] += sigma2[t - k];
+
+        /* 3. C_t recursion */
+        double *C_t = C_buf + (t % ring) * K * K;
+        memset(C_t, 0, K * K * sizeof(double));
+        for (size_t lag = 1; lag <= q && t >= lag; ++lag) {
+            const double  beta_l = beta[lag - 1];
+            const double *C_prev = C_buf + ((t - lag) % ring) * K * K;
+            const double *D_prev = d_buf  + ((t - lag) % ring) * K;
+
+            /* beta_l * C_{t‑lag} */
+            for (size_t idx = 0; idx < K * K; ++idx)
+                C_t[idx] += beta_l * C_prev[idx];
+
+            /* indicator contributions when parameter is that β_l */
+            const size_t b_idx = beta_base + lag - 1;
+            for (size_t j = 0; j < K; ++j) {
+                const double d_val = D_prev[j];
+                C_t[b_idx * K + j] += d_val;
+                C_t[j * K + b_idx] += d_val;
+            }
+        }
+
+        /* 4. scalar kernels */
+        const double inv_sigma2      = 1.0 / sigma2_t;
+        const double res_over_sigma2 = resid2[t] * inv_sigma2;
+        const double one_plus_tail   = 1.0 + res_over_sigma2 * inv_nu_minus_2;
+
+        const double S_var = 0.5 * inv_sigma2
+                            - 0.5 * (nu + 1.0) * resid2[t]
+                              * inv_nu_minus_2 * inv_sigma2 * inv_sigma2
+                              / one_plus_tail;
+
+        const double H_var = -0.5 * inv_sigma2 * inv_sigma2
+                             + (nu + 1.0) * resid2[t] * inv_nu_minus_2
+                               * inv_sigma2 * inv_sigma2 * inv_sigma2
+                               / one_plus_tail
+                             - 0.5 * (nu + 1.0) * resid2[t] * resid2[t]
+                               * inv_nu_minus_2_2 * inv_sigma2 * inv_sigma2
+                               * inv_sigma2 * inv_sigma2
+                               / (one_plus_tail * one_plus_tail);
+
+        const double dS_dnu = 0.5 * inv_nu_minus_2_2
+                              - 0.5 * resid2[t] * inv_nu_minus_2_2
+                                * inv_sigma2 / one_plus_tail
+                              + 0.5 * (nu + 1.0) * resid2[t] * resid2[t]
+                                * inv_nu_minus_2_3 * inv_sigma2 * inv_sigma2
+                                / (one_plus_tail * one_plus_tail);
+
+        const double H_nu_nu = -0.25 * trigamma_approx(0.5 * (nu + 1.0))
+                               + 0.25 * trigamma_approx(0.5 * nu)
+                               - 0.5  * inv_nu_minus_2_2
+                               + 0.5  * resid2[t] * inv_nu_minus_2_2
+                                 * inv_sigma2 / one_plus_tail
+                               - 0.5  * (nu + 1.0) * resid2[t] * resid2[t]
+                                 * inv_nu_minus_2_3 * inv_sigma2 * inv_sigma2
+                                 / (one_plus_tail * one_plus_tail);
+
+        {
+            for (size_t i = 0; i < K - 1; ++i) {
+                const double d_i = D_t[i];
+                for (size_t j = 0; j < K - 1; ++j)
+                    hess[i*K + j] += H_var * d_i * D_t[j]
+                                    + S_var * C_t[i*K + j];
+
+                const double cross = dS_dnu * d_i;
+                hess[i*K + (K-1)] += cross;
+                hess[(K-1)*K + i] += cross;
+            }
+            hess[(K-1)*K + (K-1)] += H_nu_nu;
+        }
+    }
+
+    free(d_buf);
+    free(C_buf);
+}

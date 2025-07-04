@@ -138,6 +138,48 @@ void garch_ll_hess_pq_normal(
         size_t p,
         size_t q);
 
+/* ----------------------------- Student-t --------------------------------- */
+
+double garch_ll_11_studentt(const double *parameters,
+                            const double *residuals2,
+                            double       *sigma2,
+                            size_t n);
+
+double garch_ll_pq_studentt(const double *parameters,
+                            const double *residuals2,
+                            double       *sigma2,
+                            size_t n,
+                            size_t p,
+                            size_t q);
+
+void garch_ll_grad_11_studentt(const double *params,
+                               const double *resid2,
+                               double       *sigma2,
+                               double       *grad,
+                               size_t n);
+
+void garch_ll_hess_11_studentt(const double *params,
+                               const double *resid2,
+                               double       *sigma2,
+                               double       *hess,
+                               size_t n);
+
+void garch_ll_grad_pq_studentt(const double *params,
+                               const double *resid2,
+                               double       *sigma2,
+                               double       *grad,
+                               size_t n,
+                               size_t p,
+                               size_t q);
+
+void garch_ll_hess_pq_studentt(const double *params,
+                               const double *resid2,
+                               double       *sigma2,
+                               double       *hess,
+                               size_t n,
+                               size_t p,
+                               size_t q);
+
 #ifdef __cplusplus
 }
 #endif
