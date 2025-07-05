@@ -54,7 +54,7 @@ void garch_ll_grad_11_normal(
 
     dzeros(grad, 3);
 
-    double d_prev[3] = {1.0, 0.0, 0.0};
+    double d_prev[3] = {0.0, 0.0, 0.0};
 
     {
     const double s2      = sigma2[0];
@@ -104,57 +104,89 @@ void garch_ll_hess_11_normal(
 
     dzeros(hess, 9);
 
-    double d_prev[3] = {1.0, 0.0, 0.0};
+    // First derivatives: [∂h_t/∂ω, ∂h_t/∂α, ∂h_t/∂β]
+    double d_prev[3] = {0.0, 0.0, 0.0};
+    
+    // Second derivatives: [∂²h_t/∂ω², ∂²h_t/∂ω∂α, ∂²h_t/∂ω∂β,
+    //                                  ∂²h_t/∂α², ∂²h_t/∂α∂β,
+    //                                              ∂²h_t/∂β²]
+    double d2_prev[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
 
+    /* ===== t = 0 ================================================== */
     {
-    const double s2      = sigma2[0];
-    const double inv_s2  = 1.0 / s2;
-    const double res_os  = resid2[0] * inv_s2;
+        const double s2      = sigma2[0];
+        const double inv_s2  = 1.0 / s2;
+        const double res_os  = resid2[0] * inv_s2;
 
-    const double c_grad  = 0.5 * (res_os - 1.0) * inv_s2;
-    const double c_hess  = 0.5 * inv_s2 * inv_s2;
+        /* NEGATIVE log-likelihood coefficients (notice the minus signs) */
+        const double c_grad  = -0.5 * (res_os - 1.0) * inv_s2;
+        const double c_hess  = -0.5 * inv_s2 * inv_s2 * (1.0 - 2.0 * res_os);
 
-    for (size_t i = 0; i < 3; ++i) {
-        const double g_i = c_grad * d_prev[i];
-        size_t row = i * 3;
-        for (size_t j = 0; j < 3; ++j) {
-        const double g_j = c_grad * d_prev[j];
-        hess[row + j] += g_i * g_j
-                   + c_hess * d_prev[i] * d_prev[j];
+        size_t idx = 0;
+        for (size_t i = 0; i < 3; ++i) {
+            size_t row = i * 3;
+            for (size_t j = i; j < 3; ++j) {                          /* upper triangle only */
+                hess[row + j] += c_hess * d_prev[i] * d_prev[j] + c_grad * d2_prev[idx];
+                if (j > i)                                            /* style fix */
+                    hess[j * 3 + i] = hess[row + j];                  /* symmetry */
+                idx++;
+            }
         }
     }
-    }
 
+    /* ===== t = 1 … n-1 =========================================== */
     for (size_t t = 1; t < n; ++t) {
-    sigma2[t] = omega + alpha * resid2[t-1] + beta * sigma2[t-1];
+        
+        /* 1. Variance recursion */
+        sigma2[t] = omega + alpha * resid2[t-1] + beta * sigma2[t-1];
 
-    double d_curr[3];
-    d_curr[0] = 1.0           + beta * d_prev[0];
-    d_curr[1] = resid2[t-1]   + beta * d_prev[1];
-    d_curr[2] = sigma2[t-1]   + beta * d_prev[2];
+        /* 2. First derivative recursion */
+        double d_curr[3];
+        d_curr[0] = 1.0           + beta * d_prev[0];  // ∂h_t/∂ω
+        d_curr[1] = resid2[t-1]   + beta * d_prev[1];  // ∂h_t/∂α
+        d_curr[2] = sigma2[t-1]   + beta * d_prev[2];  // ∂h_t/∂β
 
-    const double inv_s2 = 1.0 / sigma2[t];
-    const double res_os = resid2[t] * inv_s2;
+        /* 3. Second derivative recursion */
+        double d2_curr[6];
+        d2_curr[0] = beta * d2_prev[0];                     // ∂²h_t/∂ω²
+        d2_curr[1] = beta * d2_prev[1];                     // ∂²h_t/∂ω∂α
+        d2_curr[2] = d_prev[0] + beta * d2_prev[2];         // ∂²h_t/∂ω∂β
+        d2_curr[3] = beta * d2_prev[3];                     // ∂²h_t/∂α²
+        d2_curr[4] = d_prev[1] + beta * d2_prev[4];         // ∂²h_t/∂α∂β
+        d2_curr[5] = 2.0 * d_prev[2] + beta * d2_prev[5];   // ∂²h_t/∂β²
 
-    const double c_grad = 0.5 * (res_os - 1.0) * inv_s2;
-    const double c_hess = 0.5 * inv_s2 * inv_s2;
+        /* 4. Hessian contribution */
+        const double inv_s2 = 1.0 / sigma2[t];
+        const double res_os = resid2[t] * inv_s2;
 
-    for (size_t i = 0; i < 3; ++i) {
-        const double g_i = c_grad * d_curr[i];
-        size_t row = i * 3;
-        for (size_t j = 0; j < 3; ++j) {
-        const double g_j = c_grad * d_curr[j];
-        hess[row + j] += g_i * g_j
-                   + c_hess * d_curr[i] * d_curr[j];
+        /* NEGATIVE log-likelihood coefficients (notice the minus signs) */
+        const double c_grad = -0.5 * (res_os - 1.0) * inv_s2;
+        const double c_hess = -0.5 * inv_s2 * inv_s2 * (1.0 - 2.0 * res_os);
+
+        size_t idx = 0;
+        for (size_t i = 0; i < 3; ++i) {
+            size_t row = i * 3;
+            for (size_t j = i; j < 3; ++j) {                          /* upper triangle only */
+                hess[row + j] += c_hess * d_curr[i] * d_curr[j] + c_grad * d2_curr[idx];
+                if (j > i)                                            /* style fix */
+                    hess[j * 3 + i] = hess[row + j];                  /* symmetry */
+                idx++;
+            }
         }
-    }
 
-    d_prev[0] = d_curr[0];
-    d_prev[1] = d_curr[1];
-    d_prev[2] = d_curr[2];
+        /* 5. Update for next iteration */
+        d_prev[0] = d_curr[0];
+        d_prev[1] = d_curr[1];
+        d_prev[2] = d_curr[2];
+        
+        d2_prev[0] = d2_curr[0];
+        d2_prev[1] = d2_curr[1];
+        d2_prev[2] = d2_curr[2];
+        d2_prev[3] = d2_curr[3];
+        d2_prev[4] = d2_curr[4];
+        d2_prev[5] = d2_curr[5];
     }
 }
-
 
 // GARCH(p,q) | Normal
 __attribute__((visibility("default"), hot, flatten))
@@ -255,7 +287,7 @@ void garch_ll_grad_pq_normal(
     /* ===== t = 0 ================================================== */
     {
         double *d0 = d_buf;
-        d0[0] = 1.0;
+        d0[0] = 0.0;
 
         const double s2      = sigma2[0];
         const double inv_s2  = 1.0 / s2;
@@ -332,26 +364,43 @@ void garch_ll_hess_pq_normal(
     memset(hess, 0, K * K * sizeof(double));
 
     const size_t ring = q + 1;
+    
+    // First derivatives buffer
     double *d_buf = (double *)calloc(ring * K, sizeof(double));
     if (!d_buf) return;
+    
+    // Second derivatives buffer (K×K matrix for each time point)
+    double *d2_buf = (double *)calloc(ring * K * K, sizeof(double));
+    if (!d2_buf) {
+        free(d_buf);
+        return;
+    }
 
     /* ===== t = 0 ================================================== */
     {
         double *d0 = d_buf;
-        d0[0] = 1.0;
+        double *d2_0 = d2_buf;
+        
+        // Under assumption: unconditional variance is parameter-independent
+        // All derivatives are zero at t=0
+        memset(d0, 0, K * sizeof(double));
+        memset(d2_0, 0, K * K * sizeof(double));
 
         const double s2      = sigma2[0];
         const double inv_s2  = 1.0 / s2;
         const double res_os  = resid2[0] * inv_s2;
-        const double c_grad  = 0.5 * (res_os - 1.0) * inv_s2;
-        const double c_hess  = 0.5 * inv_s2 * inv_s2;
+        
+        /* NEGATIVE log-likelihood coefficients (notice the minus signs) */
+        const double c_grad  = -0.5 * (res_os - 1.0) * inv_s2;
+        const double c_hess  = -0.5 * inv_s2 * inv_s2 * (1.0 - 2.0 * res_os);
 
         for (size_t i = 0; i < K; ++i) {
-            const double g_i = c_grad * d0[i];
-            size_t row = i * K;
-            for (size_t j = 0; j < K; ++j) {
-                const double g_j = c_grad * d0[j];
-                hess[row + j] += g_i * g_j + c_hess * d0[i] * d0[j];
+            const size_t row = i * K;
+            for (size_t j = i; j < K; ++j) {          /* upper triangle only */
+                hess[row + j] += c_hess * d0[i] * d0[j] 
+                               + c_grad * d2_0[i * K + j];
+                if (j > i)                             /* style fix #2   */
+                    hess[j * K + i] = hess[row + j];   /* symmetry write */
             }
         }
     }
@@ -370,44 +419,77 @@ void garch_ll_hess_pq_normal(
 
         sigma2[t] = s2;
 
-        /* 2. derivative recursion */
+        /* 2. first derivative recursion */
         double *d_t = d_buf + (t % ring) * K;
         memset(d_t, 0, K * sizeof(double));
 
+        // ∂h_t/∂ω = 1 + Σ β_k * ∂h_{t-k}/∂ω
         d_t[0] = 1.0;
 
+        // Recursive component: Σ β_k * ∂h_{t-k}/∂θ_i
         for (size_t k = 1; k <= q && t >= k; ++k) {
             const double *d_prev = d_buf + ((t - k) % ring) * K;
-            const double b       = beta[k-1];
+            const double b = beta[k-1];
             for (size_t i = 0; i < K; ++i)
                 d_t[i] += b * d_prev[i];
         }
 
+        // Direct terms
+        // ∂h_t/∂α_j += ε²_{t-j}
         for (size_t j = 1; j <= p && t >= j; ++j)
             d_t[j] += resid2[t - j];
 
+        // ∂h_t/∂β_k += h_{t-k}
         for (size_t k = 1; k <= q && t >= k; ++k)
             d_t[p + k] += sigma2[t - k];
 
-        /* 3. Hessian contribution */
+        /* 3. second derivative recursion */
+        double *d2_t = d2_buf + (t % ring) * K * K;
+        memset(d2_t, 0, K * K * sizeof(double));
+
+        // ∂²h_t/∂θ_i∂θ_j = Σ β_k * ∂²h_{t-k}/∂θ_i∂θ_j + [source terms]
+        for (size_t k = 1; k <= q && t >= k; ++k) {
+            const double *d2_prev = d2_buf + ((t - k) % ring) * K * K;
+            const double *d_prev  = d_buf + ((t - k) % ring) * K;
+            const double b = beta[k-1];
+            const size_t bet_idx = 1 + p + (k - 1);    /* style fix #1 */
+
+            // Recursive part: Σ β_k * ∂²h_{t-k}/∂θ_i∂θ_j
+            for (size_t i = 0; i < K; ++i) {
+                for (size_t j = 0; j < K; ++j) {
+                    d2_t[i * K + j] += b * d2_prev[i * K + j];
+                }
+            }
+
+            /* --- source terms from ∂β_k/∂θ ------------------------- */
+            for (size_t i = 0; i < K; ++i) {
+                d2_t[bet_idx * K + i] += d_prev[i];
+                d2_t[i * K + bet_idx] += d_prev[i];
+            }
+        }
+
+        /* 4. Hessian contribution */
         const double inv_s2 = 1.0 / s2;
         const double res_os = resid2[t] * inv_s2;
-        const double c_grad = 0.5 * (res_os - 1.0) * inv_s2;
-        const double c_hess = 0.5 * inv_s2 * inv_s2;
+        
+        /* NEGATIVE log-likelihood coefficients (notice the minus signs) */
+        const double c_grad = -0.5 * (res_os - 1.0) * inv_s2;
+        const double c_hess = -0.5 * inv_s2 * inv_s2 * (1.0 - 2.0 * res_os);
 
         for (size_t i = 0; i < K; ++i) {
-            const double g_i = c_grad * d_t[i];
-            size_t row = i * K;
-            for (size_t j = 0; j < K; ++j) {
-                const double g_j = c_grad * d_t[j];
-                hess[row + j] += g_i * g_j + c_hess * d_t[i] * d_t[j];
+            const size_t row = i * K;
+            for (size_t j = i; j < K; ++j) {                           /* upper-tri only */
+                hess[row + j] += c_hess * d_t[i] * d_t[j]
+                               + c_grad * d2_t[i * K + j];
+                if (j > i)                                             /* style fix #2 */
+                    hess[j * K + i] = hess[row + j];
             }
         }
     }
 
     free(d_buf);
+    free(d2_buf);
 }
-
 
 // -----------------------
 // -- GARCH | Student-t --
@@ -436,7 +518,8 @@ double garch_ll_11_studentt(const double* __restrict parameters,
         var2 += log1p(r2os2 / (nu_minus_2));
     }
 
-     return constant - 0.5 * (var1 + (nu + 1) * var2);
+     return 0.5 * (var1 + (nu + 1) * var2) - constant;
+    //  return constant - 0.5 * (var1 + (nu + 1) * var2);
 }
 
 
@@ -503,40 +586,15 @@ double garch_ll_pq_studentt(const double* __restrict parameters,
         var2 += log1p(r2os2 * inv_nu_minus_2);
     }
 
-    return constant - 0.5 * (var1 + (nu + 1) * var2);
+    // return constant - 0.5 * (var1 + (nu + 1) * var2);
+    return 0.5 * (var1 + (nu + 1) * var2) - constant;
 }
-
-
-// __attribute__((visibility("default"), hot, flatten))
-// double studentt_ll(const double* __restrict sigma2,
-//                    const double* __restrict r2os2,
-//                    const size_t n,
-//                    const double nu) {
-
-//     double var1 = 0;
-//     double var2 = 0;
-//     double constant = n * (lgamma(0.5 * (nu + 1)) - lgamma(0.5 * nu) - 0.5 * log(M_PI * (nu - 2)));
-
-//     for (size_t t = 0; t < n; ++t) {
-//         var1 += log(sigma2[t]);
-//         var2 += log1p(r2os2[t] / (nu - 2));
-//     }
-
-//     return constant - 0.5 * (var1 + (nu + 1) * var2);
-// }
-
-
-
-
-
-
-
 
 static inline double digamma_approx(double x)
 {
     double result = 0.0;
-    /* raise argument into (8,∞) */
-    while (x < 8.0) {
+    /* raise argument into (6,∞) for better precision */
+    while (x < 6.0) {
         result -= 1.0 / x;
         x += 1.0;
     }
@@ -552,7 +610,7 @@ static inline double trigamma_approx(double x)
     double result = 0.0;
 
     /* Raise argument into the asymptotic region (x ≥ 5) */
-    while (x < 5.0) {
+    while (x < 8.0) {
         result += 1.0 / (x * x);   /* exact recurrence: ψ′(x) = ψ′(x+1) + 1/x² */
         x += 1.0;
     }
@@ -562,6 +620,7 @@ static inline double trigamma_approx(double x)
     const double inv4 = inv2 * inv2;
     const double inv6 = inv4 * inv2;
     const double inv8 = inv4 * inv4;
+    const double inv10 = inv8 * inv2;
 
     /* six-term asymptotic expansion */
     result +=  inv
@@ -570,6 +629,7 @@ static inline double trigamma_approx(double x)
             - (1.0 / 30.0) * inv4 * inv    /* −1/(30x⁵) */
             + (1.0 / 42.0) * inv6 * inv    /* 1/(42x⁷)  */
             - (1.0 / 30.0) * inv8 * inv;   /* −1/(30x⁹) */
+            + (5.0 / 66.0)   * inv10 * inv;
 
     return result;
 }
@@ -599,7 +659,7 @@ void garch_ll_grad_11_studentt(const double * __restrict params,
     dzeros(grad, 4);
 
     /* derivative of σ²₀ wrt parameters */
-    double d_prev[3] = { 1.0, 0.0, 0.0 };
+    double d_prev[3] = { 0.0, 0.0, 0.0 };
 
     /* ---- t = 0 ------------------------------------------------------------ */
     {
@@ -690,7 +750,7 @@ void garch_ll_hess_11_studentt(const double * __restrict params,
     dzeros(hess, K * K);
 
     /* derivative and second‑derivative state */
-    double d_prev[3]        = { 1.0, 0.0, 0.0 };
+    double d_prev[3]        = { 0.0, 0.0, 0.0 };
     double C_prev[3][3];    memset(C_prev, 0, sizeof(C_prev));
 
     /* ---- t = 0 ------------------------------------------------------------ */
@@ -713,21 +773,19 @@ void garch_ll_hess_11_studentt(const double * __restrict params,
                                * inv_sigma2 * inv_sigma2
                                / (one_plus_tail * one_plus_tail);
 
-        const double dS_dnu = 0.5 * inv_nu_minus_2_2
-                              - 0.5 * resid2[0] * inv_nu_minus_2_2
-                                * inv_sigma2 / one_plus_tail
-                              + 0.5 * (nu + 1.0) * resid2[0] * resid2[0]
-                                * inv_nu_minus_2_3 * inv_sigma2 * inv_sigma2
-                                / (one_plus_tail * one_plus_tail);
+        /* Fixed dS_dnu using compact mathematically correct expression */
+        const double zi = res_over_sigma2 * inv_nu_minus_2;
+        const double dS_dnu = 0.5 * res_over_sigma2 * inv_sigma2 * inv_nu_minus_2_2 
+                              / (one_plus_tail * one_plus_tail) 
+                              * (3.0 * one_plus_tail - (nu + 1.0) * zi);
 
-        const double H_nu_nu = -0.25 * trigamma_approx(0.5 * (nu + 1.0))
-                               + 0.25 * trigamma_approx(0.5 * nu)
-                               - 0.5  * inv_nu_minus_2_2
-                               + 0.5  * resid2[0] * inv_nu_minus_2_2
-                                 * inv_sigma2 / one_plus_tail
-                               - 0.5  * (nu + 1.0) * resid2[0] * resid2[0]
-                                 * inv_nu_minus_2_3 * inv_sigma2 * inv_sigma2
-                                 / (one_plus_tail * one_plus_tail);
+        /* Fixed H_nu_nu with correct sign on middle term */
+        const double H_nu_nu =  -0.25 * trigamma_approx(0.5 * (nu + 1.0))
+                                + 0.25 * trigamma_approx(0.5 *  nu)
+                                - 0.5  * inv_nu_minus_2_2
+                                - res_over_sigma2 * inv_nu_minus_2_2 / (2.0 * one_plus_tail)
+                                - 0.5  * (nu + 1.0) * res_over_sigma2 * res_over_sigma2
+                                * inv_nu_minus_2_3 / (one_plus_tail * one_plus_tail);
 
         {
             for (size_t i = 0; i < 3; ++i) {
@@ -786,21 +844,19 @@ void garch_ll_hess_11_studentt(const double * __restrict params,
                                * inv_sigma2 * inv_sigma2
                                / (one_plus_tail * one_plus_tail);
 
-        const double dS_dnu = 0.5 * inv_nu_minus_2_2
-                              - 0.5 * resid2[t] * inv_nu_minus_2_2
-                                * inv_sigma2 / one_plus_tail
-                              + 0.5 * (nu + 1.0) * resid2[t] * resid2[t]
-                                * inv_nu_minus_2_3 * inv_sigma2 * inv_sigma2
-                                / (one_plus_tail * one_plus_tail);
+        /* Fixed dS_dnu using compact mathematically correct expression */
+        const double zi = res_over_sigma2 * inv_nu_minus_2;
+        const double dS_dnu = 0.5 * res_over_sigma2 * inv_sigma2 * inv_nu_minus_2_2 
+                              / (one_plus_tail * one_plus_tail) 
+                              * (3.0 * one_plus_tail - (nu + 1.0) * zi);
 
-        const double H_nu_nu = -0.25 * trigamma_approx(0.5 * (nu + 1.0))
-                               + 0.25 * trigamma_approx(0.5 * nu)
-                               - 0.5  * inv_nu_minus_2_2
-                               + 0.5  * resid2[t] * inv_nu_minus_2_2
-                                 * inv_sigma2 / one_plus_tail
-                               - 0.5  * (nu + 1.0) * resid2[t] * resid2[t]
-                                 * inv_nu_minus_2_3 * inv_sigma2 * inv_sigma2
-                                 / (one_plus_tail * one_plus_tail);
+        /* Fixed H_nu_nu with correct sign on middle term */
+        const double H_nu_nu =  -0.25 * trigamma_approx(0.5 * (nu + 1.0))
+                                + 0.25 * trigamma_approx(0.5 *  nu)
+                                - 0.5  * inv_nu_minus_2_2
+                                - res_over_sigma2 * inv_nu_minus_2_2 / (2.0 * one_plus_tail)
+                                - 0.5  * (nu + 1.0) * res_over_sigma2 * res_over_sigma2
+                                * inv_nu_minus_2_3 / (one_plus_tail * one_plus_tail);
 
         {
             for (size_t i = 0; i < 3; ++i) {
@@ -855,7 +911,7 @@ void garch_ll_grad_pq_studentt(const double * __restrict params,
     /* ===== t = 0 ========================================================== */
     {
         double *d0 = d_buf;      /* derivatives of σ²₀ */
-        d0[0] = 1.0;
+        d0[0] = 0.0;
 
         const double inv_sigma2      = 1.0 / sigma2[0];
         const double res_over_sigma2 = resid2[0] * inv_sigma2;
@@ -969,7 +1025,7 @@ void garch_ll_hess_pq_studentt(const double * __restrict params,
     /* ===== t = 0 ========================================================== */
     {
         double *D0 = d_buf;     /* first block */
-        D0[0] = 1.0;
+        D0[0] = 0.0;
 
         double *C0 = C_buf;     /* all zeros */
 
@@ -991,21 +1047,19 @@ void garch_ll_hess_pq_studentt(const double * __restrict params,
                                * inv_sigma2 * inv_sigma2
                                / (one_plus_tail * one_plus_tail);
 
-        const double dS_dnu = 0.5 * inv_nu_minus_2_2
-                              - 0.5 * resid2[0] * inv_nu_minus_2_2
-                                * inv_sigma2 / one_plus_tail
-                              + 0.5 * (nu + 1.0) * resid2[0] * resid2[0]
-                                * inv_nu_minus_2_3 * inv_sigma2 * inv_sigma2
-                                / (one_plus_tail * one_plus_tail);
+        /* Fixed dS_dnu using compact mathematically correct expression */
+        const double zi = res_over_sigma2 * inv_nu_minus_2;
+        const double dS_dnu = 0.5 * res_over_sigma2 * inv_sigma2 * inv_nu_minus_2_2 
+                              / (one_plus_tail * one_plus_tail) 
+                              * (3.0 * one_plus_tail - (nu + 1.0) * zi);
 
-        const double H_nu_nu = -0.25 * trigamma_approx(0.5 * (nu + 1.0))
-                               + 0.25 * trigamma_approx(0.5 * nu)
-                               - 0.5  * inv_nu_minus_2_2
-                               + 0.5  * resid2[0] * inv_nu_minus_2_2
-                                 * inv_sigma2 / one_plus_tail
-                               - 0.5  * (nu + 1.0) * resid2[0] * resid2[0]
-                                 * inv_nu_minus_2_3 * inv_sigma2 * inv_sigma2
-                                 / (one_plus_tail * one_plus_tail);
+        /* Fixed H_nu_nu with correct sign on middle term */
+        const double H_nu_nu =  -0.25 * trigamma_approx(0.5 * (nu + 1.0))
+                                + 0.25 * trigamma_approx(0.5 *  nu)
+                                - 0.5  * inv_nu_minus_2_2
+                                - res_over_sigma2 * inv_nu_minus_2_2 / (2.0 * one_plus_tail)
+                                - 0.5  * (nu + 1.0) * res_over_sigma2 * res_over_sigma2
+                                * inv_nu_minus_2_3 / (one_plus_tail * one_plus_tail);
 
         {
             for (size_t i = 0; i < K - 1; ++i) {
@@ -1087,21 +1141,19 @@ void garch_ll_hess_pq_studentt(const double * __restrict params,
                                * inv_sigma2 * inv_sigma2
                                / (one_plus_tail * one_plus_tail);
 
-        const double dS_dnu = 0.5 * inv_nu_minus_2_2
-                              - 0.5 * resid2[t] * inv_nu_minus_2_2
-                                * inv_sigma2 / one_plus_tail
-                              + 0.5 * (nu + 1.0) * resid2[t] * resid2[t]
-                                * inv_nu_minus_2_3 * inv_sigma2 * inv_sigma2
-                                / (one_plus_tail * one_plus_tail);
+        /* Fixed dS_dnu using compact mathematically correct expression */
+        const double zi = res_over_sigma2 * inv_nu_minus_2;
+        const double dS_dnu = 0.5 * res_over_sigma2 * inv_sigma2 * inv_nu_minus_2_2 
+                              / (one_plus_tail * one_plus_tail) 
+                              * (3.0 * one_plus_tail - (nu + 1.0) * zi);
 
-        const double H_nu_nu = -0.25 * trigamma_approx(0.5 * (nu + 1.0))
-                               + 0.25 * trigamma_approx(0.5 * nu)
-                               - 0.5  * inv_nu_minus_2_2
-                               + 0.5  * resid2[t] * inv_nu_minus_2_2
-                                 * inv_sigma2 / one_plus_tail
-                               - 0.5  * (nu + 1.0) * resid2[t] * resid2[t]
-                                 * inv_nu_minus_2_3 * inv_sigma2 * inv_sigma2
-                                 / (one_plus_tail * one_plus_tail);
+        /* Fixed H_nu_nu with correct sign on middle term */
+        const double H_nu_nu =  -0.25 * trigamma_approx(0.5 * (nu + 1.0))
+                                + 0.25 * trigamma_approx(0.5 *  nu)
+                                - 0.5  * inv_nu_minus_2_2
+                                - res_over_sigma2 * inv_nu_minus_2_2 / (2.0 * one_plus_tail)
+                                - 0.5  * (nu + 1.0) * res_over_sigma2 * res_over_sigma2
+                                * inv_nu_minus_2_3 / (one_plus_tail * one_plus_tail);
 
         {
             for (size_t i = 0; i < K - 1; ++i) {

@@ -36,8 +36,8 @@ class StudentT(Component):
     @property
     def n_params(self): return 1  # degrees of freedom
     
-    def default_start(self, data): return np.array([10.0])
-    def bounds(self): return [(2.1, 300.0)]
+    def default_start(self, data): return np.array([3.0])
+    def bounds(self): return [(2.1 + 1e-12, 100.0)]
     def pack(self, params_dict): return np.array([params_dict['df']])
     def unpack(self, flat_params):
         self.fitted_params = {'df': flat_params[0]} if len(flat_params) > 0 else {}

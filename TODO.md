@@ -1,18 +1,18 @@
 # Project Roadmap & TODO List
 
-## Version 0.1 (Target: October 2024)
+## Version 0.1 (Target: Summer 2025)
 
 
 - [] Homemade solver
 - [] Fit on component
-- [] Finite diff errors
-- []
-- []
+- [] Finite diff verification of grad/hess functions
+- [] Formulaic x0 in vol class
+- [] Add exponential transformation kernels
 - []
 - []
 - []
 
-- [x] **Basic GARCH Model Implementation**
+<!-- - [x] **Basic GARCH Model Implementation**
 
   - [x] Implement GARCH and GJR model with Normal distribution
     - [x] Implement volatility calculation method
@@ -63,4 +63,4 @@
 
 ## Wishlist
 
-- [ ] HAR models
+- [ ] HAR models -->

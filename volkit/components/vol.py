@@ -27,7 +27,9 @@ class GARCH(Component):
         persist_target = 0.90
         beta_share     = 0.80
 
-        omega = max(min_positive, 0.01 * np.var(data))
+        omega = max(min_positive, 0.1 * np.var(data))
+        # omega = 0.025
+        omega = min_positive
 
         total_beta  = persist_target * beta_share
         total_alpha = persist_target * (1.0 - beta_share)
