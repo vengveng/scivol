@@ -9,8 +9,8 @@ y = y[:2398]
 
 
 print(f"Data shape: {y.shape}")
-# r = get_routine("GARCH(2,2)+Normal") # verified OK
-r = get_routine("GARCH(1,1)+StudentT")
+r = get_routine("GARCH(2,2)+Normal") # verified OK
+# r = get_routine("GARCH(1,1)+StudentT")
 check_routine(r, y, rtol=1e-4)
 
 # Routine: GARCH(2,2)+Normal

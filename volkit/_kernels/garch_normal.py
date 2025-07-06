@@ -4,6 +4,7 @@ import re
 import numpy as np
 from numpy.typing import NDArray
 from typing import Dict, Tuple
+from scipy.special import logsumexp
 
 from .. import _core
 from ..components.vol import GARCH
@@ -38,6 +39,7 @@ def _build(p: int, q: int) -> Routine:
         def _as_cptr(arr: NDArray[np.float64]) -> int:
             return np.ascontiguousarray(arr, dtype=np.float64).ctypes.data
         
+        
         n = resid.size
         sigma2 = np.zeros(len(resid), dtype=np.float64)
         sigma2[0] = np.sum(resid**2) / len(resid)
@@ -54,39 +56,36 @@ def _build(p: int, q: int) -> Routine:
         grad_vec_c = _as_cptr(grad_vec)
         hess_mat_c = _as_cptr(hess_mat)
 
-        # print(vol.default_start(resid))
-        # print(vol.bounds())
+        def call_c_obj(theta: NDArray[np.float64]) -> float:
+            if special:
+                return c_obj(_as_cptr(theta), resid2_c, sigma2_c, n) # type: ignore
+            else:
+                return c_obj(_as_cptr(theta), resid2_c, sigma2_c, n, p, q)
+            
+        def call_c_jac(theta: NDArray[np.float64]) -> None:
+            if special:
+                c_jac(_as_cptr(theta), resid2_c, sigma2_c, grad_vec_c, n) # type: ignore
+            else:
+                c_jac(_as_cptr(theta), resid2_c, sigma2_c, grad_vec_c, n, p, q)
+        
+        def call_c_hess(theta: NDArray[np.float64]) -> None:
+            if special:
+                c_hess(_as_cptr(theta), resid2_c, sigma2_c, hess_mat_c, n) # type: ignore
+            else:
+                c_hess(_as_cptr(theta), resid2_c, sigma2_c, hess_mat_c, n, p, q)
 
         if not log_mode:
-            if special:
-                def obj(theta: NDArray[np.float64]) -> float:
-                    theta_ptr = _as_cptr(theta)
-                    return c_obj(theta_ptr, resid2_c, sigma2_c, n) / n # type: ignore
 
-                def jac(theta: NDArray[np.float64]) -> NDArray[np.float64]:
-                    theta_ptr = _as_cptr(theta)
-                    c_jac(theta_ptr, resid2_c, sigma2_c, grad_vec_c, n) # type: ignore
-                    return grad_vec.copy() / n
-                
-                def hess(theta: NDArray[np.float64]) -> NDArray[np.float64]:
-                    theta_ptr = _as_cptr(theta)
-                    c_hess(theta_ptr, resid2_c, sigma2_c, hess_mat_c, n) # type: ignore
-                    return hess_mat.copy() / n
-                
-            else:
-                def obj(theta: NDArray[np.float64]) -> float:
-                    theta_ptr = _as_cptr(theta)
-                    return c_obj(theta_ptr, resid2_c, sigma2_c, n, p, q) / n
-                
-                def jac(theta: NDArray[np.float64]) -> NDArray[np.float64]:
-                    theta_ptr = _as_cptr(theta)
-                    c_jac(theta_ptr, resid2_c, sigma2_c, grad_vec_c, n, p, q)
-                    return grad_vec.copy() / n
-                
-                def hess(theta: NDArray[np.float64]) -> NDArray[np.float64]:
-                    theta_ptr = _as_cptr(theta)
-                    c_hess(theta_ptr, resid2_c, sigma2_c, hess_mat_c, n, p, q)
-                    return hess_mat.copy() / n
+            def obj(theta: NDArray[np.float64]) -> float:
+                return call_c_obj(theta) / n
+            
+            def jac(theta: NDArray[np.float64]) -> NDArray[np.float64]:
+                call_c_jac(theta)
+                return grad_vec.copy() / n
+            
+            def hess(theta: NDArray[np.float64]) -> NDArray[np.float64]:
+                call_c_hess(theta)
+                return hess_mat.copy() / n
                 
 
             from scipy.optimize import minimize
@@ -145,130 +144,210 @@ def _build(p: int, q: int) -> Routine:
             # ------------------------------------------------------------------
             # log-mode helpers (work for any p, q)
             # ------------------------------------------------------------------
-            def pack(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                """ℝ^{1+p+q} -> original θ = [ω, α₁..α_p, β₁..β_q]"""
-                ω_tilde          = z[0]
-                z_alpha          = z[1 : 1+p]
-                betas            = z[1+p : 1+p+q]                 # unchanged
+            # def pack(z: NDArray[np.float64]) -> NDArray[np.float64]:
+            #     """R^{1+p+q} -> original θ = [omega, alpha₁..alpha_p, beta₁..beta_q]"""
+            #     omega_tilde          = z[0]
+            #     z_alpha          = z[1 : 1+p]
+            #     betas            = z[1+p : 1+p+q]                 # unchanged
 
-                exp_a            = np.exp(z_alpha)
-                den_a            = 1.0 + exp_a.sum()
-                exp_b            = np.exp(betas)
-                den_b            = 1.0 + exp_b.sum()
+            #     exp_a            = np.exp(z_alpha)
+            #     den_a            = 1.0 + exp_a.sum()
+            #     exp_b            = np.exp(betas)
+            #     den_b            = 1.0 + exp_b.sum()
 
-                alphas           = exp_a / den_a                  # Σα < 1
-                betas            = exp_b / den_b                  # Σβ < 1
-                omega            = np.exp(ω_tilde)                # > 0
+            #     alphas           = exp_a / den_a                  # Σalpha < 1
+            #     betas            = exp_b / den_b                  # Σbeta < 1
+            #     omega            = np.exp(omega_tilde)                # > 0
 
-                return np.r_[omega, alphas, betas]
+            #     return np.r_[omega, alphas, betas]
+            
+            def pack(z: np.ndarray) -> np.ndarray:
+                """
+                Numerically safe pack() with log-sum-exp stabilization.
+                z: length 1+p+q
+                """
+                omega_t   = z[0]
+                zalpha    = z[1 : 1+p]
+                zbeta    = z[1+p : ]
+
+                lse_a = logsumexp(zalpha)
+                logden_a = np.logaddexp(0.0, lse_a)  # type: ignore
+                alpha     = np.exp(zalpha - logden_a)  # type: ignore
+                # den_a = 1.0 + np.exp(lse_a) # type: ignore
+                # alpha     = np.exp(zalpha - lse_a) / den_a
+
+                # 2. same for beta
+                lse_b = logsumexp(zbeta)
+                logden_b = np.logaddexp(0.0, lse_b)  # type: ignore
+                beta     = np.exp(zbeta - logden_b)  # type: ignore
+                # den_b = 1.0 + np.exp(lse_b) # type: ignore
+                # beta     = np.exp(zbeta - lse_b) / den_b
+
+                # 3. safe omega
+                omega     = np.exp(np.clip(omega_t, -700.0, 700.0))
+
+                return np.r_[omega, alpha, beta]
 
             def unpack(theta: NDArray[np.float64]) -> NDArray[np.float64]:
                 """original θ -> unconstrained z   (needed for default start)"""
-                ω, alphas, betas = theta[0], theta[1:1+p], theta[1+p:]
+                omega, alphas, betas = theta[0], theta[1:1+p], theta[1+p:]
 
-                ω_tilde          = np.log(ω)
+                omega_tilde      = np.log(omega)
                 z_alpha          = np.log(alphas) - np.log1p(-alphas.sum())
                 z_betas          = np.log(betas) - np.log1p(-betas.sum())
-                return np.r_[ω_tilde, z_alpha, z_betas]
+                return np.r_[omega_tilde, z_alpha, z_betas]
 
             # ------------------------------------------------------------------
             # objective wrapper working in z-space
             # ------------------------------------------------------------------
-            if special:
-                def obj_log(z: NDArray[np.float64]) -> float:
-                    theta = pack(z)
-                    return c_obj(_as_cptr(theta), resid2_c, sigma2_c, n) * p_scaler  # type: ignore
-                    # return c_obj(_as_cptr(theta), resid2_c, sigma2_c, n) / n # type: ignore
-                    # (use the p,q signature for the special case)
 
-                def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                    theta = pack(z)                          # [ω, α..., β...]
+            def obj_log(z: NDArray[np.float64]) -> float:
+                theta = pack(z)
+                return call_c_obj(theta) * p_scaler
+            
+            def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                theta = pack(z)
+                call_c_jac(theta)
+                grad_vec_j = grad_vec.copy() * p_scaler
 
-                    c_jac(_as_cptr(theta), resid2_c, sigma2_c, grad_vec_c, n) # type: ignore
-                    grad_vec_j = grad_vec.copy() * p_scaler          # scale by n
-                    # grad_vec_j = grad_vec.copy() / n           # scale by n
+                g_omega   = grad_vec_j[0]
+                g_alpha   = grad_vec_j[1 : 1+p]
+                g_beta   = grad_vec_j[1+p : 1+p+q]
 
-                    # split views
-                    g_ω   = grad_vec_j[0]
-                    g_α   = grad_vec_j[1 : 1+p]
-                    g_β   = grad_vec_j[1+p : 1+p+q]
-
-                    ω     = theta[0]
-                    α     = theta[1 : 1+p]
-                    β     = theta[1+p : 1+p+q]
-
-                    # chain rule
-                    out         = np.empty_like(z)
-                    out[0]      = ω * g_ω
-
-                    sα          = (α * g_α).sum()            # Σ α_k g_αk
-                    out[1 : 1+p] = α * (g_α - sα)            # element-wise
-
-                    sβ          = (β * g_β).sum()
-                    out[1+p : 1+p+q] = β * (g_β - sβ)
-
-                    return out
-            else:
-                def obj_log(z: NDArray[np.float64]) -> float:
-                    theta = pack(z)
-                    return c_obj(_as_cptr(theta), resid2_c, sigma2_c, n, p, q) * p_scaler  # type: ignore
-                    # return c_obj(_as_cptr(theta), resid2_c, sigma2_c, n, p, q) / n # type: ignore
+                omega     = theta[0]
+                alpha     = theta[1 : 1+p]
+                beta     = theta[1+p : 1+p+q]
                 
-                def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                    theta = pack(z)                          # [ω, α..., β...]
+                out         = np.empty_like(z)
+                out[0]      = omega * g_omega
 
-                    c_jac(_as_cptr(theta), resid2_c, sigma2_c, grad_vec_c, n, p, q) # type: ignore
-                    grad_vec_j = grad_vec.copy() * p_scaler          # scale by n
-                    # grad_vec_j = grad_vec.copy() / n           # scale by n
+                salpha          = (alpha * g_alpha).sum()            # Σ alpha_k g_alphak
+                out[1 : 1+p] = alpha * (g_alpha - salpha)            # element-wise
 
-                    # split views
-                    g_ω   = grad_vec_j[0]
-                    g_α   = grad_vec_j[1 : 1+p]
-                    g_β   = grad_vec_j[1+p : 1+p+q]
+                sbeta          = (beta * g_beta).sum()
+                out[1+p : 1+p+q] = beta * (g_beta - sbeta)
 
-                    ω     = theta[0]
-                    α     = theta[1 : 1+p]
-                    β     = theta[1+p : 1+p+q]
+                return out
+            
+            def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                θ = pack(z)                                     # [omega, alpha..., beta...]
 
-                    # chain rule
-                    out         = np.empty_like(z)
-                    out[0]      = ω * g_ω
+                call_c_jac(θ)                                  # fill grad_vec_c
+                call_c_hess(θ)                                 # fill hess_mat_c
 
-                    sα          = (α * g_α).sum()            # Σ α_k g_αk
-                    out[1 : 1+p] = α * (g_α - sα)            # element-wise
+                gθ = grad_vec.copy() * p_scaler              # scale identically to jac
+                Hθ = hess_mat.copy() * p_scaler              # same scaling
 
-                    sβ          = (β * g_β).sum()
-                    out[1+p : 1+p+q] = β * (g_β - sβ)
+                omega            = θ[0]
+                alpha            = θ[1 : 1+p]
+                beta            = θ[1+p : 1+p+q]
 
-                    return out
+                K            = 1 + p + q
+                # 2. build Jacobian  J  -----------------------------------------------
+                J            = np.zeros((K, K), dtype=np.float64)
+
+                # omega row/col
+                J[0, 0]      = omega                                # ∂omega/∂omegã
+
+                # alpha block
+                Jalpha           = np.diag(alpha) - np.outer(alpha, alpha)      # alpha_i(δ_ik-alpha_k)
+                J[1:1+p, 1:1+p] = Jalpha
+
+                # beta block
+                Jbeta           = np.diag(beta) - np.outer(beta, beta)
+                J[1+p:, 1+p:]  = Jbeta
+
+                # 3. first term  H1 = Jᵀ Hθ J  ----------------------------------------
+                H1 = J.T @ Hθ @ J
+
+                # 4. correction term  H2 = Σ gθk · J''_k  -----------------------------
+                H2 = np.zeros((K, K), dtype=np.float64)
+
+                # omega second derivative:  ∂²omega/∂omegã² = omega
+                H2[0, 0] += gθ[0] * omega
+
+                # alpha block
+                for i in range(p):
+                    gi = gθ[1 + i]
+                    ai = alpha[i]
+                    for j in range(p):
+                        for k in range(p):
+                            δij = 1.0 if i == j else 0.0
+                            δik = 1.0 if i == k else 0.0
+                            δjk = 1.0 if j == k else 0.0
+                            d2  = ai * ((δij - alpha[j]) * (δik - alpha[k]) - (δjk - alpha[k]))
+                            H2[1 + j, 1 + k] += gi * d2
+
+                # beta block
+                for i in range(q):
+                    gi = gθ[1 + p + i]
+                    bi = beta[i]
+                    for j in range(q):
+                        for k in range(q):
+                            δij = 1.0 if i == j else 0.0
+                            δik = 1.0 if i == k else 0.0
+                            δjk = 1.0 if j == k else 0.0
+                            d2  = bi * ((δij - beta[j]) * (δik - beta[k]) - (δjk - beta[k]))
+                            H2[1 + p + j, 1 + p + k] += gi * d2
+
+                # (cross-blocks are zero because alpha,beta depend on disjoint logits)
+
+                return H1 + H2
                     
             from scipy.optimize import minimize
             from scipy.optimize import LinearConstraint
 
-            θ0      = np.concatenate((vol.default_start(resid),     # ω, α
+            θ0      = np.concatenate((vol.default_start(resid),     # omega, alpha
                                     dens.default_start(resid)))   # (empty here)
             z0      = unpack(θ0)
 
-            # res = minimize(obj_log,
-            #             z0,
-            #             method="Nelder-Mead",
-            #             tol=1e-16,
-            #             options=dict(maxfev=5000, disp=True, xatol=1e-16, adaptive=True))
-            res = minimize(obj_log, 
-                            z0, 
-                            method="SLSQP",
-                            jac=jac_log, 
-                            tol=1e-12,
-                            options={"disp": True, 'ftol': 1e-12, "maxiter": 5000}
-                            )
+            if solver == "Nelder-Mead":
+                res = minimize(obj_log, 
+                                z0, 
+                                method="Nelder-Mead",
+                                tol=1e-12,
+                                options={"disp": True, "maxiter": 5000}
+                                )
 
-            θ_hat   = pack(res.x)                 # back-transform
-            res.x   = θ_hat                       # store original parameters
-            # res.fun = -(-res.fun * n + constant_ll)
-            # res.fun = -(-res.fun + constant_ll)
+            elif solver == "L-BFGS-B":
+                # res = minimize(obj_log, 
+                #                 z0, 
+                #                 method="SLSQP",
+                #                 jac=jac_log, 
+                #                 tol=1e-12,
+                #                 options={"disp": True, 'ftol': 1e-12, "maxiter": 5000}
+                #                 )
+                res = minimize(lambda z: obj_log(z) / n, 
+                                z0, 
+                                method="SLSQP",
+                                jac=lambda z: jac_log(z) / n, 
+                                tol=1e-16,
+                                options={"disp": True, 'ftol': 1e-16, "maxiter": 5000,}
+                                )
+                res.fun *= n
+                
+            elif solver == "trust-constr":
+                radius = max(1 / (10 ** (p + q + 1)), 1e-6)
+                # scaled objective, gradient, and Hessian
+                
+                res = minimize(lambda z: obj_log(z) / n, 
+                                z0, 
+                                method="trust-exact",
+                                jac=lambda z: jac_log(z) / n, 
+                                hess=lambda z: hess_log(z) / n, 
+                                tol=1e-12, 
+                                options={"disp": True, "maxiter": 5000,}
+                                )
+                res.fun *= n
+                
+            else:
+                raise ValueError(f"Unknown solver '{solver}'")
+
+            θ_hat   = pack(res.x)
+            res.x   = θ_hat
             res.fun = -(-res.fun / p_scaler + constant_ll)
 
-            vol.unpack(θ_hat)                     # write into spec
+            vol.unpack(θ_hat)
             return EstimationResult(spec, res, resid)
 
     return Routine(
