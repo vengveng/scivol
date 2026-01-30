@@ -669,10 +669,11 @@ void garch_ll_hess_11_studentt(const double * __restrict params,
                                 * inv_nu_minus_2_3 / (one_plus_tail * one_plus_tail);
 
         {
+            /* Iterate upper triangle only (j >= i) to avoid double counting */
             for (size_t i = 0; i < 3; ++i) {
                 const double d_i = d_prev[i];
 
-                for (size_t j = 0; j < 3; ++j)
+                for (size_t j = i; j < 3; ++j)
                     hessian_accumulate(hess, i, j, K, H_var * d_i * d_prev[j] + S_var * C_prev[i][j]);
 
                 hessian_accumulate(hess, i, 3, K, dS_dnu * d_i);
@@ -737,10 +738,11 @@ void garch_ll_hess_11_studentt(const double * __restrict params,
                                 * inv_nu_minus_2_3 / (one_plus_tail * one_plus_tail);
 
         {
+            /* Iterate upper triangle only (j >= i) to avoid double counting */
             for (size_t i = 0; i < 3; ++i) {
                 const double d_i = d_curr[i];
 
-                for (size_t j = 0; j < 3; ++j)
+                for (size_t j = i; j < 3; ++j)
                     hessian_accumulate(hess, i, j, K, H_var * d_i * d_curr[j] + S_var * C_curr[i][j]);
 
                 hessian_accumulate(hess, i, 3, K, dS_dnu * d_i);
@@ -935,9 +937,10 @@ void garch_ll_hess_pq_studentt(const double * __restrict params,
                                 * inv_nu_minus_2_3 / (one_plus_tail * one_plus_tail);
 
         {
+            /* Iterate upper triangle only (j >= i) to avoid double counting */
             for (size_t i = 0; i < K - 1; ++i) {
                 const double d_i = D0[i];
-                for (size_t j = 0; j < K - 1; ++j)
+                for (size_t j = i; j < K - 1; ++j)
                     hessian_accumulate(hess, i, j, K, H_var * d_i * D0[j] + S_var * C0[i*K + j]);
 
                 hessian_accumulate(hess, i, K-1, K, dS_dnu * d_i);
@@ -1021,9 +1024,10 @@ void garch_ll_hess_pq_studentt(const double * __restrict params,
                                 * inv_nu_minus_2_3 / (one_plus_tail * one_plus_tail);
 
         {
+            /* Iterate upper triangle only (j >= i) to avoid double counting */
             for (size_t i = 0; i < K - 1; ++i) {
                 const double d_i = D_t[i];
-                for (size_t j = 0; j < K - 1; ++j)
+                for (size_t j = i; j < K - 1; ++j)
                     hessian_accumulate(hess, i, j, K, H_var * d_i * D_t[j] + S_var * C_t[i*K + j]);
 
                 hessian_accumulate(hess, i, K-1, K, dS_dnu * d_i);

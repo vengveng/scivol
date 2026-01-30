@@ -2,6 +2,9 @@
 GARCH(p,q) + Student-t likelihood (with analytic gradient / Hessian).
 
 UID handled:  "GARCH(p,q)+StudentT"
+
+Supports both constrained optimization (log_mode=False) and 
+unconstrained optimization (log_mode=True) via parameter transformations.
 """
 
 from __future__ import annotations
@@ -18,6 +21,11 @@ from ..components.density import StudentT
 from ..spec.composite import CompositeSpec
 from ..result import EstimationResult
 from .routine import Routine
+from .transforms import (
+    pack_garch_studentt,
+    unpack_garch_studentt,
+    jacobian_garch_studentt,
+)
 
 # ------------------------------------------------------------------ #
 # cache (p,q) → Routine
@@ -191,7 +199,113 @@ def _build(p: int, q: int) -> Routine:
             return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
         
         else:
-            raise NotImplementedError("Log mode is not implemented for GARCH + Student-t fitting.")
+            # =========================================================
+            # LOG MODE: Unconstrained optimization with C-accelerated transforms
+            # =========================================================
+            from .transforms import pack_garch_studentt_c, jacobian_garch_studentt_c, transform_grad_c
+            
+            K = vol.n_params + dens.n_params  # Total parameters
+            p_scaler = 2  # Scale factor for numerical stability
+            
+            # Pre-allocate buffers for C functions
+            _theta_buf = np.empty(K, dtype=np.float64)
+            _J_buf = np.empty((K, K), dtype=np.float64)
+            _grad_z_buf = np.empty(K, dtype=np.float64)
+            
+            def pack(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                """C-accelerated transform: z -> theta."""
+                pack_garch_studentt_c(z, _theta_buf, p, q)
+                return _theta_buf
+            
+            def unpack(theta: NDArray[np.float64]) -> NDArray[np.float64]:
+                """Transform constrained theta to unconstrained z."""
+                return unpack_garch_studentt(theta, p, q)
+            
+            def obj_log(z: NDArray[np.float64]) -> float:
+                """Objective function in z-space."""
+                pack_garch_studentt_c(z, _theta_buf, p, q)
+                return call_c_obj(_theta_buf) * p_scaler
+            
+            def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                """C-accelerated gradient: ∇_z = Jᵀ ∇_θ."""
+                pack_garch_studentt_c(z, _theta_buf, p, q)
+                call_c_jac(_theta_buf)
+                grad_theta = grad_vec * p_scaler
+                
+                # Use C Jacobian and gradient transform
+                jacobian_garch_studentt_c(_theta_buf, _J_buf, p, q)
+                transform_grad_c(grad_theta, _J_buf, _grad_z_buf, p, q, "studentt")
+                return _grad_z_buf.copy()
+            
+            def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                """Numerical Hessian in z-space."""
+                eps = 1e-5
+                H = np.zeros((K, K), dtype=np.float64)
+                
+                for i in range(K):
+                    for j in range(K):
+                        z_pp = z.copy(); z_pp[i] += eps; z_pp[j] += eps
+                        z_pm = z.copy(); z_pm[i] += eps; z_pm[j] -= eps
+                        z_mp = z.copy(); z_mp[i] -= eps; z_mp[j] += eps
+                        z_mm = z.copy(); z_mm[i] -= eps; z_mm[j] -= eps
+                        
+                        H[i, j] = (obj_log(z_pp) - obj_log(z_pm) - obj_log(z_mp) + obj_log(z_mm)) / (4 * eps * eps)
+                
+                return H
+            
+            # Initial values in theta-space, then transform to z-space
+            theta0 = np.concatenate((vol.default_start(resid), dens.default_start(resid)))
+            z0 = unpack(theta0)
+            
+            if solver.lower() == "nelder-mead":
+                res = minimize(
+                    obj_log,
+                    z0,
+                    method="Nelder-Mead",
+                    tol=1e-12,
+                    options={"disp": verbose, "maxiter": 5000, "maxfev": 50000}
+                )
+            
+            elif solver.lower() == "slsqp":
+                res = minimize(
+                    lambda z: obj_log(z) / n,
+                    z0,
+                    method="SLSQP",
+                    jac=lambda z: jac_log(z) / n,
+                    tol=1e-16,
+                    options={"disp": verbose, "ftol": 1e-16, "maxiter": 5000}
+                )
+                res.fun *= n
+            
+            elif solver.lower() in ("trust", "trust-constr", "trust-exact"):
+                res = minimize(
+                    lambda z: obj_log(z) / n,
+                    z0,
+                    method="trust-exact",
+                    jac=lambda z: jac_log(z) / n,
+                    hess=lambda z: hess_log(z) / n,
+                    tol=1e-12,
+                    options={"disp": verbose, "maxiter": 5000}
+                )
+                res.fun *= n
+            
+            else:
+                raise ValueError(f"Unknown solver '{solver}'")
+            
+            # Transform back to theta-space
+            theta_hat = pack(res.x)
+            res.x = theta_hat
+            res.fun = res.fun / p_scaler  # Unscale
+            
+            vol.unpack(theta_hat[:vol.n_params])
+            dens.unpack(theta_hat[vol.n_params:])
+            
+            t_elapsed = time.perf_counter() - t_start
+            
+            # Compute final sigma2
+            _compute_garch_variance(theta_hat, resid2, sigma2, p, q)
+            
+            return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
 
     # -------------------------------------------------------------------------
     return Routine(

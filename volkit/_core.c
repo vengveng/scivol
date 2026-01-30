@@ -115,18 +115,19 @@ static PyObject *
 py_garch_opg_hess_pq(PyObject *self,
     PyObject *const *args, Py_ssize_t nargs)
     {
-        if (nargs != 7) { BAD_ARITY("garch_opg_hess_pq", 7, nargs); return NULL; }
+        if (nargs != 8) { BAD_ARITY("garch_opg_hess_pq", 8, nargs); return NULL; }
     
-        const double *eps2   = (const double *)PyLong_AsVoidPtr(args[0]);
-        const double *sigma2 = (const double *)PyLong_AsVoidPtr(args[1]);
-        double       *OPG    = (double *)      PyLong_AsVoidPtr(args[2]);
-        double       *HESS   = (double *)      PyLong_AsVoidPtr(args[3]);
-        size_t n  = PyLong_AsSize_t(args[4]);
-        size_t p  = PyLong_AsSize_t(args[5]);
-        size_t q  = PyLong_AsSize_t(args[6]);
+        const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+        const double *eps2   = (const double *)PyLong_AsVoidPtr(args[1]);
+        const double *sigma2 = (const double *)PyLong_AsVoidPtr(args[2]);
+        double       *OPG    = (double *)      PyLong_AsVoidPtr(args[3]);
+        double       *HESS   = (double *)      PyLong_AsVoidPtr(args[4]);
+        size_t n  = PyLong_AsSize_t(args[5]);
+        size_t p  = PyLong_AsSize_t(args[6]);
+        size_t q  = PyLong_AsSize_t(args[7]);
         if (PyErr_Occurred()) return NULL;
     
-        garch_opg_hess_pq(eps2, sigma2, OPG, HESS, n, p, q);
+        garch_opg_hess_pq(params, eps2, sigma2, OPG, HESS, n, p, q);
         Py_RETURN_NONE;
     
     }
@@ -135,16 +136,17 @@ static PyObject *
 py_garch_opg_hess_11(PyObject *self,
     PyObject *const *args, Py_ssize_t nargs)
     {
-        if (nargs != 5) { BAD_ARITY("garch_opg_hess_11", 5, nargs); return NULL; }
+        if (nargs != 6) { BAD_ARITY("garch_opg_hess_11", 6, nargs); return NULL; }
         
-        const double *eps2   = (const double *)PyLong_AsVoidPtr(args[0]);
-        const double *sigma2 = (const double *)PyLong_AsVoidPtr(args[1]);
-        double       *OPG    = (double *)      PyLong_AsVoidPtr(args[2]);
-        double       *HESS   = (double *)      PyLong_AsVoidPtr(args[3]);
-        size_t n  = PyLong_AsSize_t(args[4]);
+        const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+        const double *eps2   = (const double *)PyLong_AsVoidPtr(args[1]);
+        const double *sigma2 = (const double *)PyLong_AsVoidPtr(args[2]);
+        double       *OPG    = (double *)      PyLong_AsVoidPtr(args[3]);
+        double       *HESS   = (double *)      PyLong_AsVoidPtr(args[4]);
+        size_t n  = PyLong_AsSize_t(args[5]);
         if (PyErr_Occurred()) return NULL;
         
-        garch_opg_hess_11(eps2, sigma2, OPG, HESS, n);
+        garch_opg_hess_11(params, eps2, sigma2, OPG, HESS, n);
         Py_RETURN_NONE;
         
     }
@@ -335,6 +337,203 @@ py_garch_ll_hess_pq_studentt(PyObject *self,
 }
 
 
+/* ======================== Log-space transforms ========================== */
+
+/* --- GARCH(1,1) specialized --- */
+static PyObject *
+py_pack_garch_11(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 2) { BAD_ARITY("pack_garch_11", 2, nargs); return NULL; }
+    const double *z     = (const double *)PyLong_AsVoidPtr(args[0]);
+    double       *theta = (double *)      PyLong_AsVoidPtr(args[1]);
+    if (PyErr_Occurred()) return NULL;
+    pack_garch_11(z, theta);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_pack_garch_studentt_11(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 2) { BAD_ARITY("pack_garch_studentt_11", 2, nargs); return NULL; }
+    const double *z     = (const double *)PyLong_AsVoidPtr(args[0]);
+    double       *theta = (double *)      PyLong_AsVoidPtr(args[1]);
+    if (PyErr_Occurred()) return NULL;
+    pack_garch_studentt_11(z, theta);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_pack_garch_skewt_11(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 2) { BAD_ARITY("pack_garch_skewt_11", 2, nargs); return NULL; }
+    const double *z     = (const double *)PyLong_AsVoidPtr(args[0]);
+    double       *theta = (double *)      PyLong_AsVoidPtr(args[1]);
+    if (PyErr_Occurred()) return NULL;
+    pack_garch_skewt_11(z, theta);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_jacobian_garch_11(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 2) { BAD_ARITY("jacobian_garch_11", 2, nargs); return NULL; }
+    const double *theta = (const double *)PyLong_AsVoidPtr(args[0]);
+    double       *J     = (double *)      PyLong_AsVoidPtr(args[1]);
+    if (PyErr_Occurred()) return NULL;
+    jacobian_garch_11(theta, J);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_jacobian_garch_studentt_11(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 2) { BAD_ARITY("jacobian_garch_studentt_11", 2, nargs); return NULL; }
+    const double *theta = (const double *)PyLong_AsVoidPtr(args[0]);
+    double       *J     = (double *)      PyLong_AsVoidPtr(args[1]);
+    if (PyErr_Occurred()) return NULL;
+    jacobian_garch_studentt_11(theta, J);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_jacobian_garch_skewt_11(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 2) { BAD_ARITY("jacobian_garch_skewt_11", 2, nargs); return NULL; }
+    const double *theta = (const double *)PyLong_AsVoidPtr(args[0]);
+    double       *J     = (double *)      PyLong_AsVoidPtr(args[1]);
+    if (PyErr_Occurred()) return NULL;
+    jacobian_garch_skewt_11(theta, J);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_transform_grad_11_normal(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 3) { BAD_ARITY("transform_grad_11_normal", 3, nargs); return NULL; }
+    const double *grad_theta = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *J          = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *grad_z     = (double *)      PyLong_AsVoidPtr(args[2]);
+    if (PyErr_Occurred()) return NULL;
+    transform_grad_11_normal(grad_theta, J, grad_z);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_transform_grad_11_studentt(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 3) { BAD_ARITY("transform_grad_11_studentt", 3, nargs); return NULL; }
+    const double *grad_theta = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *J          = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *grad_z     = (double *)      PyLong_AsVoidPtr(args[2]);
+    if (PyErr_Occurred()) return NULL;
+    transform_grad_11_studentt(grad_theta, J, grad_z);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_transform_grad_11_skewt(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 3) { BAD_ARITY("transform_grad_11_skewt", 3, nargs); return NULL; }
+    const double *grad_theta = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *J          = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *grad_z     = (double *)      PyLong_AsVoidPtr(args[2]);
+    if (PyErr_Occurred()) return NULL;
+    transform_grad_11_skewt(grad_theta, J, grad_z);
+    Py_RETURN_NONE;
+}
+
+/* --- General GARCH(p,q) --- */
+static PyObject *
+py_pack_garch_pq(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 4) { BAD_ARITY("pack_garch_pq", 4, nargs); return NULL; }
+    const double *z     = (const double *)PyLong_AsVoidPtr(args[0]);
+    double       *theta = (double *)      PyLong_AsVoidPtr(args[1]);
+    size_t p = PyLong_AsSize_t(args[2]);
+    size_t q = PyLong_AsSize_t(args[3]);
+    if (PyErr_Occurred()) return NULL;
+    pack_garch_pq(z, theta, p, q);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_pack_garch_studentt_pq(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 4) { BAD_ARITY("pack_garch_studentt_pq", 4, nargs); return NULL; }
+    const double *z     = (const double *)PyLong_AsVoidPtr(args[0]);
+    double       *theta = (double *)      PyLong_AsVoidPtr(args[1]);
+    size_t p = PyLong_AsSize_t(args[2]);
+    size_t q = PyLong_AsSize_t(args[3]);
+    if (PyErr_Occurred()) return NULL;
+    pack_garch_studentt_pq(z, theta, p, q);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_pack_garch_skewt_pq(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 4) { BAD_ARITY("pack_garch_skewt_pq", 4, nargs); return NULL; }
+    const double *z     = (const double *)PyLong_AsVoidPtr(args[0]);
+    double       *theta = (double *)      PyLong_AsVoidPtr(args[1]);
+    size_t p = PyLong_AsSize_t(args[2]);
+    size_t q = PyLong_AsSize_t(args[3]);
+    if (PyErr_Occurred()) return NULL;
+    pack_garch_skewt_pq(z, theta, p, q);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_jacobian_garch_pq(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 4) { BAD_ARITY("jacobian_garch_pq", 4, nargs); return NULL; }
+    const double *theta = (const double *)PyLong_AsVoidPtr(args[0]);
+    double       *J     = (double *)      PyLong_AsVoidPtr(args[1]);
+    size_t p = PyLong_AsSize_t(args[2]);
+    size_t q = PyLong_AsSize_t(args[3]);
+    if (PyErr_Occurred()) return NULL;
+    jacobian_garch_pq(theta, J, p, q);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_jacobian_garch_studentt_pq(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 4) { BAD_ARITY("jacobian_garch_studentt_pq", 4, nargs); return NULL; }
+    const double *theta = (const double *)PyLong_AsVoidPtr(args[0]);
+    double       *J     = (double *)      PyLong_AsVoidPtr(args[1]);
+    size_t p = PyLong_AsSize_t(args[2]);
+    size_t q = PyLong_AsSize_t(args[3]);
+    if (PyErr_Occurred()) return NULL;
+    jacobian_garch_studentt_pq(theta, J, p, q);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_jacobian_garch_skewt_pq(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 4) { BAD_ARITY("jacobian_garch_skewt_pq", 4, nargs); return NULL; }
+    const double *theta = (const double *)PyLong_AsVoidPtr(args[0]);
+    double       *J     = (double *)      PyLong_AsVoidPtr(args[1]);
+    size_t p = PyLong_AsSize_t(args[2]);
+    size_t q = PyLong_AsSize_t(args[3]);
+    if (PyErr_Occurred()) return NULL;
+    jacobian_garch_skewt_pq(theta, J, p, q);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_transform_grad_pq(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 4) { BAD_ARITY("transform_grad_pq", 4, nargs); return NULL; }
+    const double *grad_theta = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *J          = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *grad_z     = (double *)      PyLong_AsVoidPtr(args[2]);
+    size_t K                 = PyLong_AsSize_t(args[3]);
+    if (PyErr_Occurred()) return NULL;
+    transform_grad_pq(grad_theta, J, grad_z, K);
+    Py_RETURN_NONE;
+}
+
 /* ---- Method table & module init ----------------------------------- */
 static PyMethodDef Methods[] = {
 
@@ -396,6 +595,41 @@ static PyMethodDef Methods[] = {
     {"_garch_opg_hess_11",       (PyCFunction)py_garch_opg_hess_11,
                                   METH_FASTCALL, "Internal pointer API"},                                 
 
+    // Log-space transforms | GARCH(1,1) specialized
+    {"_pack_garch_11",           (PyCFunction)py_pack_garch_11,
+                                  METH_FASTCALL, "z -> theta transform for GARCH(1,1)"},
+    {"_pack_garch_studentt_11",  (PyCFunction)py_pack_garch_studentt_11,
+                                  METH_FASTCALL, "z -> theta transform for GARCH(1,1)+StudentT"},
+    {"_pack_garch_skewt_11",     (PyCFunction)py_pack_garch_skewt_11,
+                                  METH_FASTCALL, "z -> theta transform for GARCH(1,1)+SkewT"},
+    {"_jacobian_garch_11",       (PyCFunction)py_jacobian_garch_11,
+                                  METH_FASTCALL, "Jacobian for GARCH(1,1)"},
+    {"_jacobian_garch_studentt_11",(PyCFunction)py_jacobian_garch_studentt_11,
+                                  METH_FASTCALL, "Jacobian for GARCH(1,1)+StudentT"},
+    {"_jacobian_garch_skewt_11", (PyCFunction)py_jacobian_garch_skewt_11,
+                                  METH_FASTCALL, "Jacobian for GARCH(1,1)+SkewT"},
+    {"_transform_grad_11_normal",(PyCFunction)py_transform_grad_11_normal,
+                                  METH_FASTCALL, "J^T @ grad for K=3"},
+    {"_transform_grad_11_studentt",(PyCFunction)py_transform_grad_11_studentt,
+                                  METH_FASTCALL, "J^T @ grad for K=4"},
+    {"_transform_grad_11_skewt", (PyCFunction)py_transform_grad_11_skewt,
+                                  METH_FASTCALL, "J^T @ grad for K=5"},
+
+    // Log-space transforms | General GARCH(p,q)
+    {"_pack_garch_pq",           (PyCFunction)py_pack_garch_pq,
+                                  METH_FASTCALL, "z -> theta transform for GARCH(p,q)"},
+    {"_pack_garch_studentt_pq",  (PyCFunction)py_pack_garch_studentt_pq,
+                                  METH_FASTCALL, "z -> theta transform for GARCH(p,q)+StudentT"},
+    {"_pack_garch_skewt_pq",     (PyCFunction)py_pack_garch_skewt_pq,
+                                  METH_FASTCALL, "z -> theta transform for GARCH(p,q)+SkewT"},
+    {"_jacobian_garch_pq",       (PyCFunction)py_jacobian_garch_pq,
+                                  METH_FASTCALL, "Jacobian for GARCH(p,q)"},
+    {"_jacobian_garch_studentt_pq",(PyCFunction)py_jacobian_garch_studentt_pq,
+                                  METH_FASTCALL, "Jacobian for GARCH(p,q)+StudentT"},
+    {"_jacobian_garch_skewt_pq", (PyCFunction)py_jacobian_garch_skewt_pq,
+                                  METH_FASTCALL, "Jacobian for GARCH(p,q)+SkewT"},
+    {"_transform_grad_pq",       (PyCFunction)py_transform_grad_pq,
+                                  METH_FASTCALL, "J^T @ grad for general K"},
 
     {NULL, NULL, 0, NULL}
 };

@@ -4,7 +4,8 @@ GARCH(p,q) + Skewed Student-t likelihood (numerical derivatives).
 UID handled:  "GARCH(p,q)+SkewT"
 
 Uses the Hansen (1994) parameterization for the skewed Student-t distribution.
-Since no analytical derivatives are available, numerical optimization is used.
+Supports both constrained (log_mode=False) and unconstrained (log_mode=True)
+optimization.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from ..components.density import SkewT
 from ..spec.composite import CompositeSpec
 from ..result import EstimationResult
 from .routine import Routine
+from .transforms import pack_garch_skewt, unpack_garch_skewt, jacobian_garch_skewt
 
 # Import skewt likelihood from reference implementation
 import sys
@@ -88,6 +90,7 @@ def _build(p: int, q: int) -> Routine:
     def fit(
         resid: NDArray[np.float64],
         solver: str = "nelder-mead",
+        log_mode: bool = False,
         verbose: bool = False,
         **_
     ) -> EstimationResult:
@@ -100,6 +103,8 @@ def _build(p: int, q: int) -> Routine:
         resid2 = resid ** 2
         sigma2 = np.zeros(n, dtype=np.float64)
         sigma2[0] = np.mean(resid2)
+        
+        K = n_total  # Total number of parameters
 
         def objective(theta: NDArray[np.float64]) -> float:
             """Negative log-likelihood for GARCH + Skew-t."""
@@ -113,60 +118,176 @@ def _build(p: int, q: int) -> Routine:
             ll = skewt_loglik(resid, sigma2, nu, lam)
             return -ll / n  # Return negative for minimization, scaled
 
-        # Initial values and bounds
-        start = np.concatenate((vol.default_start(resid), dens.default_start(resid)))
-        bounds = vol.bounds() + dens.bounds()
+        if not log_mode:
+            # =========================================================
+            # CONSTRAINED MODE
+            # =========================================================
+            
+            # Initial values and bounds
+            start = np.concatenate((vol.default_start(resid), dens.default_start(resid)))
+            bounds = vol.bounds() + dens.bounds()
 
-        # Stationarity constraint: sum(alpha) + sum(beta) < 1
-        # A @ theta gives: alpha_1 + ... + alpha_p + beta_1 + ... + beta_q
-        A = np.array([[0] + [1] * p + [1] * q + [0, 0]])  # Skip omega and dist params
-        lc = LinearConstraint(A, lb=1e-12, ub=1.0 - 1e-8)
+            # Stationarity constraint: sum(alpha) + sum(beta) < 1
+            A = np.array([[0] + [1] * p + [1] * q + [0, 0]])  # Skip omega and dist params
+            lc = LinearConstraint(A, lb=1e-12, ub=1.0 - 1e-8)
 
-        if solver.lower() == "nelder-mead":
-            res = minimize(
-                objective,
-                start,
-                method="Nelder-Mead",
-                bounds=bounds,
-                tol=1e-12,
-                options={"maxfev": 50000, "disp": verbose}
-            )
-        elif solver.lower() == "slsqp":
-            res = minimize(
-                objective,
-                start,
-                method="SLSQP",
-                bounds=bounds,
-                constraints=lc,
-                tol=1e-12,
-                options={"disp": verbose, "ftol": 1e-12, "maxiter": 5000}
-            )
-        elif solver.lower() in ("trust-constr", "trust"):
-            res = minimize(
-                objective,
-                start,
-                method="trust-constr",
-                bounds=bounds,
-                constraints=lc,
-                tol=1e-12,
-                options={"disp": verbose, "xtol": 1e-6, "maxiter": 5000}
-            )
+            if solver.lower() == "nelder-mead":
+                res = minimize(
+                    objective,
+                    start,
+                    method="Nelder-Mead",
+                    bounds=bounds,
+                    tol=1e-12,
+                    options={"maxfev": 50000, "disp": verbose}
+                )
+            elif solver.lower() == "slsqp":
+                res = minimize(
+                    objective,
+                    start,
+                    method="SLSQP",
+                    bounds=bounds,
+                    constraints=lc,
+                    tol=1e-12,
+                    options={"disp": verbose, "ftol": 1e-12, "maxiter": 5000}
+                )
+            elif solver.lower() in ("trust-constr", "trust"):
+                res = minimize(
+                    objective,
+                    start,
+                    method="trust-constr",
+                    bounds=bounds,
+                    constraints=lc,
+                    tol=1e-12,
+                    options={"disp": verbose, "xtol": 1e-6, "maxiter": 5000}
+                )
+            else:
+                raise ValueError(f"Unknown solver '{solver}'")
+
+            # Convert back to total negative log-likelihood
+            res.fun = res.fun * n
+
+            t_elapsed = time.perf_counter() - t_start
+
+            # Unpack parameters into components
+            vol.unpack(res.x[:n_garch])
+            dens.unpack(res.x[n_garch:])
+
+            # Compute final sigma2 for storage
+            _garch_variance(res.x[:n_garch], resid2, sigma2, p, q)
+
+            return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
+        
         else:
-            raise ValueError(f"Unknown solver '{solver}'")
-
-        # Convert back to total negative log-likelihood
-        res.fun = res.fun * n
-
-        t_elapsed = time.perf_counter() - t_start
-
-        # Unpack parameters into components
-        vol.unpack(res.x[:n_garch])
-        dens.unpack(res.x[n_garch:])
-
-        # Compute final sigma2 for storage
-        _garch_variance(res.x[:n_garch], resid2, sigma2, p, q)
-
-        return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
+            # =========================================================
+            # LOG MODE: Unconstrained optimization with C-accelerated transforms
+            # =========================================================
+            from .transforms import pack_garch_skewt_c
+            
+            p_scaler = 2  # Scale factor for numerical stability
+            
+            # Pre-allocate buffer for C transform
+            _theta_buf = np.empty(K, dtype=np.float64)
+            
+            def pack(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                """C-accelerated transform: z -> theta."""
+                pack_garch_skewt_c(z, _theta_buf, p, q)
+                return _theta_buf
+            
+            def unpack(theta: NDArray[np.float64]) -> NDArray[np.float64]:
+                """Transform constrained theta to unconstrained z."""
+                return unpack_garch_skewt(theta, p, q)
+            
+            def obj_log(z: NDArray[np.float64]) -> float:
+                """Objective function in z-space."""
+                pack_garch_skewt_c(z, _theta_buf, p, q)
+                return objective(_theta_buf) * n * p_scaler  # Unscale then rescale
+            
+            def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                """
+                Numerical gradient in z-space via central finite differences.
+                (No analytical gradient available for SkewT likelihood)
+                """
+                eps = 1e-7
+                grad = np.zeros(K, dtype=np.float64)
+                
+                for i in range(K):
+                    z_p = z.copy()
+                    z_m = z.copy()
+                    z_p[i] += eps
+                    z_m[i] -= eps
+                    grad[i] = (obj_log(z_p) - obj_log(z_m)) / (2 * eps)
+                
+                return grad
+            
+            def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                """Numerical Hessian in z-space."""
+                eps = 1e-5
+                H = np.zeros((K, K), dtype=np.float64)
+                
+                for i in range(K):
+                    for j in range(K):
+                        z_pp = z.copy(); z_pp[i] += eps; z_pp[j] += eps
+                        z_pm = z.copy(); z_pm[i] += eps; z_pm[j] -= eps
+                        z_mp = z.copy(); z_mp[i] -= eps; z_mp[j] += eps
+                        z_mm = z.copy(); z_mm[i] -= eps; z_mm[j] -= eps
+                        
+                        H[i, j] = (obj_log(z_pp) - obj_log(z_pm) - obj_log(z_mp) + obj_log(z_mm)) / (4 * eps * eps)
+                
+                return H
+            
+            # Initial values in theta-space, then transform to z-space
+            theta0 = np.concatenate((vol.default_start(resid), dens.default_start(resid)))
+            z0 = unpack(theta0)
+            
+            if solver.lower() == "nelder-mead":
+                res = minimize(
+                    obj_log,
+                    z0,
+                    method="Nelder-Mead",
+                    tol=1e-12,
+                    options={"disp": verbose, "maxiter": 5000, "maxfev": 50000}
+                )
+            
+            elif solver.lower() == "slsqp":
+                res = minimize(
+                    lambda z: obj_log(z) / n,
+                    z0,
+                    method="SLSQP",
+                    jac=lambda z: jac_log(z) / n,
+                    tol=1e-16,
+                    options={"disp": verbose, "ftol": 1e-16, "maxiter": 5000}
+                )
+                res.fun *= n
+            
+            elif solver.lower() in ("trust", "trust-constr", "trust-exact"):
+                res = minimize(
+                    lambda z: obj_log(z) / n,
+                    z0,
+                    method="trust-exact",
+                    jac=lambda z: jac_log(z) / n,
+                    hess=lambda z: hess_log(z) / n,
+                    tol=1e-12,
+                    options={"disp": verbose, "maxiter": 5000}
+                )
+                res.fun *= n
+            
+            else:
+                raise ValueError(f"Unknown solver '{solver}'")
+            
+            # Transform back to theta-space
+            theta_hat = pack(res.x)
+            res.x = theta_hat
+            res.fun = res.fun / p_scaler  # Unscale
+            
+            vol.unpack(theta_hat[:n_garch])
+            dens.unpack(theta_hat[n_garch:])
+            
+            t_elapsed = time.perf_counter() - t_start
+            
+            # Compute final sigma2
+            _garch_variance(theta_hat[:n_garch], resid2, sigma2, p, q)
+            
+            return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
 
     # -------------------------------------------------------------------------
     return Routine(

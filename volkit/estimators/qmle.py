@@ -54,6 +54,9 @@ def _compute_robust_se_c(
     n = len(resid2)
     k = 1 + p + q  # GARCH params only (no distribution params for Normal)
     
+    # Extract GARCH params only (first k elements)
+    garch_params = params[:k].copy()
+    
     opg = np.zeros((k, k), dtype=np.float64)
     hess = np.zeros((k, k), dtype=np.float64)
     
@@ -61,6 +64,7 @@ def _compute_robust_se_c(
     if p == 1 and q == 1:
         try:
             _core._garch_opg_hess_11(
+                _as_cptr(garch_params),
                 _as_cptr(resid2),
                 _as_cptr(sigma2),
                 _as_cptr(opg),
@@ -74,6 +78,7 @@ def _compute_robust_se_c(
     # Fall back to general (p,q) version
     try:
         _core._garch_opg_hess_pq(
+            _as_cptr(garch_params),
             _as_cptr(resid2),
             _as_cptr(sigma2),
             _as_cptr(opg),

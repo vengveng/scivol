@@ -176,84 +176,74 @@ def _build(p: int, q: int) -> Routine:
             return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
         
         else:
+            from .transforms import pack_garch_c, jacobian_garch_c, transform_grad_c, unpack_garch
+            
             p_scaler = 2
+            K = 1 + p + q
+            
+            # Pre-allocate buffers for C functions (reused across calls)
+            _theta_buf = np.empty(K, dtype=np.float64)
+            _J_buf = np.empty((K, K), dtype=np.float64)
+            _grad_z_buf = np.empty(K, dtype=np.float64)
+            
             # ------------------------------------------------------------------
-            # log-mode helpers
+            # log-mode helpers using C-accelerated transforms
             # ------------------------------------------------------------------
             
             def pack(z: np.ndarray) -> np.ndarray:
-                """
-                Numerically safe pack() with log-sum-exp stabilization.
-                """
-                omega_t = z[0]
-                zalpha  = z[1 : 1+p]
-                zbetas  = z[1+p : ]
-
-                lse_a = logsumexp(zalpha)
-                lse_b = logsumexp(zbetas)
-
-                logden_a = np.logaddexp(0.0, lse_a)  # type: ignore
-                logden_b = np.logaddexp(0.0, lse_b)  # type: ignore
-
-                omega = np.exp(np.clip(omega_t, -700.0, 700.0))
-                alpha = np.exp(zalpha - logden_a)  # type: ignore
-                betas = np.exp(zbetas - logden_b)  # type: ignore
-
-                return np.r_[omega, alpha, betas]
+                """C-accelerated transform: z -> theta."""
+                pack_garch_c(z, _theta_buf, p, q)
+                return _theta_buf
 
             def unpack(theta: NDArray[np.float64]) -> NDArray[np.float64]:
-                """original θ -> unconstrained z"""
-                omega, alpha, betas = theta[0], theta[1:1+p], theta[1+p:]
-
-                z_omega = np.log(omega)
-                z_alpha = np.log(alpha) - np.log1p(-alpha.sum())
-                z_betas = np.log(betas) - np.log1p(-betas.sum())
-                return np.r_[z_omega, z_alpha, z_betas]
+                """Transform constrained theta to unconstrained z."""
+                return unpack_garch(theta, p, q)
 
             # ------------------------------------------------------------------
             # objective wrapper working in z-space
             # ------------------------------------------------------------------
 
             def obj_log(z: NDArray[np.float64]) -> float:
-                theta = pack(z)
-                return call_c_obj(theta) * p_scaler
+                pack_garch_c(z, _theta_buf, p, q)
+                return call_c_obj(_theta_buf) * p_scaler
             
             def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                theta = pack(z)
-                call_c_jac(theta)
-                grad_vec_j = grad_vec.copy() * p_scaler
-
-                g_omega = grad_vec_j[0]
-                g_alpha = grad_vec_j[1 : 1+p]
-                g_beta  = grad_vec_j[1+p : 1+p+q]
-
-                omega   = theta[0]
-                alpha   = theta[1 : 1+p]
-                beta    = theta[1+p : 1+p+q]
+                """C-accelerated gradient: ∇_z = Jᵀ ∇_θ."""
+                pack_garch_c(z, _theta_buf, p, q)
+                call_c_jac(_theta_buf)
+                grad_theta = grad_vec * p_scaler
                 
-                out     = np.empty_like(z)
-                out[0]  = omega * g_omega
-
-                salpha       = (alpha * g_alpha).sum()            # Σ alpha_k g_alphak
-                sbeta          = (beta * g_beta).sum()
-                out[1 : 1+p] = alpha * (g_alpha - salpha)            # element-wise
-                out[1+p : 1+p+q] = beta * (g_beta - sbeta)
-
-
-                return out
+                # Use C Jacobian and gradient transform
+                jacobian_garch_c(_theta_buf, _J_buf, p, q)
+                transform_grad_c(grad_theta, _J_buf, _grad_z_buf, p, q, "normal")
+                return _grad_z_buf.copy()
             
             def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                θ = pack(z)                                     # [omega, alpha..., beta...]
+                """Numerical Hessian in z-space."""
+                eps = 1e-5
+                H = np.zeros((K, K), dtype=np.float64)
+                for i in range(K):
+                    for j in range(K):
+                        z_pp = z.copy(); z_pp[i] += eps; z_pp[j] += eps
+                        z_pm = z.copy(); z_pm[i] += eps; z_pm[j] -= eps
+                        z_mp = z.copy(); z_mp[i] -= eps; z_mp[j] += eps
+                        z_mm = z.copy(); z_mm[i] -= eps; z_mm[j] -= eps
+                        H[i, j] = (obj_log(z_pp) - obj_log(z_pm) - obj_log(z_mp) + obj_log(z_mm)) / (4 * eps * eps)
+                return H
 
-                call_c_jac(θ)                                  # fill grad_vec_c
-                call_c_hess(θ)                                 # fill hess_mat_c
+            def _hess_log_analytical_UNUSED(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                """OLD: Analytical Hessian (kept for reference)."""
+                theta = pack(z)
 
-                gθ = grad_vec.copy() * p_scaler              # scale identically to jac
-                Hθ = hess_mat.copy() * p_scaler              # same scaling
+                call_c_jac(theta)
+                call_c_hess(theta)
 
-                omega = θ[0]
-                alpha = θ[1 : 1+p]
-                beta  = θ[1+p : 1+p+q]
+                g_theta = grad_vec.copy() * p_scaler
+                H_theta = hess_mat.copy() * p_scaler
+
+                omega = theta[0]
+                alpha = theta[1 : 1+p]
+                beta  = theta[1+p : 1+p+q]
 
                 K       = 1 + p + q
                 # 2. build Jacobian  J  -----------------------------------------------

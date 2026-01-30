@@ -1,0 +1,366 @@
+// volkit/_csrc/transforms_logspace.c
+//
+// Parameter transformations for unconstrained (log-space) optimization.
+//
+// Transforms:
+//   omega = exp(z_omega)                    ensures omega > 0
+//   (alpha, beta, r) = softmax(z_alpha, z_beta, 0)  ensures alpha + beta < 1
+//   nu = 2 + exp(z_nu)                      ensures nu > 2
+//   lam = tanh(z_lam)                       ensures -1 < lam < 1
+
+#include <math.h>
+#include <stddef.h>
+#include "math_and_helpers.h"
+
+// Clipping bounds to prevent overflow in exp()
+#define EXP_CLIP_MIN -700.0
+#define EXP_CLIP_MAX  700.0
+
+VLK_FORCE_INLINE double clip(double x, double lo, double hi) {
+    return x < lo ? lo : (x > hi ? hi : x);
+}
+
+VLK_FORCE_INLINE double safe_exp(double x) {
+    return exp(clip(x, EXP_CLIP_MIN, EXP_CLIP_MAX));
+}
+
+// =============================================================================
+// GARCH(1,1) SPECIALIZED FUNCTIONS
+// =============================================================================
+
+__attribute__((visibility("default"), hot, flatten))
+void pack_garch_11(const double *z, double *theta)
+{
+    // z = [z_omega, z_alpha, z_beta]
+    // theta = [omega, alpha, beta]
+    
+    const double z_omega = z[0];
+    const double z_alpha = z[1];
+    const double z_beta  = z[2];
+    
+    // omega = exp(z_omega)
+    theta[0] = safe_exp(z_omega);
+    
+    // Joint softmax: (alpha, beta, r) = softmax(z_alpha, z_beta, 0)
+    // Using log-sum-exp trick for numerical stability:
+    // lse = max(z_alpha, z_beta, 0) + log(exp(z_alpha - max) + exp(z_beta - max) + exp(0 - max))
+    const double m = MAX(MAX(z_alpha, z_beta), 0.0);
+    const double sum_exp = exp(z_alpha - m) + exp(z_beta - m) + exp(-m);
+    const double lse = m + log(sum_exp);
+    
+    theta[1] = exp(z_alpha - lse);  // alpha
+    theta[2] = exp(z_beta - lse);   // beta
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void pack_garch_studentt_11(const double *z, double *theta)
+{
+    // z = [z_omega, z_alpha, z_beta, z_nu]
+    // theta = [omega, alpha, beta, nu]
+    
+    // First pack GARCH params
+    pack_garch_11(z, theta);
+    
+    // nu = 2 + exp(z_nu)
+    theta[3] = 2.0 + safe_exp(z[3]);
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void pack_garch_skewt_11(const double *z, double *theta)
+{
+    // z = [z_omega, z_alpha, z_beta, z_nu, z_lam]
+    // theta = [omega, alpha, beta, nu, lam]
+    
+    // First pack GARCH params
+    pack_garch_11(z, theta);
+    
+    // nu = 2 + exp(z_nu)
+    theta[3] = 2.0 + safe_exp(z[3]);
+    
+    // lam = tanh(z_lam)
+    theta[4] = tanh(z[4]);
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void jacobian_garch_11(const double *theta, double *J)
+{
+    // Compute Jacobian J = d(theta)/d(z) for GARCH(1,1)
+    // J is 3x3 matrix in row-major order
+    //
+    // For joint softmax:
+    //   d(alpha)/d(z_alpha) = alpha * (1 - alpha)
+    //   d(alpha)/d(z_beta)  = -alpha * beta
+    //   d(beta)/d(z_alpha)  = -beta * alpha
+    //   d(beta)/d(z_beta)   = beta * (1 - beta)
+    
+    const double omega = theta[0];
+    const double alpha = theta[1];
+    const double beta  = theta[2];
+    
+    // Initialize to zero
+    dzeros(J, 9);
+    
+    // J[0,0] = d(omega)/d(z_omega) = omega
+    J[0] = omega;
+    
+    // J[1,1] = d(alpha)/d(z_alpha) = alpha * (1 - alpha)
+    J[4] = alpha * (1.0 - alpha);
+    
+    // J[1,2] = d(alpha)/d(z_beta) = -alpha * beta
+    J[5] = -alpha * beta;
+    
+    // J[2,1] = d(beta)/d(z_alpha) = -beta * alpha
+    J[7] = -beta * alpha;
+    
+    // J[2,2] = d(beta)/d(z_beta) = beta * (1 - beta)
+    J[8] = beta * (1.0 - beta);
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void jacobian_garch_studentt_11(const double *theta, double *J)
+{
+    // Compute Jacobian for GARCH(1,1) + Student-t
+    // J is 4x4 matrix in row-major order
+    
+    const double omega = theta[0];
+    const double alpha = theta[1];
+    const double beta  = theta[2];
+    const double nu    = theta[3];
+    
+    // Initialize to zero
+    dzeros(J, 16);
+    
+    // GARCH block (same as jacobian_garch_11)
+    J[0]  = omega;                    // J[0,0]
+    J[5]  = alpha * (1.0 - alpha);    // J[1,1]
+    J[6]  = -alpha * beta;            // J[1,2]
+    J[9]  = -beta * alpha;            // J[2,1]
+    J[10] = beta * (1.0 - beta);      // J[2,2]
+    
+    // J[3,3] = d(nu)/d(z_nu) = nu - 2
+    J[15] = nu - 2.0;
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void jacobian_garch_skewt_11(const double *theta, double *J)
+{
+    // Compute Jacobian for GARCH(1,1) + SkewT
+    // J is 5x5 matrix in row-major order
+    
+    const double omega = theta[0];
+    const double alpha = theta[1];
+    const double beta  = theta[2];
+    const double nu    = theta[3];
+    const double lam   = theta[4];
+    
+    // Initialize to zero
+    dzeros(J, 25);
+    
+    // GARCH block
+    J[0]  = omega;                    // J[0,0]
+    J[6]  = alpha * (1.0 - alpha);    // J[1,1]
+    J[7]  = -alpha * beta;            // J[1,2]
+    J[11] = -beta * alpha;            // J[2,1]
+    J[12] = beta * (1.0 - beta);      // J[2,2]
+    
+    // J[3,3] = d(nu)/d(z_nu) = nu - 2
+    J[18] = nu - 2.0;
+    
+    // J[4,4] = d(lam)/d(z_lam) = 1 - lam^2 = sech^2(z_lam)
+    J[24] = 1.0 - lam * lam;
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void transform_grad_11_normal(const double *grad_theta, const double *J, double *grad_z)
+{
+    // grad_z = J^T @ grad_theta for K=3
+    // J is 3x3 row-major
+    
+    // J^T @ grad_theta:
+    // grad_z[i] = sum_j J[j,i] * grad_theta[j] = sum_j J[j*3 + i] * grad_theta[j]
+    
+    grad_z[0] = J[0] * grad_theta[0];  // Only J[0,0] is nonzero in column 0
+    grad_z[1] = J[4] * grad_theta[1] + J[7] * grad_theta[2];  // J[1,1] and J[2,1]
+    grad_z[2] = J[5] * grad_theta[1] + J[8] * grad_theta[2];  // J[1,2] and J[2,2]
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void transform_grad_11_studentt(const double *grad_theta, const double *J, double *grad_z)
+{
+    // grad_z = J^T @ grad_theta for K=4
+    // J is 4x4 row-major
+    
+    grad_z[0] = J[0] * grad_theta[0];
+    grad_z[1] = J[5] * grad_theta[1] + J[9] * grad_theta[2];
+    grad_z[2] = J[6] * grad_theta[1] + J[10] * grad_theta[2];
+    grad_z[3] = J[15] * grad_theta[3];
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void transform_grad_11_skewt(const double *grad_theta, const double *J, double *grad_z)
+{
+    // grad_z = J^T @ grad_theta for K=5
+    // J is 5x5 row-major
+    
+    grad_z[0] = J[0] * grad_theta[0];
+    grad_z[1] = J[6] * grad_theta[1] + J[11] * grad_theta[2];
+    grad_z[2] = J[7] * grad_theta[1] + J[12] * grad_theta[2];
+    grad_z[3] = J[18] * grad_theta[3];
+    grad_z[4] = J[24] * grad_theta[4];
+}
+
+
+// =============================================================================
+// GENERAL GARCH(p,q) FUNCTIONS
+// =============================================================================
+
+__attribute__((visibility("default"), hot))
+void pack_garch_pq(const double *z, double *theta, size_t p, size_t q)
+{
+    // z = [z_omega, z_alpha_1, ..., z_alpha_p, z_beta_1, ..., z_beta_q]
+    // theta = [omega, alpha_1, ..., alpha_p, beta_1, ..., beta_q]
+    
+    const size_t K = 1 + p + q;
+    
+    // omega = exp(z_omega)
+    theta[0] = safe_exp(z[0]);
+    
+    // Joint softmax over z_alpha, z_beta, and slack variable 0
+    // First find max for numerical stability
+    double m = 0.0;  // slack variable
+    for (size_t i = 1; i < K; ++i) {
+        if (z[i] > m) m = z[i];
+    }
+    
+    // Compute sum of exp(z_i - m)
+    double sum_exp = exp(-m);  // slack variable contribution
+    for (size_t i = 1; i < K; ++i) {
+        sum_exp += exp(z[i] - m);
+    }
+    
+    const double lse = m + log(sum_exp);
+    
+    // Compute alpha and beta from softmax
+    for (size_t i = 1; i < K; ++i) {
+        theta[i] = exp(z[i] - lse);
+    }
+}
+
+__attribute__((visibility("default"), hot))
+void pack_garch_studentt_pq(const double *z, double *theta, size_t p, size_t q)
+{
+    const size_t n_garch = 1 + p + q;
+    
+    // Pack GARCH params
+    pack_garch_pq(z, theta, p, q);
+    
+    // nu = 2 + exp(z_nu)
+    theta[n_garch] = 2.0 + safe_exp(z[n_garch]);
+}
+
+__attribute__((visibility("default"), hot))
+void pack_garch_skewt_pq(const double *z, double *theta, size_t p, size_t q)
+{
+    const size_t n_garch = 1 + p + q;
+    
+    // Pack GARCH params
+    pack_garch_pq(z, theta, p, q);
+    
+    // nu = 2 + exp(z_nu)
+    theta[n_garch] = 2.0 + safe_exp(z[n_garch]);
+    
+    // lam = tanh(z_lam)
+    theta[n_garch + 1] = tanh(z[n_garch + 1]);
+}
+
+__attribute__((visibility("default"), hot))
+void jacobian_garch_pq(const double *theta, double *J, size_t p, size_t q)
+{
+    // Compute Jacobian J = d(theta)/d(z) for GARCH(p,q)
+    // J is K x K matrix in row-major order where K = 1 + p + q
+    //
+    // For joint softmax over [z_alpha..., z_beta..., 0]:
+    //   d(theta_i)/d(z_j) = theta_i * (delta_ij - theta_j) for i,j >= 1
+    //   d(omega)/d(z_omega) = omega
+    
+    const size_t K = 1 + p + q;
+    
+    // Initialize to zero
+    dzeros(J, K * K);
+    
+    // J[0,0] = omega
+    J[0] = theta[0];
+    
+    // Softmax Jacobian for alpha and beta (indices 1 to K-1)
+    for (size_t i = 1; i < K; ++i) {
+        for (size_t j = 1; j < K; ++j) {
+            const double delta_ij = (i == j) ? 1.0 : 0.0;
+            J[i * K + j] = theta[i] * (delta_ij - theta[j]);
+        }
+    }
+}
+
+__attribute__((visibility("default"), hot))
+void jacobian_garch_studentt_pq(const double *theta, double *J, size_t p, size_t q)
+{
+    const size_t n_garch = 1 + p + q;
+    const size_t K = n_garch + 1;
+    
+    // Initialize to zero
+    dzeros(J, K * K);
+    
+    // GARCH block
+    J[0] = theta[0];  // omega
+    
+    for (size_t i = 1; i < n_garch; ++i) {
+        for (size_t j = 1; j < n_garch; ++j) {
+            const double delta_ij = (i == j) ? 1.0 : 0.0;
+            J[i * K + j] = theta[i] * (delta_ij - theta[j]);
+        }
+    }
+    
+    // nu: J[n_garch, n_garch] = nu - 2
+    J[n_garch * K + n_garch] = theta[n_garch] - 2.0;
+}
+
+__attribute__((visibility("default"), hot))
+void jacobian_garch_skewt_pq(const double *theta, double *J, size_t p, size_t q)
+{
+    const size_t n_garch = 1 + p + q;
+    const size_t K = n_garch + 2;
+    
+    // Initialize to zero
+    dzeros(J, K * K);
+    
+    // GARCH block
+    J[0] = theta[0];  // omega
+    
+    for (size_t i = 1; i < n_garch; ++i) {
+        for (size_t j = 1; j < n_garch; ++j) {
+            const double delta_ij = (i == j) ? 1.0 : 0.0;
+            J[i * K + j] = theta[i] * (delta_ij - theta[j]);
+        }
+    }
+    
+    // nu: J[n_garch, n_garch] = nu - 2
+    J[n_garch * K + n_garch] = theta[n_garch] - 2.0;
+    
+    // lam: J[n_garch+1, n_garch+1] = 1 - lam^2
+    const double lam = theta[n_garch + 1];
+    J[(n_garch + 1) * K + (n_garch + 1)] = 1.0 - lam * lam;
+}
+
+__attribute__((visibility("default"), hot))
+void transform_grad_pq(const double *grad_theta, const double *J, double *grad_z, size_t K)
+{
+    // grad_z = J^T @ grad_theta
+    // J is K x K row-major
+    
+    for (size_t i = 0; i < K; ++i) {
+        double sum = 0.0;
+        for (size_t j = 0; j < K; ++j) {
+            sum += J[j * K + i] * grad_theta[j];
+        }
+        grad_z[i] = sum;
+    }
+}

@@ -84,6 +84,7 @@ def _studentt_ll(
 # ── Standard error computation (OPG & Hessian) ────────────────────────────
 
 def _garch_opg_hess_pq(
+    params_ptr: _IntPtr,  # GARCH parameters [omega, alpha1, ..., alphap, beta1, ..., betaq]
     eps2_ptr: _IntPtr,    # Squared residuals/returns
     sigma2_ptr: _IntPtr,  # Conditional variances
     OPG_ptr: _IntPtr,     # Output: Outer Product of Gradients matrix (modified in-place)
@@ -92,17 +93,18 @@ def _garch_opg_hess_pq(
     p: _Size,             # GARCH order (number of alpha parameters)
     q: _Size,             # ARCH order (number of beta parameters)
 ) -> None:
-    """Compute GARCH(p,q) OPG and Hessian matrices for robust standard errors"""
+    """Compute GARCH(p,q) OPG and Hessian matrices for robust standard errors (with recursive derivatives)"""
     ...
 
 def _garch_opg_hess_11(
+    params_ptr: _IntPtr,  # GARCH(1,1) parameters [omega, alpha, beta]
     eps2_ptr: _IntPtr,    # Squared residuals/returns
     sigma2_ptr: _IntPtr,  # Conditional variances
     OPG_ptr: _IntPtr,     # Output: Outer Product of Gradients matrix (modified in-place)
     HESS_ptr: _IntPtr,    # Output: Hessian matrix (modified in-place)
     n: _Size,             # Number of observations
 ) -> None:
-    """Compute GARCH(1,1) OPG and Hessian matrices for robust standard errors (optimized)"""
+    """Compute GARCH(1,1) OPG and Hessian matrices for robust standard errors (with recursive derivatives)"""
     ...
 
 def _garch_ll_grad_hess_pq_normal(
@@ -276,6 +278,91 @@ def _garch_ll_hess_pq_studentt(
     p: _Size,
     q: _Size,
 ) -> None: ...
+
+# ── Log-space transforms ───────────────────────────────────────────────────
+
+# GARCH(1,1) specialized versions
+def _pack_garch_11(z_ptr: _IntPtr, theta_ptr: _IntPtr) -> None:
+    """Transform z -> theta for GARCH(1,1). theta is modified in-place."""
+    ...
+
+def _pack_garch_studentt_11(z_ptr: _IntPtr, theta_ptr: _IntPtr) -> None:
+    """Transform z -> theta for GARCH(1,1)+StudentT. theta is modified in-place."""
+    ...
+
+def _pack_garch_skewt_11(z_ptr: _IntPtr, theta_ptr: _IntPtr) -> None:
+    """Transform z -> theta for GARCH(1,1)+SkewT. theta is modified in-place."""
+    ...
+
+def _jacobian_garch_11(theta_ptr: _IntPtr, J_ptr: _IntPtr) -> None:
+    """Compute Jacobian J = d(theta)/d(z) for GARCH(1,1). J is 3x3, row-major."""
+    ...
+
+def _jacobian_garch_studentt_11(theta_ptr: _IntPtr, J_ptr: _IntPtr) -> None:
+    """Compute Jacobian J = d(theta)/d(z) for GARCH(1,1)+StudentT. J is 4x4, row-major."""
+    ...
+
+def _jacobian_garch_skewt_11(theta_ptr: _IntPtr, J_ptr: _IntPtr) -> None:
+    """Compute Jacobian J = d(theta)/d(z) for GARCH(1,1)+SkewT. J is 5x5, row-major."""
+    ...
+
+def _transform_grad_11_normal(
+    grad_theta_ptr: _IntPtr,
+    J_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+) -> None:
+    """Compute grad_z = J^T @ grad_theta for K=3. grad_z is modified in-place."""
+    ...
+
+def _transform_grad_11_studentt(
+    grad_theta_ptr: _IntPtr,
+    J_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+) -> None:
+    """Compute grad_z = J^T @ grad_theta for K=4. grad_z is modified in-place."""
+    ...
+
+def _transform_grad_11_skewt(
+    grad_theta_ptr: _IntPtr,
+    J_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+) -> None:
+    """Compute grad_z = J^T @ grad_theta for K=5. grad_z is modified in-place."""
+    ...
+
+# General GARCH(p,q) versions
+def _pack_garch_pq(z_ptr: _IntPtr, theta_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Transform z -> theta for GARCH(p,q). theta is modified in-place."""
+    ...
+
+def _pack_garch_studentt_pq(z_ptr: _IntPtr, theta_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Transform z -> theta for GARCH(p,q)+StudentT. theta is modified in-place."""
+    ...
+
+def _pack_garch_skewt_pq(z_ptr: _IntPtr, theta_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Transform z -> theta for GARCH(p,q)+SkewT. theta is modified in-place."""
+    ...
+
+def _jacobian_garch_pq(theta_ptr: _IntPtr, J_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Compute Jacobian J = d(theta)/d(z) for GARCH(p,q). J is K*K, row-major."""
+    ...
+
+def _jacobian_garch_studentt_pq(theta_ptr: _IntPtr, J_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Compute Jacobian J = d(theta)/d(z) for GARCH(p,q)+StudentT. J is K*K, row-major."""
+    ...
+
+def _jacobian_garch_skewt_pq(theta_ptr: _IntPtr, J_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Compute Jacobian J = d(theta)/d(z) for GARCH(p,q)+SkewT. J is K*K, row-major."""
+    ...
+
+def _transform_grad_pq(
+    grad_theta_ptr: _IntPtr,
+    J_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    K: _Size,
+) -> None:
+    """Compute grad_z = J^T @ grad_theta for general K. grad_z is modified in-place."""
+    ...
 
 # Nothing is meant for star-import; keep top-level clean
 __all__: list[str] = []

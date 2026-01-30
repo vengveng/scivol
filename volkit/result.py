@@ -301,52 +301,200 @@ class EstimationResult:
     
     # Pretty printer
     # --------------------------------------------------------------------- #
-    def summary(self) -> None:
-        """Print comprehensive estimation summary"""
-        print("="*60)
-        print(f"Model: {self.spec}")
-        print("="*60)
-        print(f"Estimation Method: {self.method}")
-        print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"No. Observations: {self.n_obs}")
-        print(f"No. Parameters: {len(self.params)}")
-        print(f"Converged: {'Yes' if self.success else 'No'}")
-        print(f"Iterations: {self.niter}")
-        if self.time_elapsed is not None:
-            print(f"Time Elapsed: {self.time_elapsed:.3f}s")
+    def summary(self, robust: bool = False) -> None:
+        """
+        Print comprehensive estimation summary with professional formatting.
+        
+        Parameters
+        ----------
+        robust : bool
+            If True and robust standard errors are available, use them for
+            t-statistics and p-values. Default is False.
+        """
+        from scipy import stats
+        
+        WIDTH = 70
+        
+        # Title
+        print("═" * WIDTH)
+        print(f"{'GARCH Model Estimation Results':^{WIDTH}}")
+        print("═" * WIDTH)
+        
+        # Model info
+        model_str = str(self.spec) if self.spec else "Unknown Model"
+        print(f"Model:       {model_str}")
+        print(f"Method:      {self.method}")
+        print(f"Date:        {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("─" * WIDTH)
+        
+        # Estimation summary (two columns)
+        conv_str = "Yes" if self.success else "No"
+        time_str = f"{self.time_elapsed:.3f}s" if self.time_elapsed else "N/A"
+        print(f"{'No. Observations:':<20} {self.n_obs:<15} {'Converged:':<15} {conv_str}")
+        print(f"{'No. Parameters:':<20} {len(self.params):<15} {'Iterations:':<15} {self.niter}")
+        print(f"{'Time Elapsed:':<20} {time_str}")
+        print("─" * WIDTH)
+        
+        # Model fit statistics
+        print(f"{'Log-Likelihood:':<20} {self.loglikelihood:>15.4f}")
+        print(f"{'AIC:':<20} {self.aic:>15.4f}")
+        print(f"{'BIC:':<20} {self.bic:>15.4f}")
+        print(f"{'HQIC:':<20} {self.hqic:>15.4f}")
+        print("─" * WIDTH)
+        
+        # Parameter estimates table
+        print(f"\n{'Parameter Estimates':^{WIDTH}}")
+        print("─" * WIDTH)
+        
+        # Select standard errors
+        se = self.std_errors_robust if (robust and self.std_errors_robust is not None) else self.std_errors
+        se_type = "Robust" if (robust and self.std_errors_robust is not None) else "MLE"
+        
+        # Header
+        print(f"{'Parameter':<12} {'Coef':>12} {'Std Err':>12} {'t-stat':>10} {'P>|t|':>10}")
+        print("─" * WIDTH)
+        
+        # Get parameter names
+        param_names = self._get_param_names()
+        
+        for i, (name, coef) in enumerate(zip(param_names, self.params)):
+            se_val = se[i] if (se is not None and i < len(se)) else None
+            
+            # Format coefficient
+            coef_str = self._format_value(coef)
+            
+            if se_val is not None and se_val > 0 and np.isfinite(se_val):
+                se_str = self._format_value(se_val)
+                t_stat = coef / se_val
+                t_str = f"{t_stat:>10.3f}"
+                # Two-tailed p-value
+                p_val = 2 * (1 - stats.t.cdf(abs(t_stat), self.n_obs - len(self.params)))
+                p_str = self._format_pvalue(p_val)
+            else:
+                se_str = f"{'N/A':>12}"
+                t_str = f"{'N/A':>10}"
+                p_str = f"{'N/A':>10}"
+            
+            print(f"{name:<12} {coef_str:>12} {se_str:>12} {t_str} {p_str}")
+        
+        print("─" * WIDTH)
+        print(f"Standard errors: {se_type}")
+        
+        # Diagnostics
+        self._print_diagnostics_formatted(WIDTH)
+        
+        # Warnings
+        self._print_warnings(WIDTH)
+        
+        print("═" * WIDTH)
+    
+    def _get_param_names(self) -> List[str]:
+        """Get parameter names from components."""
+        names: List[str] = []
+        
+        # GARCH parameters
+        gp = self.garch_params
+        if gp is not None:
+            names.append("omega")
+            for i, _ in enumerate(gp.alpha, 1):
+                names.append(f"alpha[{i}]")
+            for i, _ in enumerate(gp.beta, 1):
+                names.append(f"beta[{i}]")
+        
+        # Distribution parameters
+        dp = self.dist_params
+        if dp.nu is not None:
+            names.append("nu")
+        if dp.lam is not None:
+            names.append("lambda")
+        
+        # Fill in remaining if needed
+        while len(names) < len(self.params):
+            names.append(f"param[{len(names)}]")
+        
+        return names
+    
+    def _format_value(self, val: float, width: int = 12) -> str:
+        """Format a numeric value with appropriate precision."""
+        if not np.isfinite(val):
+            return f"{'N/A':>{width}}"
+        
+        abs_val = abs(val)
+        if abs_val == 0:
+            return f"{0.0:>{width}.6f}"
+        elif abs_val < 1e-4 or abs_val >= 1e6:
+            return f"{val:>{width}.4e}"
+        elif abs_val < 0.01:
+            return f"{val:>{width}.6f}"
+        else:
+            return f"{val:>{width}.4f}"
+    
+    def _format_pvalue(self, p: float) -> str:
+        """Format p-value with appropriate precision."""
+        if not np.isfinite(p):
+            return f"{'N/A':>10}"
+        elif p < 0.001:
+            return f"{'<0.001':>10}"
+        elif p < 0.01:
+            return f"{p:>10.4f}"
+        else:
+            return f"{p:>10.3f}"
+    
+    def _print_diagnostics_formatted(self, width: int) -> None:
+        """Print model diagnostics with nice formatting."""
+        vol_component = self.vol
+        if vol_component is None:
+            return
+        
         print()
+        print(f"{'Model Diagnostics':^{width}}")
+        print("─" * width)
         
-        print("Model Results:")
-        print("-" * 40)
-        print(f"Log-Likelihood: {self.loglikelihood:.6f}")
-        print(f"AIC: {self.aic:.6f}")
-        print(f"BIC: {self.bic:.6f}")
-        print(f"HQIC: {self.hqic:.6f}")
-        print()
+        gp = self.garch_params
+        if gp is not None:
+            persistence = gp.persistence
+            print(f"{'Persistence (α + β):':<25} {persistence:.6f}")
+            
+            if persistence < 1.0:
+                print(f"{'Stationary:':<25} Yes")
+                if gp.omega > 0:
+                    uncond_var = gp.unconditional_variance
+                    print(f"{'Unconditional Variance:':<25} {uncond_var:.6e}")
+                    print(f"{'Unconditional Volatility:':<25} {np.sqrt(uncond_var):.6f}")
+            else:
+                print(f"{'Stationary:':<25} No (IGARCH or explosive)")
         
-        # Component-specific results with type safety
-        for component in self.spec.components:
-            if hasattr(component, 'fitted_params') and component.fitted_params:
-                print(f"{component.signature} Parameters:")
-                self._print_component_params(component)
-                print()
+        # Half-life of volatility shocks
+        if gp is not None and gp.persistence < 1.0 and gp.persistence > 0:
+            half_life = np.log(0.5) / np.log(gp.persistence)
+            print(f"{'Half-life (periods):':<25} {half_life:.1f}")
+    
+    def _print_warnings(self, width: int) -> None:
+        """Print any warnings about the estimation."""
+        warnings_list: List[str] = []
         
-        # Standard errors if available
+        if not self.success:
+            warnings_list.append("Optimization did not converge")
+        
+        gp = self.garch_params
+        if gp is not None:
+            if gp.persistence >= 1.0:
+                warnings_list.append("IGARCH or explosive process detected")
+            elif gp.persistence > 0.99:
+                warnings_list.append("Near-IGARCH: persistence very close to 1")
+        
         if self.std_errors is not None:
-            print("Standard Errors (MLE):")
-            for i, se in enumerate(self.std_errors):
-                print(f"  param[{i}]: {se:.6f}")
-            print()
+            if np.any(~np.isfinite(self.std_errors)):
+                warnings_list.append("Some standard errors could not be computed")
+            elif np.any(self.std_errors <= 0):
+                warnings_list.append("Some standard errors are non-positive (Hessian issues)")
         
-        if self.std_errors_robust is not None:
-            print("Standard Errors (Robust):")
-            for i, se in enumerate(self.std_errors_robust):
-                print(f"  param[{i}]: {se:.6f}")
+        if warnings_list:
             print()
-        
-        # Model diagnostics with type checking
-        self._print_diagnostics()
-        print("="*60)
+            print(f"{'Warnings':^{width}}")
+            print("─" * width)
+            for w in warnings_list:
+                print(f"  * {w}")
     
     def _print_component_params(self, component: Component) -> None:
         """Print component parameters with type safety"""
@@ -359,23 +507,6 @@ class EstimationResult:
                     print(f"  {param_name}_{i}: {v:.6f}")
             else:
                 print(f"  {param_name}: {param_value:.6f}")
-    
-    def _print_diagnostics(self) -> None:
-        """Print model diagnostics with type safety"""
-        vol_component = self.vol
-        if vol_component and hasattr(vol_component, 'persistence'):
-            try:
-                persistence = vol_component.persistence()
-                if persistence is not None:
-                    print(f"GARCH Persistence: {persistence:.6f}")
-                    print(f"Stationary: {'Yes' if persistence < 1.0 else 'No'}")
-                    
-                    if (persistence < 1.0 and 
-                        hasattr(vol_component, 'unconditional_variance')):
-                        uncond_var = vol_component.unconditional_variance()
-                        print(f"Unconditional Variance: {uncond_var:.6f}")
-            except Exception as e:
-                print(f"Diagnostic calculation failed: {e}")
     
     # Additional utility methods with explicit typing
     def to_dict(self) -> Dict[str, Any]:
@@ -426,9 +557,37 @@ class EstimationResult:
         
         return result_dict
     
+    def __str__(self) -> str:
+        """Compact string representation with key results."""
+        lines = []
+        
+        model_str = str(self.spec) if self.spec else "Unknown"
+        lines.append(f"{model_str} Estimation Results")
+        lines.append("-" * 50)
+        
+        # Key metrics
+        lines.append(f"Log-Likelihood: {self.loglikelihood:>15.4f}")
+        lines.append(f"AIC:            {self.aic:>15.4f}")
+        lines.append(f"BIC:            {self.bic:>15.4f}")
+        
+        # Parameters
+        param_names = self._get_param_names()
+        lines.append("")
+        lines.append("Parameters:")
+        for name, val in zip(param_names, self.params):
+            val_str = self._format_value(val)
+            lines.append(f"  {name:<12} {val_str}")
+        
+        # Status
+        status = "Converged" if self.success else "Not converged"
+        lines.append("")
+        lines.append(f"Status: {status}")
+        
+        return "\n".join(lines)
+    
     def __repr__(self) -> str:
-        """String representation of result"""
-        status = "✓" if self.success else "✗"
+        """Concise representation of result"""
+        status = "converged" if self.success else "failed"
         return (f"EstimationResult({self.spec}, "
                 f"LL={self.loglikelihood:.4f}, "
-                f"converged={status})")
+                f"{status})")
