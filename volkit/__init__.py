@@ -10,9 +10,9 @@ except ModuleNotFoundError:
         "Build wheels or run `pip install .` with a C compiler."
     )
 
-from .components import ARMA, GARCH, Normal, StudentT, Component
+from .components import ARMA, GARCH, Normal, StudentT, SkewT, Component
 from .spec import CompositeSpec
-from .estimators import MLE
+from .estimators import MLE, QMLE
 from .roles import Role
 # from ._kernels import get_routine
 
@@ -24,7 +24,9 @@ __all__: list[str] = [
     # "get_routine",
     "MLE",
     "Normal",
+    "QMLE",
     "Role",
+    "SkewT",
     "StudentT",
     "__version__",
 ]

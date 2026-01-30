@@ -3,14 +3,10 @@
 ## Version 0.1 (Target: Summer 2025)
 
 
-- [] Homemade solver
-- [] Fit on component
-- [] Finite diff verification of grad/hess functions
+- [x] Fit on component
+- [x] Finite diff verification of grad/hess functions
 - [] Formulaic x0 in vol class
-- [] Add exponential transformation kernels
-- []
-- []
-- []
+- [] ~Add exponential transformation kernels~
 
 <!-- - [x] **Basic GARCH Model Implementation**
 

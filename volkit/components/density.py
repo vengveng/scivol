@@ -36,9 +36,48 @@ class StudentT(Component):
     @property
     def n_params(self): return 1  # degrees of freedom
     
-    def default_start(self, data): return np.array([3.0])
-    def bounds(self): return [(2.1 + 1e-12, 100.0)]
-    def pack(self, params_dict): return np.array([params_dict['df']])
+    def default_start(self, data): return np.array([10.0])
+    def bounds(self): return [(2.01, 100.0)]
+    def pack(self, params_dict): return np.array([params_dict['nu']])
     def unpack(self, flat_params):
-        self.fitted_params = {'df': flat_params[0]} if len(flat_params) > 0 else {}
+        self.fitted_params = {'nu': flat_params[0]} if len(flat_params) > 0 else {}
+        return self.fitted_params
+
+
+class SkewT(Component):
+    """
+    Skewed Student-t distribution (Hansen, 1994 parameterization).
+    
+    Parameters
+    ----------
+    nu : float
+        Degrees of freedom (must be > 2 for finite variance)
+    lam : float
+        Skewness parameter (-1, 1), where lam=0 gives symmetric Student-t
+    """
+    role = Role.DENSITY
+    
+    def __init__(self):
+        self.fitted_params = None
+    
+    @property
+    def signature(self): return "SkewT"
+    
+    @property
+    def n_params(self): return 2  # degrees of freedom + skewness
+    
+    def default_start(self, data): 
+        return np.array([10.0, 0.0])  # nu=10, lambda=0 (symmetric)
+    
+    def bounds(self): 
+        return [(2.01, 100.0), (-0.99, 0.99)]  # nu bounds, lambda bounds
+    
+    def pack(self, params_dict): 
+        return np.array([params_dict['nu'], params_dict['lam']])
+    
+    def unpack(self, flat_params):
+        if len(flat_params) >= 2:
+            self.fitted_params = {'nu': flat_params[0], 'lam': flat_params[1]}
+        else:
+            self.fitted_params = {}
         return self.fitted_params

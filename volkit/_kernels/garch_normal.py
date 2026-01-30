@@ -1,6 +1,7 @@
 # volkit/_kernels/garch_normal.py
 from __future__ import annotations
 import re
+import time
 import numpy as np
 from numpy.typing import NDArray
 from typing import Dict, Tuple
@@ -14,6 +15,37 @@ from ..result import EstimationResult
 from .routine import Routine
 
 _CACHE: Dict[Tuple[int, int], Routine] = {}
+
+
+def _as_cptr(arr: NDArray[np.float64]) -> int:
+    """Convert numpy array to C pointer (as integer address)."""
+    return np.ascontiguousarray(arr, dtype=np.float64).ctypes.data
+
+
+def _compute_garch_variance(
+    theta: NDArray[np.float64],
+    resid2: NDArray[np.float64],
+    sigma2: NDArray[np.float64],
+    p: int,
+    q: int,
+) -> None:
+    """Compute GARCH variance using C extension (modifies sigma2 in-place)."""
+    n = len(resid2)
+    if p == 1 and q == 1:
+        _core._garch_variance_11(
+            _as_cptr(theta),
+            _as_cptr(resid2),
+            _as_cptr(sigma2),
+            n
+        )
+    else:
+        _core._garch_variance_pq(
+            _as_cptr(theta),
+            _as_cptr(resid2),
+            _as_cptr(sigma2),
+            n, p, q
+        )
+
 
 def _build(p: int, q: int) -> Routine:
     uid = f"GARCH({p},{q})+Normal"
@@ -34,11 +66,12 @@ def _build(p: int, q: int) -> Routine:
         c_hess = _core._garch_ll_hess_pq_normal
         special = False
 
-    def fit(resid: NDArray[np.float64], solver: str = "Nelder-Mead", log_mode: bool = False, **_) -> EstimationResult:
+    def fit(resid: NDArray[np.float64], solver: str = "trust", log_mode: bool = True, verbose: bool = False, **_) -> EstimationResult:
 
-        def _as_cptr(arr: NDArray[np.float64]) -> int:
-            return np.ascontiguousarray(arr, dtype=np.float64).ctypes.data
-        
+        from scipy.optimize import minimize
+        from scipy.optimize import LinearConstraint
+
+        t_start = time.perf_counter()
         
         n = resid.size
         sigma2 = np.zeros(len(resid), dtype=np.float64)
@@ -49,7 +82,6 @@ def _build(p: int, q: int) -> Routine:
         grad_vec = np.empty(1 + p + q, dtype=np.float64)
         hess_mat = np.empty(((1 + p + q), (1 + p + q)), dtype=np.float64)
 
-
         sigma2_c = _as_cptr(sigma2)
         resid2_c = _as_cptr(resid2)
 
@@ -58,19 +90,19 @@ def _build(p: int, q: int) -> Routine:
 
         def call_c_obj(theta: NDArray[np.float64]) -> float:
             if special:
-                return c_obj(_as_cptr(theta), resid2_c, sigma2_c, n) # type: ignore
+                return c_obj(_as_cptr(theta), resid2_c, sigma2_c, n)  # type: ignore
             else:
                 return c_obj(_as_cptr(theta), resid2_c, sigma2_c, n, p, q)
             
         def call_c_jac(theta: NDArray[np.float64]) -> None:
             if special:
-                c_jac(_as_cptr(theta), resid2_c, sigma2_c, grad_vec_c, n) # type: ignore
+                c_jac(_as_cptr(theta), resid2_c, sigma2_c, grad_vec_c, n)  # type: ignore
             else:
                 c_jac(_as_cptr(theta), resid2_c, sigma2_c, grad_vec_c, n, p, q)
         
         def call_c_hess(theta: NDArray[np.float64]) -> None:
             if special:
-                c_hess(_as_cptr(theta), resid2_c, sigma2_c, hess_mat_c, n) # type: ignore
+                c_hess(_as_cptr(theta), resid2_c, sigma2_c, hess_mat_c, n)  # type: ignore
             else:
                 c_hess(_as_cptr(theta), resid2_c, sigma2_c, hess_mat_c, n, p, q)
 
@@ -88,26 +120,24 @@ def _build(p: int, q: int) -> Routine:
                 return hess_mat.copy() / n
                 
 
-            from scipy.optimize import minimize
-            from scipy.optimize import LinearConstraint
             start  = np.concatenate((vol.default_start(resid) / 2,
                                     dens.default_start(resid)))
             bounds = vol.bounds()
 
-            A = np.array([[0] + [1]*p + [1]*q])
+            A  = np.array([[0] + [1]*p + [1]*q])
             lc = LinearConstraint(A, lb=0.0 + 1e-12, ub=1.0 - 1e-8)
 
-            if solver == "Nelder-Mead":
+            if solver.lower() == "nelder-mead":
                 start[0] = 0.025
                 res = minimize(obj, 
                             start, 
                             method="Nelder-Mead",
                             bounds=bounds, 
                             tol=1e-12,
-                            options={"maxfev": 50000, "disp": True}
+                            options={"maxfev": 50000, "disp": verbose}
                             )
                 
-            elif solver == "L-BFGS-B":
+            elif solver.lower() == "slsqp":
                 start[0] = 0.05
                 res = minimize(obj, 
                             start, 
@@ -116,10 +146,10 @@ def _build(p: int, q: int) -> Routine:
                             bounds=bounds, 
                             constraints=lc,
                             tol=1e-12,
-                            options={"disp": True, 'ftol': 1e-12, "maxiter": 5000}
+                            options={"disp": verbose, 'ftol': 1e-12, "maxiter": 5000}
                             )
                 
-            elif solver == "trust-constr":
+            elif solver.lower() in ("trust", "trust-constr"):
                 radius = max(1 / (10 ** (p + q + 1)), 1e-6)
                 res = minimize(obj, 
                             start, 
@@ -129,7 +159,7 @@ def _build(p: int, q: int) -> Routine:
                             bounds=bounds, 
                             constraints=lc,
                             tol=1e-12, 
-                            options={"disp": True, "xtol": 1e-6, "maxiter": 5000, 
+                            options={"disp": verbose, "xtol": 1e-6, "maxiter": 5000, 
                                         'initial_tr_radius': radius,}
                             )
             else:
@@ -137,65 +167,48 @@ def _build(p: int, q: int) -> Routine:
 
             res.fun = -(-res.fun * n + constant_ll)
             vol.unpack(res.x)
-            return EstimationResult(spec, res, resid)
+            
+            t_elapsed = time.perf_counter() - t_start
+            
+            # Compute final sigma2 for storage
+            _compute_garch_variance(res.x, resid2, sigma2, p, q)
+            
+            return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
         
         else:
             p_scaler = 2
             # ------------------------------------------------------------------
-            # log-mode helpers (work for any p, q)
+            # log-mode helpers
             # ------------------------------------------------------------------
-            # def pack(z: NDArray[np.float64]) -> NDArray[np.float64]:
-            #     """R^{1+p+q} -> original θ = [omega, alpha₁..alpha_p, beta₁..beta_q]"""
-            #     omega_tilde          = z[0]
-            #     z_alpha          = z[1 : 1+p]
-            #     betas            = z[1+p : 1+p+q]                 # unchanged
-
-            #     exp_a            = np.exp(z_alpha)
-            #     den_a            = 1.0 + exp_a.sum()
-            #     exp_b            = np.exp(betas)
-            #     den_b            = 1.0 + exp_b.sum()
-
-            #     alphas           = exp_a / den_a                  # Σalpha < 1
-            #     betas            = exp_b / den_b                  # Σbeta < 1
-            #     omega            = np.exp(omega_tilde)                # > 0
-
-            #     return np.r_[omega, alphas, betas]
             
             def pack(z: np.ndarray) -> np.ndarray:
                 """
                 Numerically safe pack() with log-sum-exp stabilization.
-                z: length 1+p+q
                 """
-                omega_t   = z[0]
-                zalpha    = z[1 : 1+p]
-                zbeta    = z[1+p : ]
+                omega_t = z[0]
+                zalpha  = z[1 : 1+p]
+                zbetas  = z[1+p : ]
 
                 lse_a = logsumexp(zalpha)
+                lse_b = logsumexp(zbetas)
+
                 logden_a = np.logaddexp(0.0, lse_a)  # type: ignore
-                alpha     = np.exp(zalpha - logden_a)  # type: ignore
-                # den_a = 1.0 + np.exp(lse_a) # type: ignore
-                # alpha     = np.exp(zalpha - lse_a) / den_a
-
-                # 2. same for beta
-                lse_b = logsumexp(zbeta)
                 logden_b = np.logaddexp(0.0, lse_b)  # type: ignore
-                beta     = np.exp(zbeta - logden_b)  # type: ignore
-                # den_b = 1.0 + np.exp(lse_b) # type: ignore
-                # beta     = np.exp(zbeta - lse_b) / den_b
 
-                # 3. safe omega
-                omega     = np.exp(np.clip(omega_t, -700.0, 700.0))
+                omega = np.exp(np.clip(omega_t, -700.0, 700.0))
+                alpha = np.exp(zalpha - logden_a)  # type: ignore
+                betas = np.exp(zbetas - logden_b)  # type: ignore
 
-                return np.r_[omega, alpha, beta]
+                return np.r_[omega, alpha, betas]
 
             def unpack(theta: NDArray[np.float64]) -> NDArray[np.float64]:
-                """original θ -> unconstrained z   (needed for default start)"""
-                omega, alphas, betas = theta[0], theta[1:1+p], theta[1+p:]
+                """original θ -> unconstrained z"""
+                omega, alpha, betas = theta[0], theta[1:1+p], theta[1+p:]
 
-                omega_tilde      = np.log(omega)
-                z_alpha          = np.log(alphas) - np.log1p(-alphas.sum())
-                z_betas          = np.log(betas) - np.log1p(-betas.sum())
-                return np.r_[omega_tilde, z_alpha, z_betas]
+                z_omega = np.log(omega)
+                z_alpha = np.log(alpha) - np.log1p(-alpha.sum())
+                z_betas = np.log(betas) - np.log1p(-betas.sum())
+                return np.r_[z_omega, z_alpha, z_betas]
 
             # ------------------------------------------------------------------
             # objective wrapper working in z-space
@@ -210,22 +223,22 @@ def _build(p: int, q: int) -> Routine:
                 call_c_jac(theta)
                 grad_vec_j = grad_vec.copy() * p_scaler
 
-                g_omega   = grad_vec_j[0]
-                g_alpha   = grad_vec_j[1 : 1+p]
-                g_beta   = grad_vec_j[1+p : 1+p+q]
+                g_omega = grad_vec_j[0]
+                g_alpha = grad_vec_j[1 : 1+p]
+                g_beta  = grad_vec_j[1+p : 1+p+q]
 
-                omega     = theta[0]
-                alpha     = theta[1 : 1+p]
-                beta     = theta[1+p : 1+p+q]
+                omega   = theta[0]
+                alpha   = theta[1 : 1+p]
+                beta    = theta[1+p : 1+p+q]
                 
-                out         = np.empty_like(z)
-                out[0]      = omega * g_omega
+                out     = np.empty_like(z)
+                out[0]  = omega * g_omega
 
-                salpha          = (alpha * g_alpha).sum()            # Σ alpha_k g_alphak
-                out[1 : 1+p] = alpha * (g_alpha - salpha)            # element-wise
-
+                salpha       = (alpha * g_alpha).sum()            # Σ alpha_k g_alphak
                 sbeta          = (beta * g_beta).sum()
+                out[1 : 1+p] = alpha * (g_alpha - salpha)            # element-wise
                 out[1+p : 1+p+q] = beta * (g_beta - sbeta)
+
 
                 return out
             
@@ -238,23 +251,23 @@ def _build(p: int, q: int) -> Routine:
                 gθ = grad_vec.copy() * p_scaler              # scale identically to jac
                 Hθ = hess_mat.copy() * p_scaler              # same scaling
 
-                omega            = θ[0]
-                alpha            = θ[1 : 1+p]
-                beta            = θ[1+p : 1+p+q]
+                omega = θ[0]
+                alpha = θ[1 : 1+p]
+                beta  = θ[1+p : 1+p+q]
 
-                K            = 1 + p + q
+                K       = 1 + p + q
                 # 2. build Jacobian  J  -----------------------------------------------
-                J            = np.zeros((K, K), dtype=np.float64)
+                J       = np.zeros((K, K), dtype=np.float64)
 
                 # omega row/col
-                J[0, 0]      = omega                                # ∂omega/∂omegã
+                J[0, 0] = omega                                # ∂omega/∂omegã
 
                 # alpha block
-                Jalpha           = np.diag(alpha) - np.outer(alpha, alpha)      # alpha_i(δ_ik-alpha_k)
+                Jalpha          = np.diag(alpha) - np.outer(alpha, alpha)      # alpha_i(δ_ik-alpha_k)
                 J[1:1+p, 1:1+p] = Jalpha
 
                 # beta block
-                Jbeta           = np.diag(beta) - np.outer(beta, beta)
+                Jbeta          = np.diag(beta) - np.outer(beta, beta)
                 J[1+p:, 1+p:]  = Jbeta
 
                 # 3. first term  H1 = Jᵀ Hθ J  ----------------------------------------
@@ -293,51 +306,44 @@ def _build(p: int, q: int) -> Routine:
                 # (cross-blocks are zero because alpha,beta depend on disjoint logits)
 
                 return H1 + H2
-                    
-            from scipy.optimize import minimize
-            from scipy.optimize import LinearConstraint
 
             θ0      = np.concatenate((vol.default_start(resid),     # omega, alpha
                                     dens.default_start(resid)))   # (empty here)
             z0      = unpack(θ0)
 
-            if solver == "Nelder-Mead":
-                res = minimize(obj_log, 
-                                z0, 
-                                method="Nelder-Mead",
-                                tol=1e-12,
-                                options={"disp": True, "maxiter": 5000}
-                                )
+            if solver.lower() == "nelder-mead":
+                solver_args = dict(
+                    fun=obj_log,
+                    x0=z0,
+                    method="Nelder-Mead",
+                    tol=1e-12,
+                    options={"disp": verbose, "maxiter": 5000})
 
-            elif solver == "L-BFGS-B":
-                # res = minimize(obj_log, 
-                #                 z0, 
-                #                 method="SLSQP",
-                #                 jac=jac_log, 
-                #                 tol=1e-12,
-                #                 options={"disp": True, 'ftol': 1e-12, "maxiter": 5000}
-                #                 )
-                res = minimize(lambda z: obj_log(z) / n, 
-                                z0, 
-                                method="SLSQP",
-                                jac=lambda z: jac_log(z) / n, 
-                                tol=1e-16,
-                                options={"disp": True, 'ftol': 1e-16, "maxiter": 5000,}
-                                )
+                res = minimize(**solver_args)
+
+            elif solver.lower() == "slsqp":
+                solver_args = dict(
+                    fun=lambda z: obj_log(z) / n,
+                    jac=lambda z: jac_log(z) / n,
+                    x0=z0,
+                    method="SLSQP",
+                    tol=1e-16,
+                    options={"disp": verbose, 'ftol': 1e-16, "maxiter": 5000},)
+                
+                res = minimize(**solver_args)
                 res.fun *= n
                 
-            elif solver == "trust-constr":
-                radius = max(1 / (10 ** (p + q + 1)), 1e-6)
-                # scaled objective, gradient, and Hessian
+            elif solver.lower() in ("trust", "trust-constr", "trust-exact"): 
+                solver_args = dict(
+                    fun=lambda z: obj_log(z) / n,
+                    jac=lambda z: jac_log(z) / n,
+                    hess=lambda z: hess_log(z) / n,
+                    x0=z0,
+                    method="trust-exact",
+                    tol=1e-12,
+                    options={"disp": verbose, "maxiter": 5000,})
                 
-                res = minimize(lambda z: obj_log(z) / n, 
-                                z0, 
-                                method="trust-exact",
-                                jac=lambda z: jac_log(z) / n, 
-                                hess=lambda z: hess_log(z) / n, 
-                                tol=1e-12, 
-                                options={"disp": True, "maxiter": 5000,}
-                                )
+                res = minimize(**solver_args)
                 res.fun *= n
                 
             else:
@@ -348,7 +354,13 @@ def _build(p: int, q: int) -> Routine:
             res.fun = -(-res.fun / p_scaler + constant_ll)
 
             vol.unpack(θ_hat)
-            return EstimationResult(spec, res, resid)
+            
+            t_elapsed = time.perf_counter() - t_start
+            
+            # Compute final sigma2 for storage
+            _compute_garch_variance(θ_hat, resid2, sigma2, p, q)
+            
+            return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
 
     return Routine(
         uid=uid,
