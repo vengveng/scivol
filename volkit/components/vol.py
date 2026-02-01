@@ -1,18 +1,99 @@
-# volkit/components/density.py
+# volkit/components/vol.py
 from __future__ import annotations
-from typing import Tuple, List
+from typing import Tuple, List, Union, Optional, Dict, Any
 from ..roles import Role
 import numpy as np
 from ..components.base import Component
 
 class GARCH(Component):
+    """
+    GARCH(p, q) volatility component.
+    
+    Parameters
+    ----------
+    p : int or str, optional
+        Number of ARCH lags. Use 'auto' for automatic selection.
+        If auto=True is set, this can be omitted (defaults to 1 for initial fit).
+    q : int or str, optional
+        Number of GARCH lags. Use 'auto' for automatic selection.
+        If auto=True is set, this can be omitted (defaults to 1 for initial fit).
+    auto : bool or dict, optional
+        Enable automatic lag order selection.
+        - True: Search p, q in range [1, 3]
+        - dict: Specify 'max_p' and/or 'max_q' to customize search range
+        
+    Examples
+    --------
+    >>> GARCH(1, 1)  # Standard GARCH(1,1)
+    >>> GARCH(auto=True)  # Auto-select p, q from [1,3]
+    >>> GARCH(p=1, q='auto')  # Fix p=1, auto-select q
+    >>> GARCH(auto={'max_p': 2, 'max_q': 2})  # Search p,q in [1,2]
+    """
     role = Role.VOLATILITY
     
-    def __init__(self, p: int, q: int):
-        self.p, self.q = p, q
+    def __init__(
+        self,
+        p: Union[int, str, None] = None,
+        q: Union[int, str, None] = None,
+        *,
+        auto: Union[bool, Dict[str, Any]] = False,
+    ):
+        # Parse auto configuration
+        self._auto_config = self._parse_auto(p, q, auto)
+        self._is_auto = self._auto_config is not None
+        
+        # Set concrete p, q (defaults for auto, or explicit values)
+        self.p = p if isinstance(p, int) else 1
+        self.q = q if isinstance(q, int) else 1
+        
         self.fitted_params = None
         self.fitted_values = None
         self._data = None
+    
+    def _parse_auto(
+        self,
+        p: Union[int, str, None],
+        q: Union[int, str, None],
+        auto: Union[bool, Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Parse auto configuration into search ranges.
+        
+        Returns None if no auto selection is needed.
+        Returns dict with 'p' and 'q' keys containing range objects.
+        """
+        if auto is True:
+            # Full auto: search both p and q in [1, 3]
+            return {'p': range(1, 4), 'q': range(1, 4)}
+        elif isinstance(auto, dict):
+            # Custom auto with max_p/max_q
+            max_p = auto.get('max_p', 3)
+            max_q = auto.get('max_q', 3)
+            p_range = [p] if isinstance(p, int) else range(1, max_p + 1)
+            q_range = [q] if isinstance(q, int) else range(1, max_q + 1)
+            return {'p': list(p_range), 'q': list(q_range)}
+        elif p == 'auto' or q == 'auto':
+            # Individual parameter auto
+            return {
+                'p': range(1, 4) if p == 'auto' else [p],
+                'q': range(1, 4) if q == 'auto' else [q],
+            }
+        return None
+    
+    def get_candidates(self) -> List[Tuple[int, int]]:
+        """
+        Get list of (p, q) candidates for auto selection.
+        
+        Returns list of tuples [(p1, q1), (p2, q2), ...]
+        """
+        if self._auto_config is None:
+            return [(self.p, self.q)]
+        
+        candidates = []
+        for p_val in self._auto_config['p']:
+            for q_val in self._auto_config['q']:
+                candidates.append((p_val, q_val))
+        return candidates
     
     @property
     def signature(self): return f"GARCH({self.p},{self.q})"

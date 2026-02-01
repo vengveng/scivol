@@ -155,6 +155,132 @@ def _numerical_hessian(
     return H
 
 
+def _compute_arma_garch_robust_se(
+    params: NDArray[np.float64],
+    y: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+    h0: float,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """
+    Compute OPG and Hessian for ARMA-GARCH+Normal using analytical per-observation
+    gradient computation.
+    
+    Parameters
+    ----------
+    params : array [c, phi..., theta..., omega, alpha..., beta...]
+    y : array of observations
+    p_ar, q_ma : ARMA orders
+    P_arch, Q_garch : GARCH orders
+    h0 : initial variance
+    
+    Returns (opg, hess) - both are averaged (divided by n_eff)
+    """
+    n = len(y)
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + P_arch + Q_garch
+    K = n_mean + n_vol
+    
+    # Only support ARMA(1,1)-GARCH(1,1) for now
+    if not (p_ar == 1 and q_ma == 1 and P_arch == 1 and Q_garch == 1):
+        raise NotImplementedError("ARMA-GARCH QMLE only supports ARMA(1,1)-GARCH(1,1) currently")
+    
+    # Parse parameters
+    c = params[0]
+    phi = params[1]
+    theta_ma = params[2]
+    omega = params[3]
+    alpha = params[4]
+    beta = params[5]
+    
+    # Compute residuals and variances
+    resid = np.zeros(n, dtype=np.float64)
+    sigma2 = np.zeros(n, dtype=np.float64)
+    resid[0] = 0.0
+    sigma2[0] = h0
+    
+    for t in range(1, n):
+        resid[t] = y[t] - c - phi * y[t-1] - theta_ma * resid[t-1]
+        sigma2[t] = omega + alpha * resid[t-1]**2 + beta * sigma2[t-1]
+    
+    # Compute per-observation gradients using analytical sensitivity recursion
+    n_eff = n - 1
+    
+    # Sensitivity arrays (for mean params only, not omega, alpha, beta)
+    de_prev = np.zeros(3, dtype=np.float64)  # [c, phi, theta]
+    dh_prev = np.zeros(6, dtype=np.float64)  # [c, phi, theta, omega, alpha, beta]
+    
+    # Accumulate OPG and Hessian
+    OPG = np.zeros((K, K), dtype=np.float64)
+    
+    for t in range(1, n):
+        e_prev = resid[t-1]
+        h_prev = sigma2[t-1]
+        e2_prev = e_prev ** 2
+        e_t = resid[t]
+        h_t = sigma2[t]
+        
+        # Residual sensitivities: de_t/d[c, phi, theta]
+        de_curr = np.zeros(3, dtype=np.float64)
+        de_curr[0] = -1.0 - theta_ma * de_prev[0]  # c
+        de_curr[1] = -y[t-1] - theta_ma * de_prev[1]  # phi
+        de_curr[2] = -e_prev - theta_ma * de_prev[2]  # theta
+        
+        # Squared residual sensitivities: d(e²)/d[c, phi, theta]
+        de2_prev = 2.0 * e_prev * de_prev
+        
+        # Variance sensitivities: dh_t/d[c, phi, theta, omega, alpha, beta]
+        dh_curr = np.zeros(6, dtype=np.float64)
+        dh_curr[0] = alpha * de2_prev[0] + beta * dh_prev[0]  # c
+        dh_curr[1] = alpha * de2_prev[1] + beta * dh_prev[1]  # phi
+        dh_curr[2] = alpha * de2_prev[2] + beta * dh_prev[2]  # theta
+        dh_curr[3] = 1.0 + beta * dh_prev[3]  # omega
+        dh_curr[4] = e2_prev + beta * dh_prev[4]  # alpha
+        dh_curr[5] = h_prev + beta * dh_prev[5]  # beta
+        
+        # Normal log-likelihood gradient contributions:
+        # ℓ_t = -0.5 * log(h_t) - 0.5 * e_t² / h_t
+        # ∂ℓ_t/∂e_t = -e_t / h_t
+        # ∂ℓ_t/∂h_t = -0.5/h_t + 0.5*e_t²/h_t²
+        # For NLL, negate:
+        dnll_de = e_t / h_t
+        dnll_dh = 0.5 / h_t - 0.5 * e_t**2 / h_t**2
+        
+        # Per-observation gradient (K-vector)
+        g_t = np.zeros(K, dtype=np.float64)
+        # Mean params (c, phi, theta)
+        for k in range(3):
+            g_t[k] = dnll_de * de_curr[k] + dnll_dh * dh_curr[k]
+        # Variance params (omega, alpha, beta)
+        for k in range(3):
+            g_t[3 + k] = dnll_dh * dh_curr[3 + k]
+        
+        # Accumulate OPG
+        OPG += np.outer(g_t, g_t)
+        
+        # Update for next iteration
+        de_prev = de_curr
+        dh_prev = dh_curr
+    
+    # Average
+    OPG /= n_eff
+    
+    # Compute Hessian numerically (as analytical Hessian is complex)
+    y_ptr = _as_cptr(y)
+    def nll_total(theta):
+        r = np.zeros(n, dtype=np.float64)
+        s = np.zeros(n, dtype=np.float64)
+        return _core._arma_garch_nll_11_normal(
+            _as_cptr(theta), y_ptr, _as_cptr(r), _as_cptr(s), h0, n
+        )
+    
+    hess = _numerical_hessian(nll_total, params, eps=1e-5)
+    
+    return OPG, hess
+
+
 def _fit_studentt_shape(
     resid: NDArray[np.float64],
     sigma2: NDArray[np.float64],
@@ -341,68 +467,104 @@ class QMLE(Estimator):
         if vol is None:
             raise ValueError("Spec must include a volatility component (e.g., GARCH)")
         
-        p, q = vol.p, vol.q
-        n_garch = 1 + p + q
+        P_arch, Q_garch = vol.p, vol.q
+        n_vol = 1 + P_arch + Q_garch
+        
+        # Check for MEAN component (ARMA)
+        mean = None
+        for comp in spec.components:
+            if comp.role == Role.MEAN:
+                mean = comp
+                break
+        
+        has_arma = (mean is not None)
+        if has_arma:
+            p_ar, q_ma = mean.p, mean.q
+            n_mean = 1 + p_ar + q_ma
+        else:
+            p_ar, q_ma = 0, 0
+            n_mean = 0
+        
+        n_core = n_mean + n_vol  # Core params before distribution shape params
         
         # =====================================================================
-        # Step 1: Fit GARCH with Normal likelihood
+        # Step 1: Fit with Normal likelihood
         # =====================================================================
         
-        # Build Normal spec for GARCH fitting
+        # Build Normal spec for fitting
         from ..components.density import Normal as NormalDensity
         from ..components.vol import GARCH
-        normal_spec = GARCH(p, q) + NormalDensity()
+        from ..components.mean import ARMA
+        
+        if has_arma:
+            normal_spec = ARMA(p_ar, q_ma) + GARCH(P_arch, Q_garch) + NormalDensity()
+        else:
+            normal_spec = GARCH(P_arch, Q_garch) + NormalDensity()
         
         # Get routine and fit
         routine = get_routine(str(normal_spec))
-        garch_result = routine.fit(data, solver=solver, verbose=verbose, **kwargs)
+        fit_result = routine.fit(data, solver=solver, verbose=verbose, **kwargs)
         
-        if garch_result.sigma2 is None:
+        if fit_result.sigma2 is None:
             warnings.warn("Cannot compute robust SEs: sigma2 not available from estimation")
-            self._last_result = garch_result
-            return garch_result
+            self._last_result = fit_result
+            return fit_result
         
-        sigma2 = garch_result.sigma2
-        garch_params = garch_result.params[:n_garch]
+        sigma2 = fit_result.sigma2
+        core_params = fit_result.params[:n_core]
         
         # =====================================================================
-        # Step 2: Compute robust SEs for GARCH parameters
+        # Step 2: Compute robust SEs for core parameters
         # =====================================================================
         
-        resid2 = data ** 2
+        n = len(data)
+        h0 = np.mean(data ** 2)
         
-        try:
-            opg_garch, hess_garch = _compute_robust_se_c(garch_params, resid2, sigma2, p, q)
-        except RuntimeError:
-            if p != 1 or q != 1:
-                warnings.warn(
-                    f"Robust SE computation only supports GARCH(1,1). "
-                    f"Got GARCH({p},{q}). Returning MLE standard errors only."
-                )
-                self._last_result = garch_result
-                return garch_result
-            
+        if has_arma:
+            # ARMA-GARCH: use specialized function
             try:
-                opg_garch, hess_garch = _compute_robust_se_python(garch_params, resid2, sigma2)
-            except Exception as e:
-                warnings.warn(f"Robust SE computation failed: {e}")
-                self._last_result = garch_result
-                return garch_result
+                opg_core, hess_core = _compute_arma_garch_robust_se(
+                    core_params, data, p_ar, q_ma, P_arch, Q_garch, h0
+                )
+            except (NotImplementedError, Exception) as e:
+                warnings.warn(f"ARMA-GARCH robust SE computation failed: {e}. "
+                             "Returning MLE standard errors only.")
+                self._last_result = fit_result
+                return fit_result
+        else:
+            # Pure GARCH: use existing implementation
+            resid2 = data ** 2
+            try:
+                opg_core, hess_core = _compute_robust_se_c(core_params, resid2, sigma2, P_arch, Q_garch)
+            except RuntimeError:
+                if P_arch != 1 or Q_garch != 1:
+                    warnings.warn(
+                        f"Robust SE computation only supports GARCH(1,1). "
+                        f"Got GARCH({P_arch},{Q_garch}). Returning MLE standard errors only."
+                    )
+                    self._last_result = fit_result
+                    return fit_result
+                
+                try:
+                    opg_core, hess_core = _compute_robust_se_python(core_params, resid2, sigma2)
+                except Exception as e:
+                    warnings.warn(f"Robust SE computation failed: {e}")
+                    self._last_result = fit_result
+                    return fit_result
         
-        # Compute GARCH covariance matrices
-        # Note: C function returns averaged H and OPG (divided by n)
+        # Compute covariance matrices for core parameters
+        # Note: Functions return averaged H and OPG (divided by n)
         # For averaged quantities:
         #   I = n * H_avg, so Cov = I^{-1} = H_avg^{-1} / n
         #   Cov_robust = H_avg^{-1} @ OPG_avg @ H_avg^{-1} / n
-        n = len(data)
         try:
-            hess_inv_garch = np.linalg.inv(hess_garch)
-            cov_mle_garch = hess_inv_garch / n
-            cov_robust_garch = hess_inv_garch @ opg_garch @ hess_inv_garch / n
+            hess_inv_core = np.linalg.inv(hess_core)
+            cov_mle_core = hess_inv_core / n
+            cov_robust_core = hess_inv_core @ opg_core @ hess_inv_core / n
         except np.linalg.LinAlgError:
-            warnings.warn("GARCH Hessian is singular, cannot compute covariance matrix")
-            self._last_result = garch_result
-            return garch_result
+            warnings.warn("Hessian is singular, cannot compute covariance matrix")
+            self._last_result = fit_result
+            return fit_result
         
         # =====================================================================
         # Step 3: Handle distribution-specific fitting
@@ -414,59 +576,65 @@ class QMLE(Estimator):
             
             enhanced_result = EstimationResult(
                 spec=normal_spec,
-                optimization_result=garch_result.optimization_result,
+                optimization_result=fit_result.optimization_result,
                 data=data,
                 sigma2=sigma2,
                 time_elapsed=t_elapsed,
-                hessian=hess_garch,
-                cov_matrix=cov_mle_garch,
-                opg=opg_garch,
-                cov_robust=cov_robust_garch,
+                hessian=hess_core,
+                cov_matrix=cov_mle_core,
+                opg=opg_core,
+                cov_robust=cov_robust_core,
                 method="QMLE",
             )
             
             # Update component fitted params
-            vol.unpack(garch_params)
+            if has_arma:
+                mean.unpack(core_params[:n_mean])
+                vol.unpack(core_params[n_mean:n_mean + n_vol])
+            else:
+                vol.unpack(core_params)
             
             self._last_result = enhanced_result
             
             if verbose:
-                self._print_robust_se(enhanced_result, p, q)
+                self._print_robust_se(enhanced_result, P_arch, Q_garch)
             
             return enhanced_result
         
         elif density_type == "studentt":
-            # Student-t: fit nu with GARCH fixed
-            nu_hat, nll_shape, hess_nu = _fit_studentt_shape(data, sigma2, verbose)
+            # Student-t: fit nu with GARCH/ARMA-GARCH fixed
+            # Compute residuals from estimated model
+            resid = fit_result.resid if hasattr(fit_result, 'resid') and fit_result.resid is not None else data
+            nu_hat, nll_shape, hess_nu = _fit_studentt_shape(resid, sigma2, verbose)
             
             # Build full covariance (block diagonal)
-            n_params = n_garch + 1  # GARCH + nu
-            full_params = np.concatenate([garch_params, [nu_hat]])
+            n_params = n_core + 1  # Core + nu
+            full_params = np.concatenate([core_params, [nu_hat]])
             
             # Block diagonal covariance
             cov_full_robust = np.zeros((n_params, n_params), dtype=np.float64)
-            cov_full_robust[:n_garch, :n_garch] = cov_robust_garch
+            cov_full_robust[:n_core, :n_core] = cov_robust_core
             
             try:
                 cov_nu = np.linalg.inv(hess_nu)
-                cov_full_robust[n_garch:, n_garch:] = cov_nu
+                cov_full_robust[n_core:, n_core:] = cov_nu
             except np.linalg.LinAlgError:
-                cov_full_robust[n_garch, n_garch] = np.nan
+                cov_full_robust[n_core, n_core] = np.nan
             
             # MLE covariance (for shape params)
             cov_full_mle = np.zeros((n_params, n_params), dtype=np.float64)
-            cov_full_mle[:n_garch, :n_garch] = cov_mle_garch
-            cov_full_mle[n_garch:, n_garch:] = cov_full_robust[n_garch:, n_garch:]
+            cov_full_mle[:n_core, :n_core] = cov_mle_core
+            cov_full_mle[n_core:, n_core:] = cov_full_robust[n_core:, n_core:]
             
             # Build full Hessian and OPG (block diagonal)
             hess_full = np.zeros((n_params, n_params), dtype=np.float64)
-            hess_full[:n_garch, :n_garch] = hess_garch
-            hess_full[n_garch:, n_garch:] = hess_nu
+            hess_full[:n_core, :n_core] = hess_core
+            hess_full[n_core:, n_core:] = hess_nu
             
             opg_full = np.zeros((n_params, n_params), dtype=np.float64)
-            opg_full[:n_garch, :n_garch] = opg_garch
+            opg_full[:n_core, :n_core] = opg_core
             # Shape params OPG not available, use Hessian as proxy
-            opg_full[n_garch:, n_garch:] = hess_nu
+            opg_full[n_core:, n_core:] = hess_nu
             
             t_elapsed = time.perf_counter() - t_start
             
@@ -480,7 +648,9 @@ class QMLE(Estimator):
                     self.message = "QMLE two-step estimation"
             
             # Compute total log-likelihood (Student-t with fitted params)
-            resid_ptr = _as_cptr(data)
+            # Use residuals from fitted model
+            resid_data = resid if 'resid' in dir() else data
+            resid2 = resid_data ** 2
             z2 = resid2 / np.maximum(sigma2, 1e-12)
             z2_ptr = _as_cptr(z2)
             sigma2_ptr = _as_cptr(sigma2)
@@ -502,48 +672,54 @@ class QMLE(Estimator):
             )
             
             # Update component fitted params
-            vol.unpack(garch_params)
+            if has_arma:
+                mean.unpack(core_params[:n_mean])
+                vol.unpack(core_params[n_mean:n_mean + n_vol])
+            else:
+                vol.unpack(core_params)
             if density is not None:
                 density.fitted_params = {'nu': nu_hat}
             
             self._last_result = enhanced_result
             
             if verbose:
-                self._print_robust_se_studentt(enhanced_result, p, q, nu_hat)
+                self._print_robust_se_studentt(enhanced_result, P_arch, Q_garch, nu_hat)
             
             return enhanced_result
         
         elif density_type == "skewt":
-            # Skew-t: fit [nu, lam] with GARCH fixed
-            nu_hat, lam_hat, nll_shape, hess_shape = _fit_skewt_shape(data, sigma2, verbose)
+            # Skew-t: fit [nu, lam] with GARCH/ARMA-GARCH fixed
+            # Compute residuals from estimated model
+            resid = fit_result.resid if hasattr(fit_result, 'resid') and fit_result.resid is not None else data
+            nu_hat, lam_hat, nll_shape, hess_shape = _fit_skewt_shape(resid, sigma2, verbose)
             
             # Build full covariance (block diagonal)
-            n_params = n_garch + 2  # GARCH + nu + lam
-            full_params = np.concatenate([garch_params, [nu_hat, lam_hat]])
+            n_params = n_core + 2  # Core + nu + lam
+            full_params = np.concatenate([core_params, [nu_hat, lam_hat]])
             
             # Block diagonal covariance
             cov_full_robust = np.zeros((n_params, n_params), dtype=np.float64)
-            cov_full_robust[:n_garch, :n_garch] = cov_robust_garch
+            cov_full_robust[:n_core, :n_core] = cov_robust_core
             
             try:
                 cov_shape = np.linalg.inv(hess_shape)
-                cov_full_robust[n_garch:, n_garch:] = cov_shape
+                cov_full_robust[n_core:, n_core:] = cov_shape
             except np.linalg.LinAlgError:
-                cov_full_robust[n_garch:, n_garch:] = np.nan
+                cov_full_robust[n_core:, n_core:] = np.nan
             
             # MLE covariance
             cov_full_mle = np.zeros((n_params, n_params), dtype=np.float64)
-            cov_full_mle[:n_garch, :n_garch] = cov_mle_garch
-            cov_full_mle[n_garch:, n_garch:] = cov_full_robust[n_garch:, n_garch:]
+            cov_full_mle[:n_core, :n_core] = cov_mle_core
+            cov_full_mle[n_core:, n_core:] = cov_full_robust[n_core:, n_core:]
             
             # Build full Hessian and OPG (block diagonal)
             hess_full = np.zeros((n_params, n_params), dtype=np.float64)
-            hess_full[:n_garch, :n_garch] = hess_garch
-            hess_full[n_garch:, n_garch:] = hess_shape
+            hess_full[:n_core, :n_core] = hess_core
+            hess_full[n_core:, n_core:] = hess_shape
             
             opg_full = np.zeros((n_params, n_params), dtype=np.float64)
-            opg_full[:n_garch, :n_garch] = opg_garch
-            opg_full[n_garch:, n_garch:] = hess_shape
+            opg_full[:n_core, :n_core] = opg_core
+            opg_full[n_core:, n_core:] = hess_shape
             
             t_elapsed = time.perf_counter() - t_start
             
@@ -557,7 +733,8 @@ class QMLE(Estimator):
                     self.message = "QMLE two-step estimation"
             
             # Compute total log-likelihood (Skew-t with fitted params)
-            resid_ptr = _as_cptr(data)
+            resid_data = resid if 'resid' in dir() else data
+            resid_ptr = _as_cptr(resid_data)
             sigma2_ptr = _as_cptr(sigma2)
             ll_skewt = _core._skewt_ll(resid_ptr, sigma2_ptr, len(data), nu_hat, lam_hat)
             
@@ -577,14 +754,18 @@ class QMLE(Estimator):
             )
             
             # Update component fitted params
-            vol.unpack(garch_params)
+            if has_arma:
+                mean.unpack(core_params[:n_mean])
+                vol.unpack(core_params[n_mean:n_mean + n_vol])
+            else:
+                vol.unpack(core_params)
             if density is not None:
                 density.fitted_params = {'nu': nu_hat, 'lam': lam_hat}
             
             self._last_result = enhanced_result
             
             if verbose:
-                self._print_robust_se_skewt(enhanced_result, p, q, nu_hat, lam_hat)
+                self._print_robust_se_skewt(enhanced_result, P_arch, Q_garch, nu_hat, lam_hat)
             
             return enhanced_result
         

@@ -230,6 +230,37 @@ def simulate_arma_garch_normal(
     return y
 
 
+def simulate_arma_normal(
+    n: int,
+    c: float,
+    phi: float,
+    theta: float,
+    sigma: float = 0.01,
+    seed: int = 42,
+) -> NDArray[np.float64]:
+    """
+    Simulate ARMA(1,1) with Normal innovations (constant variance).
+    
+    Model:
+        y_t = c + φ·y_{t-1} + θ·ε_{t-1} + ε_t
+        ε_t ~ N(0, σ²)
+    """
+    rng = np.random.default_rng(seed)
+    
+    y = np.zeros(n, dtype=np.float64)
+    eps = np.zeros(n, dtype=np.float64)
+    
+    # Initialize t=0
+    eps[0] = rng.standard_normal() * sigma
+    y[0] = c / (1 - phi) + eps[0]  # Approximate unconditional mean
+    
+    for t in range(1, n):
+        eps[t] = rng.standard_normal() * sigma
+        y[t] = c + phi * y[t-1] + theta * eps[t-1] + eps[t]
+    
+    return y
+
+
 # -----------------------------------------------------------------------------
 # Test Configuration
 # -----------------------------------------------------------------------------
@@ -273,6 +304,12 @@ TRUE_PARAMS = {
         "omega": 1e-6,
         "alpha": 0.08,
         "beta": 0.90,
+    },
+    "arma_normal": {
+        "c": 0.0001,
+        "phi": 0.5,   # Larger phi for better identification
+        "theta": -0.3,  # Larger theta for better identification
+        "sigma": 0.01,
     },
 }
 
@@ -486,12 +523,11 @@ class TestGARCHHigherOrder:
 
 
 # -----------------------------------------------------------------------------
-# Tests: ARMA-GARCH (placeholder - enable when API supports it)
+# Tests: ARMA-GARCH
 # -----------------------------------------------------------------------------
 
-@pytest.mark.skip(reason="ARMA-GARCH not yet integrated into volkit API")
-class TestARMAGARCH:
-    """Tests for ARMA(1,1)-GARCH(1,1) estimation."""
+class TestARMAGARCHNormal:
+    """Tests for ARMA(1,1)-GARCH(1,1) + Normal estimation."""
     
     @pytest.fixture
     def data(self) -> NDArray[np.float64]:
@@ -513,6 +549,174 @@ class TestARMAGARCH:
         assert len(result.params) == 6  # c, phi, theta, omega, alpha, beta
         assert np.all(np.isfinite(result.params))
         assert result.loglikelihood > 0
+    
+    def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
+        """Test that estimated parameters are close to true values."""
+        from volkit import ARMA, GARCH, Normal
+        
+        spec = ARMA(1, 1) + GARCH(1, 1) + Normal()
+        result = spec.fit(data)
+        
+        true = TRUE_PARAMS["arma_garch_normal"]
+        
+        # Check GARCH persistence
+        alpha_hat = result.params[4]
+        beta_hat = result.params[5]
+        
+        true_persistence = true["alpha"] + true["beta"]
+        est_persistence = alpha_hat + beta_hat
+        
+        assert abs(est_persistence - true_persistence) < 0.10, \
+            f"Persistence: true={true_persistence:.4f}, est={est_persistence:.4f}"
+
+
+class TestARMAGARCHStudentT:
+    """Tests for ARMA(1,1)-GARCH(1,1) + StudentT estimation."""
+    
+    @pytest.fixture
+    def data(self) -> NDArray[np.float64]:
+        """Generate ARMA(1,1)-GARCH(1,1) Student-t data."""
+        # Use same params but with Student-t innovations
+        p = TRUE_PARAMS["arma_garch_normal"]
+        # Simulate with Student-t-like heavier tails
+        np.random.seed(42)
+        n = N_OBS
+        rng = np.random.default_rng(42)
+        
+        y = np.zeros(n, dtype=np.float64)
+        eps = np.zeros(n, dtype=np.float64)
+        sigma2 = np.zeros(n, dtype=np.float64)
+        
+        sigma2_uncond = p["omega"] / (1 - p["alpha"] - p["beta"])
+        sigma2[0] = sigma2_uncond
+        
+        nu = 8.0
+        scale = np.sqrt((nu - 2) / nu)
+        z = rng.standard_t(nu, size=n) * scale
+        
+        eps[0] = np.sqrt(sigma2[0]) * z[0]
+        y[0] = p["c"] / (1 - p["phi"]) + eps[0]
+        
+        for t in range(1, n):
+            sigma2[t] = p["omega"] + p["alpha"] * eps[t-1]**2 + p["beta"] * sigma2[t-1]
+            eps[t] = np.sqrt(sigma2[t]) * z[t]
+            y[t] = p["c"] + p["phi"] * y[t-1] + p["theta"] * eps[t-1] + eps[t]
+        
+        return y
+    
+    def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
+        """Test that estimation runs and produces valid output."""
+        from volkit import ARMA, GARCH, StudentT
+        
+        spec = ARMA(1, 1) + GARCH(1, 1) + StudentT()
+        result = spec.fit(data)
+        
+        assert result.params is not None
+        assert len(result.params) == 7  # c, phi, theta, omega, alpha, beta, nu
+        assert np.all(np.isfinite(result.params))
+        assert result.loglikelihood > 0
+
+
+class TestARMAGARCHSkewT:
+    """Tests for ARMA(1,1)-GARCH(1,1) + SkewT estimation."""
+    
+    @pytest.fixture
+    def data(self) -> NDArray[np.float64]:
+        """Generate ARMA(1,1)-GARCH(1,1) Skew-t data."""
+        p = TRUE_PARAMS["arma_garch_normal"]
+        np.random.seed(42)
+        n = N_OBS
+        rng = np.random.default_rng(42)
+        
+        y = np.zeros(n, dtype=np.float64)
+        eps = np.zeros(n, dtype=np.float64)
+        sigma2 = np.zeros(n, dtype=np.float64)
+        
+        sigma2_uncond = p["omega"] / (1 - p["alpha"] - p["beta"])
+        sigma2[0] = sigma2_uncond
+        
+        nu = 8.0
+        lam = -0.15
+        t_scale = np.sqrt((nu - 2) / nu)
+        
+        for t in range(n):
+            if t > 0:
+                sigma2[t] = p["omega"] + p["alpha"] * eps[t-1]**2 + p["beta"] * sigma2[t-1]
+            
+            z_raw = rng.standard_t(nu) * t_scale
+            if z_raw < 0:
+                z = z_raw * (1 - lam)
+            else:
+                z = z_raw * (1 + lam)
+            
+            eps[t] = np.sqrt(sigma2[t]) * z
+            if t == 0:
+                y[t] = p["c"] / (1 - p["phi"]) + eps[t]
+            else:
+                y[t] = p["c"] + p["phi"] * y[t-1] + p["theta"] * eps[t-1] + eps[t]
+        
+        return y
+    
+    def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
+        """Test that estimation runs and produces valid output."""
+        from volkit import ARMA, GARCH, SkewT
+        
+        spec = ARMA(1, 1) + GARCH(1, 1) + SkewT()
+        result = spec.fit(data)
+        
+        assert result.params is not None
+        assert len(result.params) == 8  # c, phi, theta, omega, alpha, beta, nu, lam
+        assert np.all(np.isfinite(result.params))
+        assert result.loglikelihood > 0
+
+
+# -----------------------------------------------------------------------------
+# Tests: Pure ARMA (no volatility dynamics)
+# -----------------------------------------------------------------------------
+
+class TestARMANormal:
+    """Tests for ARMA(1,1) + Normal estimation (constant variance)."""
+    
+    @pytest.fixture
+    def data(self) -> NDArray[np.float64]:
+        """Generate ARMA(1,1) Normal data."""
+        p = TRUE_PARAMS["arma_normal"]
+        return simulate_arma_normal(
+            N_OBS, p["c"], p["phi"], p["theta"], p["sigma"]
+        )
+    
+    def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
+        """Test that estimation runs and produces valid output."""
+        from volkit import ARMA, Normal
+        
+        spec = ARMA(1, 1) + Normal()
+        result = spec.fit(data)
+        
+        assert result.params is not None
+        assert len(result.params) == 3  # c, phi, theta
+        assert np.all(np.isfinite(result.params))
+        assert result.loglikelihood > 0
+    
+    def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
+        """Test that estimated parameters are close to true values."""
+        from volkit import ARMA, Normal
+        
+        spec = ARMA(1, 1) + Normal()
+        result = spec.fit(data)
+        
+        true = TRUE_PARAMS["arma_normal"]
+        
+        c_hat = result.params[0]
+        phi_hat = result.params[1]
+        theta_hat = result.params[2]
+        
+        # Check AR coefficient (most identifiable)
+        assert abs(phi_hat - true["phi"]) / abs(true["phi"]) < PARAM_RTOL, \
+            f"Phi: true={true['phi']:.4f}, est={phi_hat:.4f}"
+        
+        # Check MA coefficient  
+        assert abs(theta_hat - true["theta"]) / abs(true["theta"]) < PARAM_RTOL, \
+            f"Theta: true={true['theta']:.4f}, est={theta_hat:.4f}"
 
 
 # -----------------------------------------------------------------------------

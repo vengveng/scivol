@@ -90,6 +90,26 @@ ARMA_GARCH_OPTIMIZER_CONFIGS = [
     {"solver": "nelder-mead", "log_mode": False},
     {"solver": "slsqp", "log_mode": False},
     {"solver": "trust", "log_mode": False},
+    {"solver": "nelder-mead", "log_mode": True},
+    {"solver": "slsqp", "log_mode": True},
+    {"solver": "trust", "log_mode": True},
+]
+
+# =====================
+# Pure ARMA configs (volkit)
+# =====================
+# ARMA uses Normal only (constant variance via concentrated likelihood)
+ARMA_DIST_SPECS = {
+    "normal": Normal(),
+}
+
+ARMA_OPTIMIZER_CONFIGS = [
+    {"solver": "nelder-mead", "log_mode": False},
+    {"solver": "slsqp", "log_mode": False},
+    {"solver": "trust", "log_mode": False},
+    {"solver": "nelder-mead", "log_mode": True},
+    {"solver": "slsqp", "log_mode": True},
+    {"solver": "trust", "log_mode": True},
 ]
 
 
@@ -327,6 +347,77 @@ def run_arma_garch_benchmark(
 
 
 # =============================================================================
+# PURE ARMA BENCHMARK (constant variance)
+# =============================================================================
+
+def run_arma_benchmark(
+    y: np.ndarray,
+    asset: str,
+    dist_name: str,
+    config: Dict[str, Any],
+) -> Optional[BenchmarkResult]:
+    """Run single ARMA(1,1) benchmark using volkit (constant variance)."""
+    try:
+        # Build model spec using volkit components
+        dist_component = ARMA_DIST_SPECS[dist_name]
+        spec = ARMA(1, 1) + dist_component
+        
+        # Fit using volkit
+        result = spec.fit(
+            y,
+            solver=config["solver"],
+            log_mode=config["log_mode"],
+            verbose=False,
+        )
+        
+        # Extract parameters: [c, phi, theta]
+        params = result.params
+        c = params[0]
+        phi = params[1]
+        theta = params[2]
+        
+        converged = result.success if hasattr(result, 'success') else True
+        n_iter = result.n_iter if hasattr(result, 'n_iter') else 0
+        time_elapsed = result.time_elapsed if hasattr(result, 'time_elapsed') else 0.0
+        
+        return BenchmarkResult(
+            model_type="arma",
+            asset=asset,
+            dist=dist_name,
+            solver=config["solver"],
+            log_mode=config["log_mode"],
+            converged=converged,
+            n_iter=n_iter,
+            time_elapsed=time_elapsed,
+            log_likelihood=result.loglikelihood,
+            c=c,
+            phi=phi,
+            theta=theta,
+            omega=None,
+            alpha=None,
+            beta=None,
+            persistence=None,
+            nu=None,
+            lam=None,
+            aic=result.aic if hasattr(result, 'aic') else None,
+            bic=result.bic if hasattr(result, 'bic') else None,
+        )
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        return BenchmarkResult(
+            model_type="arma",
+            asset=asset,
+            dist=dist_name,
+            solver=config["solver"],
+            log_mode=config["log_mode"],
+            converged=False,
+            n_iter=0,
+            time_elapsed=0.0,
+            log_likelihood=np.nan,
+        )
+
+
+# =============================================================================
 # MAIN BENCHMARK
 # =============================================================================
 
@@ -341,7 +432,8 @@ def run_full_benchmark(
     # Count total configs
     n_garch = len(ASSETS) * len(GARCH_DIST_SPECS) * len(GARCH_OPTIMIZER_CONFIGS)
     n_arma_garch = len(ASSETS) * len(ARMA_GARCH_DIST_SPECS) * len(ARMA_GARCH_OPTIMIZER_CONFIGS)
-    total_configs = n_garch + n_arma_garch
+    n_arma = len(ASSETS) * len(ARMA_DIST_SPECS) * len(ARMA_OPTIMIZER_CONFIGS)
+    total_configs = n_garch + n_arma_garch + n_arma
     current = 0
     
     # =====================
@@ -393,6 +485,34 @@ def run_full_benchmark(
                 print(f"[{current}/{total_configs}] ARMA-GARCH/{asset}/{dist_name}: {config_str}...", end=" ", flush=True)
                 
                 result = run_arma_garch_benchmark(y, asset, dist_name, config)
+                if result is not None:
+                    all_results.append(result)
+                    status = "✓" if result.converged else "✗"
+                    print(f"{status} {result.time_elapsed:.3f}s")
+                else:
+                    print("FAILED")
+    
+    # =====================
+    # 3. Pure ARMA(1,1) Models (volkit, constant variance)
+    # =====================
+    print("\n" + "=" * 60)
+    print("ARMA(1,1) Models (volkit, constant variance)")
+    print("=" * 60)
+    
+    for asset in ASSETS:
+        if asset not in log_returns:
+            continue
+            
+        y = np.ascontiguousarray(log_returns[asset], dtype=np.float64)
+        
+        for dist_name in ARMA_DIST_SPECS.keys():
+            for config in ARMA_OPTIMIZER_CONFIGS:
+                current += 1
+                mode = "log" if config["log_mode"] else "con"
+                config_str = f"{config['solver']}[{mode}]"
+                print(f"[{current}/{total_configs}] ARMA/{asset}/{dist_name}: {config_str}...", end=" ", flush=True)
+                
+                result = run_arma_benchmark(y, asset, dist_name, config)
                 if result is not None:
                     all_results.append(result)
                     status = "✓" if result.converged else "✗"
@@ -497,6 +617,69 @@ def print_summary(df: pd.DataFrame):
 
 
 # =============================================================================
+# MODEL SMOKE TESTS
+# =============================================================================
+
+def verify_all_models() -> Dict[str, bool]:
+    """
+    Quick smoke test that all model types run and converge with volkit API.
+    
+    Returns dict mapping model name -> converged
+    """
+    print("\n" + "=" * 60)
+    print("MODEL VERIFICATION (Smoke Tests)")
+    print("=" * 60)
+    
+    np.random.seed(42)
+    n = 1000
+    y = np.random.randn(n) * 0.01
+    
+    results = {}
+    
+    # Test each model type
+    model_specs = [
+        ("ARMA(1,1)+Normal", ARMA(1, 1) + Normal()),
+        ("GARCH(1,1)+Normal", GARCH(1, 1) + Normal()),
+        ("GARCH(1,1)+StudentT", GARCH(1, 1) + StudentT()),
+        ("GARCH(1,1)+SkewT", GARCH(1, 1) + SkewT()),
+        ("ARMA(1,1)+GARCH(1,1)+Normal", ARMA(1, 1) + GARCH(1, 1) + Normal()),
+        ("ARMA(1,1)+GARCH(1,1)+StudentT", ARMA(1, 1) + GARCH(1, 1) + StudentT()),
+        ("ARMA(1,1)+GARCH(1,1)+SkewT", ARMA(1, 1) + GARCH(1, 1) + SkewT()),
+    ]
+    
+    for name, spec in model_specs:
+        print(f"\n[{name}] ", end="")
+        try:
+            result = spec.fit(y, solver="slsqp", verbose=False)
+            success = result.success if hasattr(result, 'success') else True
+            ll = result.loglikelihood
+            
+            # Basic sanity checks
+            is_valid = (
+                success and
+                np.isfinite(ll) and
+                ll > 0 and  # LL should be positive for these small returns
+                np.all(np.isfinite(result.params))
+            )
+            
+            results[name] = is_valid
+            print(f"{'✓' if is_valid else '✗'} LL={ll:.2f}, success={success}")
+            
+            if not is_valid:
+                print(f"    Params: {result.params}")
+        except Exception as e:
+            results[name] = False
+            print(f"✗ Error: {e}")
+    
+    # Summary
+    n_pass = sum(results.values())
+    n_total = len(results)
+    print(f"\nModel verification: {n_pass}/{n_total} passed")
+    
+    return results
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -509,6 +692,9 @@ def main():
     print("Models: GARCH(1,1), ARMA(1,1)-GARCH(1,1)")
     print("=" * 80)
     print()
+    
+    # Verify all models run first
+    model_results = verify_all_models()
     
     # Load data
     log_returns, ar1_residuals = load_data()

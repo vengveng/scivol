@@ -74,6 +74,10 @@ def _build(p: int, q: int) -> Routine:
     n_garch = vol.n_params  # 1 + p + q
     n_dist = dens.n_params  # 2 (nu, lam)
     n_total = n_garch + n_dist
+    
+    # Note: GARCH(1,1)+SkewT has C gradient function but it needs verification
+    # against numerical derivatives before enabling. For now, use numerical gradients.
+    use_analytical_grad = False  # Disabled pending verification
 
     # -------------------------------------------------------------------------
     def fit(
@@ -94,6 +98,10 @@ def _build(p: int, q: int) -> Routine:
         sigma2[0] = np.mean(resid2)
         
         K = n_total  # Total number of parameters
+        
+        # Pre-allocate gradient buffer
+        grad_vec = np.zeros(K, dtype=np.float64)
+        grad_ptr = _as_cptr(grad_vec)
 
         def objective(theta: NDArray[np.float64]) -> float:
             """Negative log-likelihood for GARCH + Skew-t (C-accelerated)."""
@@ -110,6 +118,18 @@ def _build(p: int, q: int) -> Routine:
                 n, nu, lam
             )
             return -ll / n  # Return negative for minimization, scaled
+        
+        def gradient(theta: NDArray[np.float64]) -> NDArray[np.float64]:
+            """Analytical gradient for GARCH(1,1)+SkewT (C-accelerated)."""
+            # The C function expects: [omega, alpha, beta, nu, lam]
+            # and computes NLL and gradient in one call
+            _core._garch_ll_grad_11_skewt(
+                _as_cptr(theta),
+                _as_cptr(resid),
+                grad_ptr,
+                n
+            )
+            return grad_vec.copy() / n
 
         if not log_mode:
             # =========================================================
@@ -123,6 +143,9 @@ def _build(p: int, q: int) -> Routine:
             # Stationarity constraint: sum(alpha) + sum(beta) < 1
             A = np.array([[0] + [1] * p + [1] * q + [0, 0]])  # Skip omega and dist params
             lc = LinearConstraint(A, lb=1e-12, ub=1.0 - 1e-8)
+            
+            # Use analytical gradient if available (GARCH(1,1) only)
+            jac = gradient if use_analytical_grad else None
 
             if solver.lower() == "nelder-mead":
                 res = minimize(
@@ -138,6 +161,7 @@ def _build(p: int, q: int) -> Routine:
                     objective,
                     start,
                     method="SLSQP",
+                    jac=jac,
                     bounds=bounds,
                     constraints=lc,
                     tol=1e-12,
@@ -148,6 +172,7 @@ def _build(p: int, q: int) -> Routine:
                     objective,
                     start,
                     method="trust-constr",
+                    jac=jac,
                     bounds=bounds,
                     constraints=lc,
                     tol=1e-12,
@@ -196,21 +221,31 @@ def _build(p: int, q: int) -> Routine:
                 return objective(_theta_buf) * n * p_scaler  # Unscale then rescale
             
             def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                """
-                Numerical gradient in z-space via central finite differences.
-                (No analytical gradient available for SkewT likelihood)
-                """
-                eps = 1e-7
-                grad = np.zeros(K, dtype=np.float64)
+                """Gradient in z-space: ∇_z = Jᵀ ∇_θ."""
+                pack_garch_skewt_c(z, _theta_buf, p, q)
                 
-                for i in range(K):
-                    z_p = z.copy()
-                    z_m = z.copy()
-                    z_p[i] += eps
-                    z_m[i] -= eps
-                    grad[i] = (obj_log(z_p) - obj_log(z_m)) / (2 * eps)
-                
-                return grad
+                if use_analytical_grad:
+                    # Analytical gradient for GARCH(1,1)+SkewT
+                    _core._garch_ll_grad_11_skewt(
+                        _as_cptr(_theta_buf),
+                        _as_cptr(resid),
+                        grad_ptr,
+                        n
+                    )
+                    grad_theta = grad_vec * p_scaler
+                    # Transform using Jacobian
+                    J = jacobian_garch_skewt(_theta_buf, p, q)
+                    return J.T @ grad_theta
+                else:
+                    # Numerical gradient for general GARCH(p,q)+SkewT
+                    eps = 1e-7
+                    grad = np.zeros(K, dtype=np.float64)
+                    f0 = obj_log(z)
+                    for i in range(K):
+                        z_p = z.copy()
+                        z_p[i] += eps
+                        grad[i] = (obj_log(z_p) - f0) / eps
+                    return grad
             
             def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
                 """Numerical Hessian in z-space."""

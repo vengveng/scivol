@@ -304,6 +304,146 @@ double arma_garch_nll_11_studentt(
 }
 
 /* ========================================================================== */
+/* ARMA(1,1)-GARCH(1,1) + Student-t: NLL with Gradient                        */
+/* ========================================================================== */
+
+__attribute__((visibility("default"), hot))
+double arma_garch_nll_grad_11_studentt(
+    const double *params,    /* [c, phi, theta, omega, alpha, beta, nu] */
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *grad,      /* output: gradient (7 elements) */
+    double        h0,
+    size_t        n
+) {
+    double c       = params[0];
+    double phi     = params[1];
+    double theta   = params[2];
+    double omega   = params[3];
+    double alpha   = params[4];
+    double beta    = params[5];
+    double nu      = params[6];
+    
+    const size_t K = 7;
+    
+    /* Validity checks */
+    if (omega <= 0 || alpha < 0 || beta < 0 || alpha + beta >= 1.0 || nu <= NU_MIN) {
+        for (size_t k = 0; k < K; k++) grad[k] = 0.0;
+        return 1e10;
+    }
+    
+    size_t n_eff = n - 1;
+    
+    /* Precompute Student-t constants */
+    double inv_nu = 1.0 / nu;
+    double psi_half_nu_plus_1 = digamma_approx(0.5 * (nu + 1));
+    double psi_half_nu = digamma_approx(0.5 * nu);
+    double cnst = lgamma_approx(0.5 * (nu + 1)) - lgamma_approx(0.5 * nu) - 0.5 * log(nu * M_PI);
+    
+    /* Sensitivity arrays */
+    double de_prev[6] = {0};  /* ∂e_{t-1}/∂θ (only mean/variance params, not nu) */
+    double de_curr[6] = {0};
+    double dh_prev[6] = {0};
+    double dh_curr[6] = {0};
+    
+    /* Initialize t=0 */
+    resid[0] = 0.0;
+    sigma2[0] = h0;
+    
+    for (size_t k = 0; k < K; k++) {
+        grad[k] = 0.0;
+    }
+    
+    if (sigma2[0] < H_FLOOR) {
+        return 1e10;
+    }
+    
+    double sum_nll = 0.0;
+    
+    /* Forward recursion t=1,...,n-1 */
+    for (size_t t = 1; t < n; t++) {
+        double e_prev = resid[t - 1];
+        double h_prev = sigma2[t - 1];
+        double e2_prev = e_prev * e_prev;
+        
+        /* ARMA residual */
+        double e_t = y[t] - c - phi * y[t - 1] - theta * e_prev;
+        resid[t] = e_t;
+        
+        /* GARCH variance */
+        double h_t = omega + alpha * e2_prev + beta * h_prev;
+        sigma2[t] = h_t;
+        
+        if (h_t < H_FLOOR || !isfinite(h_t)) {
+            return 1e10;
+        }
+        
+        /* ∂e_t/∂θ sensitivities (for mean/variance params only) */
+        de_curr[0] = -1.0 - theta * de_prev[0];                    /* c */
+        de_curr[1] = -y[t - 1] - theta * de_prev[1];               /* phi */
+        de_curr[2] = -e_prev - theta * de_prev[2];                 /* theta */
+        de_curr[3] = -theta * de_prev[3];                          /* omega */
+        de_curr[4] = -theta * de_prev[4];                          /* alpha */
+        de_curr[5] = -theta * de_prev[5];                          /* beta */
+        
+        /* ∂(e²)/∂θ = 2·e·∂e/∂θ */
+        double de2_prev[6];
+        for (size_t k = 0; k < 6; k++) {
+            de2_prev[k] = 2.0 * e_prev * de_prev[k];
+        }
+        
+        /* ∂h_t/∂θ sensitivities */
+        dh_curr[0] = alpha * de2_prev[0] + beta * dh_prev[0];      /* c */
+        dh_curr[1] = alpha * de2_prev[1] + beta * dh_prev[1];      /* phi */
+        dh_curr[2] = alpha * de2_prev[2] + beta * dh_prev[2];      /* theta */
+        dh_curr[3] = 1.0 + alpha * de2_prev[3] + beta * dh_prev[3];/* omega */
+        dh_curr[4] = e2_prev + alpha * de2_prev[4] + beta * dh_prev[4]; /* alpha */
+        dh_curr[5] = h_prev + alpha * de2_prev[5] + beta * dh_prev[5];  /* beta */
+        
+        /* Student-t specific gradient terms */
+        double z2 = e_t * e_t / h_t;
+        double one_plus_z2_over_nu = 1.0 + z2 * inv_nu;
+        
+        /* ∂ℓ/∂e = (ν+1) * e / (h * (ν + e²/h)) = (ν+1) * z² / (e * (ν + z²)) */
+        /* For NLL: change sign */
+        double ell_e = (nu + 1) * e_t / (h_t * (nu + z2));
+        
+        /* ∂ℓ/∂h = 0.5/h - 0.5*(ν+1)*z² / (h*(ν+z²)) */
+        /* For NLL: change sign */
+        double ell_h = 0.5 / h_t - 0.5 * (nu + 1) * z2 / (h_t * (nu + z2));
+        
+        /* Gradient w.r.t. mean/variance params */
+        for (size_t k = 0; k < 6; k++) {
+            grad[k] += ell_e * de_curr[k] + ell_h * dh_curr[k];
+        }
+        
+        /* ∂NLL/∂ν = -0.5 ψ((ν+1)/2) + 0.5 ψ(ν/2) + 0.5/ν + 0.5 log(1+z²/ν) - 0.5(ν+1)*z²/(ν*(ν+z²)) */
+        double grad_nu = -0.5 * psi_half_nu_plus_1 + 0.5 * psi_half_nu 
+                        + 0.5 * inv_nu 
+                        + 0.5 * log(one_plus_z2_over_nu)
+                        - 0.5 * (nu + 1) * z2 * inv_nu / (nu + z2);
+        grad[6] += grad_nu;
+        
+        sum_nll += studentt_nll_var(e_t, h_t, nu);
+        
+        /* Shift sensitivities */
+        for (size_t k = 0; k < 6; k++) {
+            de_prev[k] = de_curr[k];
+            dh_prev[k] = dh_curr[k];
+        }
+    }
+    
+    /* Scale by 1/(n-1) */
+    double scale = 1.0 / (double)n_eff;
+    for (size_t k = 0; k < K; k++) {
+        grad[k] *= scale;
+    }
+    
+    return (sum_nll - n_eff * cnst) * scale;
+}
+
+/* ========================================================================== */
 /* ARMA(1,1)-GARCH(1,1) + Skew-t: NLL only                                    */
 /* ========================================================================== */
 

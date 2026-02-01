@@ -272,6 +272,15 @@ double arma_garch_nll_11_studentt(
     double        h0,
     size_t        n);
 
+double arma_garch_nll_grad_11_studentt(
+    const double *params,    /* [c, phi, theta, omega, alpha, beta, nu] */
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *grad,      /* output: gradient (7 elements) */
+    double        h0,
+    size_t        n);
+
 double arma_garch_nll_11_skewt(
     const double *params,    /* [c, phi, theta, omega, alpha, beta, nu, lam] */
     const double *y,
@@ -319,6 +328,61 @@ double arma_garch_nll_pq_skewt(
     size_t        q_ma,
     size_t        P_arch,
     size_t        Q_garch);
+
+/* ========================================================================== */
+/* Pure ARMA (no volatility dynamics) - concentrated likelihood               */
+/* ========================================================================== */
+
+/* ARMA(1,1) + Normal */
+double arma_nll_11_normal(
+    const double *params,    /* [c, phi, theta] */
+    const double *y,
+    double       *resid,
+    size_t        n);
+
+double arma_nll_grad_11_normal(
+    const double *params,    /* [c, phi, theta] */
+    const double *y,
+    double       *resid,
+    double       *grad,      /* output: 3 elements */
+    size_t        n);
+
+void arma_hess_11_normal(
+    const double *params,    /* [c, phi, theta] */
+    const double *y,
+    double       *resid,
+    double       *hess,      /* output: 3x3 Hessian */
+    size_t        n);
+
+/* ARMA(p,q) + Normal */
+double arma_nll_pq_normal(
+    const double *params,    /* [c, phi_1..phi_p, theta_1..theta_q] */
+    const double *y,
+    double       *resid,
+    double       *e0,        /* initial residuals (q elements) */
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma);
+
+double arma_nll_grad_pq_normal(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *e0,
+    double       *grad,      /* output: 1 + p + q elements */
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma);
+
+void arma_hess_pq_normal(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *e0,
+    double       *hess,      /* output: (1+p+q) x (1+p+q) Hessian */
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma);
 
 #ifdef __cplusplus
 }

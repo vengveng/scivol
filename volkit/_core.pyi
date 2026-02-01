@@ -443,6 +443,18 @@ def _arma_garch_nll_11_studentt(
     """ARMA(1,1)-GARCH(1,1) NLL with Student-t innovations."""
     ...
 
+def _arma_garch_nll_grad_11_studentt(
+    params_ptr: _IntPtr,   # [c, phi, theta, omega, alpha, beta, nu]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,     # Output: gradient (7 elements, modified in-place)
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-GARCH(1,1) NLL with analytical gradient for Student-t innovations."""
+    ...
+
 def _arma_garch_nll_11_skewt(
     params_ptr: _IntPtr,   # [c, phi, theta, omega, alpha, beta, nu, lam]
     y_ptr: _IntPtr,
@@ -500,6 +512,77 @@ def _arma_garch_nll_pq_skewt(
     Q_garch: _Size,
 ) -> float:
     """General ARMA(p,q)-GARCH(P,Q) NLL with Skew-t innovations."""
+    ...
+
+# =============================================================================
+# Pure ARMA (no volatility dynamics) - Concentrated Likelihood
+# =============================================================================
+
+def _arma_nll_11_normal(
+    params_ptr: _IntPtr,   # [c, phi, theta]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,    # Output: residuals
+    n: _Size,
+) -> float:
+    """ARMA(1,1) NLL with Normal (concentrated likelihood)."""
+    ...
+
+def _arma_nll_grad_11_normal(
+    params_ptr: _IntPtr,   # [c, phi, theta]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,    # Output: residuals
+    grad_ptr: _IntPtr,     # Output: gradient (3 elements)
+    n: _Size,
+) -> float:
+    """ARMA(1,1) NLL with gradient (concentrated likelihood)."""
+    ...
+
+def _arma_hess_11_normal(
+    params_ptr: _IntPtr,   # [c, phi, theta]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,    # Working array
+    hess_ptr: _IntPtr,     # Output: 3x3 Hessian
+    n: _Size,
+) -> None:
+    """ARMA(1,1) Hessian (expected, concentrated likelihood)."""
+    ...
+
+def _arma_nll_pq_normal(
+    params_ptr: _IntPtr,   # [c, phi_1..phi_p, theta_1..theta_q]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,    # Output: residuals
+    e0_ptr: _IntPtr,       # Initial residuals (q elements)
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+) -> float:
+    """ARMA(p,q) NLL with Normal (concentrated likelihood)."""
+    ...
+
+def _arma_nll_grad_pq_normal(
+    params_ptr: _IntPtr,   # [c, phi_1..phi_p, theta_1..theta_q]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,    # Output: residuals
+    e0_ptr: _IntPtr,       # Initial residuals
+    grad_ptr: _IntPtr,     # Output: gradient (1+p+q elements)
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+) -> float:
+    """ARMA(p,q) NLL with gradient (concentrated likelihood)."""
+    ...
+
+def _arma_hess_pq_normal(
+    params_ptr: _IntPtr,   # [c, phi_1..phi_p, theta_1..theta_q]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,    # Working array
+    e0_ptr: _IntPtr,       # Initial residuals
+    hess_ptr: _IntPtr,     # Output: (1+p+q)x(1+p+q) Hessian
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+) -> None:
+    """ARMA(p,q) Hessian (expected, concentrated likelihood)."""
     ...
 
 # Nothing is meant for star-import; keep top-level clean

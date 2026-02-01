@@ -45,6 +45,9 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
     
     def fit(y: NDArray[np.float64], solver: str = "slsqp", log_mode: bool = False, verbose: bool = False, **_) -> EstimationResult:
         from scipy.optimize import minimize, LinearConstraint
+        from .transforms import (
+            pack_arma_garch_skewt, unpack_arma_garch_skewt, jacobian_arma_garch_skewt
+        )
         
         t_start = time.perf_counter()
         
@@ -59,58 +62,42 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
         resid_ptr = _as_cptr(resid)
         sigma2_ptr = _as_cptr(sigma2)
         
+        # Pre-allocate for general case
+        e0 = np.zeros(max(q_ma, 1), dtype=np.float64)
+        h0_arr = np.full(max(Q_garch, 1), h0, dtype=np.float64)
+        e0_ptr = _as_cptr(e0)
+        h0_ptr = _as_cptr(h0_arr)
+        
+        # Build objective function
         if use_specialized:
-            # ARMA(1,1)+GARCH(1,1)+SkewT
-            # Params: [c, phi, theta, omega, alpha, beta, nu, lam]
-            
-            def objective(params: NDArray[np.float64]) -> float:
-                nll = _core._arma_garch_nll_11_skewt(
-                    _as_cptr(params),
-                    y_ptr,
-                    resid_ptr,
-                    sigma2_ptr,
-                    h0,
-                    n
+            def call_nll(params: NDArray[np.float64]) -> float:
+                return _core._arma_garch_nll_11_skewt(
+                    _as_cptr(params), y_ptr, resid_ptr, sigma2_ptr, h0, n
                 )
-                return nll / n
-            
-            start = np.array([
-                np.mean(y), 0.0, 0.0,  # c, phi, theta
-                h0 * 0.1, 0.05, 0.90,  # omega, alpha, beta
-                8.0, 0.0,              # nu, lam
-            ], dtype=np.float64)
-            
-            bounds = [
-                (-1.0, 1.0), (-0.99, 0.99), (-0.99, 0.99),
-                (1e-10, None), (1e-10, 0.999), (1e-10, 0.999),
-                (2.1, 100.0), (-0.99, 0.99),
-            ]
-            
-            A = np.array([[0, 0, 0, 0, 1, 1, 0, 0]])
-            lc = LinearConstraint(A, lb=0.0, ub=0.9999)
-            
         else:
-            # General case
-            e0 = np.zeros(max(q_ma, 1), dtype=np.float64)
-            h0_arr = np.full(max(Q_garch, 1), h0, dtype=np.float64)
-            
-            def objective(params: NDArray[np.float64]) -> float:
-                nll = _core._arma_garch_nll_pq_skewt(
-                    _as_cptr(params),
-                    y_ptr,
-                    resid_ptr,
-                    sigma2_ptr,
-                    _as_cptr(e0),
-                    _as_cptr(h0_arr),
-                    n, p_ar, q_ma, P_arch, Q_garch
+            def call_nll(params: NDArray[np.float64]) -> float:
+                return _core._arma_garch_nll_pq_skewt(
+                    _as_cptr(params), y_ptr, resid_ptr, sigma2_ptr,
+                    e0_ptr, h0_ptr, n, p_ar, q_ma, P_arch, Q_garch
                 )
-                return nll / n
-            
-            start = np.concatenate([
-                [np.mean(y)], [0.0] * p_ar, [0.0] * q_ma,
-                [h0 * 0.1], [0.05 / P_arch] * P_arch, [0.90 / Q_garch] * Q_garch,
-                [8.0], [0.0],
-            ])
+        
+        # Default start
+        start = np.concatenate([
+            [np.mean(y)],
+            [0.0] * p_ar,
+            [0.0] * q_ma,
+            [h0 * 0.1],
+            [0.05 / P_arch] * P_arch,
+            [0.90 / Q_garch] * Q_garch,
+            [8.0], [0.0],
+        ])
+        
+        if not log_mode:
+            # =========================================================
+            # CONSTRAINED OPTIMIZATION
+            # =========================================================
+            def objective(params: NDArray[np.float64]) -> float:
+                return call_nll(params) / n
             
             bounds = (
                 [(-1.0, 1.0)] + [(-0.99, 0.99)] * p_ar + [(-0.99, 0.99)] * q_ma +
@@ -122,33 +109,98 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
             A[0, n_mean:n_mean + P_arch] = 1
             A[0, n_mean + P_arch:n_mean + P_arch + Q_garch] = 1
             lc = LinearConstraint(A, lb=0.0, ub=0.9999)
-        
-        # Optimize
-        if solver.lower() == "nelder-mead":
-            res = minimize(objective, start, method="Nelder-Mead", bounds=bounds,
-                          options={"maxfev": 50000, "disp": verbose, "fatol": 1e-10})
-        elif solver.lower() == "slsqp":
-            res = minimize(objective, start, method="SLSQP", bounds=bounds,
-                          constraints=lc, options={"disp": verbose, "maxiter": 5000, "ftol": 1e-12})
-        elif solver.lower() in ["trust", "trust-constr"]:
-            res = minimize(objective, start, method="trust-constr", bounds=bounds,
-                          constraints=lc, options={"disp": verbose, "maxiter": 5000})
+            
+            if solver.lower() == "nelder-mead":
+                res = minimize(objective, start, method="Nelder-Mead", bounds=bounds,
+                              options={"maxfev": 50000, "disp": verbose, "fatol": 1e-10})
+            elif solver.lower() == "slsqp":
+                res = minimize(objective, start, method="SLSQP", bounds=bounds,
+                              constraints=lc, options={"disp": verbose, "maxiter": 5000, "ftol": 1e-12})
+            elif solver.lower() in ["trust", "trust-constr"]:
+                res = minimize(objective, start, method="trust-constr", bounds=bounds,
+                              constraints=lc, options={"disp": verbose, "maxiter": 5000})
+            else:
+                raise ValueError(f"Unknown solver: {solver}")
+            
+            theta_hat = res.x
+            nll_final = res.fun * n
+            
         else:
-            raise ValueError(f"Unknown solver: {solver}")
+            # =========================================================
+            # LOG MODE: Unconstrained optimization
+            # =========================================================
+            K = n_params
+            p_scaler = 2
+            
+            def pack(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                return pack_arma_garch_skewt(z, p_ar, q_ma, P_arch, Q_garch)
+            
+            def unpack(theta: NDArray[np.float64]) -> NDArray[np.float64]:
+                return unpack_arma_garch_skewt(theta, p_ar, q_ma, P_arch, Q_garch)
+            
+            def obj_log(z: NDArray[np.float64]) -> float:
+                theta = pack(z)
+                return call_nll(theta) * p_scaler
+            
+            def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                # Numerical gradient
+                eps = 1e-7
+                grad = np.zeros(K, dtype=np.float64)
+                f0 = obj_log(z)
+                for i in range(K):
+                    z_p = z.copy()
+                    z_p[i] += eps
+                    grad[i] = (obj_log(z_p) - f0) / eps
+                return grad
+            
+            def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                eps = 1e-5
+                H = np.zeros((K, K), dtype=np.float64)
+                for i in range(K):
+                    for j in range(K):
+                        z_pp = z.copy(); z_pp[i] += eps; z_pp[j] += eps
+                        z_pm = z.copy(); z_pm[i] += eps; z_pm[j] -= eps
+                        z_mp = z.copy(); z_mp[i] -= eps; z_mp[j] += eps
+                        z_mm = z.copy(); z_mm[i] -= eps; z_mm[j] -= eps
+                        H[i, j] = (obj_log(z_pp) - obj_log(z_pm) - obj_log(z_mp) + obj_log(z_mm)) / (4 * eps * eps)
+                return H
+            
+            z0 = unpack(start)
+            
+            if solver.lower() == "nelder-mead":
+                res = minimize(obj_log, z0, method="Nelder-Mead", tol=1e-12,
+                              options={"disp": verbose, "maxiter": 5000, "maxfev": 50000,
+                                      "xatol": 1e-8, "fatol": 1e-12, "adaptive": True})
+            elif solver.lower() == "slsqp":
+                res = minimize(lambda z: obj_log(z) / n, z0, method="SLSQP",
+                              jac=lambda z: jac_log(z) / n, tol=1e-16,
+                              options={"disp": verbose, "ftol": 1e-16, "maxiter": 5000})
+                res.fun *= n
+            elif solver.lower() in ["trust", "trust-constr", "trust-exact"]:
+                res = minimize(lambda z: obj_log(z) / n, z0, method="trust-exact",
+                              jac=lambda z: jac_log(z) / n, hess=lambda z: hess_log(z) / n,
+                              tol=1e-12, options={"disp": verbose, "maxiter": 5000})
+                res.fun *= n
+            else:
+                raise ValueError(f"Unknown solver: {solver}")
+            
+            theta_hat = pack(res.x)
+            nll_final = res.fun / p_scaler
         
         t_elapsed = time.perf_counter() - t_start
-        _ = objective(res.x)
+        _ = call_nll(theta_hat)
         
-        # Create a modified optimization result with un-scaled objective
         class ScaledResult:
-            def __init__(self, opt_res, n):
-                self.x = opt_res.x
-                self.fun = opt_res.fun * n  # Undo per-observation scaling
-                self.success = opt_res.success
-                self.nit = getattr(opt_res, 'nit', getattr(opt_res, 'nfev', 0))
-                self.message = getattr(opt_res, 'message', '')
+            def __init__(self, x, fun, success, nit, message):
+                self.x = x
+                self.fun = fun
+                self.success = success
+                self.nit = nit
+                self.message = message
         
-        scaled_res = ScaledResult(res, n)
+        scaled_res = ScaledResult(theta_hat, nll_final, res.success,
+                                   getattr(res, 'nit', getattr(res, 'nfev', 0)),
+                                   getattr(res, 'message', ''))
         
         return EstimationResult(
             spec=spec,

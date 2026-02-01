@@ -432,3 +432,223 @@ def transform_grad_c(
             raise ValueError(f"Unknown distribution: {dist}")
     else:
         _core._transform_grad_pq(_as_cptr(grad_theta), _as_cptr(J), _as_cptr(grad_z_out), K)
+
+
+# =============================================================================
+# ARMA-GARCH PARAMETER TRANSFORMS
+# =============================================================================
+
+def pack_arma_garch_normal(
+    z: NDArray[np.float64], 
+    p_ar: int, 
+    q_ma: int, 
+    P_arch: int, 
+    Q_garch: int
+) -> NDArray[np.float64]:
+    """
+    Transform unconstrained z to constrained θ for ARMA(p,q)+GARCH(P,Q)+Normal.
+    
+    z = [z_c, z_phi_1..p, z_theta_1..q, z_omega, z_alpha_1..P, z_beta_1..Q]
+    θ = [c, phi_1..p, theta_1..q, omega, alpha_1..P, beta_1..Q]
+    
+    Transformations:
+        c = z_c (unbounded)
+        phi_i = 0.99 * tanh(z_phi_i)  ensures |phi_i| < 0.99
+        theta_j = 0.99 * tanh(z_theta_j)  ensures |theta_j| < 0.99
+        omega = exp(z_omega)  ensures omega > 0
+        (alpha, beta, r) = softmax([z_alpha, z_beta, 0])  ensures α+β < 1
+    """
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + P_arch + Q_garch
+    
+    # Mean parameters
+    c = z[0]  # Unbounded
+    phi = 0.99 * np.tanh(z[1:1+p_ar]) if p_ar > 0 else np.array([])
+    theta = 0.99 * np.tanh(z[1+p_ar:n_mean]) if q_ma > 0 else np.array([])
+    
+    # GARCH parameters (same as pure GARCH)
+    z_garch = z[n_mean:n_mean+n_vol]
+    theta_garch = pack_garch(z_garch, P_arch, Q_garch)
+    
+    return np.concatenate([[c], phi, theta, theta_garch])
+
+
+def unpack_arma_garch_normal(
+    theta: NDArray[np.float64], 
+    p_ar: int, 
+    q_ma: int, 
+    P_arch: int, 
+    Q_garch: int
+) -> NDArray[np.float64]:
+    """Transform constrained θ to unconstrained z for ARMA+GARCH+Normal."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + P_arch + Q_garch
+    
+    # Mean parameters
+    z_c = theta[0]
+    z_phi = np.arctanh(np.clip(theta[1:1+p_ar] / 0.99, -0.999, 0.999)) if p_ar > 0 else np.array([])
+    z_theta = np.arctanh(np.clip(theta[1+p_ar:n_mean] / 0.99, -0.999, 0.999)) if q_ma > 0 else np.array([])
+    
+    # GARCH parameters
+    z_garch = unpack_garch(theta[n_mean:n_mean+n_vol], P_arch, Q_garch)
+    
+    return np.concatenate([[z_c], z_phi, z_theta, z_garch])
+
+
+def jacobian_arma_garch_normal(
+    theta: NDArray[np.float64], 
+    p_ar: int, 
+    q_ma: int, 
+    P_arch: int, 
+    Q_garch: int
+) -> NDArray[np.float64]:
+    """Compute Jacobian J = ∂θ/∂z for ARMA+GARCH+Normal."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + P_arch + Q_garch
+    K = n_mean + n_vol
+    
+    J = np.zeros((K, K), dtype=np.float64)
+    
+    # c: identity
+    J[0, 0] = 1.0
+    
+    # phi: 0.99 * tanh(z) -> ∂phi/∂z = 0.99 * (1 - tanh²(z)) = 0.99 * (1 - (phi/0.99)²)
+    for i in range(p_ar):
+        phi_i = theta[1 + i]
+        J[1 + i, 1 + i] = 0.99 * (1.0 - (phi_i / 0.99) ** 2)
+    
+    # theta: same as phi
+    for j in range(q_ma):
+        theta_j = theta[1 + p_ar + j]
+        J[1 + p_ar + j, 1 + p_ar + j] = 0.99 * (1.0 - (theta_j / 0.99) ** 2)
+    
+    # GARCH block
+    J_garch = jacobian_garch(theta[n_mean:n_mean+n_vol], P_arch, Q_garch)
+    J[n_mean:, n_mean:] = J_garch
+    
+    return J
+
+
+def pack_arma_garch_studentt(
+    z: NDArray[np.float64], 
+    p_ar: int, 
+    q_ma: int, 
+    P_arch: int, 
+    Q_garch: int
+) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained θ for ARMA+GARCH+StudentT."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + P_arch + Q_garch
+    
+    # ARMA+GARCH params
+    theta_base = pack_arma_garch_normal(z[:n_mean+n_vol], p_ar, q_ma, P_arch, Q_garch)
+    
+    # nu parameter
+    nu = pack_studentt(z[n_mean + n_vol])
+    
+    return np.concatenate([theta_base, [nu]])
+
+
+def unpack_arma_garch_studentt(
+    theta: NDArray[np.float64], 
+    p_ar: int, 
+    q_ma: int, 
+    P_arch: int, 
+    Q_garch: int
+) -> NDArray[np.float64]:
+    """Transform constrained θ to unconstrained z for ARMA+GARCH+StudentT."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + P_arch + Q_garch
+    
+    z_base = unpack_arma_garch_normal(theta[:n_mean+n_vol], p_ar, q_ma, P_arch, Q_garch)
+    z_nu = unpack_studentt(theta[n_mean + n_vol])
+    
+    return np.concatenate([z_base, [z_nu]])
+
+
+def jacobian_arma_garch_studentt(
+    theta: NDArray[np.float64], 
+    p_ar: int, 
+    q_ma: int, 
+    P_arch: int, 
+    Q_garch: int
+) -> NDArray[np.float64]:
+    """Compute Jacobian for ARMA+GARCH+StudentT."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + P_arch + Q_garch
+    K = n_mean + n_vol + 1
+    
+    J = np.zeros((K, K), dtype=np.float64)
+    
+    # ARMA+GARCH block
+    J[:n_mean+n_vol, :n_mean+n_vol] = jacobian_arma_garch_normal(
+        theta[:n_mean+n_vol], p_ar, q_ma, P_arch, Q_garch
+    )
+    
+    # nu
+    J[K-1, K-1] = jacobian_studentt(theta[n_mean + n_vol])
+    
+    return J
+
+
+def pack_arma_garch_skewt(
+    z: NDArray[np.float64], 
+    p_ar: int, 
+    q_ma: int, 
+    P_arch: int, 
+    Q_garch: int
+) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained θ for ARMA+GARCH+SkewT."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + P_arch + Q_garch
+    
+    # ARMA+GARCH params
+    theta_base = pack_arma_garch_normal(z[:n_mean+n_vol], p_ar, q_ma, P_arch, Q_garch)
+    
+    # nu and lam parameters
+    nu, lam = pack_skewt(z[n_mean + n_vol], z[n_mean + n_vol + 1])
+    
+    return np.concatenate([theta_base, [nu, lam]])
+
+
+def unpack_arma_garch_skewt(
+    theta: NDArray[np.float64], 
+    p_ar: int, 
+    q_ma: int, 
+    P_arch: int, 
+    Q_garch: int
+) -> NDArray[np.float64]:
+    """Transform constrained θ to unconstrained z for ARMA+GARCH+SkewT."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + P_arch + Q_garch
+    
+    z_base = unpack_arma_garch_normal(theta[:n_mean+n_vol], p_ar, q_ma, P_arch, Q_garch)
+    z_nu, z_lam = unpack_skewt(theta[n_mean + n_vol], theta[n_mean + n_vol + 1])
+    
+    return np.concatenate([z_base, [z_nu, z_lam]])
+
+
+def jacobian_arma_garch_skewt(
+    theta: NDArray[np.float64], 
+    p_ar: int, 
+    q_ma: int, 
+    P_arch: int, 
+    Q_garch: int
+) -> NDArray[np.float64]:
+    """Compute Jacobian for ARMA+GARCH+SkewT."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + P_arch + Q_garch
+    K = n_mean + n_vol + 2
+    
+    J = np.zeros((K, K), dtype=np.float64)
+    
+    # ARMA+GARCH block
+    J[:n_mean+n_vol, :n_mean+n_vol] = jacobian_arma_garch_normal(
+        theta[:n_mean+n_vol], p_ar, q_ma, P_arch, Q_garch
+    )
+    
+    # nu and lam
+    J_dist = jacobian_skewt(theta[n_mean + n_vol], theta[n_mean + n_vol + 1])
+    J[n_mean+n_vol:, n_mean+n_vol:] = J_dist
+    
+    return J

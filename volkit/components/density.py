@@ -1,6 +1,6 @@
 # volkit/components/density.py
 from __future__ import annotations
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 from ..roles import Role
 import numpy as np
 from ..components.base import Component
@@ -81,3 +81,62 @@ class SkewT(Component):
         else:
             self.fitted_params = {}
         return self.fitted_params
+
+
+class AutoDensity(Component):
+    """
+    Placeholder component for automatic density/distribution selection.
+    
+    When used in a spec, the fit method will search over candidate distributions
+    and select the best one based on a blended criterion of AIC and diagnostic tests.
+    
+    Parameters
+    ----------
+    candidates : list of str, optional
+        List of distribution names to search over.
+        Default is ['Normal', 'StudentT', 'SkewT'].
+        
+    Examples
+    --------
+    >>> from volkit import GARCH, AutoDensity
+    >>> spec = GARCH(1, 1) + AutoDensity()  # Search all distributions
+    >>> spec = GARCH(auto=True) + AutoDensity(candidates=['Normal', 'StudentT'])
+    
+    Notes
+    -----
+    When used with QMLE estimation, AutoDensity is redundant since QMLE always
+    fits with Normal likelihood. A warning will be issued and Normal will be used.
+    """
+    role = Role.DENSITY
+    
+    CANDIDATES = ['Normal', 'StudentT', 'SkewT']
+    
+    def __init__(self, candidates: Optional[List[str]] = None):
+        self.candidates = candidates or self.CANDIDATES.copy()
+        self.fitted_params = {}
+        self._is_auto = True
+    
+    @property
+    def signature(self) -> str:
+        return "AutoDensity"
+    
+    @property
+    def n_params(self) -> int:
+        # Placeholder - actual n_params depends on selected distribution
+        return 0
+    
+    def default_start(self, data: np.ndarray) -> np.ndarray:
+        return np.array([])
+    
+    def bounds(self) -> List[Tuple[float, float]]:
+        return []
+    
+    def pack(self, params_dict: dict) -> np.ndarray:
+        return np.array([])
+    
+    def unpack(self, flat_params: np.ndarray) -> dict:
+        return {}
+    
+    def get_candidates(self) -> List[str]:
+        """Return list of candidate distribution names."""
+        return self.candidates

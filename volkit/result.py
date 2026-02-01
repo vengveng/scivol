@@ -5,8 +5,42 @@ from typing import Dict, List, Optional, Any, Protocol, runtime_checkable, TYPE_
 import numpy as np
 from numpy.typing import NDArray
 from datetime import datetime
+from scipy.stats import norm, t as t_dist, chi2
+from scipy.special import gammaln
 
 from .roles import Role
+
+
+# =============================================================================
+# PIT HELPER FUNCTIONS (Probability Integral Transform)
+# =============================================================================
+
+def _std_t_cdf(x: np.ndarray, nu: float) -> np.ndarray:
+    """
+    CDF of standardized Student-t distribution with variance = 1.
+    
+    If Y ~ t_nu (standard), Var(Y) = nu/(nu-2). 
+    For variance-1 version: X = Y * sqrt((nu-2)/nu)
+    So F_X(x) = F_Y(x * sqrt(nu/(nu-2))).
+    """
+    s = np.sqrt(nu / (nu - 2.0))
+    return t_dist.cdf(x * s, df=nu)
+
+
+def _hansen_skewt_cdf(z: np.ndarray, nu: float, lam: float) -> np.ndarray:
+    """
+    CDF of Hansen (1994) skewed-t distribution.
+    
+    This matches the parameterization used in volkit's skewt_loglik().
+    """
+    c = gammaln(0.5 * (nu + 1.0)) - gammaln(0.5 * nu) - 0.5 * np.log(np.pi * (nu - 2.0))
+    a = 4.0 * lam * np.exp(c) * (nu - 2.0) / (nu - 1.0)
+    b = np.sqrt(1.0 + 3.0 * lam * lam - a * a)
+
+    bz_a = b * z + a
+    # piecewise transform back to symmetric standardized-t variable y
+    y = np.where(bz_a < 0.0, bz_a / (1.0 + lam), bz_a / (1.0 - lam))
+    return _std_t_cdf(y, nu)
 
 if TYPE_CHECKING:
     from .components import Component
@@ -556,6 +590,288 @@ class EstimationResult:
             result_dict['std_errors_robust'] = self.std_errors_robust.tolist()
         
         return result_dict
+    
+    # =========================================================================
+    # DIAGNOSTIC TESTS (DGT + Ljung-Box)
+    # =========================================================================
+    
+    def diagnostic_tests(
+        self,
+        n_cells: int = 40,
+        lags: int = 10,
+        alpha: float = 0.05,
+        print_results: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Run DGT (Density Goodness-of-Fit) and Ljung-Box tests on PIT residuals.
+        
+        The Probability Integral Transform (PIT) converts standardized residuals
+        to uniform(0,1) using the fitted distribution's CDF. Under correct
+        specification, u_t = F(z_t) should be i.i.d. U(0,1).
+        
+        Tests performed:
+        1. DGT cell test: Pearson chi-square test for uniformity of PIT
+        2. Ljung-Box tests on PIT moments: Tests for serial correlation in
+           (u - 0.5)^p for p = 1, 2, 3, 4 to detect misspecification in
+           conditional mean, variance, skewness, and kurtosis.
+        
+        Parameters
+        ----------
+        n_cells : int, default 40
+            Number of cells for the DGT chi-square test.
+        lags : int, default 10
+            Number of lags for Ljung-Box tests.
+        alpha : float, default 0.05
+            Significance level for hypothesis tests.
+        print_results : bool, default True
+            If True, print formatted test results.
+            
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - 'distribution': str, name of fitted distribution
+            - 'dist_params': dict, distribution parameters (nu, lam)
+            - 'n_obs': int, number of observations
+            - 'dgt': dict, DGT test results
+            - 'ljung_box': dict, Ljung-Box test results for each moment
+            - 'pit': np.ndarray, PIT values for further analysis
+            
+        Raises
+        ------
+        ValueError
+            If standardized residuals are not available.
+        """
+        # Get standardized residuals
+        z = self.std_resid
+        if z is None:
+            raise ValueError("Standardized residuals not available. "
+                           "Model may not have volatility component or sigma2 not computed.")
+        
+        # Remove any NaN values
+        z = z[~np.isnan(z)]
+        T = len(z)
+        
+        # Determine distribution type and compute PIT
+        dens = self.density
+        dist_name = dens.signature if dens is not None else "Normal"
+        dp = self.dist_params
+        
+        # Compute PIT: u = F(z) using fitted distribution
+        if dist_name == "Normal":
+            u = norm.cdf(z)
+            dist_params_dict = {"nu": None, "lam": None}
+        elif dist_name == "StudentT":
+            if dp.nu is None:
+                raise ValueError("Student-t distribution requires nu parameter")
+            u = _std_t_cdf(z, dp.nu)
+            dist_params_dict = {"nu": dp.nu, "lam": None}
+        elif dist_name == "SkewT":
+            if dp.nu is None or dp.lam is None:
+                raise ValueError("Skew-t distribution requires nu and lam parameters")
+            u = _hansen_skewt_cdf(z, dp.nu, dp.lam)
+            dist_params_dict = {"nu": dp.nu, "lam": dp.lam}
+        else:
+            # Default to Normal
+            u = norm.cdf(z)
+            dist_params_dict = {"nu": None, "lam": None}
+        
+        # Clip to (0, 1) for numerical stability
+        eps = 1e-12
+        u = np.clip(u, eps, 1.0 - eps)
+        
+        # =====================================================================
+        # DGT Test (Pearson chi-square for uniformity)
+        # =====================================================================
+        edges = np.linspace(0.0, 1.0, n_cells + 1)
+        counts, _ = np.histogram(u, bins=edges)
+        expected = T / n_cells
+        
+        chi2_stat = float(np.sum((counts - expected) ** 2 / expected))
+        df = n_cells - 1
+        p_value_dgt = float(chi2.sf(chi2_stat, df=df))
+        reject_dgt = p_value_dgt < alpha
+        
+        dgt_result = {
+            "n_cells": n_cells,
+            "chi2_stat": chi2_stat,
+            "df": df,
+            "p_value": p_value_dgt,
+            "reject": reject_dgt,
+        }
+        
+        # =====================================================================
+        # Ljung-Box Tests on PIT Moments
+        # =====================================================================
+        u_centered = u - 0.5
+        lb_results: Dict[int, Dict[str, Any]] = {}
+        
+        for power in (1, 2, 3, 4):
+            m = u_centered ** power
+            
+            # Compute autocorrelations
+            acf = np.array([
+                np.corrcoef(m[lag:], m[:-lag])[0, 1] if len(m) > lag else 0.0
+                for lag in range(1, lags + 1)
+            ])
+            
+            # Ljung-Box Q statistic
+            lag_array = np.arange(1, lags + 1)
+            q_stat = float(T * (T + 2) * np.sum((acf ** 2) / (T - lag_array)))
+            p_value_lb = float(chi2.sf(q_stat, df=lags))
+            reject_lb = p_value_lb < alpha
+            
+            lb_results[power] = {
+                "lags": lags,
+                "q_stat": q_stat,
+                "p_value": p_value_lb,
+                "reject": reject_lb,
+            }
+        
+        # Build result dictionary
+        result = {
+            "distribution": dist_name,
+            "dist_params": dist_params_dict,
+            "n_obs": T,
+            "alpha": alpha,
+            "dgt": dgt_result,
+            "ljung_box": lb_results,
+            "pit": u,
+        }
+        
+        # Print formatted results if requested
+        if print_results:
+            self._print_diagnostic_tests(result)
+        
+        return result
+    
+    def _print_diagnostic_tests(self, results: Dict[str, Any]) -> None:
+        """Print nicely formatted diagnostic test results."""
+        WIDTH = 70
+        
+        # Title
+        print()
+        print("=" * WIDTH)
+        print(f"{'Model Diagnostic Tests':^{WIDTH}}")
+        print("=" * WIDTH)
+        
+        # Distribution info
+        dist_name = results["distribution"]
+        dp = results["dist_params"]
+        if dp["nu"] is not None and dp["lam"] is not None:
+            dist_str = f"{dist_name} (nu={dp['nu']:.2f}, lam={dp['lam']:.4f})"
+        elif dp["nu"] is not None:
+            dist_str = f"{dist_name} (nu={dp['nu']:.2f})"
+        else:
+            dist_str = dist_name
+        
+        print(f"Distribution:  {dist_str}")
+        print(f"Observations:  {results['n_obs']}")
+        print(f"Alpha:         {results['alpha']}")
+        
+        # DGT Test
+        print()
+        print("DGT Test (Density Goodness-of-Fit)")
+        print("-" * WIDTH)
+        dgt = results["dgt"]
+        print(f"  {'Cells:':<12} {dgt['n_cells']:<10} {'df:':<12} {dgt['df']}")
+        print(f"  {'Chi2 stat:':<12} {dgt['chi2_stat']:<10.2f} {'p-value:':<12} {dgt['p_value']:.4f}")
+        reject_str = "Yes (reject uniformity)" if dgt["reject"] else "No (uniform PIT)"
+        print(f"  {'Reject H0:':<12} {reject_str}")
+        
+        # Ljung-Box Tests
+        print()
+        print("Ljung-Box Tests on PIT Moments")
+        print("-" * WIDTH)
+        print(f"  {'Moment':<10} {'Lags':>6} {'Q-stat':>12} {'p-value':>12} {'Reject':>10}")
+        print(f"  {'-'*10} {'-'*6} {'-'*12} {'-'*12} {'-'*10}")
+        
+        moment_labels = {1: "(u-0.5)^1", 2: "(u-0.5)^2", 3: "(u-0.5)^3", 4: "(u-0.5)^4"}
+        
+        for power in (1, 2, 3, 4):
+            lb = results["ljung_box"][power]
+            reject_str = "Yes" if lb["reject"] else "No"
+            print(f"  {moment_labels[power]:<10} {lb['lags']:>6} {lb['q_stat']:>12.2f} "
+                  f"{lb['p_value']:>12.4f} {reject_str:>10}")
+        
+        print("=" * WIDTH)
+        print()
+    
+    # =========================================================================
+    # MODEL SELECTION SUMMARY (for auto-fitted models)
+    # =========================================================================
+    
+    def selection_summary(self, top_n: int = 10) -> None:
+        """
+        Print model selection summary (only available for auto-fitted models).
+        
+        Parameters
+        ----------
+        top_n : int, default 10
+            Number of top models to display.
+            
+        Notes
+        -----
+        This method is only available when the model was fitted using
+        auto-selection (e.g., GARCH(auto=True) or AutoDensity).
+        """
+        if not hasattr(self, '_selection_candidates'):
+            print("Model was not auto-selected. No selection summary available.")
+            return
+        
+        candidates = self._selection_candidates
+        WIDTH = 78
+        
+        print()
+        print("=" * WIDTH)
+        print(f"{'Model Selection Summary':^{WIDTH}}")
+        print("=" * WIDTH)
+        
+        # Header
+        print(f"{'Rank':<6} {'Model':<28} {'AIC':>12} {'Diag Pen':>10} {'Score':>12} {'Time':>8}")
+        print("-" * WIDTH)
+        
+        # Show top N models
+        for i, c in enumerate(candidates[:top_n], 1):
+            model_str = str(c.spec)[:27]
+            
+            if c.aic < np.inf:
+                aic_str = f"{c.aic:.2f}"
+            else:
+                aic_str = "Failed"
+            
+            pen_str = f"{c.diagnostic_penalty:.1f}"
+            
+            if c.score < np.inf:
+                score_str = f"{c.score:.2f}"
+            else:
+                score_str = "Failed"
+            
+            time_str = f"{c.fit_time:.2f}s"
+            
+            # Mark best model
+            marker = " *" if i == 1 else ""
+            
+            print(f"{i:<6} {model_str:<28} {aic_str:>12} {pen_str:>10} {score_str:>12} {time_str:>8}{marker}")
+        
+        # Footer
+        print("-" * WIDTH)
+        total_time = sum(c.fit_time for c in candidates)
+        n_failed = sum(1 for c in candidates if c.result is None)
+        n_total = len(candidates)
+        
+        print(f"Total: {n_total} models evaluated ({n_failed} failed), {total_time:.2f}s total time")
+        print(f"Best:  {candidates[0].spec}")
+        
+        # Show diagnostic status of best model
+        best = candidates[0]
+        if best.result is not None:
+            dgt_status = "PASS" if best.dgt_passed else "FAIL"
+            lb_status = f"{best.lb_failures}/4 failed" if best.lb_failures > 0 else "all PASS"
+            print(f"       DGT: {dgt_status}, Ljung-Box: {lb_status}")
+        
+        print("=" * WIDTH)
+        print()
     
     def __str__(self) -> str:
         """Compact string representation with key results."""

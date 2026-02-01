@@ -759,12 +759,17 @@ This pattern was used for `arma_garch_estimator.py` → `arma_garch.c`.
 
 ### Benchmark Testing (Keep Evergreen)
 
+**IMPORTANT: When adding a new model/routine, you MUST add it to:**
+1. **`benchmark_optimizers.py`** - Tests optimizer configurations with real data
+2. **`tests/test_dgp_estimation.py`** - Tests parameter recovery with DGP data
+
 `benchmark_optimizers.py` tests all optimizer configurations:
 - Model types: GARCH(1,1), ARMA(1,1)-GARCH(1,1)
 - All distributions (Normal, Student-t, Skew-t)
 - All solvers (nelder-mead, slsqp, trust)
 - Log-mode vs constrained mode
 - Multiple real asset classes (stock, bond, commodity, etc.)
+- **Gradient verification**: Analytical vs numerical gradients for all C implementations
 
 Run after any changes to optimization code to validate defaults:
 ```bash
@@ -772,6 +777,11 @@ python benchmark_optimizers.py
 ```
 
 Results saved to `benchmark_results/` with recommended defaults.
+
+`tests/test_dgp_estimation.py` tests parameter recovery:
+- Generates synthetic data from known DGPs (5000 observations)
+- Verifies estimation recovers true parameters (within tolerance)
+- All model/distribution combinations must have tests
 
 **Current Recommended Defaults** (as of 2026-01-30):
 

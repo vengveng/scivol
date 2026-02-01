@@ -29,6 +29,7 @@ sources = [
   "volkit/_csrc/errors_garch.c",
   "volkit/_csrc/transforms_logspace.c",
   "volkit/_csrc/arma_garch.c",
+  "volkit/_csrc/arma.c",
 ]
 include-dirs       = ["volkit/_csrc"]
 extra-compile-args = ["-O3", "-ffast-math", "-march=native", "-ffp-contract=fast", "-funroll-loops"]
