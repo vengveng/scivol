@@ -66,7 +66,7 @@ def _build(p: int, q: int) -> Routine:
         c_hess = _core._garch_ll_hess_pq_normal
         special = False
 
-    def fit(resid: NDArray[np.float64], solver: str = "trust", log_mode: bool = True, verbose: bool = False, **_) -> EstimationResult:
+    def fit(resid: NDArray[np.float64], solver: str = "slsqp", log_mode: bool = True, verbose: bool = False, **_) -> EstimationResult:
 
         from scipy.optimize import minimize
         from scipy.optimize import LinearConstraint

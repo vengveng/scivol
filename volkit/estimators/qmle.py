@@ -1,8 +1,10 @@
 """
 QMLE Estimator with Robust (Sandwich) Standard Errors.
 
-Uses Normal log-likelihood for parameter estimation, but computes robust
-standard errors that are valid even when the true distribution is non-Normal.
+Supports:
+- GARCH + Normal: Robust SEs for all parameters
+- GARCH + StudentT: Robust SEs for GARCH params, MLE SE for nu (two-step)
+- GARCH + SkewT: Robust SEs for GARCH params, MLE SE for nu, lam (two-step)
 
 The sandwich covariance estimator is:
     V_robust = H^{-1} @ OPG @ H^{-1}
@@ -11,16 +13,23 @@ where:
     H = Hessian of the negative log-likelihood
     OPG = Outer Product of Gradients = sum_t (g_t @ g_t')
     g_t = score (gradient of -log L) at observation t
+
+For Student-t and Skew-t, we use a two-step procedure:
+1. Fit GARCH with Normal LL → robust SEs for [omega, alpha, beta]
+2. Fix GARCH, fit shape params → MLE SEs for [nu] or [nu, lam]
+
+The final covariance is block-diagonal (GARCH and shape blocks are independent).
 """
 
 from __future__ import annotations
 
 import time
 import warnings
-from typing import TYPE_CHECKING, Any, Dict, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Union, Literal
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.optimize import minimize, Bounds
 
 # ── intra-package imports (relative) ──────────────────────────────────
 from ..spec import CompositeSpec
@@ -49,7 +58,7 @@ def _compute_robust_se_c(
     """
     Compute OPG and Hessian using C extensions.
     
-    Returns (opg, hess) matrices.
+    Returns (opg, hess) matrices for GARCH parameters only.
     """
     n = len(resid2)
     k = 1 + p + q  # GARCH params only (no distribution params for Normal)
@@ -122,27 +131,154 @@ def _compute_robust_se_python(
     return result.opg, result.hess
 
 
+def _numerical_hessian(
+    func,
+    x: NDArray[np.float64],
+    eps: float = 1e-5,
+) -> NDArray[np.float64]:
+    """
+    Compute numerical Hessian using central differences.
+    """
+    n = len(x)
+    H = np.zeros((n, n), dtype=np.float64)
+    
+    for i in range(n):
+        for j in range(i, n):
+            x_pp = x.copy(); x_pp[i] += eps; x_pp[j] += eps
+            x_pm = x.copy(); x_pm[i] += eps; x_pm[j] -= eps
+            x_mp = x.copy(); x_mp[i] -= eps; x_mp[j] += eps
+            x_mm = x.copy(); x_mm[i] -= eps; x_mm[j] -= eps
+            
+            H[i, j] = (func(x_pp) - func(x_pm) - func(x_mp) + func(x_mm)) / (4 * eps * eps)
+            H[j, i] = H[i, j]
+    
+    return H
+
+
+def _fit_studentt_shape(
+    resid: NDArray[np.float64],
+    sigma2: NDArray[np.float64],
+    verbose: bool = False,
+) -> tuple[float, float, NDArray[np.float64]]:
+    """
+    Fit Student-t degrees of freedom (nu) with GARCH fixed.
+    
+    Returns (nu_hat, nll, hessian_nu).
+    """
+    n = len(resid)
+    resid2 = resid ** 2
+    
+    # Precompute z² = resid²/sigma²
+    z2 = resid2 / np.maximum(sigma2, 1e-12)
+    z2_ptr = _as_cptr(z2)
+    sigma2_ptr = _as_cptr(sigma2)
+    
+    def nll_nu(nu_arr):
+        nu = nu_arr[0]
+        if nu <= 2.01 or nu > 100:
+            return 1e10
+        # Use C function for likelihood
+        ll = _core._studentt_ll(sigma2_ptr, z2_ptr, n, nu)
+        return -ll / n  # Negative log-likelihood, scaled
+    
+    # Optimize
+    result = minimize(
+        nll_nu,
+        x0=np.array([8.0]),
+        method="L-BFGS-B",
+        bounds=[(2.01, 100.0)],
+        options={"maxiter": 1000, "disp": verbose}
+    )
+    
+    nu_hat = result.x[0]
+    nll = result.fun * n  # Unscale
+    
+    # Compute Hessian for SE
+    hess = _numerical_hessian(nll_nu, result.x, eps=1e-5) * n
+    
+    return nu_hat, nll, hess
+
+
+def _fit_skewt_shape(
+    resid: NDArray[np.float64],
+    sigma2: NDArray[np.float64],
+    verbose: bool = False,
+) -> tuple[float, float, float, NDArray[np.float64]]:
+    """
+    Fit Skew-t shape parameters (nu, lambda) with GARCH fixed.
+    
+    Returns (nu_hat, lam_hat, nll, hessian_shape).
+    """
+    n = len(resid)
+    resid_ptr = _as_cptr(resid)
+    sigma2_ptr = _as_cptr(sigma2)
+    
+    def nll_shape(params):
+        nu, lam = params[0], params[1]
+        if nu <= 2.01 or nu > 100:
+            return 1e10
+        if lam <= -0.99 or lam >= 0.99:
+            return 1e10
+        # Use C function for likelihood
+        ll = _core._skewt_ll(resid_ptr, sigma2_ptr, n, nu, lam)
+        if not np.isfinite(ll):
+            return 1e10
+        return -ll / n  # Negative log-likelihood, scaled
+    
+    # Optimize
+    result = minimize(
+        nll_shape,
+        x0=np.array([8.0, 0.0]),
+        method="L-BFGS-B",
+        bounds=[(2.01, 100.0), (-0.99, 0.99)],
+        options={"maxiter": 1000, "disp": verbose}
+    )
+    
+    nu_hat = result.x[0]
+    lam_hat = result.x[1]
+    nll = result.fun * n  # Unscale
+    
+    # Compute Hessian for SE
+    hess = _numerical_hessian(nll_shape, result.x, eps=1e-5) * n
+    
+    return nu_hat, lam_hat, nll, hess
+
+
 class QMLE(Estimator):
     """
     Quasi-Maximum Likelihood Estimator with robust (sandwich) standard errors.
     
-    Uses Normal log-likelihood for parameter estimation, then computes
-    robust standard errors via the sandwich covariance estimator.
+    Supports three distribution types:
+    
+    1. **Normal**: Standard QMLE with robust SEs for [omega, alpha, beta]
+    
+    2. **StudentT**: Two-step procedure
+       - Step 1: Fit GARCH with Normal LL → robust SEs for GARCH params
+       - Step 2: Fix GARCH, fit nu → MLE SE for nu
+    
+    3. **SkewT**: Two-step procedure
+       - Step 1: Fit GARCH with Normal LL → robust SEs for GARCH params
+       - Step 2: Fix GARCH, fit [nu, lam] → MLE SEs for shape params
     
     Usage:
+        # Normal
         spec = GARCH(1, 1) + Normal()
-        estimator = QMLE()
-        result = estimator.fit(spec, data)
+        result = QMLE().fit(spec, data)
         
-        # Access robust standard errors
-        print(result.std_errors_robust)
+        # Student-t with robust GARCH SEs
+        spec = GARCH(1, 1) + StudentT()
+        result = QMLE().fit(spec, data)
+        
+        # Skew-t with robust GARCH SEs
+        spec = GARCH(1, 1) + SkewT()
+        result = QMLE().fit(spec, data)
     """
     
     def fit(
         self,
         spec: Union[CompositeSpec, Component],
         data: np.ndarray,
-        solver: str = "trust",
+        solver: str = "slsqp",
         verbose: bool = False,
         **kwargs: Any,
     ) -> EstimationResult:
@@ -152,11 +288,11 @@ class QMLE(Estimator):
         Parameters
         ----------
         spec : CompositeSpec or Component
-            Model specification (e.g., GARCH(1,1) + Normal())
+            Model specification (e.g., GARCH(1,1) + StudentT())
         data : array
             Residual series (demeaned returns or AR residuals)
         solver : str
-            Optimization method: "nelder-mead", "slsqp", "trust"
+            Optimization method for GARCH: "nelder-mead", "slsqp", "trust"
         verbose : bool
             Print progress
         **kwargs
@@ -165,9 +301,13 @@ class QMLE(Estimator):
         Returns
         -------
         EstimationResult
-            Contains both MLE and robust standard errors
+            Contains both MLE and robust standard errors:
+            - std_errors: MLE standard errors (for shape params)
+            - std_errors_robust: Robust sandwich SEs (for GARCH params, 
+              or full if Normal density)
         """
         from ..result import EstimationResult
+        from ..components.density import Normal, StudentT, SkewT
         
         t_start = time.perf_counter()
         
@@ -176,20 +316,22 @@ class QMLE(Estimator):
         data = self._validate_data(data)
         self._warn_small_sample(spec, data)
         
-        # Check for Normal density (QMLE requires Normal likelihood)
+        # Identify density type
         density = None
         for comp in spec.components:
             if comp.role == Role.DENSITY:
                 density = comp
                 break
         
-        if density is None or density.signature != "Normal":
-            warnings.warn(
-                "QMLE is designed for Normal density. "
-                "For Student-t or Skew-t, consider using MLE with the correct distribution."
-            )
+        density_type = "normal"
+        if density is not None:
+            sig = density.signature
+            if sig == "StudentT":
+                density_type = "studentt"
+            elif sig == "SkewT":
+                density_type = "skewt"
         
-        # Get GARCH component to extract p, q
+        # Get GARCH component
         vol = None
         for comp in spec.components:
             if comp.role == Role.VOLATILITY:
@@ -200,75 +342,286 @@ class QMLE(Estimator):
             raise ValueError("Spec must include a volatility component (e.g., GARCH)")
         
         p, q = vol.p, vol.q
+        n_garch = 1 + p + q
         
-        # Step 1: Run MLE optimization
-        routine = get_routine(str(spec))
-        result = routine.fit(data, solver=solver, verbose=verbose, **kwargs)
+        # =====================================================================
+        # Step 1: Fit GARCH with Normal likelihood
+        # =====================================================================
         
-        # Step 2: Compute robust standard errors
-        if result.sigma2 is None:
+        # Build Normal spec for GARCH fitting
+        from ..components.density import Normal as NormalDensity
+        from ..components.vol import GARCH
+        normal_spec = GARCH(p, q) + NormalDensity()
+        
+        # Get routine and fit
+        routine = get_routine(str(normal_spec))
+        garch_result = routine.fit(data, solver=solver, verbose=verbose, **kwargs)
+        
+        if garch_result.sigma2 is None:
             warnings.warn("Cannot compute robust SEs: sigma2 not available from estimation")
-            self._last_result = result
-            return result
+            self._last_result = garch_result
+            return garch_result
+        
+        sigma2 = garch_result.sigma2
+        garch_params = garch_result.params[:n_garch]
+        
+        # =====================================================================
+        # Step 2: Compute robust SEs for GARCH parameters
+        # =====================================================================
         
         resid2 = data ** 2
         
         try:
-            # Try C extension first
-            opg, hess = _compute_robust_se_c(result.params, resid2, result.sigma2, p, q)
+            opg_garch, hess_garch = _compute_robust_se_c(garch_params, resid2, sigma2, p, q)
         except RuntimeError:
-            # Fall back to Python implementation
             if p != 1 or q != 1:
                 warnings.warn(
-                    f"Robust SE computation only supports GARCH(1,1) in Python fallback. "
+                    f"Robust SE computation only supports GARCH(1,1). "
                     f"Got GARCH({p},{q}). Returning MLE standard errors only."
                 )
-                self._last_result = result
-                return result
+                self._last_result = garch_result
+                return garch_result
             
             try:
-                opg, hess = _compute_robust_se_python(result.params, resid2, result.sigma2)
+                opg_garch, hess_garch = _compute_robust_se_python(garch_params, resid2, sigma2)
             except Exception as e:
                 warnings.warn(f"Robust SE computation failed: {e}")
-                self._last_result = result
-                return result
+                self._last_result = garch_result
+                return garch_result
         
-        # Step 3: Compute covariance matrices
+        # Compute GARCH covariance matrices
+        # Note: C function returns averaged H and OPG (divided by n)
+        # For averaged quantities:
+        #   I = n * H_avg, so Cov = I^{-1} = H_avg^{-1} / n
+        #   Cov_robust = H_avg^{-1} @ OPG_avg @ H_avg^{-1} / n
+        n = len(data)
         try:
-            hess_inv = np.linalg.inv(hess)
-            cov_mle = hess_inv
-            cov_robust = hess_inv @ opg @ hess_inv
+            hess_inv_garch = np.linalg.inv(hess_garch)
+            cov_mle_garch = hess_inv_garch / n
+            cov_robust_garch = hess_inv_garch @ opg_garch @ hess_inv_garch / n
         except np.linalg.LinAlgError:
-            warnings.warn("Hessian is singular, cannot compute covariance matrix")
-            self._last_result = result
-            return result
+            warnings.warn("GARCH Hessian is singular, cannot compute covariance matrix")
+            self._last_result = garch_result
+            return garch_result
         
-        t_elapsed = time.perf_counter() - t_start
+        # =====================================================================
+        # Step 3: Handle distribution-specific fitting
+        # =====================================================================
         
-        # Step 4: Create enhanced result with robust SEs
-        # We need to create a new EstimationResult with the additional information
-        enhanced_result = EstimationResult(
-            spec=result.spec,
-            optimization_result=result.optimization_result,
-            data=data,
-            sigma2=result.sigma2,
-            time_elapsed=t_elapsed,
-            hessian=hess,
-            cov_matrix=cov_mle,
-            opg=opg,
-            cov_robust=cov_robust,
-            method="QMLE",
-        )
+        if density_type == "normal":
+            # Normal: we're done - just return robust SEs
+            t_elapsed = time.perf_counter() - t_start
+            
+            enhanced_result = EstimationResult(
+                spec=normal_spec,
+                optimization_result=garch_result.optimization_result,
+                data=data,
+                sigma2=sigma2,
+                time_elapsed=t_elapsed,
+                hessian=hess_garch,
+                cov_matrix=cov_mle_garch,
+                opg=opg_garch,
+                cov_robust=cov_robust_garch,
+                method="QMLE",
+            )
+            
+            # Update component fitted params
+            vol.unpack(garch_params)
+            
+            self._last_result = enhanced_result
+            
+            if verbose:
+                self._print_robust_se(enhanced_result, p, q)
+            
+            return enhanced_result
         
-        self._last_result = enhanced_result
+        elif density_type == "studentt":
+            # Student-t: fit nu with GARCH fixed
+            nu_hat, nll_shape, hess_nu = _fit_studentt_shape(data, sigma2, verbose)
+            
+            # Build full covariance (block diagonal)
+            n_params = n_garch + 1  # GARCH + nu
+            full_params = np.concatenate([garch_params, [nu_hat]])
+            
+            # Block diagonal covariance
+            cov_full_robust = np.zeros((n_params, n_params), dtype=np.float64)
+            cov_full_robust[:n_garch, :n_garch] = cov_robust_garch
+            
+            try:
+                cov_nu = np.linalg.inv(hess_nu)
+                cov_full_robust[n_garch:, n_garch:] = cov_nu
+            except np.linalg.LinAlgError:
+                cov_full_robust[n_garch, n_garch] = np.nan
+            
+            # MLE covariance (for shape params)
+            cov_full_mle = np.zeros((n_params, n_params), dtype=np.float64)
+            cov_full_mle[:n_garch, :n_garch] = cov_mle_garch
+            cov_full_mle[n_garch:, n_garch:] = cov_full_robust[n_garch:, n_garch:]
+            
+            # Build full Hessian and OPG (block diagonal)
+            hess_full = np.zeros((n_params, n_params), dtype=np.float64)
+            hess_full[:n_garch, :n_garch] = hess_garch
+            hess_full[n_garch:, n_garch:] = hess_nu
+            
+            opg_full = np.zeros((n_params, n_params), dtype=np.float64)
+            opg_full[:n_garch, :n_garch] = opg_garch
+            # Shape params OPG not available, use Hessian as proxy
+            opg_full[n_garch:, n_garch:] = hess_nu
+            
+            t_elapsed = time.perf_counter() - t_start
+            
+            # Create fake optimization result
+            class FakeOptResult:
+                def __init__(self, x, fun, success):
+                    self.x = x
+                    self.fun = fun
+                    self.success = success
+                    self.nit = 0
+                    self.message = "QMLE two-step estimation"
+            
+            # Compute total log-likelihood (Student-t with fitted params)
+            resid_ptr = _as_cptr(data)
+            z2 = resid2 / np.maximum(sigma2, 1e-12)
+            z2_ptr = _as_cptr(z2)
+            sigma2_ptr = _as_cptr(sigma2)
+            ll_studentt = _core._studentt_ll(sigma2_ptr, z2_ptr, len(data), nu_hat)
+            
+            fake_opt = FakeOptResult(full_params, -ll_studentt, True)
+            
+            enhanced_result = EstimationResult(
+                spec=spec,
+                optimization_result=fake_opt,
+                data=data,
+                sigma2=sigma2,
+                time_elapsed=t_elapsed,
+                hessian=hess_full,
+                cov_matrix=cov_full_mle,
+                opg=opg_full,
+                cov_robust=cov_full_robust,
+                method="QMLE",
+            )
+            
+            # Update component fitted params
+            vol.unpack(garch_params)
+            if density is not None:
+                density.fitted_params = {'nu': nu_hat}
+            
+            self._last_result = enhanced_result
+            
+            if verbose:
+                self._print_robust_se_studentt(enhanced_result, p, q, nu_hat)
+            
+            return enhanced_result
         
-        if verbose:
-            se_mle = enhanced_result.std_errors
-            se_robust = enhanced_result.std_errors_robust
-            if se_mle is not None and se_robust is not None:
-                print("Robust (sandwich) standard errors computed successfully.")
-                param_names = ["omega"] + [f"alpha_{i+1}" for i in range(p)] + [f"beta_{j+1}" for j in range(q)]
-                for i, name in enumerate(param_names):
+        elif density_type == "skewt":
+            # Skew-t: fit [nu, lam] with GARCH fixed
+            nu_hat, lam_hat, nll_shape, hess_shape = _fit_skewt_shape(data, sigma2, verbose)
+            
+            # Build full covariance (block diagonal)
+            n_params = n_garch + 2  # GARCH + nu + lam
+            full_params = np.concatenate([garch_params, [nu_hat, lam_hat]])
+            
+            # Block diagonal covariance
+            cov_full_robust = np.zeros((n_params, n_params), dtype=np.float64)
+            cov_full_robust[:n_garch, :n_garch] = cov_robust_garch
+            
+            try:
+                cov_shape = np.linalg.inv(hess_shape)
+                cov_full_robust[n_garch:, n_garch:] = cov_shape
+            except np.linalg.LinAlgError:
+                cov_full_robust[n_garch:, n_garch:] = np.nan
+            
+            # MLE covariance
+            cov_full_mle = np.zeros((n_params, n_params), dtype=np.float64)
+            cov_full_mle[:n_garch, :n_garch] = cov_mle_garch
+            cov_full_mle[n_garch:, n_garch:] = cov_full_robust[n_garch:, n_garch:]
+            
+            # Build full Hessian and OPG (block diagonal)
+            hess_full = np.zeros((n_params, n_params), dtype=np.float64)
+            hess_full[:n_garch, :n_garch] = hess_garch
+            hess_full[n_garch:, n_garch:] = hess_shape
+            
+            opg_full = np.zeros((n_params, n_params), dtype=np.float64)
+            opg_full[:n_garch, :n_garch] = opg_garch
+            opg_full[n_garch:, n_garch:] = hess_shape
+            
+            t_elapsed = time.perf_counter() - t_start
+            
+            # Create fake optimization result
+            class FakeOptResult:
+                def __init__(self, x, fun, success):
+                    self.x = x
+                    self.fun = fun
+                    self.success = success
+                    self.nit = 0
+                    self.message = "QMLE two-step estimation"
+            
+            # Compute total log-likelihood (Skew-t with fitted params)
+            resid_ptr = _as_cptr(data)
+            sigma2_ptr = _as_cptr(sigma2)
+            ll_skewt = _core._skewt_ll(resid_ptr, sigma2_ptr, len(data), nu_hat, lam_hat)
+            
+            fake_opt = FakeOptResult(full_params, -ll_skewt, True)
+            
+            enhanced_result = EstimationResult(
+                spec=spec,
+                optimization_result=fake_opt,
+                data=data,
+                sigma2=sigma2,
+                time_elapsed=t_elapsed,
+                hessian=hess_full,
+                cov_matrix=cov_full_mle,
+                opg=opg_full,
+                cov_robust=cov_full_robust,
+                method="QMLE",
+            )
+            
+            # Update component fitted params
+            vol.unpack(garch_params)
+            if density is not None:
+                density.fitted_params = {'nu': nu_hat, 'lam': lam_hat}
+            
+            self._last_result = enhanced_result
+            
+            if verbose:
+                self._print_robust_se_skewt(enhanced_result, p, q, nu_hat, lam_hat)
+            
+            return enhanced_result
+        
+        else:
+            raise ValueError(f"Unknown density type: {density_type}")
+    
+    def _print_robust_se(self, result, p: int, q: int):
+        """Print robust SE info for Normal."""
+        se_mle = result.std_errors
+        se_robust = result.std_errors_robust
+        if se_mle is not None and se_robust is not None:
+            print("QMLE: Robust (sandwich) standard errors computed successfully.")
+            param_names = ["omega"] + [f"alpha_{i+1}" for i in range(p)] + [f"beta_{j+1}" for j in range(q)]
+            for i, name in enumerate(param_names):
+                if i < len(se_mle) and i < len(se_robust):
                     print(f"  SE({name}):  MLE={se_mle[i]:.6f}, Robust={se_robust[i]:.6f}")
-        
-        return enhanced_result
+    
+    def _print_robust_se_studentt(self, result, p: int, q: int, nu: float):
+        """Print robust SE info for Student-t."""
+        se_robust = result.std_errors_robust
+        if se_robust is not None:
+            print("QMLE (Student-t two-step): Robust GARCH SEs, MLE SE for nu.")
+            param_names = ["omega"] + [f"alpha_{i+1}" for i in range(p)] + [f"beta_{j+1}" for j in range(q)] + ["nu"]
+            for i, name in enumerate(param_names):
+                if i < len(se_robust):
+                    se_type = "Robust" if i < (1 + p + q) else "MLE"
+                    print(f"  SE({name}):  {se_type}={se_robust[i]:.6f}")
+            print(f"  nu (df) = {nu:.2f}")
+    
+    def _print_robust_se_skewt(self, result, p: int, q: int, nu: float, lam: float):
+        """Print robust SE info for Skew-t."""
+        se_robust = result.std_errors_robust
+        if se_robust is not None:
+            print("QMLE (Skew-t two-step): Robust GARCH SEs, MLE SEs for nu, lambda.")
+            param_names = ["omega"] + [f"alpha_{i+1}" for i in range(p)] + [f"beta_{j+1}" for j in range(q)] + ["nu", "lambda"]
+            for i, name in enumerate(param_names):
+                if i < len(se_robust):
+                    se_type = "Robust" if i < (1 + p + q) else "MLE"
+                    print(f"  SE({name}):  {se_type}={se_robust[i]:.6f}")
+            print(f"  nu (df) = {nu:.2f}, lambda = {lam:.4f}")

@@ -78,7 +78,7 @@ def _build(p: int, q: int) -> Routine:
     # -------------------------------------------------------------------------
     def fit(
         resid: NDArray[np.float64],
-        solver: str = "nelder-mead",
+        solver: str = "slsqp",
         log_mode: bool = False,
         verbose: bool = False,
         **_

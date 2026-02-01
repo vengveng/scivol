@@ -1,30 +1,35 @@
 """
-GARCH Model Estimation and Analysis
-===================================
 Sections:
+  2.1 - Individual asset diagnostics (daily & weekly)
+  2.2 - Portfolio diagnostics
   3.1 - GARCH model estimation
   3.2 - MLE vs QMLE
   3.3 - Student-t GARCH
   3.4 - Skew-t GARCH
-  
-Uses volkit C extension library for all estimation.
-
-Run as: python garch_analysis.py
 """
 
-import pandas as pd
 import numpy as np
-from scipy.stats import norm, chi2
+import pandas as pd
 from pathlib import Path
+from scipy.special import gammaln
+from scipy.stats import norm, chi2
 
 from utilities import (
+    extreme_observations,
+    wait_years,
     jarque_bera,
     acf_and_ljung_box,
+    acf_lb_interface,
+    summary_stats,
     ar1,
     arch_lm_test,
     dgt_lb_interface,
     dgt_with_lb_moments,
     # Printing functions
+    print_q2_1a,
+    print_q2_1c,
+    print_q2_1d,
+    print_q2_2,
     print_q3_1,
     print_q3_1d,
     print_q3_2,
@@ -32,9 +37,7 @@ from utilities import (
     print_q3_4,
     print_q3_summary,
 )
-
-# Legacy-compatible fit_garch function (wraps volkit)
-from volkit_compat import fit_garch, fit_garch as fit_garch_ref
+from garch_estimator import fit_garch
 
 # =============================================================================
 # CONFIGURATION
@@ -43,8 +46,14 @@ from volkit_compat import fit_garch, fit_garch as fit_garch_ref
 RESULTS_DIR = Path("results")
 RESULTS_DIR.mkdir(exist_ok=True)
 
-# Collector for GARCH results
+# Collector for all results
 RESULTS = {
+    "q2_1a": [],  # crashes/booms
+    "q2_1b": [],  # extreme return probabilities
+    "q2_1c": [],  # Jarque-Bera tests
+    "q2_1d_acf": [],  # ACF values
+    "q2_1d_lb": [],  # Ljung-Box tests
+    "q2_2": [],  # portfolio summary stats
     "q3_1a": [],  # pre-GARCH diagnostics
     "q3_1b": [],  # AR(1) results
     "q3_1c": [],  # ARCH-LM tests
@@ -66,6 +75,9 @@ VOLATILITIES = {}
 # DATA LOADING
 # =============================================================================
 
+data_raw = pd.read_csv("data/DATA_HW1.csv", skiprows=1, parse_dates=["DATE"], dayfirst=True)
+dff_rate = pd.read_csv("data/DFF.csv", parse_dates=["date"], index_col="date")
+
 RENAME = {
     "DATE": "date",
     "S&PCOMP(RI)": "stock",
@@ -75,12 +87,135 @@ RENAME = {
     "RJEFCRT(TR)": "commo",
     "USBINXB": "usdfx",
 }
+ASSETS = [a for a in RENAME.values() if a != "date"]
 
-data_raw = pd.read_csv("data/DATA_HW1.csv", skiprows=1, parse_dates=["DATE"], dayfirst=True)
-data_raw = data_raw.rename(columns=RENAME).set_index("date")[["stock", "cbond"]]
+data_raw = data_raw.rename(columns=RENAME).set_index("date")[ASSETS]
+rf_ann_pct = dff_rate.reindex(data_raw.index).ffill()
 
-# Daily log-returns
-d_data = np.log1p(data_raw.pct_change(fill_method=None))
+# Daily data
+d_data = pd.concat({
+    "px": data_raw,
+    "sr": data_raw.pct_change(fill_method=None),
+    "lr": np.log1p(data_raw.pct_change(fill_method=None)),
+}, axis=1)
+d_data.columns.names = ["measure", "asset"]
+
+# Weekly data (Friday close)
+w_raw = data_raw.resample("W-FRI", label="right", closed="right").last()
+w_data = pd.concat({
+    "px": w_raw,
+    "sr": w_raw.pct_change(fill_method=None),
+    "lr": np.log1p(w_raw.pct_change(fill_method=None)),
+}, axis=1)
+w_data.columns.names = ["measure", "asset"]
+
+DATA = {"d": d_data, "w": w_data}
+
+
+# =============================================================================
+# SECTION 2.1: INDIVIDUAL ASSET DIAGNOSTICS
+# =============================================================================
+
+print("\n" + "="*70)
+print("SECTION 2.1: Individual Asset Diagnostics")
+print("="*70)
+
+# 2.1a: Crashes and booms for S&P 500
+for freq in ["d", "w"]:
+    lr_stock = DATA[freq]["lr"]["stock"]
+    for row in extreme_observations(lr_stock, k=5):
+        RESULTS["q2_1a"].append({
+            "freq": freq,
+            "type": row["type"],
+            "rank": row["rank"],
+            "date": row["date"].date().isoformat(),
+            "return": row["r"],
+        })
+
+# 2.1b: Test extreme returns against normality
+for freq in ["d", "w"]:
+    lr_df = DATA[freq]["lr"]
+    for asset in ASSETS:
+        lr = lr_df[asset].dropna()
+        mu, sigma, T = lr.mean(), lr.std(ddof=0), len(lr)
+
+        # crashes
+        for rank, (dt, val) in enumerate(lr.nsmallest(5).items(), 1):
+            z = (val - mu) / sigma
+            p = norm.cdf(z) # left-tail
+            y50 = wait_years(p, freq)
+            RESULTS["q2_1b"].append({
+                "freq": freq, "asset": asset, "type": "crash", "rank": rank,
+                "date": dt.date().isoformat(),
+                "return": val,
+                "mu": mu, "sigma": sigma, "z": z,
+                "p_value": p,
+                "wait_years_50": y50,})
+
+        for rank, (dt, val) in enumerate(lr.nlargest(5).items(), 1):
+            z = (val - mu) / sigma
+            p = norm.sf(z) # right-tail
+            y50 = wait_years(p, freq)
+            RESULTS["q2_1b"].append({
+                "freq": freq, "asset": asset, "type": "boom", "rank": rank,
+                "date": dt.date().isoformat(),
+                "return": val,
+                "mu": mu, "sigma": sigma, "z": z,
+                "p_value": p,
+                "wait_years_50": y50,})
+
+# 2.1c: Jarque-Bera tests
+for freq in ["d", "w"]:
+    for asset in ASSETS:
+        jb = jarque_bera(DATA[freq]["lr"][asset], 0.05)
+        RESULTS["q2_1c"].append({"freq": freq, "asset": asset, **jb})
+
+# 2.1d: ACF and Ljung-Box tests (returns and squared returns)
+for freq in ["d", "w"]:
+    for asset in ASSETS:
+        r = DATA[freq]["lr"][asset].dropna()
+        
+        # Returns
+        acf_rows, lb_row = acf_lb_interface(r, k=10, alpha=0.05)
+        for row in acf_rows:
+            RESULTS["q2_1d_acf"].append({"freq": freq, "asset": asset, "series": "r", **row})
+        RESULTS["q2_1d_lb"].append({"freq": freq, "asset": asset, "series": "r", **lb_row})
+        
+        # Squared returns
+        acf_rows2, lb_row2 = acf_lb_interface(r**2, k=10, alpha=0.05)
+        for row in acf_rows2:
+            RESULTS["q2_1d_acf"].append({"freq": freq, "asset": asset, "series": "r2", **row})
+        RESULTS["q2_1d_lb"].append({"freq": freq, "asset": asset, "series": "r2", **lb_row2})
+
+
+# Print Section 2.1 results
+print_q2_1a(RESULTS["q2_1a"])
+print_q2_1c(RESULTS["q2_1c"])
+print_q2_1d(RESULTS["q2_1d_lb"])
+
+
+# =============================================================================
+# SECTION 2.2: PORTFOLIO DIAGNOSTICS
+# =============================================================================
+
+print("\n" + "="*70)
+print("SECTION 2.2: Portfolio Diagnostics")
+print("="*70)
+
+for freq in ["d", "w"]:
+    sr_df = DATA[freq]["sr"]
+    
+    # Equal-weight portfolio
+    sr_ptf = sr_df.mean(axis=1)
+    RESULTS["q2_2"].append({"freq": freq, "type": "portfolio", "asset": "EW6", **summary_stats(sr_ptf)})
+    
+    # Individual assets
+    for asset in ASSETS:
+        RESULTS["q2_2"].append({"freq": freq, "type": "asset", "asset": asset, **summary_stats(sr_df[asset])})
+
+# Print Section 2.2 results
+print_q2_2(RESULTS["q2_2"])
+
 
 # =============================================================================
 # SECTION 3: GARCH MODELING (Daily data, stocks & bonds only)
@@ -90,11 +225,15 @@ print("\n" + "="*70)
 print("SECTION 3: GARCH Modeling")
 print("="*70)
 
-# Prepare data: remove zero-return days
-lr = d_data
+# Prepare data: remove zero-return days, compute log-returns
+lr = DATA["d"]["lr"][["stock", "cbond"]]
 mask_zero = (lr == 0).any(axis=1)
 lr = lr[~mask_zero]
 print(f"Removed {mask_zero.sum()} zero-return days")
+
+rf_log = np.log1p(rf_ann_pct["dff"] / 100 / 360)
+rf_log = rf_log.reindex(lr.index).ffill()
+lr = lr.sub(rf_log, axis=0)
 
 # Store AR(1) residuals
 AR1_RESID = {}
@@ -211,6 +350,13 @@ for asset in ["stock", "cbond"]:
         "se_omega_robust": r.std_errors_robust[0] if r.std_errors_robust is not None else None,
         "se_alpha_robust": r.std_errors_robust[1] if r.std_errors_robust is not None else None,
         "se_beta_robust": r.std_errors_robust[2] if r.std_errors_robust is not None else None,
+        "t_omega_mle": r.garch_params.omega / r.std_errors[0] if r.std_errors is not None else None,
+        "t_alpha_mle": r.garch_params.alpha[0] / r.std_errors[1] if r.std_errors is not None else None,
+        "t_beta_mle": r.garch_params.beta[0] / r.std_errors[2] if r.std_errors is not None else None,
+        "t_omega_robust": r.garch_params.omega / r.std_errors_robust[0] if r.std_errors_robust is not None else None,
+        "t_alpha_robust": r.garch_params.alpha[0] / r.std_errors_robust[1] if r.std_errors_robust is not None else None,
+        "t_beta_robust": r.garch_params.beta[0] / r.std_errors_robust[2] if r.std_errors_robust is not None else None,
+            
     })
     
     # Store volatility for plotting
@@ -335,15 +481,23 @@ for asset in ["stock", "cbond"]:
     wald_stat, p_wald = None, None
     if r.cov_matrix is not None and r.cov_matrix.shape[0] >= 5:
         cov_nu_lam = r.cov_matrix[3:5, 3:5]
+        print("========================a")
+        print(cov_nu_lam)
+        print("========================a")
         # Check for valid covariance (positive diagonal)
         if np.all(np.diag(cov_nu_lam) > 0):
             G = np.array([[-1.0/nu**2, 0.0], [0.0, 1.0]])
             var_g = G @ cov_nu_lam @ G.T
+            se_invnu = np.sqrt(var_g[0, 0])
+            se_lam   = np.sqrt(var_g[1, 1])
             try:
                 g_hat = np.array([inv_nu, lam])
                 var_g_inv = np.linalg.inv(var_g)
                 wald_stat = float(g_hat @ var_g_inv @ g_hat)
                 p_wald = float(chi2.sf(wald_stat, df=2))
+                # parameter t-stats
+                t_invnu = inv_nu / se_invnu
+                t_lam = lam / se_lam
             except np.linalg.LinAlgError:
                 pass
     
@@ -364,6 +518,8 @@ for asset in ["stock", "cbond"]:
         "wald_stat": wald_stat,
         "wald_p": p_wald,
         "wald_reject": p_wald < 0.05 if p_wald is not None else None,
+        "t_invnu": t_invnu,
+        "t_lambda": t_lam,
         "aic": r.aic,
         "bic": r.bic,
     })
@@ -387,20 +543,48 @@ for asset in ["stock", "cbond"]:
         })
     
     # 3.4c: Moment comparison
-    sample_mean = float(np.mean(r.std_resid))
-    sample_var = float(np.var(r.std_resid, ddof=1))
-    sample_skew = float(pd.Series(r.std_resid).skew())
-    sample_kurt = float(pd.Series(r.std_resid).kurt())
     
-    # Implied moments (standardized skew-t has mean=0, var=1 by construction)
+
+    # 3.4c: Moment comparison
+    x = np.asarray(r.std_resid, dtype=float)
+
+    sample_mean = float(np.mean(x))
+    sample_var  = float(np.var(x, ddof=1))
+    sample_skew = float(pd.Series(x).skew())
+    sample_kurt = float(pd.Series(x).kurt()) + 3.0  # total kurtosis
+
     implied_mean, implied_var = 0.0, 1.0
-    implied_kurt = 6.0 / (nu - 4) if nu > 4 else np.nan  # excess kurtosis for symmetric t
-    
+    implied_skew = np.nan
+    implied_kurt = np.nan
+    # (nu>3 for skewness, nu>4 for kurtosis)
+    if nu > 2 and (-1.0 < lam < 1.0):
+        logc = gammaln((nu + 1.0) / 2.0) - 0.5 * np.log(np.pi * (nu - 2.0)) - gammaln(nu / 2.0)
+        c = float(np.exp(logc))
+
+        a = 4.0 * lam * c * (nu - 2.0) / (nu - 1.0)
+        m2 = 1.0 + 3.0 * lam**2
+        b2 = m2 - a**2
+
+        if b2 > 0:
+            b = float(np.sqrt(b2))
+            if nu > 3:
+                m3 = 16.0 * c * lam * (1.0 + lam**2) * (nu - 2.0)**2 / ((nu - 1.0) * (nu - 3.0))
+                mu3 = (m3 - 3.0 * a * m2 + 2.0 * a**3) / (b**3)   # = skewness since Var=1
+                implied_skew = float(mu3)
+
+            if nu > 4:
+                if nu <= 3:
+                    # shouldn't happen given nu>4
+                    m3 = 16.0 * c * lam * (1.0 + lam**2) * (nu - 2.0)**2 / ((nu - 1.0) * (nu - 3.0))
+                m4 = 3.0 * (nu - 2.0) / (nu - 4.0) * (1.0 + 10.0 * lam**2 + 5.0 * lam**4)
+                mu4 = (m4 - 4.0 * a * m3 + 6.0 * a**2 * m2 - 3.0 * a**4) / (b**4)
+                implied_kurt = float(mu4)  
+
     RESULTS["q3_4c"].append({
         "asset": asset,
         "sample_mean": sample_mean, "implied_mean": implied_mean,
         "sample_var": sample_var, "implied_var": implied_var,
-        "sample_skew": sample_skew,
+        "sample_skew": sample_skew, "implied_skew": implied_skew,
         "sample_kurt": sample_kurt, "implied_kurt": implied_kurt,
         "nu": nu, "lambda": lam,
     })
@@ -453,154 +637,6 @@ print_q3_summary(RESULTS["q3_summary"])
 
 
 # =============================================================================
-# VOLKIT PARITY CHECK - Side-by-side comparison
-# =============================================================================
-
-print("\n" + "="*70)
-print("VOLKIT PARITY CHECK")
-print("="*70)
-
-# Store parity results
-PARITY_RESULTS = []
-
-def compare_results(ref_result, volkit_result, model_name: str, asset: str):
-    """Compare reference and volkit results, return comparison dict."""
-    comparison = {
-        "asset": asset,
-        "model": model_name,
-        "ref_ll": ref_result.log_likelihood,
-        "volkit_ll": volkit_result.loglikelihood,
-        "ll_diff": abs(ref_result.log_likelihood - volkit_result.loglikelihood),
-        "ref_omega": ref_result.garch_params.omega,
-        "volkit_omega": volkit_result.garch_params.omega if volkit_result.garch_params else None,
-        "ref_alpha": ref_result.garch_params.alpha[0],
-        "volkit_alpha": volkit_result.garch_params.alpha[0] if volkit_result.garch_params else None,
-        "ref_beta": ref_result.garch_params.beta[0],
-        "volkit_beta": volkit_result.garch_params.beta[0] if volkit_result.garch_params else None,
-        "ref_time": ref_result.time_elapsed,
-        "volkit_time": volkit_result.time_elapsed,
-    }
-    
-    # Add distribution parameters if available
-    if hasattr(ref_result.dist_params, 'nu') and ref_result.dist_params.nu is not None:
-        comparison["ref_nu"] = ref_result.dist_params.nu
-        comparison["volkit_nu"] = volkit_result.dist_params.nu if volkit_result.dist_params else None
-    
-    if hasattr(ref_result.dist_params, 'lam') and ref_result.dist_params.lam is not None:
-        comparison["ref_lam"] = ref_result.dist_params.lam
-        comparison["volkit_lam"] = volkit_result.dist_params.lam if volkit_result.dist_params else None
-    
-    return comparison
-
-print("\n--- GARCH(1,1) + Normal ---")
-for asset in ["stock", "cbond"]:
-    eps_np = np.asarray(AR1_RESID[asset], dtype=np.float64)
-    
-    # Reference implementation (use log-space for best convergence)
-    r_ref = fit_garch_ref(eps_np, dist="normal", method="mle", p=1, q=1,
-                          solver="trust-constr", use_logspace=True, verbose=False)
-    
-    # volkit implementation (use log_mode=True for consistency)
-    spec = GARCH(1, 1) + Normal()
-    estimator = MLE()
-    r_volkit = estimator.fit(spec, eps_np, solver="trust", log_mode=True, verbose=False)
-    
-    comp = compare_results(r_ref, r_volkit, "Normal", asset)
-    PARITY_RESULTS.append(comp)
-    
-    print(f"  {asset}:")
-    print(f"    Reference LL: {r_ref.log_likelihood:.6f}")
-    print(f"    Volkit LL:    {r_volkit.loglikelihood:.6f}")
-    print(f"    Difference:   {comp['ll_diff']:.2e}")
-    print(f"    Time - Ref: {r_ref.time_elapsed:.3f}s, Volkit: {r_volkit.time_elapsed:.3f}s")
-
-print("\n--- GARCH(1,1) + Student-t ---")
-for asset in ["stock", "cbond"]:
-    eps_np = np.asarray(AR1_RESID[asset], dtype=np.float64)
-    
-    # Reference implementation
-    r_ref = fit_garch_ref(eps_np, dist="studentt", method="mle", p=1, q=1,
-                          solver="nelder-mead", use_derivatives=True, verbose=False)
-    
-    # volkit implementation
-    spec = GARCH(1, 1) + StudentT()
-    estimator = MLE()
-    r_volkit = estimator.fit(spec, eps_np, solver="nelder-mead", log_mode=False, verbose=False)
-    
-    comp = compare_results(r_ref, r_volkit, "StudentT", asset)
-    PARITY_RESULTS.append(comp)
-    
-    print(f"  {asset}:")
-    print(f"    Reference LL: {r_ref.log_likelihood:.6f}, nu={r_ref.dist_params.nu:.2f}")
-    print(f"    Volkit LL:    {r_volkit.loglikelihood:.6f}, nu={r_volkit.dist_params.nu:.2f}")
-    print(f"    Difference:   {comp['ll_diff']:.2e}")
-    print(f"    Time - Ref: {r_ref.time_elapsed:.3f}s, Volkit: {r_volkit.time_elapsed:.3f}s")
-
-print("\n--- GARCH(1,1) + Skew-t ---")
-for asset in ["stock", "cbond"]:
-    eps_np = np.asarray(AR1_RESID[asset], dtype=np.float64)
-    
-    # Reference implementation
-    r_ref = fit_garch_ref(eps_np, dist="skewt", method="mle", p=1, q=1,
-                          solver="nelder-mead", use_derivatives=False, verbose=False)
-    
-    # volkit implementation
-    spec = GARCH(1, 1) + SkewT()
-    estimator = MLE()
-    r_volkit = estimator.fit(spec, eps_np, solver="nelder-mead", verbose=False)
-    
-    comp = compare_results(r_ref, r_volkit, "SkewT", asset)
-    PARITY_RESULTS.append(comp)
-    
-    print(f"  {asset}:")
-    print(f"    Reference LL: {r_ref.log_likelihood:.6f}, nu={r_ref.dist_params.nu:.2f}, lam={r_ref.dist_params.lam:.4f}")
-    print(f"    Volkit LL:    {r_volkit.loglikelihood:.6f}, nu={r_volkit.dist_params.nu:.2f}, lam={r_volkit.dist_params.lam:.4f}")
-    print(f"    Difference:   {comp['ll_diff']:.2e}")
-    print(f"    Time - Ref: {r_ref.time_elapsed:.3f}s, Volkit: {r_volkit.time_elapsed:.3f}s")
-
-print("\n--- QMLE with Robust Standard Errors ---")
-for asset in ["stock", "cbond"]:
-    eps_np = np.asarray(AR1_RESID[asset], dtype=np.float64)
-    
-    # Reference implementation
-    r_ref = fit_garch_ref(eps_np, dist="normal", method="qmle", p=1, q=1,
-                          solver="trust-constr", use_derivatives=True, verbose=False)
-    
-    # volkit implementation
-    spec = GARCH(1, 1) + Normal()
-    estimator = QMLE()
-    r_volkit = estimator.fit(spec, eps_np, solver="trust", verbose=False)
-    
-    comp = compare_results(r_ref, r_volkit, "QMLE", asset)
-    PARITY_RESULTS.append(comp)
-    
-    print(f"  {asset}:")
-    print(f"    Reference LL: {r_ref.log_likelihood:.6f}")
-    print(f"    Volkit LL:    {r_volkit.loglikelihood:.6f}")
-    print(f"    Difference:   {comp['ll_diff']:.2e}")
-    
-    # Compare robust SEs if available
-    if r_ref.std_errors_robust is not None and r_volkit.std_errors_robust is not None:
-        print(f"    Robust SE(alpha) - Ref: {r_ref.std_errors_robust[1]:.6f}, Volkit: {r_volkit.std_errors_robust[1]:.6f}")
-
-# Summary of parity results
-print("\n--- Parity Summary ---")
-parity_df = pd.DataFrame(PARITY_RESULTS)
-max_diff = parity_df["ll_diff"].max()
-print(f"Maximum log-likelihood difference: {max_diff:.2e}")
-if max_diff < 1e-3:
-    print("PASS: All models within tolerance (< 1e-3)")
-elif max_diff < 1e-1:
-    print("WARNING: Some models have small differences, acceptable for different optimization paths")
-else:
-    print("FAIL: Large differences detected - investigate convergence")
-
-# Save parity results
-parity_df.to_csv(RESULTS_DIR / "volkit_parity.csv", index=False)
-print(f"Parity results saved to: {RESULTS_DIR / 'volkit_parity.csv'}")
-
-
-# =============================================================================
 # SAVE ALL RESULTS TO CSV
 # =============================================================================
 
@@ -628,55 +664,140 @@ for (asset, model), vol_data in VOLATILITIES.items():
 
 
 # =============================================================================
-# VOLATILITY PLOTTING
+# 3.4d: VOLATILITY PLOTTING (commented out to avoid blocking)
 # =============================================================================
 
-def plot_volatilities(asset: str, save_path: str | None = None):
-    """Plot volatility comparison for Normal, Student-t, and Skew-t models."""
+def plot_volatilities(save_path: str | None = None):
+    """Volatility comparison for Normal, Student-t, and Skew-t models."""
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
+    from datetime import datetime
     
-    dates = VOLATILITIES[(asset, "normal")]["dates"]
-    sigma_n = np.sqrt(VOLATILITIES[(asset, "normal")]["sigma2"]) * 100
-    sigma_t = np.sqrt(VOLATILITIES[(asset, "studentt")]["sigma2"]) * 100
-    sigma_s = np.sqrt(VOLATILITIES[(asset, "skewt")]["sigma2"]) * 100
+    assets = [("stock", "Stock"), ("cbond", "Corporate Bond")]
+    COLORS = {"normal": "orange", "studentt": "red", "skewt": "navy"}
     
-    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+    # Create 3x2 subplot grid
+    fig, axes = plt.subplots(3, 2, figsize=(14, 11), sharex=True)
     
-    # Top: All volatilities
-    axes[0].plot(dates, sigma_n, label="Normal", alpha=0.8, lw=0.8)
-    axes[0].plot(dates, sigma_t, label="Student-t", alpha=0.8, lw=0.8)
-    axes[0].plot(dates, sigma_s, label="Skew-t", alpha=0.8, lw=0.8)
-    axes[0].set_ylabel("Volatility (%)")
-    axes[0].set_title(f"GARCH(1,1) Conditional Volatility — {asset}")
-    axes[0].legend(loc="upper right")
-    axes[0].grid(True, alpha=0.3)
+    for col, (asset_key, asset_name) in enumerate(assets):
+        dates = VOLATILITIES[(asset_key, "normal")]["dates"]
+        sigma_n = (
+            np.sqrt(VOLATILITIES[(asset_key, "normal")]["sigma2"]) * 100
+        )
+        sigma_t = (
+            np.sqrt(VOLATILITIES[(asset_key, "studentt")]["sigma2"]) * 100
+        )
+        sigma_s = (
+            np.sqrt(VOLATILITIES[(asset_key, "skewt")]["sigma2"]) * 100
+        )
+        
+        # Row 0: Volatility levels
+        axes[0, col].plot(
+            dates,
+            sigma_n,
+            label="Normal",
+            alpha=0.9,
+            lw=0.8,
+            c=COLORS["normal"],
+        )
+        axes[0, col].plot(
+            dates,
+            sigma_t,
+            label="Student-t",
+            alpha=0.9,
+            lw=0.8,
+            c=COLORS["studentt"],
+        )
+        axes[0, col].plot(
+            dates,
+            sigma_s,
+            label="Skew-t",
+            alpha=0.9,
+            lw=0.8,
+            c=COLORS["skewt"],
+        )
+        axes[0, col].set_title(f"GARCH(1,1) Volatility — {asset_name}")
+        axes[0, col].legend(loc="upper left")
+        axes[0, col].set_ylim(-0.05, 6)
+        axes[0, col].grid(True, alpha=0.3)
+        
+        # Row 1: Differences from Normal
+        axes[1, col].plot(
+            dates,
+            sigma_t - sigma_n,
+            label="Student-t − Normal",
+            alpha=0.9,
+            lw=0.8,
+            c=COLORS["studentt"],
+        )
+        axes[1, col].plot(
+            dates,
+            sigma_s - sigma_n,
+            label="Skew-t − Normal",
+            alpha=0.9,
+            lw=0.8,
+            c=COLORS["skewt"],
+        )
+        # axes[1, col].plot(
+        #     dates,
+        #     sigma_s - sigma_t,
+        #     label="Skew-t − Student-t",
+        #     alpha=0.9,
+        #     lw=0.8,
+        #     c="green"
+        # )
+        
+        axes[1, col].axhline(0, color="k", ls="--", lw=0.5)
+        axes[1, col].legend(loc="upper left")
+        axes[1, col].grid(True, alpha=0.3)
+
+        # Row 2: Difference of differences (Skew-t - Student-t)
+        diff = (sigma_s - sigma_t) * 100
+        axes[2, col].plot(
+            dates,
+            diff,
+            label="Skew-t − Student-t",
+            alpha=0.9,
+            lw=0.8,
+            c="black",
+        )
+        axes[2, col].axhline(0, color="k", ls="--", lw=0.5)
+        axes[2, col].set_xlabel("Date")
+        axes[2, col].legend(loc="upper left")
+        axes[2, col].set_ylim(-0.4, 0.8)
+        axes[2, col].grid(True, alpha=0.3)
+        
+        # Set date range and ticks
+        axes[2, col].set_xlim(dates[0], dates[-1])
+        year_ticks = [
+            datetime(year, 1, 1) for year in range(2000, 2026, 5)
+        ]
+        axes[2, col].set_xticks(year_ticks)
+        axes[2, col].xaxis.set_major_formatter(
+            mdates.DateFormatter("%Y")
+        )
     
-    # Bottom: Differences from Normal
-    axes[1].plot(dates, sigma_t - sigma_n, label="Student-t − Normal", alpha=0.8, lw=0.8)
-    axes[1].plot(dates, sigma_s - sigma_n, label="Skew-t − Normal", alpha=0.8, lw=0.8)
-    axes[1].axhline(0, color="k", ls="--", lw=0.5)
-    axes[1].set_ylabel("Difference (%)")
-    axes[1].set_xlabel("Date")
-    axes[1].legend(loc="upper right")
-    axes[1].grid(True, alpha=0.3)
+    # Share y-axis only for top row (volatility plots)
+    axes[0, 1].sharey(axes[0, 0])
+    axes[2, 1].sharey(axes[2, 0])
     
-    axes[1].xaxis.set_major_locator(mdates.YearLocator(5))
-    axes[1].xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
+    # Y-axis labels
+    axes[0, 0].set_ylabel("Volatility (%)")
+    axes[1, 0].set_ylabel("Difference (%)")
+    axes[1, 1].set_ylabel("Difference (%)")
+    axes[2, 0].set_ylabel("Difference (bps)")
+    # axes[2, 1].set_ylabel("Difference (bps)")
     
     plt.tight_layout()
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        plt.savefig(save_path, dpi=450, bbox_inches="tight")
         print(f"Saved: {save_path}")
-    plt.show()
+    
     return fig
 
-
-# Uncomment to generate plots:
-# plot_volatilities("stock", save_path="results/volatility_stock.png")
-# plot_volatilities("cbond", save_path="results/volatility_cbond.png")
-
+plot_volatilities(save_path="results/volatility_comparison.png")
 
 print("\n" + "="*70)
-print("GARCH Analysis Complete!")
+print("Analysis Complete!")
 print("="*70)
+

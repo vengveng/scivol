@@ -37,7 +37,6 @@ def get_routine(uid: str) -> Routine:
         msg = f"No implementation for family '{mod_name}'. "
         msg += "Request the module to be implemented."
         raise RuntimeError(msg) from e
-    print(mod_name)  # debug
 
     try:
         routine = mod.get_routine(uid)           # every module must expose this

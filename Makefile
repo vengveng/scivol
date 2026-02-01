@@ -13,6 +13,11 @@ t:
 	pytest -q tests/test_result_core.py
 	pytest -q tests/test_fit_mixins.py
 	pytest -q tests/test_mle_core.py
+	pytest -q tests/test_dgp_estimation.py
+
+# Full DGP estimation tests (slower, more thorough)
+dgp:
+	pytest -v tests/test_dgp_estimation.py
 	
 
 f:

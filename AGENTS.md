@@ -5,6 +5,8 @@
 
 **Reference implementations:** `arma_garch_estimator.py` contains verified Python+Numba implementations with analytical gradients/Hessians for ARMA-GARCH models (Normal, Student-t, Skew-t). Use as ground truth when porting to C.
 
+**Benchmarking:** `benchmark_optimizers.py` tests all optimizer configurations on real data. Run periodically to validate/update default settings.
+
 ---
 
 ## Table of Contents
@@ -41,7 +43,43 @@ spec = ARMA(1, 1) + GARCH(1, 1) + StudentT() # Full specification
 
 # Universal interface
 result = spec.fit(data)
+
+# QMLE with robust (sandwich) standard errors
+from volkit.estimators import QMLE
+result = QMLE().fit(spec, data)
+print(result.std_errors_robust)
 ```
+
+#### QMLE (Quasi-Maximum Likelihood Estimation)
+
+QMLE provides robust standard errors that are valid even when the distributional assumption is wrong:
+
+```python
+from volkit import GARCH, Normal, StudentT, SkewT
+from volkit.estimators import QMLE
+
+# Normal: robust SEs for all GARCH parameters
+spec = GARCH(1, 1) + Normal()
+result = QMLE().fit(spec, data)
+print(result.std_errors)        # MLE standard errors
+print(result.std_errors_robust) # Sandwich (robust) standard errors
+
+# Student-t: two-step procedure
+# Step 1: Fit GARCH with Normal LL → robust SEs for GARCH params
+# Step 2: Fix GARCH, fit nu → MLE SE for nu
+spec = GARCH(1, 1) + StudentT()
+result = QMLE().fit(spec, data)
+# result.std_errors_robust[0:3] = robust SEs for [omega, alpha, beta]
+# result.std_errors_robust[3]   = MLE SE for nu
+
+# Skew-t: same two-step procedure
+spec = GARCH(1, 1) + SkewT()
+result = QMLE().fit(spec, data)
+# result.std_errors_robust[0:3] = robust SEs for [omega, alpha, beta]
+# result.std_errors_robust[3:5] = MLE SEs for [nu, lambda]
+```
+
+The sandwich covariance is: `V_robust = H^{-1} @ OPG @ H^{-1}` where H is the Hessian and OPG is the outer product of gradients.
 
 #### Component System
 
@@ -316,6 +354,23 @@ np.testing.assert_allclose(hess_analytical, hess_numerical, rtol=1e-4, atol=1e-6
 - Correctness: Does it match finite differences?
 - Boundary cases: Does it handle constraints properly?
 
+### Master DGP Test File (Keep Evergreen)
+
+**`tests/test_dgp_estimation.py`** is the canonical test file for volkit estimation accuracy.
+
+**Keep this file updated** when adding new models or distributions:
+1. Add a `simulate_*` DGP function for the new model
+2. Add true parameters to `TRUE_PARAMS` dict
+3. Add a test class with `test_convergence` and `test_parameter_recovery`
+
+**Test approach:**
+- Generate 5000 observations from known true parameters
+- Estimate the model using volkit
+- Verify optimization converges
+- Check parameter recovery within tolerance
+
+**Run with:** `pytest tests/test_dgp_estimation.py -v`
+
 ### Testing Patterns
 
 **Use pytest with fixtures**:
@@ -372,20 +427,6 @@ The internal kernel/routine organization is being refined. Current architecture 
 - `volkit/_kernels/routine.py` - `Routine` dataclass
 - `volkit/_kernels/garch_normal.py` - GARCH+Normal implementations
 - `volkit/_kernels/garch_studentt.py` - GARCH+StudentT implementations
-
-#### Alternative: Self-Contained Estimators
-
-**Location**: Root `.py` files (`garch_estimator.py`, etc.)
-
-**Pattern**:
-- Single function per model family: `fit_garch()`
-- Parameters control variants: `dist="normal"`, `p=1, q=1`
-- All logic (bounds, initialization, optimization) in one place
-- Calls C extensions for heavy computation
-
-**Trade-offs being evaluated**:
-- Registry: DRY, consistent, but scattered across files
-- Self-contained: Easy to understand, but some duplication
 
 ### What's Stable
 
@@ -463,7 +504,7 @@ class OptimizeResultLike(Protocol):
 - C functions: `garch_variance_11`, `garch_ll_pq_normal`
 
 **Files/Modules**:
-- lowercase with underscores: `garch_estimator.py`, `numerical_hessians.py`
+- lowercase with underscores: `benchmark_optimizers.py`, `numerical_hessians.py`
 - Private modules: underscore prefix: `_mixins.py`, `_kernels/`, `_csrc/`
 
 ---
@@ -615,14 +656,14 @@ volkit/
 │   ├── __init__.py
 │   ├── base.py              # Estimator ABC
 │   ├── mle.py               # Maximum Likelihood
-│   └── qmle.py              # Quasi-MLE (placeholder)
+│   └── qmle.py              # QMLE with robust (sandwich) SEs
 ├── result.py                # EstimationResult class
 ├── roles.py                 # Role enum (MEAN, VOLATILITY, DENSITY)
 └── _mixins.py               # FitsMixin helper
 
 Root-level files (reference implementations & analysis):
 ├── arma_garch_estimator.py  # ARMA-GARCH with analytical grad/Hess (Normal/t/Skew-t)
-├── garch_estimator.py       # Self-contained GARCH estimator
+├── benchmark_optimizers.py  # Optimizer benchmarking (keep evergreen)
 ├── likelihoods.py           # Log-likelihood functions
 ├── numerical_hessians.py    # Finite difference validation
 ├── utilities.py             # Statistical tests
@@ -661,10 +702,10 @@ from volkit.result import EstimationResult
 1. **Complete C gradient/Hessian** for Student-t and Skew-t distributions
 2. **Integrate into volkit component system** - wire up C functions to `volkit/` API
 3. **Add missing capabilities** to `volkit/`:
-   - `SkewT` component wrapping C implementation
-   - Robust standard errors (QMLE implementation)
-   - Rich result objects (sigma2, standardized residuals, timing)
-   - Log-space (unconstrained) optimization option
+   - ✅ `SkewT` component wrapping C implementation
+   - ✅ Robust standard errors (QMLE implementation)
+   - ✅ Rich result objects (sigma2, standardized residuals, timing)
+   - Log-space (unconstrained) optimization option (partially implemented)
 
 ### Future Models
 
@@ -716,6 +757,47 @@ For new models:
 
 This pattern was used for `arma_garch_estimator.py` → `arma_garch.c`.
 
+### Benchmark Testing (Keep Evergreen)
+
+`benchmark_optimizers.py` tests all optimizer configurations:
+- Model types: GARCH(1,1), ARMA(1,1)-GARCH(1,1)
+- All distributions (Normal, Student-t, Skew-t)
+- All solvers (nelder-mead, slsqp, trust)
+- Log-mode vs constrained mode
+- Multiple real asset classes (stock, bond, commodity, etc.)
+
+Run after any changes to optimization code to validate defaults:
+```bash
+python benchmark_optimizers.py
+```
+
+Results saved to `benchmark_results/` with recommended defaults.
+
+**Current Recommended Defaults** (as of 2026-01-30):
+
+**GARCH(1,1) Models:**
+
+| Distribution | Solver | Log Mode | Avg Time | Conv Rate |
+|--------------|--------|----------|----------|-----------|
+| Normal       | slsqp  | True     | 0.003s   | 100%      |
+| Student-t    | slsqp  | True     | 0.008s   | 100%      |
+| Skew-t       | slsqp  | False    | 0.033s   | 100%      |
+
+**ARMA(1,1)-GARCH(1,1) Models:**
+
+| Distribution | Solver | Log Mode | Avg Time | Conv Rate |
+|--------------|--------|----------|----------|-----------|
+| Normal       | slsqp  | False    | 0.005s   | 100%      |
+| Student-t    | slsqp  | False    | 0.055s   | 100%      |
+| Skew-t       | slsqp  | False    | 0.027s   | 100%      |
+
+Key findings:
+- `slsqp` is fastest AND most reliable across all distributions
+- `trust` solver has poor convergence (0-67%), avoid as default
+- `nelder-mead` is reliable but 5-10x slower than `slsqp`
+- Log-mode (unconstrained) works well for GARCH Normal/Student-t
+- Constrained mode better for Skew-t and all ARMA-GARCH models
+
 ### Questions to Ask
 
 Before implementing:
@@ -731,6 +813,6 @@ Before implementing:
 
 For questions or clarifications about this guide, check:
 - Implementation examples in `volkit/components/` and `volkit/_kernels/`
-- Alternative patterns in `garch_estimator.py`
+- Reference implementations in `arma_garch_estimator.py`
 - Test patterns in `tests/`
 - C interface in `volkit/_core.c` and `volkit/_core.pyi`

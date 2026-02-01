@@ -145,6 +145,25 @@ py_skewt_nll(PyObject *self,
     return PyFloat_FromDouble(nll);
 }
 
+/* Skew-t NLL with gradient for GARCH(1,1) 
+ * Takes returns data directly, computes h internally
+ * theta = [omega, alpha, beta, nu, lam] */
+static PyObject *
+py_garch_ll_grad_11_skewt(PyObject *self,
+                          PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 4) { BAD_ARITY("garch_ll_grad_11_skewt", 4, nargs); return NULL; }
+
+    const double *theta  = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y      = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *grad   = (double *)      PyLong_AsVoidPtr(args[2]);
+    size_t n             = PyLong_AsSize_t(args[3]);
+    if (PyErr_Occurred()) return NULL;
+
+    double nll = garch_ll_grad_11_skewt(theta, y, grad, n);
+    return PyFloat_FromDouble(nll);
+}
+
 static PyObject *
 py_garch_opg_hess_pq(PyObject *self,
     PyObject *const *args, Py_ssize_t nargs)
@@ -770,7 +789,9 @@ static PyMethodDef Methods[] = {
     {"_skewt_ll",                (PyCFunction)py_skewt_ll,
                                   METH_FASTCALL, "Hansen (1994) Skew-t log-likelihood"},
     {"_skewt_nll",               (PyCFunction)py_skewt_nll,
-                                  METH_FASTCALL, "Hansen (1994) Skew-t negative log-likelihood"},                        
+                                  METH_FASTCALL, "Hansen (1994) Skew-t negative log-likelihood"},
+    {"_garch_ll_grad_11_skewt",  (PyCFunction)py_garch_ll_grad_11_skewt,
+                                  METH_FASTCALL, "GARCH(1,1) + Skew-t NLL with gradient"},
 
     // OLD                            
     {"_garch_opg_hess_pq",       (PyCFunction)py_garch_opg_hess_pq,

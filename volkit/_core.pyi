@@ -115,6 +115,15 @@ def _skewt_nll(
     """Hansen (1994) Skewed Student-t negative log-likelihood."""
     ...
 
+def _garch_ll_grad_11_skewt(
+    theta_ptr: _IntPtr,   # [omega, alpha, beta, nu, lam]
+    y_ptr: _IntPtr,       # Returns data
+    grad_ptr: _IntPtr,    # Output: gradient [5] (modified in-place)
+    n: _Size,
+) -> float:
+    """GARCH(1,1) + Skew-t NLL with analytical gradient. Returns NLL."""
+    ...
+
 # ── Standard error computation (OPG & Hessian) ────────────────────────────
 
 def _garch_opg_hess_pq(

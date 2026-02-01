@@ -55,6 +55,15 @@ double skewt_nll(const double* resid,
                  const double nu,
                  const double lam);
 
+/* Skew-t NLL with gradient for GARCH(1,1) 
+ * Takes returns data (y), computes residuals internally
+ * Returns NLL (for minimization) */
+double garch_ll_grad_11_skewt(
+    const double* theta,     /* [omega, alpha, beta, nu, lam] */
+    const double* y,         /* returns data */
+    double*       grad,      /* output: gradient [5] */
+    size_t n);
+
 double normal_ll(const double* sigma2, 
                  const double* residuals2, 
                  size_t n);

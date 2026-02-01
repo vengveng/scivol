@@ -1,6 +1,18 @@
+/*
+ * volkit/_csrc/likelihood_studentt.c
+ *
+ * Student-t distribution log-likelihood for GARCH models.
+ * 
+ * Note: Gradient and Hessian functions are in likelihood_garch.c
+ */
+
 #include <stddef.h>
 #include <stdlib.h>
 #include <math.h>
+
+/* ============================================================================
+ * Student-t Log-Likelihood
+ * ============================================================================ */
 
 __attribute__((visibility("default"), hot, flatten))
 double studentt_ll(const double* __restrict sigma2,
