@@ -266,24 +266,40 @@ class FitsMixin:
         -------
         Dict[str, EstimationResult]
         """
-        from ._parallel import fit_multi_parallel, get_default_workers
+        from ._parallel import fit_multi_parallel, fit_multi_auto_parallel, get_default_workers
         
         n_jobs = n_jobs if n_jobs is not None else get_default_workers()
         
         # Build data dict
         data_dict = {col: data[:, i] for i, col in enumerate(columns)}
         
-        # Serialize spec for cross-process use
+        # Check if auto-selection is enabled
+        if self._has_auto_components():
+            # Use flattened parallelism: (n_series × n_candidates) tasks
+            # This maximizes CPU utilization
+            vol_candidates = self._get_vol_candidates()
+            density_candidates = self._get_density_candidates()
+            
+            return fit_multi_auto_parallel(
+                data_dict=data_dict,
+                vol_candidates=vol_candidates,
+                density_candidates=density_candidates,
+                index=index,
+                diagnostic_weight=diagnostic_weight,
+                n_jobs=n_jobs,
+                verbose=verbose_selection,
+                **kwargs,
+            )
+        
+        # Non-auto: parallelize only across series
         spec_params = self._spec_to_params()
         
-        # Build fit kwargs
         fit_kwargs = {
             'diagnostic_weight': diagnostic_weight,
             'verbose_selection': verbose_selection,
             **kwargs,
         }
         
-        # Fit in parallel
         results = fit_multi_parallel(
             spec_params=spec_params,
             data_dict=data_dict,

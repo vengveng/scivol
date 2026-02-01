@@ -7,6 +7,11 @@ name            = "volkit"
 version         = "0.1.0"
 description     = "GARCH helpers in C"
 requires-python = ">=3.9"
+dependencies    = [
+    "numpy>=1.22",
+    "scipy>=1.7",
+    "joblib>=1.2",
+]
 
 [tool.setuptools]
 packages = [
