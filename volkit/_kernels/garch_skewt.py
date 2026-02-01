@@ -1,9 +1,9 @@
 """
-GARCH(p,q) + Skewed Student-t likelihood (numerical derivatives).
+GARCH(p,q) + Hansen (1994) Skewed Student-t likelihood.
 
 UID handled:  "GARCH(p,q)+SkewT"
 
-Uses the Hansen (1994) parameterization for the skewed Student-t distribution.
+Uses C-accelerated Hansen (1994) Skew-t log-likelihood for fast computation.
 Supports both constrained (log_mode=False) and unconstrained (log_mode=True)
 optimization.
 """
@@ -23,17 +23,6 @@ from ..spec.composite import CompositeSpec
 from ..result import EstimationResult
 from .routine import Routine
 from .transforms import pack_garch_skewt, unpack_garch_skewt, jacobian_garch_skewt
-
-# Import skewt likelihood from reference implementation
-import sys
-from pathlib import Path
-
-# Add parent directory to path for importing likelihoods
-_root = Path(__file__).resolve().parents[2]
-if str(_root) not in sys.path:
-    sys.path.insert(0, str(_root))
-
-from likelihoods import skewt_loglik
 
 # ------------------------------------------------------------------ #
 # cache (p,q) → Routine
@@ -107,15 +96,19 @@ def _build(p: int, q: int) -> Routine:
         K = n_total  # Total number of parameters
 
         def objective(theta: NDArray[np.float64]) -> float:
-            """Negative log-likelihood for GARCH + Skew-t."""
+            """Negative log-likelihood for GARCH + Skew-t (C-accelerated)."""
             theta_garch = theta[:n_garch]
             nu, lam = theta[n_garch], theta[n_garch + 1]
 
             # Compute GARCH variance using C extension
             _garch_variance(theta_garch, resid2, sigma2, p, q)
 
-            # Compute skew-t log-likelihood using Python function
-            ll = skewt_loglik(resid, sigma2, nu, lam)
+            # Compute skew-t log-likelihood using C extension (Hansen 1994)
+            ll = _core._skewt_ll(
+                _as_cptr(resid),
+                _as_cptr(sigma2),
+                n, nu, lam
+            )
             return -ll / n  # Return negative for minimization, scaled
 
         if not log_mode:
@@ -185,11 +178,11 @@ def _build(p: int, q: int) -> Routine:
             
             p_scaler = 2  # Scale factor for numerical stability
             
-            # Pre-allocate buffer for C transform
+            # Pre-allocate buffer for C transforms
             _theta_buf = np.empty(K, dtype=np.float64)
             
             def pack(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                """C-accelerated transform: z -> theta."""
+                """C-accelerated transform z -> theta."""
                 pack_garch_skewt_c(z, _theta_buf, p, q)
                 return _theta_buf
             
@@ -198,7 +191,7 @@ def _build(p: int, q: int) -> Routine:
                 return unpack_garch_skewt(theta, p, q)
             
             def obj_log(z: NDArray[np.float64]) -> float:
-                """Objective function in z-space."""
+                """Objective function in z-space (C-accelerated)."""
                 pack_garch_skewt_c(z, _theta_buf, p, q)
                 return objective(_theta_buf) * n * p_scaler  # Unscale then rescale
             
@@ -240,12 +233,20 @@ def _build(p: int, q: int) -> Routine:
             z0 = unpack(theta0)
             
             if solver.lower() == "nelder-mead":
+                # Scale fatol by objective scaling factor (n * p_scaler) for proper convergence
                 res = minimize(
                     obj_log,
                     z0,
                     method="Nelder-Mead",
                     tol=1e-12,
-                    options={"disp": verbose, "maxiter": 5000, "maxfev": 50000}
+                    options={
+                        "disp": verbose,
+                        "maxiter": 5000,
+                        "maxfev": 50000,
+                        "xatol": 1e-8,
+                        "fatol": 1e-12 * n * p_scaler,  # Scale with objective
+                        "adaptive": True,
+                    }
                 )
             
             elif solver.lower() == "slsqp":

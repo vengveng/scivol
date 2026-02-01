@@ -5,7 +5,7 @@
 // Transforms:
 //   omega = exp(z_omega)                    ensures omega > 0
 //   (alpha, beta, r) = softmax(z_alpha, z_beta, 0)  ensures alpha + beta < 1
-//   nu = 2 + exp(z_nu)                      ensures nu > 2
+//   nu = 2 + softplus(z_nu)                 ensures nu > 2
 //   lam = tanh(z_lam)                       ensures -1 < lam < 1
 
 #include <math.h>
@@ -15,6 +15,7 @@
 // Clipping bounds to prevent overflow in exp()
 #define EXP_CLIP_MIN -700.0
 #define EXP_CLIP_MAX  700.0
+#define SOFTPLUS_THRESHOLD 20.0
 
 VLK_FORCE_INLINE double clip(double x, double lo, double hi) {
     return x < lo ? lo : (x > hi ? hi : x);
@@ -22,6 +23,25 @@ VLK_FORCE_INLINE double clip(double x, double lo, double hi) {
 
 VLK_FORCE_INLINE double safe_exp(double x) {
     return exp(clip(x, EXP_CLIP_MIN, EXP_CLIP_MAX));
+}
+
+// Softplus: log(1 + exp(x)) - numerically stable
+VLK_FORCE_INLINE double softplus(double x) {
+    if (x > SOFTPLUS_THRESHOLD) return x;
+    return log1p(exp(x));
+}
+
+// Softplus inverse: log(exp(y) - 1)
+VLK_FORCE_INLINE double softplus_inv(double y) {
+    if (y > SOFTPLUS_THRESHOLD) return y;
+    return log(expm1(y));
+}
+
+// Softplus derivative: sigmoid(x) = 1 / (1 + exp(-x))
+VLK_FORCE_INLINE double softplus_deriv(double x) {
+    if (x > SOFTPLUS_THRESHOLD) return 1.0;
+    if (x < -SOFTPLUS_THRESHOLD) return 0.0;
+    return 1.0 / (1.0 + exp(-x));
 }
 
 // =============================================================================
@@ -61,8 +81,8 @@ void pack_garch_studentt_11(const double *z, double *theta)
     // First pack GARCH params
     pack_garch_11(z, theta);
     
-    // nu = 2 + exp(z_nu)
-    theta[3] = 2.0 + safe_exp(z[3]);
+    // nu = 2 + softplus(z_nu)
+    theta[3] = 2.0 + softplus(z[3]);
 }
 
 __attribute__((visibility("default"), hot, flatten))
@@ -74,8 +94,8 @@ void pack_garch_skewt_11(const double *z, double *theta)
     // First pack GARCH params
     pack_garch_11(z, theta);
     
-    // nu = 2 + exp(z_nu)
-    theta[3] = 2.0 + safe_exp(z[3]);
+    // nu = 2 + softplus(z_nu)
+    theta[3] = 2.0 + softplus(z[3]);
     
     // lam = tanh(z_lam)
     theta[4] = tanh(z[4]);
@@ -137,8 +157,10 @@ void jacobian_garch_studentt_11(const double *theta, double *J)
     J[9]  = -beta * alpha;            // J[2,1]
     J[10] = beta * (1.0 - beta);      // J[2,2]
     
-    // J[3,3] = d(nu)/d(z_nu) = nu - 2
-    J[15] = nu - 2.0;
+    // J[3,3] = d(nu)/d(z_nu) = softplus'(z_nu) = sigmoid(z_nu)
+    // z_nu = softplus_inv(nu - 2)
+    const double z_nu = softplus_inv(nu - 2.0);
+    J[15] = softplus_deriv(z_nu);
 }
 
 __attribute__((visibility("default"), hot, flatten))
@@ -163,8 +185,9 @@ void jacobian_garch_skewt_11(const double *theta, double *J)
     J[11] = -beta * alpha;            // J[2,1]
     J[12] = beta * (1.0 - beta);      // J[2,2]
     
-    // J[3,3] = d(nu)/d(z_nu) = nu - 2
-    J[18] = nu - 2.0;
+    // J[3,3] = d(nu)/d(z_nu) = softplus'(z_nu) = sigmoid(z_nu)
+    const double z_nu = softplus_inv(nu - 2.0);
+    J[18] = softplus_deriv(z_nu);
     
     // J[4,4] = d(lam)/d(z_lam) = 1 - lam^2 = sech^2(z_lam)
     J[24] = 1.0 - lam * lam;
@@ -254,8 +277,8 @@ void pack_garch_studentt_pq(const double *z, double *theta, size_t p, size_t q)
     // Pack GARCH params
     pack_garch_pq(z, theta, p, q);
     
-    // nu = 2 + exp(z_nu)
-    theta[n_garch] = 2.0 + safe_exp(z[n_garch]);
+    // nu = 2 + softplus(z_nu)
+    theta[n_garch] = 2.0 + softplus(z[n_garch]);
 }
 
 __attribute__((visibility("default"), hot))
@@ -266,8 +289,8 @@ void pack_garch_skewt_pq(const double *z, double *theta, size_t p, size_t q)
     // Pack GARCH params
     pack_garch_pq(z, theta, p, q);
     
-    // nu = 2 + exp(z_nu)
-    theta[n_garch] = 2.0 + safe_exp(z[n_garch]);
+    // nu = 2 + softplus(z_nu)
+    theta[n_garch] = 2.0 + softplus(z[n_garch]);
     
     // lam = tanh(z_lam)
     theta[n_garch + 1] = tanh(z[n_garch + 1]);
@@ -319,8 +342,10 @@ void jacobian_garch_studentt_pq(const double *theta, double *J, size_t p, size_t
         }
     }
     
-    // nu: J[n_garch, n_garch] = nu - 2
-    J[n_garch * K + n_garch] = theta[n_garch] - 2.0;
+    // nu: J[n_garch, n_garch] = softplus'(z_nu)
+    const double nu = theta[n_garch];
+    const double z_nu = softplus_inv(nu - 2.0);
+    J[n_garch * K + n_garch] = softplus_deriv(z_nu);
 }
 
 __attribute__((visibility("default"), hot))
@@ -342,8 +367,10 @@ void jacobian_garch_skewt_pq(const double *theta, double *J, size_t p, size_t q)
         }
     }
     
-    // nu: J[n_garch, n_garch] = nu - 2
-    J[n_garch * K + n_garch] = theta[n_garch] - 2.0;
+    // nu: J[n_garch, n_garch] = softplus'(z_nu)
+    const double nu = theta[n_garch];
+    const double z_nu = softplus_inv(nu - 2.0);
+    J[n_garch * K + n_garch] = softplus_deriv(z_nu);
     
     // lam: J[n_garch+1, n_garch+1] = 1 - lam^2
     const double lam = theta[n_garch + 1];

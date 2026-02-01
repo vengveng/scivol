@@ -56,3 +56,22 @@ VLK_FORCE_INLINE double trigamma_approx(double x)
         + (5.0 / 66.0) * inv10* inv;
     return result;
 }
+
+VLK_FORCE_INLINE double lgamma_approx(double x)
+{
+    /* Log-gamma using Stirling's approximation for x >= 10, recursion otherwise */
+    if (x <= 0) return 1e10;
+    double result = 0.0;
+    while (x < 10.0) {
+        result -= log(x);
+        x += 1.0;
+    }
+    /* Stirling for x >= 10 */
+    return result + (x - 0.5) * log(x) - x + 0.5 * log(2 * M_PI) + 1.0 / (12.0 * x);
+}
+
+/* Common constants */
+#define LOG_2PI   1.8378770664093453  /* log(2*pi) */
+#define H_FLOOR   1e-12
+#define NU_MIN    2.001
+#define LAM_MAX   0.999

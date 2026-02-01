@@ -3,6 +3,8 @@
 **Last Updated:** 2026-01-30  
 **Purpose:** Essential architectural rules, patterns, and constraints for developing the volkit time series volatility modeling library.
 
+**Reference implementations:** `arma_garch_estimator.py` contains verified Python+Numba implementations with analytical gradients/Hessians for ARMA-GARCH models (Normal, Student-t, Skew-t). Use as ground truth when porting to C.
+
 ---
 
 ## Table of Contents
@@ -201,9 +203,94 @@ extra-compile-args = [
 ]
 ```
 
+#### Shared Math Functions
+
+Generic math functions go in `volkit/_csrc/math_and_helpers.h`:
+
+```c
+// Already provided:
+VLK_FORCE_INLINE double digamma_approx(double x);   // ψ(x)
+VLK_FORCE_INLINE double trigamma_approx(double x);  // ψ'(x)
+VLK_FORCE_INLINE double lgamma_approx(double x);    // log Γ(x)
+
+// Constants:
+#define LOG_2PI   1.8378770664093453
+#define H_FLOOR   1e-12   // Minimum variance floor
+#define NU_MIN    2.001   // Minimum degrees of freedom
+#define LAM_MAX   0.999   // Maximum skewness magnitude
+```
+
+#### 🔴 C Performance Rule: Precompute Constants
+
+**Never compute distribution constants inside the observation loop.**
+
+```c
+// ❌ WRONG: lgamma computed 6000+ times
+for (size_t t = 1; t < n; t++) {
+    double cnst = lgamma_approx(0.5*(nu+1)) - lgamma_approx(0.5*nu);  // Wasteful!
+    sum_nll += -cnst + 0.5*log(h) + ...;
+}
+
+// ✅ CORRECT: Compute once before loop
+double cnst = lgamma_approx(0.5*(nu+1)) - lgamma_approx(0.5*nu) - 0.5*log(nu*M_PI);
+for (size_t t = 1; t < n; t++) {
+    sum_nll += studentt_nll_var(e, h, nu);  // Only h-varying part
+}
+return (sum_nll - n_eff * cnst) / n_eff;
+```
+
+This applies to Student-t (`lgamma` terms) and Skew-t (`a`, `b` constants).
+
 ---
 
 ## 3. Development Standards
+
+### Initialization Conventions (ARMA-GARCH)
+
+**Standard initialization for time series models:**
+
+```python
+e_0 = 0.0           # Initial residual (conditioned on)
+h_0 = mean(y²)      # Initial variance (or mean(eps²) for GARCH-only)
+LL starts at t=1    # First obs with proper y_{t-1} available
+n_eff = n - 1       # Effective sample size for scaling
+```
+
+**Why this matters:**
+- At t=0, we don't have y_{-1}, so we can't compute a proper AR term
+- Setting e_0=0 and starting LL at t=1 avoids biasing φ, θ estimates
+- Consistent h_0 across models enables apples-to-apples LL comparisons
+
+**In C code:**
+```c
+resid[0] = 0.0;      // e_0 = 0 (conditioning)
+sigma2[0] = h0;      // h_0 passed from Python
+for (size_t t = 1; t < n; t++) { ... }  // Start at t=1
+return sum_nll / (double)(n - 1);       // Scale by n_eff
+```
+
+### Analytical Gradients via Sensitivity Recursions
+
+For ARMA-GARCH, compute ∂e_t/∂θ and ∂h_t/∂θ recursively:
+
+```
+∂e_t/∂c     = -1 - θ·∂e_{t-1}/∂c
+∂e_t/∂φ     = -y_{t-1} - θ·∂e_{t-1}/∂φ
+∂e_t/∂θ_ma  = -e_{t-1} - θ·∂e_{t-1}/∂θ_ma
+
+∂h_t/∂ω     = 1 + α·∂(e²)_{t-1}/∂ω + β·∂h_{t-1}/∂ω
+∂h_t/∂α     = e²_{t-1} + α·∂(e²)_{t-1}/∂α + β·∂h_{t-1}/∂α
+∂h_t/∂β     = h_{t-1} + α·∂(e²)_{t-1}/∂β + β·∂h_{t-1}/∂β
+
+where ∂(e²)/∂θ = 2·e·∂e/∂θ
+```
+
+Per-observation gradient contribution:
+```
+∂ℓ_t/∂θ = (e_t/h_t)·∂e_t/∂θ + 0.5·(1/h_t - e²_t/h²_t)·∂h_t/∂θ
+```
+
+For Hessians, also track ∂²e_t/∂θ∂θ' and ∂²h_t/∂θ∂θ'.
 
 ### Derivative Validation (Required)
 
@@ -505,9 +592,10 @@ volkit/
 ├── _core.pyi                # Type stubs for C functions
 ├── _csrc/                   # C implementation
 │   ├── volkit_core.h        # Public C API declarations
-│   ├── math_and_helpers.h   # Internal helpers
+│   ├── math_and_helpers.h   # Shared math (lgamma, digamma, constants)
 │   ├── variance_garch.c     # GARCH variance recursion
 │   ├── likelihood_*.c       # Distribution log-likelihoods
+│   ├── arma_garch.c         # ARMA-GARCH NLL + gradients (Normal/t/Skew-t)
 │   └── errors_garch.c       # OPG and Hessian computation
 ├── _kernels/                # Optimization kernels (internal)
 │   ├── __init__.py          # Registry and dispatcher
@@ -532,7 +620,8 @@ volkit/
 ├── roles.py                 # Role enum (MEAN, VOLATILITY, DENSITY)
 └── _mixins.py               # FitsMixin helper
 
-Root-level files (alternative interface under development):
+Root-level files (reference implementations & analysis):
+├── arma_garch_estimator.py  # ARMA-GARCH with analytical grad/Hess (Normal/t/Skew-t)
 ├── garch_estimator.py       # Self-contained GARCH estimator
 ├── likelihoods.py           # Log-likelihood functions
 ├── numerical_hessians.py    # Finite difference validation
@@ -558,15 +647,24 @@ from volkit.result import EstimationResult
 
 ## Next Steps for Development
 
+### Completed
+
+- ✅ ARMA-GARCH Python reference with analytical gradients/Hessians
+- ✅ Normal, Student-t, Skew-t distributions
+- ✅ C implementations for ARMA(1,1)-GARCH(1,1) NLL + gradient (Normal)
+- ✅ C implementations for ARMA(p,q)-GARCH(P,Q) NLL (all distributions)
+- ✅ Sensitivity recursion framework for derivatives
+- ✅ Shared math functions in `math_and_helpers.h`
+
 ### Immediate Goals
 
-1. **Achieve functional parity** between `volkit/` and root `.py` interface
-2. **Add missing capabilities** to `volkit/`:
-   - Skew-t distribution (`SkewT` component)
+1. **Complete C gradient/Hessian** for Student-t and Skew-t distributions
+2. **Integrate into volkit component system** - wire up C functions to `volkit/` API
+3. **Add missing capabilities** to `volkit/`:
+   - `SkewT` component wrapping C implementation
    - Robust standard errors (QMLE implementation)
    - Rich result objects (sigma2, standardized residuals, timing)
-   - Multiple solver support with log-space optimization
-   - DGT diagnostic tests
+   - Log-space (unconstrained) optimization option
 
 ### Future Models
 
@@ -605,7 +703,18 @@ Each model family will need:
 ❌ **Forgetting contiguous** - Non-contiguous arrays cause corruption  
 ❌ **Wrong dtype** - Must be `float64`, not `float32` or Python float  
 ❌ **No pre-allocation** - Output arrays must exist before C call  
-❌ **Duplicating C logic in Python** - Always call C for computation
+❌ **Duplicating C logic in Python** - Always call C for computation  
+❌ **Constants in loops** - Precompute lgamma, distribution constants outside loops
+
+### Development Pattern: Numba First, Then C
+
+For new models:
+1. **Implement in Python with `@numba.njit`** - Fast iteration, easy debugging
+2. **Validate derivatives** against finite differences
+3. **Port to C** using the Numba code as reference
+4. **Verify C matches Numba** to <1e-12 precision
+
+This pattern was used for `arma_garch_estimator.py` → `arma_garch.c`.
 
 ### Questions to Ask
 

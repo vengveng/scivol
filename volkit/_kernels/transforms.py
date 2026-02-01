@@ -133,22 +133,54 @@ def jacobian_garch(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.flo
 
 
 # =============================================================================
+# SOFTPLUS HELPERS (for nu transform - gives nicer optimization landscape)
+# =============================================================================
+
+SOFTPLUS_THRESHOLD = 20.0  # For numerical stability
+
+
+def softplus(x: float) -> float:
+    """Numerically stable softplus: log(1 + exp(x))."""
+    if x > SOFTPLUS_THRESHOLD:
+        return x  # Avoid overflow
+    return np.log1p(np.exp(x))
+
+
+def softplus_inv(y: float) -> float:
+    """Inverse softplus: log(exp(y) - 1)."""
+    if y > SOFTPLUS_THRESHOLD:
+        return y  # Approximate inverse for large y
+    return np.log(np.expm1(y))
+
+
+def softplus_deriv(x: float) -> float:
+    """Derivative of softplus: sigmoid(x) = 1 / (1 + exp(-x))."""
+    if x > SOFTPLUS_THRESHOLD:
+        return 1.0
+    if x < -SOFTPLUS_THRESHOLD:
+        return 0.0
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+# =============================================================================
 # STUDENT-T PARAMETER TRANSFORMS
 # =============================================================================
 
 def pack_studentt(z_nu: float) -> float:
-    """Transform unconstrained z_nu to constrained nu > 2."""
-    return 2.0 + np.exp(np.clip(z_nu, -700.0, 700.0))
+    """Transform unconstrained z_nu to constrained nu > 2 using softplus."""
+    return 2.0 + softplus(z_nu)
 
 
 def unpack_studentt(nu: float) -> float:
     """Transform constrained nu to unconstrained z_nu."""
-    return np.log(nu - 2.0)
+    return softplus_inv(nu - 2.0)
 
 
 def jacobian_studentt(nu: float) -> float:
-    """Compute ∂nu/∂z_nu = nu - 2."""
-    return nu - 2.0
+    """Compute ∂nu/∂z_nu = softplus'(z_nu) = sigmoid(z_nu)."""
+    # We need z_nu = softplus_inv(nu - 2)
+    z_nu = softplus_inv(nu - 2.0)
+    return softplus_deriv(z_nu)
 
 
 # =============================================================================
@@ -159,17 +191,17 @@ def pack_skewt(z_nu: float, z_lam: float) -> tuple[float, float]:
     """
     Transform unconstrained (z_nu, z_lam) to constrained (nu, lambda).
     
-    nu = 2 + exp(z_nu)    ensures nu > 2
-    lambda = tanh(z_lam)  ensures lambda ∈ (-1, 1)
+    nu = 2 + softplus(z_nu)    ensures nu > 2
+    lambda = tanh(z_lam)       ensures lambda ∈ (-1, 1)
     """
-    nu = 2.0 + np.exp(np.clip(z_nu, -700.0, 700.0))
+    nu = 2.0 + softplus(z_nu)
     lam = np.tanh(z_lam)
     return nu, lam
 
 
 def unpack_skewt(nu: float, lam: float) -> tuple[float, float]:
     """Transform constrained (nu, lambda) to unconstrained (z_nu, z_lam)."""
-    z_nu = np.log(nu - 2.0)
+    z_nu = softplus_inv(nu - 2.0)
     z_lam = np.arctanh(np.clip(lam, -0.999, 0.999))
     return z_nu, z_lam
 
@@ -179,11 +211,12 @@ def jacobian_skewt(nu: float, lam: float) -> NDArray[np.float64]:
     Compute Jacobian J = ∂(nu, lambda)/∂(z_nu, z_lam).
     
     Returns 2×2 diagonal matrix:
-        ∂nu/∂z_nu = nu - 2
+        ∂nu/∂z_nu = softplus'(z_nu) = sigmoid(z_nu)
         ∂lambda/∂z_lam = 1 - lambda²  (derivative of tanh)
     """
+    z_nu = softplus_inv(nu - 2.0)
     J = np.zeros((2, 2), dtype=np.float64)
-    J[0, 0] = nu - 2.0
+    J[0, 0] = softplus_deriv(z_nu)
     J[1, 1] = 1.0 - lam * lam  # sech²(z_lam) = 1 - tanh²(z_lam)
     return J
 

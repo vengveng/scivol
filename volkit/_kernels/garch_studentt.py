@@ -263,7 +263,14 @@ def _build(p: int, q: int) -> Routine:
                     z0,
                     method="Nelder-Mead",
                     tol=1e-12,
-                    options={"disp": verbose, "maxiter": 5000, "maxfev": 50000}
+                    options={
+                        "disp": verbose,
+                        "maxiter": 5000,
+                        "maxfev": 50000,
+                        "xatol": 1e-8,
+                        "fatol": 1e-12,
+                        "adaptive": True,
+                    }
                 )
             
             elif solver.lower() == "slsqp":

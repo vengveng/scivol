@@ -36,6 +36,25 @@ double studentt_ll(const double* sigma2,
                    const size_t n,
                    const double nu);
 
+/* Hansen (1994) Skew-t log-likelihood */
+double skewt_ll(const double* resid,
+                const double* sigma2,
+                const size_t n,
+                const double nu,
+                const double lam);
+
+double skewt_ll_z(const double* z,
+                  const double* sigma2,
+                  const size_t n,
+                  const double nu,
+                  const double lam);
+
+double skewt_nll(const double* resid,
+                 const double* sigma2,
+                 const size_t n,
+                 const double nu,
+                 const double lam);
+
 double normal_ll(const double* sigma2, 
                  const double* residuals2, 
                  size_t n);
@@ -215,6 +234,82 @@ void jacobian_garch_studentt_pq(const double *theta, double *J, size_t p, size_t
 void jacobian_garch_skewt_pq(const double *theta, double *J, size_t p, size_t q);
 
 void transform_grad_pq(const double *grad_theta, const double *J, double *grad_z, size_t K);
+
+/* ======================== ARMA-GARCH Functions ============================= */
+
+/* ARMA(1,1)-GARCH(1,1) NLL functions */
+double arma_garch_nll_11_normal(
+    const double *params,    /* [c, phi, theta, omega, alpha, beta] */
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double        h0,
+    size_t        n);
+
+double arma_garch_nll_grad_11_normal(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *grad,
+    double        h0,
+    size_t        n);
+
+double arma_garch_nll_11_studentt(
+    const double *params,    /* [c, phi, theta, omega, alpha, beta, nu] */
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double        h0,
+    size_t        n);
+
+double arma_garch_nll_11_skewt(
+    const double *params,    /* [c, phi, theta, omega, alpha, beta, nu, lam] */
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double        h0,
+    size_t        n);
+
+/* General ARMA(p,q)-GARCH(P,Q) NLL functions */
+double arma_garch_nll_pq_normal(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *e0,
+    double       *h0,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma,
+    size_t        P_arch,
+    size_t        Q_garch);
+
+double arma_garch_nll_pq_studentt(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *e0,
+    double       *h0,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma,
+    size_t        P_arch,
+    size_t        Q_garch);
+
+double arma_garch_nll_pq_skewt(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *e0,
+    double       *h0,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma,
+    size_t        P_arch,
+    size_t        Q_garch);
 
 #ifdef __cplusplus
 }

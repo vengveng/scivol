@@ -112,6 +112,40 @@ PyObject *const *args, Py_ssize_t nargs)
 }
 
 static PyObject *
+py_skewt_ll(PyObject *self,
+            PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 5) { BAD_ARITY("skewt_ll", 5, nargs); return NULL; }
+
+    const double *resid  = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *sigma2 = (const double *)PyLong_AsVoidPtr(args[1]);
+    size_t n             = PyLong_AsSize_t(args[2]);
+    const double nu      = PyFloat_AsDouble(args[3]);
+    const double lam     = PyFloat_AsDouble(args[4]);
+    if (PyErr_Occurred()) return NULL;
+
+    double ll = skewt_ll(resid, sigma2, n, nu, lam);
+    return PyFloat_FromDouble(ll);
+}
+
+static PyObject *
+py_skewt_nll(PyObject *self,
+             PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 5) { BAD_ARITY("skewt_nll", 5, nargs); return NULL; }
+
+    const double *resid  = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *sigma2 = (const double *)PyLong_AsVoidPtr(args[1]);
+    size_t n             = PyLong_AsSize_t(args[2]);
+    const double nu      = PyFloat_AsDouble(args[3]);
+    const double lam     = PyFloat_AsDouble(args[4]);
+    if (PyErr_Occurred()) return NULL;
+
+    double nll = skewt_nll(resid, sigma2, n, nu, lam);
+    return PyFloat_FromDouble(nll);
+}
+
+static PyObject *
 py_garch_opg_hess_pq(PyObject *self,
     PyObject *const *args, Py_ssize_t nargs)
     {
@@ -535,6 +569,152 @@ py_transform_grad_pq(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
 }
 
 /* ---- Method table & module init ----------------------------------- */
+/* ======================== ARMA-GARCH Wrappers ============================= */
+
+static PyObject *
+py_arma_garch_nll_11_normal(PyObject *self,
+                            PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 6) { BAD_ARITY("arma_garch_nll_11_normal", 6, nargs); return NULL; }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y      = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *resid  = (double *)      PyLong_AsVoidPtr(args[2]);
+    double       *sigma2 = (double *)      PyLong_AsVoidPtr(args[3]);
+    double        h0     = PyFloat_AsDouble(args[4]);
+    size_t        n      = PyLong_AsSize_t(args[5]);
+    if (PyErr_Occurred()) return NULL;
+
+    double nll = arma_garch_nll_11_normal(params, y, resid, sigma2, h0, n);
+    return PyFloat_FromDouble(nll);
+}
+
+static PyObject *
+py_arma_garch_nll_grad_11_normal(PyObject *self,
+                                  PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 7) { BAD_ARITY("arma_garch_nll_grad_11_normal", 7, nargs); return NULL; }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y      = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *resid  = (double *)      PyLong_AsVoidPtr(args[2]);
+    double       *sigma2 = (double *)      PyLong_AsVoidPtr(args[3]);
+    double       *grad   = (double *)      PyLong_AsVoidPtr(args[4]);
+    double        h0     = PyFloat_AsDouble(args[5]);
+    size_t        n      = PyLong_AsSize_t(args[6]);
+    if (PyErr_Occurred()) return NULL;
+
+    double nll = arma_garch_nll_grad_11_normal(params, y, resid, sigma2, grad, h0, n);
+    return PyFloat_FromDouble(nll);
+}
+
+static PyObject *
+py_arma_garch_nll_11_studentt(PyObject *self,
+                              PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 6) { BAD_ARITY("arma_garch_nll_11_studentt", 6, nargs); return NULL; }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y      = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *resid  = (double *)      PyLong_AsVoidPtr(args[2]);
+    double       *sigma2 = (double *)      PyLong_AsVoidPtr(args[3]);
+    double        h0     = PyFloat_AsDouble(args[4]);
+    size_t        n      = PyLong_AsSize_t(args[5]);
+    if (PyErr_Occurred()) return NULL;
+
+    double nll = arma_garch_nll_11_studentt(params, y, resid, sigma2, h0, n);
+    return PyFloat_FromDouble(nll);
+}
+
+static PyObject *
+py_arma_garch_nll_11_skewt(PyObject *self,
+                           PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 6) { BAD_ARITY("arma_garch_nll_11_skewt", 6, nargs); return NULL; }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y      = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *resid  = (double *)      PyLong_AsVoidPtr(args[2]);
+    double       *sigma2 = (double *)      PyLong_AsVoidPtr(args[3]);
+    double        h0     = PyFloat_AsDouble(args[4]);
+    size_t        n      = PyLong_AsSize_t(args[5]);
+    if (PyErr_Occurred()) return NULL;
+
+    double nll = arma_garch_nll_11_skewt(params, y, resid, sigma2, h0, n);
+    return PyFloat_FromDouble(nll);
+}
+
+static PyObject *
+py_arma_garch_nll_pq_normal(PyObject *self,
+                            PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 11) { BAD_ARITY("arma_garch_nll_pq_normal", 11, nargs); return NULL; }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y      = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *resid  = (double *)      PyLong_AsVoidPtr(args[2]);
+    double       *sigma2 = (double *)      PyLong_AsVoidPtr(args[3]);
+    double       *e0     = (double *)      PyLong_AsVoidPtr(args[4]);
+    double       *h0     = (double *)      PyLong_AsVoidPtr(args[5]);
+    size_t        n      = PyLong_AsSize_t(args[6]);
+    size_t        p_ar   = PyLong_AsSize_t(args[7]);
+    size_t        q_ma   = PyLong_AsSize_t(args[8]);
+    size_t        P_arch = PyLong_AsSize_t(args[9]);
+    size_t        Q_garch= PyLong_AsSize_t(args[10]);
+    if (PyErr_Occurred()) return NULL;
+
+    double nll = arma_garch_nll_pq_normal(params, y, resid, sigma2, e0, h0, n, p_ar, q_ma, P_arch, Q_garch);
+    return PyFloat_FromDouble(nll);
+}
+
+static PyObject *
+py_arma_garch_nll_pq_studentt(PyObject *self,
+                              PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 11) { BAD_ARITY("arma_garch_nll_pq_studentt", 11, nargs); return NULL; }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y      = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *resid  = (double *)      PyLong_AsVoidPtr(args[2]);
+    double       *sigma2 = (double *)      PyLong_AsVoidPtr(args[3]);
+    double       *e0     = (double *)      PyLong_AsVoidPtr(args[4]);
+    double       *h0     = (double *)      PyLong_AsVoidPtr(args[5]);
+    size_t        n      = PyLong_AsSize_t(args[6]);
+    size_t        p_ar   = PyLong_AsSize_t(args[7]);
+    size_t        q_ma   = PyLong_AsSize_t(args[8]);
+    size_t        P_arch = PyLong_AsSize_t(args[9]);
+    size_t        Q_garch= PyLong_AsSize_t(args[10]);
+    if (PyErr_Occurred()) return NULL;
+
+    double nll = arma_garch_nll_pq_studentt(params, y, resid, sigma2, e0, h0, n, p_ar, q_ma, P_arch, Q_garch);
+    return PyFloat_FromDouble(nll);
+}
+
+static PyObject *
+py_arma_garch_nll_pq_skewt(PyObject *self,
+                           PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 11) { BAD_ARITY("arma_garch_nll_pq_skewt", 11, nargs); return NULL; }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y      = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *resid  = (double *)      PyLong_AsVoidPtr(args[2]);
+    double       *sigma2 = (double *)      PyLong_AsVoidPtr(args[3]);
+    double       *e0     = (double *)      PyLong_AsVoidPtr(args[4]);
+    double       *h0     = (double *)      PyLong_AsVoidPtr(args[5]);
+    size_t        n      = PyLong_AsSize_t(args[6]);
+    size_t        p_ar   = PyLong_AsSize_t(args[7]);
+    size_t        q_ma   = PyLong_AsSize_t(args[8]);
+    size_t        P_arch = PyLong_AsSize_t(args[9]);
+    size_t        Q_garch= PyLong_AsSize_t(args[10]);
+    if (PyErr_Occurred()) return NULL;
+
+    double nll = arma_garch_nll_pq_skewt(params, y, resid, sigma2, e0, h0, n, p_ar, q_ma, P_arch, Q_garch);
+    return PyFloat_FromDouble(nll);
+}
+
+/* ======================== Method Table ===================================== */
+
 static PyMethodDef Methods[] = {
 
     // GARCH | Normal | Core
@@ -586,7 +766,11 @@ static PyMethodDef Methods[] = {
 
                                   METH_FASTCALL, "Internal pointer API"},
     {"_studentt_ll",             (PyCFunction)py_studentt_ll,
-                                  METH_FASTCALL, "Internal pointer API"},                        
+                                  METH_FASTCALL, "Internal pointer API"},
+    {"_skewt_ll",                (PyCFunction)py_skewt_ll,
+                                  METH_FASTCALL, "Hansen (1994) Skew-t log-likelihood"},
+    {"_skewt_nll",               (PyCFunction)py_skewt_nll,
+                                  METH_FASTCALL, "Hansen (1994) Skew-t negative log-likelihood"},                        
 
     // OLD                            
     {"_garch_opg_hess_pq",       (PyCFunction)py_garch_opg_hess_pq,
@@ -630,6 +814,22 @@ static PyMethodDef Methods[] = {
                                   METH_FASTCALL, "Jacobian for GARCH(p,q)+SkewT"},
     {"_transform_grad_pq",       (PyCFunction)py_transform_grad_pq,
                                   METH_FASTCALL, "J^T @ grad for general K"},
+
+    // ARMA-GARCH functions
+    {"_arma_garch_nll_11_normal",      (PyCFunction)py_arma_garch_nll_11_normal,
+                                        METH_FASTCALL, "ARMA(1,1)-GARCH(1,1) NLL with Normal"},
+    {"_arma_garch_nll_grad_11_normal", (PyCFunction)py_arma_garch_nll_grad_11_normal,
+                                        METH_FASTCALL, "ARMA(1,1)-GARCH(1,1) NLL+Gradient with Normal"},
+    {"_arma_garch_nll_11_studentt",    (PyCFunction)py_arma_garch_nll_11_studentt,
+                                        METH_FASTCALL, "ARMA(1,1)-GARCH(1,1) NLL with Student-t"},
+    {"_arma_garch_nll_11_skewt",       (PyCFunction)py_arma_garch_nll_11_skewt,
+                                        METH_FASTCALL, "ARMA(1,1)-GARCH(1,1) NLL with Skew-t"},
+    {"_arma_garch_nll_pq_normal",      (PyCFunction)py_arma_garch_nll_pq_normal,
+                                        METH_FASTCALL, "ARMA(p,q)-GARCH(P,Q) NLL with Normal"},
+    {"_arma_garch_nll_pq_studentt",    (PyCFunction)py_arma_garch_nll_pq_studentt,
+                                        METH_FASTCALL, "ARMA(p,q)-GARCH(P,Q) NLL with Student-t"},
+    {"_arma_garch_nll_pq_skewt",       (PyCFunction)py_arma_garch_nll_pq_skewt,
+                                        METH_FASTCALL, "ARMA(p,q)-GARCH(P,Q) NLL with Skew-t"},
 
     {NULL, NULL, 0, NULL}
 };

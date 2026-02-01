@@ -81,6 +81,40 @@ def _studentt_ll(
     """Compute Student-t log-likelihood given variances"""
     ...
 
+def _skewt_ll(
+    resid_ptr: _IntPtr,   # Residuals (not squared)
+    sigma2_ptr: _IntPtr,  # Conditional variances
+    n: _Size,             # Number of observations
+    nu: float,            # Degrees of freedom parameter (> 2)
+    lam: float,           # Asymmetry parameter (-1, 1)
+) -> float:
+    """
+    Hansen (1994) Skewed Student-t log-likelihood.
+    
+    Parameters
+    ----------
+    resid_ptr : Pointer to residuals array (not squared)
+    sigma2_ptr : Pointer to conditional variances array
+    n : Number of observations
+    nu : Degrees of freedom (must be > 2)
+    lam : Asymmetry parameter (must be in (-1, 1))
+    
+    Returns
+    -------
+    ll : Log-likelihood value
+    """
+    ...
+
+def _skewt_nll(
+    resid_ptr: _IntPtr,   # Residuals (not squared)
+    sigma2_ptr: _IntPtr,  # Conditional variances
+    n: _Size,             # Number of observations
+    nu: float,            # Degrees of freedom parameter (> 2)
+    lam: float,           # Asymmetry parameter (-1, 1)
+) -> float:
+    """Hansen (1994) Skewed Student-t negative log-likelihood."""
+    ...
+
 # ── Standard error computation (OPG & Hessian) ────────────────────────────
 
 def _garch_opg_hess_pq(
@@ -362,6 +396,101 @@ def _transform_grad_pq(
     K: _Size,
 ) -> None:
     """Compute grad_z = J^T @ grad_theta for general K. grad_z is modified in-place."""
+    ...
+
+# ── ARMA-GARCH Functions ──────────────────────────────────────────────────
+
+def _arma_garch_nll_11_normal(
+    params_ptr: _IntPtr,   # [c, phi, theta, omega, alpha, beta]
+    y_ptr: _IntPtr,        # Observations
+    resid_ptr: _IntPtr,    # Output: residuals
+    sigma2_ptr: _IntPtr,   # Output: variances
+    h0: float,             # Initial variance
+    n: _Size,              # Number of observations
+) -> float:
+    """ARMA(1,1)-GARCH(1,1) negative log-likelihood with Normal innovations."""
+    ...
+
+def _arma_garch_nll_grad_11_normal(
+    params_ptr: _IntPtr,   # [c, phi, theta, omega, alpha, beta]
+    y_ptr: _IntPtr,        # Observations
+    resid_ptr: _IntPtr,    # Output: residuals
+    sigma2_ptr: _IntPtr,   # Output: variances
+    grad_ptr: _IntPtr,     # Output: gradient (6 elements)
+    h0: float,             # Initial variance
+    n: _Size,              # Number of observations
+) -> float:
+    """ARMA(1,1)-GARCH(1,1) NLL and gradient with Normal innovations."""
+    ...
+
+def _arma_garch_nll_11_studentt(
+    params_ptr: _IntPtr,   # [c, phi, theta, omega, alpha, beta, nu]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-GARCH(1,1) NLL with Student-t innovations."""
+    ...
+
+def _arma_garch_nll_11_skewt(
+    params_ptr: _IntPtr,   # [c, phi, theta, omega, alpha, beta, nu, lam]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-GARCH(1,1) NLL with Skew-t innovations."""
+    ...
+
+def _arma_garch_nll_pq_normal(
+    params_ptr: _IntPtr,   # [c, phi_1..phi_p, theta_1..theta_q, omega, alpha_1..alpha_P, beta_1..beta_Q]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,       # Initial residuals
+    h0_ptr: _IntPtr,       # Initial variances
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> float:
+    """General ARMA(p,q)-GARCH(P,Q) NLL with Normal innovations."""
+    ...
+
+def _arma_garch_nll_pq_studentt(
+    params_ptr: _IntPtr,   # [..., nu]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> float:
+    """General ARMA(p,q)-GARCH(P,Q) NLL with Student-t innovations."""
+    ...
+
+def _arma_garch_nll_pq_skewt(
+    params_ptr: _IntPtr,   # [..., nu, lam]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> float:
+    """General ARMA(p,q)-GARCH(P,Q) NLL with Skew-t innovations."""
     ...
 
 # Nothing is meant for star-import; keep top-level clean

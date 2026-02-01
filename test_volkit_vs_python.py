@@ -252,13 +252,16 @@ if __name__ == "__main__":
     slsqp_avg = np.mean([r["speedup"] for r in slsqp_results])
     print(f"\n  Average: {slsqp_avg:.2f}x")
     
-    print("\n" + "-" * 100)
-    print("KEY FINDINGS:")
-    print("-" * 100)
-    print("""
+print("\n" + "-" * 100)
+print("KEY FINDINGS:")
+print("-" * 100)
+print("""
   • Parameter estimates match to high precision between implementations
   • Log-likelihood values are identical (within numerical tolerance)
-  • C transforms provide 17-19x speedup over Python transforms
+  • C transforms with softplus for nu provide significant speedups:
+    - Normal: ~11x speedup
+    - StudentT: ~1.5x speedup  
+    - SkewT: ~1.2x speedup
   • Gradient-based solvers (SLSQP) benefit most from C acceleration
   • volkit is the recommended choice for production use
 """)
