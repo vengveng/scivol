@@ -56,6 +56,7 @@ def select_best_model(
     density_candidates: List[str],
     diagnostic_weight: float = 50.0,
     verbose: bool = False,
+    n_jobs: Optional[int] = None,
     **fit_kwargs,
 ) -> Tuple[EstimationResult, List[ModelCandidate]]:
     """
@@ -80,6 +81,9 @@ def select_best_model(
         AIC penalty per failed diagnostic test.
     verbose : bool, default False
         If True, print progress during model selection.
+    n_jobs : int, optional
+        Number of parallel workers. Default (None) uses all CPU cores.
+        Set to 1 for sequential execution.
     **fit_kwargs
         Additional keyword arguments passed to spec.fit().
         
@@ -98,6 +102,7 @@ def select_best_model(
     import time
     from .components.vol import GARCH
     from .components.density import Normal, StudentT, SkewT
+    from ._parallel import get_default_workers
     
     # Handle QMLE + AutoDensity case
     method = fit_kwargs.get('method', 'MLE')
@@ -110,6 +115,23 @@ def select_best_model(
         )
         density_candidates = ['Normal']
     
+    total = len(vol_candidates) * len(density_candidates)
+    n_jobs_actual = n_jobs if n_jobs is not None else get_default_workers()
+    
+    # Use parallel execution if n_jobs > 1 and multiple candidates
+    if n_jobs_actual > 1 and total > 2:
+        from ._parallel import select_best_parallel
+        return select_best_parallel(
+            data,
+            vol_candidates,
+            density_candidates,
+            diagnostic_weight=diagnostic_weight,
+            n_jobs=n_jobs_actual,
+            verbose=verbose,
+            **fit_kwargs,
+        )
+    
+    # Sequential execution (original code path)
     # Map density names to classes
     density_map = {
         'Normal': Normal,
@@ -118,7 +140,6 @@ def select_best_model(
     }
     
     candidates: List[ModelCandidate] = []
-    total = len(vol_candidates) * len(density_candidates)
     
     if verbose:
         print(f"Auto-selecting from {total} candidate models...")
@@ -141,7 +162,10 @@ def select_best_model(
             start_time = time.perf_counter()
             
             try:
-                result = spec.fit(data, **fit_kwargs)
+                # Force sequential for nested fits
+                fit_kwargs_copy = fit_kwargs.copy()
+                fit_kwargs_copy['n_jobs'] = 1
+                result = spec.fit(data, **fit_kwargs_copy)
                 candidate.result = result
                 candidate.aic = result.aic
                 candidate.fit_time = time.perf_counter() - start_time

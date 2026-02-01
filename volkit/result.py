@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Protocol, runtime_checkable, TYPE_CHECKING
+from typing import Dict, List, Optional, Any, Protocol, runtime_checkable, TYPE_CHECKING, Union
 import numpy as np
 from numpy.typing import NDArray
 from datetime import datetime
@@ -9,6 +9,18 @@ from scipy.stats import norm, t as t_dist, chi2
 from scipy.special import gammaln
 
 from .roles import Role
+
+# Lazy import for pandas to avoid hard dependency
+def _to_pandas_series(
+    arr: NDArray[np.float64],
+    index: Any,
+    name: Optional[str],
+    suffix: str = "",
+) -> Any:
+    """Convert numpy array to pandas Series if index is available."""
+    import pandas as pd
+    series_name = f"{name}_{suffix}" if name else suffix
+    return pd.Series(arr, index=index, name=series_name)
 
 
 # =============================================================================
@@ -148,6 +160,8 @@ class EstimationResult:
         opg: Optional[NDArray[np.float64]] = None,
         cov_robust: Optional[NDArray[np.float64]] = None,
         method: str = "MLE",
+        index: Optional[Any] = None,
+        name: Optional[str] = None,
     ) -> None:
 
         self.spec: CompositeSpec = spec
@@ -171,6 +185,10 @@ class EstimationResult:
         # Robust covariance / standard errors (for QMLE)
         self._opg: Optional[NDArray[np.float64]] = opg
         self._cov_robust: Optional[NDArray[np.float64]] = cov_robust
+        
+        # Pandas metadata (for preserving index/column names)
+        self._index: Optional[Any] = index
+        self._name: Optional[str] = name
 
         # Components were mutated in-place during fitting
         self._component_map: Dict[Role, Component] = {c.role: c for c in spec.components}
@@ -266,16 +284,41 @@ class EstimationResult:
     # Conditional variances and standardized residuals
     # --------------------------------------------------------------------- #
     @property
-    def sigma2(self) -> Optional[NDArray[np.float64]]:
-        """Conditional variance series."""
+    def sigma2(self) -> Optional[Union[NDArray[np.float64], Any]]:
+        """
+        Conditional variance series.
+        
+        Returns pandas Series if input was pandas, otherwise numpy array.
+        """
+        if self._sigma2 is None:
+            return None
+        if self._index is not None:
+            return _to_pandas_series(self._sigma2, self._index, self._name, "sigma2")
         return self._sigma2
     
     @property
-    def std_resid(self) -> Optional[NDArray[np.float64]]:
-        """Standardized residuals: resid / sqrt(sigma2)."""
+    def std_resid(self) -> Optional[Union[NDArray[np.float64], Any]]:
+        """
+        Standardized residuals: resid / sqrt(sigma2).
+        
+        Returns pandas Series if input was pandas, otherwise numpy array.
+        """
         if self._sigma2 is None:
             return None
-        return self.data / np.sqrt(self._sigma2)
+        resid = self.data / np.sqrt(self._sigma2)
+        if self._index is not None:
+            return _to_pandas_series(resid, self._index, self._name, "std_resid")
+        return resid
+    
+    @property
+    def index(self) -> Optional[Any]:
+        """Original pandas index if input was pandas, else None."""
+        return self._index
+    
+    @property
+    def series_name(self) -> Optional[str]:
+        """Original series/column name if input was pandas, else None."""
+        return self._name
     
     # Covariance and standard errors
     # --------------------------------------------------------------------- #

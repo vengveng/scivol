@@ -404,6 +404,26 @@ def test_validation_raises(bad_data):
         spec.fit(bad_data)
 ```
 
+### Slow Tests Warning
+
+**The following test files are slow (4+ minutes) because they fit many models:**
+
+| Test File | Reason | When to Run |
+|-----------|--------|-------------|
+| `tests/test_parallel_auto.py` | Fits 4-8 models per test with auto-selection | Only when modifying `_parallel.py`, `_autoselect.py`, or `_mixins.py` |
+| `tests/test_multi_series.py` | Fits multiple series in parallel | Only when modifying multi-series or parallel fitting logic |
+
+**Fast tests** (run always): `test_pandas_integration.py`, `test_spec_core.py`, `test_result_core.py`, etc.
+
+Run slow tests selectively:
+```bash
+# Skip slow tests during development
+pytest tests/ --ignore=tests/test_parallel_auto.py --ignore=tests/test_multi_series.py
+
+# Run only when parallel/auto logic changes
+pytest tests/test_parallel_auto.py tests/test_multi_series.py -v
+```
+
 ---
 
 ## 4. Internal Implementation
