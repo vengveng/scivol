@@ -36,6 +36,9 @@ from utilities import (
 # Legacy-compatible fit_garch function (wraps volkit)
 from volkit_compat import fit_garch, fit_garch as fit_garch_ref
 
+# volkit components for parity testing
+from volkit import GARCH, Normal, StudentT, SkewT, MLE, QMLE
+
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
@@ -321,9 +324,9 @@ for asset in ["stock", "cbond"]:
     eps = AR1_RESID[asset]
     eps_np = np.asarray(eps, dtype=np.float64)
     
-    # Use nelder-mead for robust convergence (no analytical derivatives for skew-t)
+    # Use slsqp for robust convergence (volkit now computes SEs automatically)
     r = fit_garch(eps_np, dist="skewt", method="mle", p=1, q=1,
-                  solver="nelder-mead", use_derivatives=False, verbose=False)
+                  solver="slsqp", use_derivatives=True, verbose=False)
     
     nu = r.dist_params.nu
     lam = r.dist_params.lam
@@ -668,13 +671,13 @@ def plot_volatilities(asset: str, save_path: str | None = None):
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
         print(f"Saved: {save_path}")
-    plt.show()
+    # plt.show()
     return fig
 
 
 # Uncomment to generate plots:
-# plot_volatilities("stock", save_path="results/volatility_stock.png")
-# plot_volatilities("cbond", save_path="results/volatility_cbond.png")
+plot_volatilities("stock", save_path="results/volatility_stock.png")
+plot_volatilities("cbond", save_path="results/volatility_cbond.png")
 
 
 print("\n" + "="*70)

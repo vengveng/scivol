@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Protocol, runtime_checkable, TYPE_CHECKING, Union
+import warnings
 import numpy as np
 from numpy.typing import NDArray
 from datetime import datetime
@@ -117,6 +118,50 @@ class DistributionParams:
         return np.array(parts) if parts else np.array([])
 
 
+@dataclass
+class ARMAParams:
+    """Container for ARMA(p,q) parameters."""
+    c: float                          # Intercept
+    phi: NDArray[np.float64]          # AR coefficients (length p)
+    theta: NDArray[np.float64]        # MA coefficients (length q)
+    
+    @property
+    def p(self) -> int:
+        """AR order."""
+        return len(self.phi)
+    
+    @property
+    def q(self) -> int:
+        """MA order."""
+        return len(self.theta)
+    
+    @property
+    def unconditional_mean(self) -> float:
+        """Long-run mean (only valid if AR polynomial has roots outside unit circle)."""
+        ar_sum = np.sum(self.phi)
+        if abs(ar_sum) >= 1.0:
+            return np.inf
+        return self.c / (1.0 - ar_sum)
+    
+    @property
+    def is_stationary(self) -> bool:
+        """Check if AR polynomial has roots outside unit circle (simplified check)."""
+        return abs(np.sum(self.phi)) < 1.0
+    
+    def to_array(self) -> NDArray[np.float64]:
+        """Flatten to 1D array [c, phi_1, ..., phi_p, theta_1, ..., theta_q]."""
+        return np.concatenate([[self.c], self.phi, self.theta])
+    
+    @classmethod
+    def from_array(cls, arr: NDArray[np.float64], p: int, q: int) -> "ARMAParams":
+        """Construct from flat array."""
+        return cls(
+            c=arr[0],
+            phi=arr[1:1+p],
+            theta=arr[1+p:1+p+q],
+        )
+
+
 # =============================================================================
 # OPTIMIZATION RESULT PROTOCOL
 # =============================================================================
@@ -200,37 +245,71 @@ class EstimationResult:
         return self.optimization_result.x
 
     @property
-    def loglikelihood(self) -> float:
+    def log_likelihood(self) -> float:
+        """Log-likelihood at optimum (negative of minimized objective)."""
         return -self.optimization_result.fun
 
     @property
-    def success(self) -> bool:
+    def converged(self) -> bool:
+        """Whether the optimization converged successfully."""
         return self.optimization_result.success
 
     @property
-    def niter(self) -> int:
+    def n_iter(self) -> int:
+        """Number of iterations used by the optimizer."""
         return self.optimization_result.nit
 
     @property
     def convergence_message(self) -> str:
         return self.optimization_result.message
+    
+    # Deprecated aliases (for backward compatibility)
+    @property
+    def loglikelihood(self) -> float:
+        """Deprecated: Use log_likelihood instead."""
+        warnings.warn(
+            "loglikelihood is deprecated, use log_likelihood instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.log_likelihood
+
+    @property
+    def success(self) -> bool:
+        """Deprecated: Use converged instead."""
+        warnings.warn(
+            "success is deprecated, use converged instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.converged
+
+    @property
+    def niter(self) -> int:
+        """Deprecated: Use n_iter instead."""
+        warnings.warn(
+            "niter is deprecated, use n_iter instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.n_iter
 
     # Information criteria
     # --------------------------------------------------------------------- #
     @property
     def aic(self) -> float:
         k = len(self.params)
-        return 2 * k - 2 * self.loglikelihood
+        return 2 * k - 2 * self.log_likelihood
 
     @property
     def bic(self) -> float:
         k = len(self.params)
-        return k * np.log(self.n_obs) - 2 * self.loglikelihood
+        return k * np.log(self.n_obs) - 2 * self.log_likelihood
 
     @property
     def hqic(self) -> float:
         k = len(self.params)
-        return 2 * k * np.log(np.log(self.n_obs)) - 2 * self.loglikelihood
+        return 2 * k * np.log(np.log(self.n_obs)) - 2 * self.log_likelihood
 
     # Component shorthands
     # --------------------------------------------------------------------- #
@@ -267,6 +346,21 @@ class EstimationResult:
         beta = np.array(fp.get('beta', []), dtype=np.float64)
         
         return GARCHParams(omega=omega, alpha=alpha, beta=beta)
+    
+    @property
+    def arma_params(self) -> Optional[ARMAParams]:
+        """Get ARMA parameters as structured object."""
+        mean_comp = self.mean
+        if mean_comp is None or not hasattr(mean_comp, 'fitted_params') or not mean_comp.fitted_params:
+            return None
+        
+        fp = mean_comp.fitted_params
+        # Handle both naming conventions: c/phi/theta and const/ar/ma
+        c = fp.get('c', fp.get('const', 0.0))
+        phi = np.array(fp.get('phi', fp.get('ar', [])), dtype=np.float64)
+        theta = np.array(fp.get('theta', fp.get('ma', [])), dtype=np.float64)
+        
+        return ARMAParams(c=c, phi=phi, theta=theta)
     
     @property
     def dist_params(self) -> DistributionParams:
@@ -320,6 +414,125 @@ class EstimationResult:
         """Original series/column name if input was pandas, else None."""
         return self._name
     
+    # Forecasting
+    # --------------------------------------------------------------------- #
+    def forecast(
+        self,
+        horizon: int = 10,
+        *,
+        return_variance: bool = True,
+        return_volatility: bool = True,
+    ) -> Dict[str, NDArray[np.float64]]:
+        """
+        Forecast future conditional variances and volatilities.
+        
+        For GARCH(p,q) with parameters (omega, alpha_1, ..., alpha_p, beta_1, ..., beta_q),
+        the h-step ahead forecast follows:
+        
+            σ²_{T+1} = ω + α*ε²_T + β*σ²_T  (1-step)
+            σ²_{T+h} = ω + (α + β)*σ²_{T+h-1}  for h > max(p,q)
+        
+        As h → ∞, σ²_{T+h} → ω / (1 - α - β) (unconditional variance).
+        
+        Parameters
+        ----------
+        horizon : int
+            Number of steps ahead to forecast (default: 10)
+        return_variance : bool
+            If True, include 'variance' in output (default: True)
+        return_volatility : bool
+            If True, include 'volatility' in output (default: True)
+        
+        Returns
+        -------
+        dict
+            Dictionary with keys:
+            - 'variance': Array of forecasted variances σ²_{T+1}, ..., σ²_{T+h}
+            - 'volatility': Array of forecasted volatilities σ_{T+1}, ..., σ_{T+h}
+        
+        Raises
+        ------
+        ValueError
+            If no GARCH component is present or sigma2 is not available
+        
+        Examples
+        --------
+        >>> result = spec.fit(data)
+        >>> fc = result.forecast(horizon=10)
+        >>> print(fc['volatility'])  # 10-step ahead volatility forecast
+        """
+        if horizon <= 0:
+            raise ValueError("horizon must be positive")
+        
+        gp = self.garch_params
+        if gp is None:
+            raise ValueError("Cannot forecast: no GARCH component found")
+        
+        if self._sigma2 is None:
+            raise ValueError("Cannot forecast: sigma2 not available")
+        
+        omega = gp.omega
+        alpha = gp.alpha  # Array of alpha coefficients
+        beta = gp.beta    # Array of beta coefficients
+        
+        p = len(alpha)  # Number of alpha (ARCH) terms
+        q = len(beta)   # Number of beta (GARCH) terms
+        
+        # Get last values needed for recursion
+        data = self.data
+        sigma2 = self._sigma2
+        n = len(sigma2)
+        
+        # For GARCH(p,q), we need the last max(p,q) values
+        max_lag = max(p, q)
+        
+        # Get squared residuals (eps² = data²) - we use raw data as residuals
+        # for pure GARCH models
+        eps2 = data ** 2
+        
+        # Initialize forecast array
+        sigma2_forecast = np.empty(horizon, dtype=np.float64)
+        
+        # Build history arrays (most recent first for easier indexing)
+        eps2_history = list(eps2[-(max_lag):])[::-1] if p > 0 else []
+        sigma2_history = list(sigma2[-(max_lag):])[::-1] if q > 0 else []
+        
+        for h in range(horizon):
+            # Compute sigma2_{T+h+1}
+            forecast = omega
+            
+            # Add ARCH terms: sum_i alpha_i * eps²_{T+h+1-i}
+            for i, a in enumerate(alpha):
+                if h == 0 and i < len(eps2_history):
+                    # Use historical eps²
+                    forecast += a * eps2_history[i]
+                else:
+                    # For h > 0, E[eps²_{T+h}] = E[σ²_{T+h}] = sigma2_forecast[h-1-i]
+                    idx = h - 1 - i
+                    if idx >= 0:
+                        forecast += a * sigma2_forecast[idx]
+                    elif len(eps2_history) > (i - h):
+                        forecast += a * eps2_history[i - h]
+            
+            # Add GARCH terms: sum_j beta_j * sigma²_{T+h+1-j}
+            for j, b in enumerate(beta):
+                if h - j - 1 >= 0:
+                    # Use previous forecast
+                    forecast += b * sigma2_forecast[h - j - 1]
+                elif j < len(sigma2_history):
+                    # Use historical sigma²
+                    forecast += b * sigma2_history[j]
+            
+            sigma2_forecast[h] = forecast
+        
+        result = {}
+        if return_variance:
+            result['variance'] = sigma2_forecast
+        if return_volatility:
+            result['volatility'] = np.sqrt(sigma2_forecast)
+        
+        return result
+    
     # Covariance and standard errors
     # --------------------------------------------------------------------- #
     @property
@@ -359,22 +572,6 @@ class EstimationResult:
         diag = np.diag(self._cov_robust)
         return np.sqrt(np.maximum(diag, 0.0))
     
-    # Aliases for compatibility with reference implementation
-    # --------------------------------------------------------------------- #
-    @property
-    def log_likelihood(self) -> float:
-        """Alias for loglikelihood (reference implementation compatibility)."""
-        return self.loglikelihood
-    
-    @property
-    def converged(self) -> bool:
-        """Alias for success (reference implementation compatibility)."""
-        return self.success
-    
-    @property
-    def n_iter(self) -> int:
-        """Alias for niter (reference implementation compatibility)."""
-        return self.niter
     
     # Pretty printer
     # --------------------------------------------------------------------- #
@@ -405,15 +602,15 @@ class EstimationResult:
         print("─" * WIDTH)
         
         # Estimation summary (two columns)
-        conv_str = "Yes" if self.success else "No"
+        conv_str = "Yes" if self.converged else "No"
         time_str = f"{self.time_elapsed:.3f}s" if self.time_elapsed else "N/A"
         print(f"{'No. Observations:':<20} {self.n_obs:<15} {'Converged:':<15} {conv_str}")
-        print(f"{'No. Parameters:':<20} {len(self.params):<15} {'Iterations:':<15} {self.niter}")
+        print(f"{'No. Parameters:':<20} {len(self.params):<15} {'Iterations:':<15} {self.n_iter}")
         print(f"{'Time Elapsed:':<20} {time_str}")
         print("─" * WIDTH)
         
         # Model fit statistics
-        print(f"{'Log-Likelihood:':<20} {self.loglikelihood:>15.4f}")
+        print(f"{'Log-Likelihood:':<20} {self.log_likelihood:>15.4f}")
         print(f"{'AIC:':<20} {self.aic:>15.4f}")
         print(f"{'BIC:':<20} {self.bic:>15.4f}")
         print(f"{'HQIC:':<20} {self.hqic:>15.4f}")
@@ -550,7 +747,7 @@ class EstimationResult:
         """Print any warnings about the estimation."""
         warnings_list: List[str] = []
         
-        if not self.success:
+        if not self.converged:
             warnings_list.append("Optimization did not converge")
         
         gp = self.garch_params
@@ -591,14 +788,14 @@ class EstimationResult:
         result_dict: Dict[str, Any] = {
             'model': str(self.spec),
             'method': self.method,
-            'loglikelihood': self.loglikelihood,
+            'log_likelihood': self.log_likelihood,
             'aic': self.aic,
             'bic': self.bic,
             'hqic': self.hqic,
             'n_obs': self.n_obs,
             'n_params': len(self.params),
-            'converged': self.success,
-            'iterations': self.niter,
+            'converged': self.converged,
+            'n_iter': self.n_iter,
             'time_elapsed': self.time_elapsed,
             'parameters': {},
         }
@@ -925,7 +1122,7 @@ class EstimationResult:
         lines.append("-" * 50)
         
         # Key metrics
-        lines.append(f"Log-Likelihood: {self.loglikelihood:>15.4f}")
+        lines.append(f"Log-Likelihood: {self.log_likelihood:>15.4f}")
         lines.append(f"AIC:            {self.aic:>15.4f}")
         lines.append(f"BIC:            {self.bic:>15.4f}")
         
@@ -938,7 +1135,7 @@ class EstimationResult:
             lines.append(f"  {name:<12} {val_str}")
         
         # Status
-        status = "Converged" if self.success else "Not converged"
+        status = "Converged" if self.converged else "Not converged"
         lines.append("")
         lines.append(f"Status: {status}")
         
@@ -946,7 +1143,7 @@ class EstimationResult:
     
     def __repr__(self) -> str:
         """Concise representation of result"""
-        status = "converged" if self.success else "failed"
+        status = "converged" if self.converged else "failed"
         return (f"EstimationResult({self.spec}, "
-                f"LL={self.loglikelihood:.4f}, "
+                f"LL={self.log_likelihood:.4f}, "
                 f"{status})")

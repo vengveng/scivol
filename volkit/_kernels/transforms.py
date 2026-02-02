@@ -330,6 +330,102 @@ def transform_covariance(cov_z: NDArray[np.float64], J: NDArray[np.float64]) -> 
     return J @ cov_z @ J.T
 
 
+def compute_se_via_logspace(
+    theta_hat: NDArray[np.float64],
+    nll_theta: callable,
+    unpack_fn: callable,
+    jacobian_fn: callable,
+    pack_fn: callable,
+) -> tuple[NDArray[np.float64] | None, NDArray[np.float64] | None]:
+    """
+    Compute standard errors via numerical Hessian in unconstrained (log) space.
+    
+    This approach avoids boundary issues when computing finite differences:
+    1. Transform θ_hat → z_hat (unconstrained space)
+    2. Compute numerical Hessian H_z in z-space (safe - no boundaries)
+    3. Compute Cov_z = inv(H_z)
+    4. Transform back: Cov_θ = J @ Cov_z @ J^T
+    
+    Parameters
+    ----------
+    theta_hat : array
+        Optimal parameters in constrained space
+    nll_theta : callable
+        Negative log-likelihood function: nll_theta(theta) -> float
+    unpack_fn : callable
+        Transform θ → z: unpack_fn(theta) -> z
+    jacobian_fn : callable
+        Compute Jacobian: jacobian_fn(theta) -> J where J = ∂θ/∂z
+    pack_fn : callable
+        Transform z → θ: pack_fn(z) -> theta
+    
+    Returns
+    -------
+    hessian_theta : array or None
+        Hessian in theta-space (transformed from z-space)
+    cov_theta : array or None
+        Covariance matrix in theta-space
+    """
+    K = len(theta_hat)
+    
+    # Transform to unconstrained space
+    z_hat = unpack_fn(theta_hat)
+    
+    # Define NLL in z-space
+    def nll_z(z: NDArray[np.float64]) -> float:
+        theta = pack_fn(z)
+        return nll_theta(theta)
+    
+    # Pre-allocate buffers for finite difference computation (avoids 4×K² allocations)
+    z_pp = np.empty(K, dtype=np.float64)
+    z_pm = np.empty(K, dtype=np.float64)
+    z_mp = np.empty(K, dtype=np.float64)
+    z_mm = np.empty(K, dtype=np.float64)
+    
+    # Pre-compute step sizes for each parameter
+    eps = np.array([1e-5 * max(abs(z_hat[k]), 1.0) for k in range(K)], dtype=np.float64)
+    
+    # Compute numerical Hessian in z-space using relative step sizes
+    # Step size 1e-5 is optimal for second derivative finite differences:
+    # - Smaller values (1e-7, 1e-8) cause round-off error amplification
+    # - Larger values (1e-3, 1e-4) cause truncation error
+    # In unconstrained space, no boundary issues, so 1e-5 is reliable
+    H_z = np.zeros((K, K), dtype=np.float64)
+    for i in range(K):
+        eps_i = eps[i]
+        for j in range(K):
+            eps_j = eps[j]
+            
+            # Reuse pre-allocated buffers instead of calling z.copy()
+            z_pp[:] = z_hat; z_pp[i] += eps_i; z_pp[j] += eps_j
+            z_pm[:] = z_hat; z_pm[i] += eps_i; z_pm[j] -= eps_j
+            z_mp[:] = z_hat; z_mp[i] -= eps_i; z_mp[j] += eps_j
+            z_mm[:] = z_hat; z_mm[i] -= eps_i; z_mm[j] -= eps_j
+            
+            H_z[i, j] = (nll_z(z_pp) - nll_z(z_pm) - nll_z(z_mp) + nll_z(z_mm)) / (4 * eps_i * eps_j)
+    
+    # Compute covariance in z-space
+    try:
+        cov_z = np.linalg.inv(H_z)
+    except np.linalg.LinAlgError:
+        return None, None
+    
+    # Compute Jacobian at theta_hat: J = ∂θ/∂z
+    J = jacobian_fn(theta_hat)
+    
+    # Transform to theta-space: Cov_θ = J @ Cov_z @ J^T
+    cov_theta = J @ cov_z @ J.T
+    
+    # Transform Hessian (for completeness): H_θ = inv(J) @ H_z @ inv(J)^T ≈ inv(Cov_θ)
+    # More directly: H_θ = inv(Cov_θ) but we compute from H_z for consistency
+    try:
+        hessian_theta = np.linalg.inv(cov_theta)
+    except np.linalg.LinAlgError:
+        hessian_theta = None
+    
+    return hessian_theta, cov_theta
+
+
 # =============================================================================
 # C-ACCELERATED VERSIONS (use pre-allocated buffers)
 # =============================================================================

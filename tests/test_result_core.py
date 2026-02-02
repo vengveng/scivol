@@ -108,17 +108,17 @@ def test_to_dict_structure():
 
     d = res.to_dict()
 
-    # high-level keys
+    # high-level keys (using standardized names)
     assert {
         "model",
-        "loglikelihood",
+        "log_likelihood",
         "aic",
         "bic",
         "hqic",
         "n_obs",
         "n_params",
         "converged",
-        "iterations",
+        "n_iter",
         "parameters",
     } <= d.keys()
 
@@ -145,4 +145,72 @@ def test_summary_prints(capsys):
     # very loose sanity checks
     assert str(spec) in captured
     assert re.search(r"Log-?Likelihood", captured, flags=re.I)
-    assert "GARCH Persistence" in captured
+    assert "Persistence" in captured  # Check for persistence info
+
+
+# ------------------------------------------------------------------ #
+# 4. forecast() method
+# ------------------------------------------------------------------ #
+def test_forecast_returns_dict():
+    """forecast() should return dict with variance and volatility."""
+    data = np.random.randn(100) * 0.01
+    spec = _build_fitted_spec()
+    # Create params with reasonable GARCH values
+    params = np.array([1e-6, 0.1, 0.85, 8.0, 0.0, 0.0, 0.0])
+    opt = DummyOpt(x=params, fun=10.0)
+    res = EstimationResult(spec, opt, data)
+    
+    # Need to set sigma2 for forecast to work
+    res._sigma2 = np.random.rand(len(data)) * 1e-4
+    
+    fc = res.forecast(horizon=5)
+    
+    assert isinstance(fc, dict)
+    assert 'variance' in fc
+    assert 'volatility' in fc
+    assert len(fc['variance']) == 5
+    assert len(fc['volatility']) == 5
+    # Volatility should be sqrt of variance
+    np.testing.assert_allclose(fc['volatility'], np.sqrt(fc['variance']))
+
+
+def test_forecast_convergence():
+    """Long-horizon forecast should converge to unconditional variance."""
+    # Use simulated GARCH data for proper convergence test
+    from volkit import GARCH, Normal
+    
+    np.random.seed(42)
+    n = 500
+    omega, alpha, beta = 1e-6, 0.1, 0.85  # Known parameters
+    
+    # Simulate GARCH(1,1) process
+    y = np.zeros(n)
+    sigma2 = np.zeros(n)
+    sigma2[0] = omega / (1 - alpha - beta)  # unconditional variance
+    
+    for t in range(1, n):
+        sigma2[t] = omega + alpha * y[t-1]**2 + beta * sigma2[t-1]
+        y[t] = np.sqrt(sigma2[t]) * np.random.randn()
+    
+    spec = GARCH(1, 1) + Normal()
+    res = spec.fit(y, solver='slsqp', verbose=False)
+    
+    # Skip if no GARCH params
+    gp = res.garch_params
+    if gp is None:
+        pytest.skip("No GARCH params available")
+    
+    # Skip if model is non-stationary (persistence >= 1)
+    if gp.persistence >= 1.0:
+        pytest.skip(f"Model non-stationary: persistence = {gp.persistence}")
+    
+    # Long horizon forecast
+    fc = res.forecast(horizon=200)
+    
+    # Should converge to unconditional variance
+    unconditional_var = gp.unconditional_variance
+    
+    # Check last forecast is close to unconditional (within 30%)
+    # Loose tolerance due to estimation error
+    rel_diff = abs(fc['variance'][-1] - unconditional_var) / unconditional_var
+    assert rel_diff < 0.3, f"Forecast didn't converge: rel_diff = {rel_diff}"

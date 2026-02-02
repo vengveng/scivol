@@ -195,14 +195,43 @@ def _build(p: int, q: int) -> Routine:
             
             # Compute final sigma2 for storage
             _compute_garch_variance(res.x, resid2, sigma2, p, q)
+            
+            # Compute SEs via log-space numerical Hessian (robust to boundary issues)
+            from .transforms import (
+                compute_se_via_logspace, 
+                unpack_garch_studentt, 
+                jacobian_garch_studentt,
+                pack_garch_studentt,
+            )
+            
+            def nll_theta(theta: NDArray[np.float64]) -> float:
+                return call_c_obj(theta)
+            
+            H_theta, cov_matrix = compute_se_via_logspace(
+                theta_hat=res.x,
+                nll_theta=nll_theta,
+                unpack_fn=lambda th: unpack_garch_studentt(th, p, q),
+                jacobian_fn=lambda th: jacobian_garch_studentt(th, p, q),
+                pack_fn=lambda z: pack_garch_studentt(z, p, q),
+            )
 
-            return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
+            return EstimationResult(
+                spec, res, resid, 
+                sigma2=sigma2.copy(), 
+                time_elapsed=t_elapsed,
+                hessian=H_theta,
+                cov_matrix=cov_matrix,
+            )
         
         else:
             # =========================================================
             # LOG MODE: Unconstrained optimization with C-accelerated transforms
             # =========================================================
-            from .transforms import pack_garch_studentt_c, jacobian_garch_studentt_c, transform_grad_c
+            from .transforms import (
+                pack_garch_studentt_c, jacobian_garch_studentt_c, transform_grad_c,
+                unpack_garch_studentt, jacobian_garch_studentt, pack_garch_studentt,
+                compute_se_via_logspace,
+            )
             
             K = vol.n_params + dens.n_params  # Total parameters
             p_scaler = 2  # Scale factor for numerical stability
@@ -312,7 +341,27 @@ def _build(p: int, q: int) -> Routine:
             # Compute final sigma2
             _compute_garch_variance(theta_hat, resid2, sigma2, p, q)
             
-            return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
+            # Compute SEs via log-space numerical Hessian (robust to boundary issues)
+            # Imports already at top of log_mode section
+            
+            def nll_theta(theta: NDArray[np.float64]) -> float:
+                return call_c_obj(theta)
+            
+            H_theta, cov_matrix = compute_se_via_logspace(
+                theta_hat=theta_hat,
+                nll_theta=nll_theta,
+                unpack_fn=lambda th: unpack_garch_studentt(th, p, q),
+                jacobian_fn=lambda th: jacobian_garch_studentt(th, p, q),
+                pack_fn=lambda z: pack_garch_studentt(z, p, q),
+            )
+            
+            return EstimationResult(
+                spec, res, resid, 
+                sigma2=sigma2.copy(), 
+                time_elapsed=t_elapsed,
+                hessian=H_theta,
+                cov_matrix=cov_matrix,
+            )
 
     # -------------------------------------------------------------------------
     return Routine(

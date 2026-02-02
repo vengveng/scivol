@@ -9,8 +9,10 @@ import pytest
 import numpy as np
 from numpy.testing import assert_allclose
 
-# Reference implementation
-from garch_estimator import fit_garch as fit_garch_ref
+# Reference implementation (volkit_compat wraps volkit with legacy interface)
+import sys
+sys.path.insert(0, str(__file__).rsplit('/tests/', 1)[0])  # Add project root
+from volkit_compat import fit_garch as fit_garch_ref
 
 # volkit implementation
 from volkit import GARCH, Normal, StudentT, SkewT, MLE, QMLE

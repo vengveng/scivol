@@ -148,9 +148,11 @@ def fit_garch(
         if len(params) > n_garch + 1:
             dist_params.lam = params[n_garch + 1]
     
-    # Standard errors
+    # Standard errors and covariance
     std_errors = result.std_errors if hasattr(result, 'std_errors') else None
     std_errors_robust = result.std_errors_robust if hasattr(result, 'std_errors_robust') else None
+    cov_matrix = result.cov_matrix if hasattr(result, 'cov_matrix') else None
+    hessian = result.hessian if hasattr(result, 'hessian') else None
     
     return EstimationResult(
         garch_params=garch_params,
@@ -160,6 +162,8 @@ def fit_garch(
         converged=result.success if hasattr(result, 'success') else True,
         n_iter=result.n_iter if hasattr(result, 'n_iter') else 0,
         message="",
+        hessian=hessian,
+        cov_matrix=cov_matrix,
         std_errors=std_errors,
         std_errors_robust=std_errors_robust,
         sigma2=result.sigma2 if hasattr(result, 'sigma2') else None,

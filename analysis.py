@@ -643,13 +643,13 @@ def plot_volatilities(asset: str, save_path: str | None = None):
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
         print(f"Saved: {save_path}")
-    plt.show()
+    # plt.show()
     return fig
 
 
 # Uncomment to generate plots:
-# plot_volatilities("stock", save_path="results/volatility_stock.png")
-# plot_volatilities("cbond", save_path="results/volatility_cbond.png")
+plot_volatilities("stock", save_path="results/volatility_stock.png")
+plot_volatilities("cbond", save_path="results/volatility_cbond.png")
 
 
 print("\n" + "="*70)

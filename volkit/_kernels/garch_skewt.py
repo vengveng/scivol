@@ -22,7 +22,10 @@ from ..components.density import SkewT
 from ..spec.composite import CompositeSpec
 from ..result import EstimationResult
 from .routine import Routine
-from .transforms import pack_garch_skewt, unpack_garch_skewt, jacobian_garch_skewt
+from .transforms import (
+    pack_garch_skewt, unpack_garch_skewt, jacobian_garch_skewt,
+    compute_se_via_logspace,
+)
 
 # ------------------------------------------------------------------ #
 # cache (p,q) → Routine
@@ -192,8 +195,26 @@ def _build(p: int, q: int) -> Routine:
 
             # Compute final sigma2 for storage
             _garch_variance(res.x[:n_garch], resid2, sigma2, p, q)
+            
+            # Compute SEs via log-space numerical Hessian (robust to boundary issues)
+            def nll_theta(theta: NDArray[np.float64]) -> float:
+                return objective(theta) * n  # objective returns NLL/n
+            
+            H_theta, cov_matrix = compute_se_via_logspace(
+                theta_hat=res.x,
+                nll_theta=nll_theta,
+                unpack_fn=lambda th: unpack_garch_skewt(th, p, q),
+                jacobian_fn=lambda th: jacobian_garch_skewt(th, p, q),
+                pack_fn=lambda z: pack_garch_skewt(z, p, q),
+            )
 
-            return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
+            return EstimationResult(
+                spec, res, resid, 
+                sigma2=sigma2.copy(), 
+                time_elapsed=t_elapsed,
+                hessian=H_theta,
+                cov_matrix=cov_matrix,
+            )
         
         else:
             # =========================================================
@@ -323,7 +344,25 @@ def _build(p: int, q: int) -> Routine:
             # Compute final sigma2
             _garch_variance(theta_hat[:n_garch], resid2, sigma2, p, q)
             
-            return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
+            # Compute SEs via log-space numerical Hessian (robust to boundary issues)
+            def nll_theta_fn(theta: NDArray[np.float64]) -> float:
+                return objective(theta) * n  # objective returns NLL/n
+            
+            H_theta, cov_matrix = compute_se_via_logspace(
+                theta_hat=theta_hat,
+                nll_theta=nll_theta_fn,
+                unpack_fn=lambda th: unpack_garch_skewt(th, p, q),
+                jacobian_fn=lambda th: jacobian_garch_skewt(th, p, q),
+                pack_fn=lambda z: pack_garch_skewt(z, p, q),
+            )
+            
+            return EstimationResult(
+                spec, res, resid, 
+                sigma2=sigma2.copy(), 
+                time_elapsed=t_elapsed,
+                hessian=H_theta,
+                cov_matrix=cov_matrix,
+            )
 
     # -------------------------------------------------------------------------
     return Routine(

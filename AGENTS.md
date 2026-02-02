@@ -406,7 +406,8 @@ def test_validation_raises(bad_data):
 
 ### Slow Tests Warning
 
-**The following test files are slow (4+ minutes) because they fit many models:**
+**The following test files are slow (4+ minutes) because they fit many models.**
+They are marked with `@pytest.mark.slow` and skipped by default.
 
 | Test File | Reason | When to Run |
 |-----------|--------|-------------|
@@ -415,13 +416,16 @@ def test_validation_raises(bad_data):
 
 **Fast tests** (run always): `test_pandas_integration.py`, `test_spec_core.py`, `test_result_core.py`, etc.
 
-Run slow tests selectively:
+Run tests:
 ```bash
-# Skip slow tests during development
-pytest tests/ --ignore=tests/test_parallel_auto.py --ignore=tests/test_multi_series.py
+# Run fast tests only (default - skips @pytest.mark.slow)
+pytest tests/
 
-# Run only when parallel/auto logic changes
-pytest tests/test_parallel_auto.py tests/test_multi_series.py -v
+# Run ALL tests including slow ones
+pytest tests/ --run-slow
+
+# Run only slow tests
+pytest tests/ --run-slow -m slow
 ```
 
 ---

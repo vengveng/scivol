@@ -1,6 +1,13 @@
-"""Tests for multi-series parallel fitting."""
+"""Tests for multi-series parallel fitting.
+
+These tests are slow (4+ minutes) because they fit multiple models in parallel.
+Run with: pytest tests/test_multi_series.py --run-slow
+"""
 import pytest
 import numpy as np
+
+# Mark all tests in this module as slow
+pytestmark = pytest.mark.slow
 
 # Check if pandas is available
 try:
