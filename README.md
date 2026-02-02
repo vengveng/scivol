@@ -6,8 +6,10 @@ A high-performance Python library for volatility modeling with GARCH models.
 
 - **Component-based model specification** - Build models by combining volatility, mean, and density components
 - **Multiple distributions** - Normal, Student-t, and Skewed Student-t
+- **Automatic model selection** - Search over GARCH orders and distributions with parallel fitting
 - **Fast C extensions** - Optimized likelihood, gradient, and Hessian computation
 - **Robust standard errors** - QMLE with sandwich covariance estimation
+- **Multi-series support** - Fit the same model to multiple time series in parallel
 - **Professional output** - Clean, tabular estimation summaries
 
 ## Installation
@@ -81,9 +83,10 @@ Half-life (periods):      106.3
 1. [Model Specification](#model-specification)
 2. [Components](#components)
 3. [Estimators](#estimators)
-4. [Results](#results)
-5. [Diagnostic Tools](#diagnostic-tools)
-6. [API Reference](#api-reference)
+4. [Automatic Model Selection](#automatic-model-selection)
+5. [Results](#results)
+6. [Diagnostic Tools](#diagnostic-tools)
+7. [API Reference](#api-reference)
 
 ---
 
@@ -309,6 +312,156 @@ print(result.std_errors_robust) # Robust (sandwich) standard errors
 
 ---
 
+## Automatic Model Selection
+
+volkit can automatically search over multiple model specifications and select the best one based on a blended criterion of AIC and diagnostic tests.
+
+### Auto-selection for GARCH Orders
+
+Search over different GARCH lag orders using `auto=True`:
+
+```python
+from volkit import GARCH, Normal
+
+# Search p, q in range [1, 3]
+spec = GARCH(auto=True) + Normal()
+result = spec.fit(returns)
+
+# Inspect what was selected
+print(f"Selected model: {result.spec}")  # e.g., GARCH(2,1)+Normal
+print(result.selection_summary())  # Show all candidates and scores
+```
+
+**Customizing the search range:**
+
+```python
+# Search p in [1, 2], q in [1, 2]
+spec = GARCH(auto={'max_p': 2, 'max_q': 2}) + Normal()
+
+# Fix p=1, auto-select q from [1, 3]
+spec = GARCH(p=1, q='auto') + Normal()
+```
+
+### Auto-selection for Distributions
+
+Use `AutoDensity` to automatically select the best distribution:
+
+```python
+from volkit import GARCH, AutoDensity
+
+# Search over all distributions (Normal, StudentT, SkewT)
+spec = GARCH(1, 1) + AutoDensity()
+result = spec.fit(returns)
+
+# Or specify candidates
+spec = GARCH(1, 1) + AutoDensity(candidates=['Normal', 'StudentT'])
+result = spec.fit(returns)
+```
+
+### Combined Auto-selection
+
+Search over both GARCH orders and distributions simultaneously:
+
+```python
+from volkit import GARCH, AutoDensity
+
+# Search GARCH(p,q) where p,q in [1,3] × 3 distributions = 27 models
+spec = GARCH(auto=True) + AutoDensity()
+result = spec.fit(returns, verbose=True)
+
+print(f"Best model: {result.spec}")
+result.selection_summary()
+```
+
+### Selection Criterion
+
+The selection score is computed as:
+
+```
+Score = AIC + diagnostic_weight × n_failed_tests
+```
+
+Where `n_failed_tests` includes:
+- 1 if DGT (Density Goodness-of-fit Test) fails
+- 1 for each Ljung-Box test (on moments) that fails
+
+By default, `diagnostic_weight = 50.0`, meaning a failed diagnostic test is equivalent to an AIC penalty of 50.
+
+**Customize the selection criterion:**
+
+```python
+# Increase diagnostic penalty (favors models with better diagnostics)
+result = spec.fit(returns, diagnostic_weight=100.0)
+
+# Disable diagnostic penalties (use AIC only)
+result = spec.fit(returns, diagnostic_weight=0.0)
+```
+
+### Parallel Model Selection
+
+Auto-selection can fit multiple candidates in parallel for faster execution:
+
+```python
+# Use all CPU cores (default)
+result = spec.fit(returns)
+
+# Specify number of workers
+result = spec.fit(returns, n_jobs=4)
+
+# Sequential execution (useful for debugging)
+result = spec.fit(returns, n_jobs=1)
+```
+
+### Multi-series Fitting
+
+Fit the same model specification to multiple time series at once:
+
+```python
+from volkit import GARCH, Normal
+
+# List of return series
+returns_list = [returns1, returns2, returns3, returns4]
+
+spec = GARCH(1, 1) + Normal()
+
+# Fit all series in parallel
+results = spec.fit_multiple(returns_list, n_jobs=4)
+
+# Each result is independent
+for i, result in enumerate(results):
+    print(f"Series {i}: persistence = {result.garch_params.persistence:.4f}")
+```
+
+**Multi-series with auto-selection:**
+
+```python
+# Auto-select best model for each series independently
+spec = GARCH(auto=True) + AutoDensity()
+results = spec.fit_multiple(returns_list, n_jobs=4, verbose=True)
+```
+
+### Inspecting Selection Results
+
+Access the full set of candidates and their scores:
+
+```python
+# After fitting with auto-selection
+result = spec.fit(returns)
+
+# Summary table
+result.selection_summary()
+
+# Programmatic access to candidates
+candidates = result._selection_candidates  # List of ModelCandidate objects
+
+for candidate in candidates[:5]:  # Top 5
+    print(f"{candidate.spec}: AIC={candidate.aic:.2f}, Score={candidate.score:.2f}")
+```
+
+**Note:** QMLE with AutoDensity is redundant since QMLE always uses Normal likelihood. A warning will be issued and only Normal will be fitted.
+
+---
+
 ## Results
 
 The `EstimationResult` object provides access to all estimation outputs.
@@ -446,6 +599,7 @@ from volkit import (
     Normal,       # Normal distribution
     StudentT,     # Student-t distribution
     SkewT,        # Skewed Student-t distribution
+    AutoDensity,  # Automatic distribution selection
     Component,    # Base class for components
     
     # Specification
@@ -464,7 +618,13 @@ from volkit import (
 ### GARCH Component
 
 ```python
+# Fixed orders
 garch = GARCH(p: int, q: int)
+
+# Auto-selection
+garch = GARCH(auto=True)  # Search p,q in [1,3]
+garch = GARCH(auto={'max_p': 2, 'max_q': 2})  # Custom range
+garch = GARCH(p=1, q='auto')  # Fix p, auto-select q
 
 # Properties
 garch.p             # ARCH order
@@ -477,6 +637,22 @@ garch.fitted_params # {'omega': float, 'alpha': list, 'beta': list}
 garch.persistence() # Sum of alpha + beta
 garch.is_stationary()
 garch.unconditional_variance()
+```
+
+### AutoDensity Component
+
+```python
+from volkit import AutoDensity
+
+# All distributions
+auto_dens = AutoDensity()
+
+# Specific candidates
+auto_dens = AutoDensity(candidates=['Normal', 'StudentT'])
+
+# Properties
+auto_dens.candidates     # List of distribution names to search
+auto_dens.signature      # "AutoDensity"
 ```
 
 ### EstimationResult
@@ -515,6 +691,10 @@ result.time_elapsed         # float - seconds
 result.summary()            # Print detailed summary
 result.summary(robust=True) # Use robust SEs in summary
 result.to_dict()            # Export as dictionary
+result.selection_summary()  # Show auto-selection candidates (if used)
+
+# Auto-selection attributes (if auto=True or AutoDensity used)
+result._selection_candidates  # List[ModelCandidate] - all evaluated models
 ```
 
 ### MLE Estimator
@@ -524,11 +704,20 @@ from volkit import MLE
 
 estimator = MLE()
 result = estimator.fit(
-    spec,                   # Model specification
-    data,                   # 1D array of returns/residuals
-    solver="trust",         # Optimization method
-    log_mode=True,          # Optimize in log-space
-    verbose=False,          # Print progress
+    spec,                      # Model specification
+    data,                      # 1D array of returns/residuals
+    solver="trust",            # Optimization method
+    log_mode=True,             # Optimize in log-space
+    verbose=False,             # Print progress
+    n_jobs=None,               # Parallel workers (for auto-selection)
+    diagnostic_weight=50.0,    # AIC penalty per failed test (auto-selection)
+)
+
+# Multi-series fitting
+results = spec.fit_multiple(
+    data_list,                 # List of 1D arrays
+    n_jobs=4,                  # Parallel workers
+    **fit_kwargs               # Other fit() arguments
 )
 ```
 
@@ -622,6 +811,41 @@ for r in results:
     print(f"{str(r.spec):20}  {r.loglikelihood:10.2f}  {r.aic:10.2f}  {r.bic:10.2f}")
 ```
 
+### Automatic Model Selection
+
+```python
+from volkit import GARCH, AutoDensity
+
+# Automatically select best GARCH order and distribution
+spec = GARCH(auto=True) + AutoDensity()
+result = spec.fit(returns, verbose=True)
+
+# View what was selected
+print(f"Best model: {result.spec}")
+result.selection_summary()
+
+# Access all candidates
+for candidate in result._selection_candidates[:3]:
+    print(f"{candidate.spec}: AIC={candidate.aic:.2f}, Score={candidate.score:.2f}")
+```
+
+### Multi-series Fitting
+
+```python
+from volkit import GARCH, Normal
+
+# Multiple return series
+returns_list = [returns1, returns2, returns3]
+
+# Fit all in parallel
+spec = GARCH(1, 1) + Normal()
+results = spec.fit_multiple(returns_list, n_jobs=4)
+
+# Compare results
+for i, result in enumerate(results):
+    print(f"Series {i}: ω={result.params[0]:.2e}, α={result.params[1]:.3f}, β={result.params[2]:.3f}")
+```
+
 ### Volatility Forecasting
 
 ```python
@@ -646,42 +870,6 @@ forecast_sigma2 = omega + alpha * last_resid2 + beta * last_sigma2
 forecast_sigma = np.sqrt(forecast_sigma2)
 
 print(f"Next period volatility forecast: {forecast_sigma:.4f}")
-```
-
----
-
-## Development
-
-### Building from source
-
-```bash
-# Clone repository
-git clone <repo-url>
-cd volkit_cursor
-
-# Development install
-make dev
-
-# Run tests
-make t
-
-# Full rebuild
-make b
-```
-
-### Derivative validation
-
-Always validate derivatives when modifying C code:
-
-```python
-from volkit import GARCH, Normal
-
-spec = GARCH(1, 1) + Normal()
-data = np.random.randn(500) * 0.01
-
-# Quick check
-report = spec.validate_derivatives(data)
-print(f"Derivatives valid: {report.passed}")
 ```
 
 ---
