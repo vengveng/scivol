@@ -25,23 +25,60 @@ import pandas as pd
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Tuple, Literal
+from joblib import Parallel, delayed
+import multiprocessing
 
 # volkit library (all models via C extensions)
 from volkit import ARMA, GARCH, Normal, StudentT, SkewT
 
-# Utilities for diagnostic tests
-from utilities import ar1
-
 # Suppress convergence warnings during benchmark
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
+
+# Get maximum available workers
+N_WORKERS = multiprocessing.cpu_count()
+print(f"Using {N_WORKERS} parallel workers")
+
+
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
+
+def ar1(series: pd.Series) -> dict:
+    """
+    Fit AR(1) model via OLS: y_t = c + phi * y_{t-1} + e_t
+    
+    Returns: {"c": float, "phi": float, "se_phi": float, "resid": pd.Series, "T": int}
+    """
+    x = series.dropna()
+    y = x.iloc[1:]
+    x_lag = x.shift(1).iloc[1:]
+
+    # y = c + phi * x_lag + e
+    cov = y.cov(x_lag)
+    var = x_lag.var()
+    phi = cov / var
+    c = y.mean() - phi * x_lag.mean()
+
+    eps = y - (c + phi * x_lag)
+    T = len(y)
+    sse = float((eps**2).sum())
+    se_phi = np.sqrt(sse / (T - 2) / float(((x_lag - x_lag.mean())**2).sum()))
+
+    return {
+        "c": float(c),
+        "phi": float(phi),
+        "se_phi": float(se_phi),
+        "resid": eps,   # pd.Series indexed by dates t=2..T
+        "T": int(T),
+    }
 
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
 
-RESULTS_DIR = Path("benchmark_results")
+RESULTS_DIR = Path("localdev_benchmark_results")
 RESULTS_DIR.mkdir(exist_ok=True)
 
 # Data columns
@@ -165,7 +202,7 @@ def load_data() -> Tuple[Dict[str, pd.Series], Dict[str, pd.Series]]:
         ar1_residuals: AR(1) residuals (for pure GARCH models)
     """
     print("Loading data...")
-    data_raw = pd.read_csv("data/DATA_HW1.csv", skiprows=1, parse_dates=["DATE"], dayfirst=True)
+    data_raw = pd.read_csv("localdev_data/DATA_HW1.csv", skiprows=1, parse_dates=["DATE"], dayfirst=True)
     data_raw = data_raw.rename(columns=DATA_RENAME).set_index("date")
     
     # Keep only the columns we need
@@ -230,7 +267,7 @@ def run_garch_benchmark(
         nu = params[3] if len(params) > 3 else None
         lam = params[4] if len(params) > 4 else None
         
-        converged = result.success if hasattr(result, 'success') else True
+        converged = result.converged if hasattr(result, 'converged') else True
         n_iter = result.n_iter if hasattr(result, 'n_iter') else 0
         time_elapsed = result.time_elapsed if hasattr(result, 'time_elapsed') else 0.0
         
@@ -243,7 +280,7 @@ def run_garch_benchmark(
             converged=converged,
             n_iter=n_iter,
             time_elapsed=time_elapsed,
-            log_likelihood=result.loglikelihood,
+            log_likelihood=result.log_likelihood,
             omega=omega,
             alpha=alpha,
             beta=beta,
@@ -305,7 +342,7 @@ def run_arma_garch_benchmark(
         nu = params[6] if len(params) > 6 else None
         lam = params[7] if len(params) > 7 else None
         
-        converged = result.success if hasattr(result, 'success') else True
+        converged = result.converged if hasattr(result, 'converged') else True
         n_iter = result.n_iter if hasattr(result, 'n_iter') else 0
         time_elapsed = result.time_elapsed if hasattr(result, 'time_elapsed') else 0.0
         
@@ -318,7 +355,7 @@ def run_arma_garch_benchmark(
             converged=converged,
             n_iter=n_iter,
             time_elapsed=time_elapsed,
-            log_likelihood=result.loglikelihood,
+            log_likelihood=result.log_likelihood,
             c=c,
             phi=phi,
             theta=theta,
@@ -376,7 +413,7 @@ def run_arma_benchmark(
         phi = params[1]
         theta = params[2]
         
-        converged = result.success if hasattr(result, 'success') else True
+        converged = result.converged if hasattr(result, 'converged') else True
         n_iter = result.n_iter if hasattr(result, 'n_iter') else 0
         time_elapsed = result.time_elapsed if hasattr(result, 'time_elapsed') else 0.0
         
@@ -389,7 +426,7 @@ def run_arma_benchmark(
             converged=converged,
             n_iter=n_iter,
             time_elapsed=time_elapsed,
-            log_likelihood=result.loglikelihood,
+            log_likelihood=result.log_likelihood,
             c=c,
             phi=phi,
             theta=theta,
@@ -421,104 +458,117 @@ def run_arma_benchmark(
 # MAIN BENCHMARK
 # =============================================================================
 
+def _run_single_garch_task(resid: np.ndarray, asset: str, dist_name: str, config: Dict[str, Any]) -> Tuple[str, Optional[BenchmarkResult]]:
+    """Wrapper for running single GARCH task with descriptive output."""
+    mode = "log" if config["log_mode"] else "con"
+    config_str = f"{config['solver']}[{mode}]"
+    task_desc = f"GARCH/{asset}/{dist_name}: {config_str}"
+    result = run_garch_benchmark(resid, asset, dist_name, config)
+    return task_desc, result
+
+
+def _run_single_arma_garch_task(y: np.ndarray, asset: str, dist_name: str, config: Dict[str, Any]) -> Tuple[str, Optional[BenchmarkResult]]:
+    """Wrapper for running single ARMA-GARCH task with descriptive output."""
+    mode = "log" if config["log_mode"] else "con"
+    config_str = f"{config['solver']}[{mode}]"
+    task_desc = f"ARMA-GARCH/{asset}/{dist_name}: {config_str}"
+    result = run_arma_garch_benchmark(y, asset, dist_name, config)
+    return task_desc, result
+
+
+def _run_single_arma_task(y: np.ndarray, asset: str, dist_name: str, config: Dict[str, Any]) -> Tuple[str, Optional[BenchmarkResult]]:
+    """Wrapper for running single ARMA task with descriptive output."""
+    mode = "log" if config["log_mode"] else "con"
+    config_str = f"{config['solver']}[{mode}]"
+    task_desc = f"ARMA/{asset}/{dist_name}: {config_str}"
+    result = run_arma_benchmark(y, asset, dist_name, config)
+    return task_desc, result
+
+
 def run_full_benchmark(
     log_returns: Dict[str, pd.Series],
     ar1_residuals: Dict[str, pd.Series],
 ) -> List[BenchmarkResult]:
-    """Run full benchmark across all models, assets, and configs."""
+    """Run full benchmark across all models, assets, and configs using parallel processing."""
     
-    all_results: List[BenchmarkResult] = []
-    
-    # Count total configs
-    n_garch = len(ASSETS) * len(GARCH_DIST_SPECS) * len(GARCH_OPTIMIZER_CONFIGS)
-    n_arma_garch = len(ASSETS) * len(ARMA_GARCH_DIST_SPECS) * len(ARMA_GARCH_OPTIMIZER_CONFIGS)
-    n_arma = len(ASSETS) * len(ARMA_DIST_SPECS) * len(ARMA_OPTIMIZER_CONFIGS)
-    total_configs = n_garch + n_arma_garch + n_arma
-    current = 0
+    # Build list of all tasks
+    tasks = []
+    task_types = []
     
     # =====================
     # 1. GARCH(1,1) Models (volkit)
     # =====================
-    print("\n" + "=" * 60)
-    print("GARCH(1,1) Models (volkit)")
-    print("=" * 60)
-    
     for asset in ASSETS:
         if asset not in ar1_residuals:
             continue
-            
         resid = np.ascontiguousarray(ar1_residuals[asset], dtype=np.float64)
         
         for dist_name in GARCH_DIST_SPECS.keys():
             for config in GARCH_OPTIMIZER_CONFIGS:
-                current += 1
-                mode = "log" if config["log_mode"] else "con"
-                config_str = f"{config['solver']}[{mode}]"
-                print(f"[{current}/{total_configs}] GARCH/{asset}/{dist_name}: {config_str}...", end=" ", flush=True)
-                
-                result = run_garch_benchmark(resid, asset, dist_name, config)
-                if result is not None:
-                    all_results.append(result)
-                    status = "✓" if result.converged else "✗"
-                    print(f"{status} {result.time_elapsed:.3f}s")
-                else:
-                    print("FAILED")
+                tasks.append(delayed(_run_single_garch_task)(resid, asset, dist_name, config))
+                task_types.append("GARCH")
     
     # =====================
     # 2. ARMA(1,1)-GARCH(1,1) Models (volkit)
     # =====================
-    print("\n" + "=" * 60)
-    print("ARMA(1,1)-GARCH(1,1) Models (volkit)")
-    print("=" * 60)
-    
     for asset in ASSETS:
         if asset not in log_returns:
             continue
-            
         y = np.ascontiguousarray(log_returns[asset], dtype=np.float64)
         
         for dist_name in ARMA_GARCH_DIST_SPECS.keys():
             for config in ARMA_GARCH_OPTIMIZER_CONFIGS:
-                current += 1
-                mode = "log" if config["log_mode"] else "con"
-                config_str = f"{config['solver']}[{mode}]"
-                print(f"[{current}/{total_configs}] ARMA-GARCH/{asset}/{dist_name}: {config_str}...", end=" ", flush=True)
-                
-                result = run_arma_garch_benchmark(y, asset, dist_name, config)
-                if result is not None:
-                    all_results.append(result)
-                    status = "✓" if result.converged else "✗"
-                    print(f"{status} {result.time_elapsed:.3f}s")
-                else:
-                    print("FAILED")
+                tasks.append(delayed(_run_single_arma_garch_task)(y, asset, dist_name, config))
+                task_types.append("ARMA-GARCH")
     
     # =====================
     # 3. Pure ARMA(1,1) Models (volkit, constant variance)
     # =====================
-    print("\n" + "=" * 60)
-    print("ARMA(1,1) Models (volkit, constant variance)")
-    print("=" * 60)
-    
     for asset in ASSETS:
         if asset not in log_returns:
             continue
-            
         y = np.ascontiguousarray(log_returns[asset], dtype=np.float64)
         
         for dist_name in ARMA_DIST_SPECS.keys():
             for config in ARMA_OPTIMIZER_CONFIGS:
-                current += 1
-                mode = "log" if config["log_mode"] else "con"
-                config_str = f"{config['solver']}[{mode}]"
-                print(f"[{current}/{total_configs}] ARMA/{asset}/{dist_name}: {config_str}...", end=" ", flush=True)
-                
-                result = run_arma_benchmark(y, asset, dist_name, config)
-                if result is not None:
-                    all_results.append(result)
-                    status = "✓" if result.converged else "✗"
-                    print(f"{status} {result.time_elapsed:.3f}s")
-                else:
-                    print("FAILED")
+                tasks.append(delayed(_run_single_arma_task)(y, asset, dist_name, config))
+                task_types.append("ARMA")
+    
+    total_tasks = len(tasks)
+    print(f"\n{'=' * 60}")
+    print(f"Running {total_tasks} benchmark tasks in parallel ({N_WORKERS} workers)")
+    print(f"{'=' * 60}\n")
+    
+    # Count tasks by type
+    from collections import Counter
+    task_counts = Counter(task_types)
+    for task_type, count in task_counts.items():
+        print(f"  {task_type}: {count} tasks")
+    print()
+    
+    # Run all tasks in parallel with progress reporting
+    start_time = time.perf_counter()
+    results_with_desc = Parallel(n_jobs=N_WORKERS, verbose=10, backend='loky')(tasks)
+    elapsed = time.perf_counter() - start_time
+    
+    print(f"\n{'=' * 60}")
+    print(f"Parallel execution completed in {elapsed:.1f}s")
+    print(f"{'=' * 60}\n")
+    
+    # Extract results and print summary
+    all_results = []
+    n_converged = 0
+    n_failed = 0
+    
+    for task_desc, result in results_with_desc:
+        if result is not None:
+            all_results.append(result)
+            if result.converged:
+                n_converged += 1
+            else:
+                n_failed += 1
+    
+    print(f"Results: {n_converged} converged, {n_failed} failed, {len(all_results)} total")
     
     return all_results
 
@@ -651,8 +701,8 @@ def verify_all_models() -> Dict[str, bool]:
         print(f"\n[{name}] ", end="")
         try:
             result = spec.fit(y, solver="slsqp", verbose=False)
-            success = result.success if hasattr(result, 'success') else True
-            ll = result.loglikelihood
+            success = result.converged if hasattr(result, 'converged') else True
+            ll = result.log_likelihood
             
             # Basic sanity checks
             is_valid = (

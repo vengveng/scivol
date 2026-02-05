@@ -3,9 +3,11 @@
 **Last Updated:** 2026-01-30  
 **Purpose:** Essential architectural rules, patterns, and constraints for developing the volkit time series volatility modeling library.
 
-**Reference implementations:** `arma_garch_estimator.py` contains verified Python+Numba implementations with analytical gradients/Hessians for ARMA-GARCH models (Normal, Student-t, Skew-t). Use as ground truth when porting to C.
+**Reference implementations:** `localdev/arma_garch_estimator.py` contains verified Python+Numba implementations with analytical gradients/Hessians for ARMA-GARCH models (Normal, Student-t, Skew-t). Use as ground truth when porting to C.
 
 **Benchmarking:** `benchmark_optimizers.py` tests all optimizer configurations on real data. Run periodically to validate/update default settings.
+
+**Local development:** All development scripts, experiments, and analysis code should go in `localdev/`. This folder is git-ignored. Directories prefixed with `localdev_*` are also ignored (e.g., `localdev_data/`, `localdev_results/`).
 
 ---
 
@@ -334,7 +336,7 @@ For Hessians, also track ∂²e_t/∂θ∂θ' and ∂²h_t/∂θ∂θ'.
 
 **All analytical derivatives must be validated against finite differences.**
 
-Pattern from `numerical_hessians.py`:
+Pattern from `localdev/numerical_hessians.py`:
 
 ```python
 # 1. Compute analytical gradient/Hessian
@@ -528,8 +530,9 @@ class OptimizeResultLike(Protocol):
 - C functions: `garch_variance_11`, `garch_ll_pq_normal`
 
 **Files/Modules**:
-- lowercase with underscores: `benchmark_optimizers.py`, `numerical_hessians.py`
+- lowercase with underscores: `benchmark_optimizers.py`, `localdev/numerical_hessians.py`
 - Private modules: underscore prefix: `_mixins.py`, `_kernels/`, `_csrc/`
+- Development files: place in `localdev/` folder (git-ignored)
 
 ---
 
@@ -652,47 +655,41 @@ print(f"AIC: {result.aic}, BIC: {result.bic}")
 ### Directory Structure
 
 ```
-volkit/
-├── _core.c                  # C extension wrapper (Python-C interface)
-├── _core.pyi                # Type stubs for C functions
-├── _csrc/                   # C implementation
-│   ├── volkit_core.h        # Public C API declarations
-│   ├── math_and_helpers.h   # Shared math (lgamma, digamma, constants)
-│   ├── variance_garch.c     # GARCH variance recursion
-│   ├── likelihood_*.c       # Distribution log-likelihoods
-│   ├── arma_garch.c         # ARMA-GARCH NLL + gradients (Normal/t/Skew-t)
-│   └── errors_garch.c       # OPG and Hessian computation
-├── _kernels/                # Optimization kernels (internal)
-│   ├── __init__.py          # Registry and dispatcher
-│   ├── routine.py           # Routine dataclass
-│   ├── garch_normal.py      # GARCH+Normal kernels
-│   └── garch_studentt.py    # GARCH+StudentT kernels
-├── components/              # User-facing components
-│   ├── __init__.py
-│   ├── base.py              # Component ABC
-│   ├── mean.py              # ARMA component
-│   ├── vol.py               # GARCH component
-│   └── density.py           # Normal, StudentT
-├── spec/                    # Composition logic
-│   ├── __init__.py
-│   └── composite.py         # CompositeSpec
-├── estimators/              # Estimation methods
-│   ├── __init__.py
-│   ├── base.py              # Estimator ABC
-│   ├── mle.py               # Maximum Likelihood
-│   └── qmle.py              # QMLE with robust (sandwich) SEs
-├── result.py                # EstimationResult class
-├── roles.py                 # Role enum (MEAN, VOLATILITY, DENSITY)
-└── _mixins.py               # FitsMixin helper
+volkit_cursor/                   # Repository root
+├── volkit/                      # Core package (ships)
+│   ├── _core.c                  # C extension wrapper (Python-C interface)
+│   ├── _core.pyi                # Type stubs for C functions
+│   ├── _csrc/                   # C implementation
+│   │   ├── volkit_core.h        # Public C API declarations
+│   │   ├── math_and_helpers.h   # Shared math (lgamma, digamma, constants)
+│   │   ├── variance_garch.c     # GARCH variance recursion
+│   │   ├── likelihood_*.c       # Distribution log-likelihoods
+│   │   ├── arma_garch.c         # ARMA-GARCH NLL + gradients (Normal/t/Skew-t)
+│   │   └── errors_garch.c       # OPG and Hessian computation
+│   ├── _kernels/                # Optimization kernels (internal)
+│   ├── components/              # User-facing components
+│   ├── spec/                    # Composition logic
+│   ├── estimators/              # Estimation methods
+│   ├── result.py                # EstimationResult class
+│   ├── roles.py                 # Role enum (MEAN, VOLATILITY, DENSITY)
+│   └── _mixins.py               # FitsMixin helper
+├── tests/                       # Test suite (ships)
+├── benchmark_optimizers.py      # Optimizer benchmarking (ships, keep evergreen)
+├── AGENTS.md                    # Developer guide (ships)
+├── README.md                    # User documentation (ships)
+├── pyproject.toml               # Build configuration (ships)
+├── Makefile                     # Build automation (ships)
+├── MANIFEST.in                  # Build manifest (ships)
+│
+└── localdev/                    # Development scripts (git-ignored)
+    ├── arma_garch_estimator.py  # Reference: ARMA-GARCH with analytical grad/Hess
+    ├── likelihoods.py           # Reference: Log-likelihood functions
+    ├── numerical_hessians.py    # Reference: Finite difference validation
+    ├── utilities.py             # Reference: Statistical tests
+    ├── analysis.py              # Analysis scripts
+    └── ...                      # Other experiments and dev tools
 
-Root-level files (reference implementations & analysis):
-├── arma_garch_estimator.py  # ARMA-GARCH with analytical grad/Hess (Normal/t/Skew-t)
-├── benchmark_optimizers.py  # Optimizer benchmarking (keep evergreen)
-├── likelihoods.py           # Log-likelihood functions
-├── numerical_hessians.py    # Finite difference validation
-├── utilities.py             # Statistical tests
-├── garch_analysis.py        # GARCH-focused analysis
-└── analysis.py              # Full analysis pipeline
+# Also git-ignored: localdev_data/, localdev_results/, localdev_backup/, etc.
 ```
 
 ### Import Patterns
@@ -779,7 +776,7 @@ For new models:
 3. **Port to C** using the Numba code as reference
 4. **Verify C matches Numba** to <1e-12 precision
 
-This pattern was used for `arma_garch_estimator.py` → `arma_garch.c`.
+This pattern was used for `localdev/arma_garch_estimator.py` → `arma_garch.c`.
 
 ### Benchmark Testing (Keep Evergreen)
 
@@ -800,7 +797,7 @@ Run after any changes to optimization code to validate defaults:
 python benchmark_optimizers.py
 ```
 
-Results saved to `benchmark_results/` with recommended defaults.
+Results saved to `localdev_benchmark_results/` with recommended defaults.
 
 `tests/test_dgp_estimation.py` tests parameter recovery:
 - Generates synthetic data from known DGPs (5000 observations)
@@ -847,6 +844,8 @@ Before implementing:
 
 For questions or clarifications about this guide, check:
 - Implementation examples in `volkit/components/` and `volkit/_kernels/`
-- Reference implementations in `arma_garch_estimator.py`
+- Reference implementations in `localdev/arma_garch_estimator.py`
 - Test patterns in `tests/`
 - C interface in `volkit/_core.c` and `volkit/_core.pyi`
+
+**New development work** (scripts, experiments, analysis) should go in `localdev/`.

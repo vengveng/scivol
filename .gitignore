@@ -5,14 +5,12 @@ __pycache__/
 *.pyd
 .pytest_cache/
 localdev/
+localdev_*
 python/
 *.ipynb
 volkit.egg-info/
 dist/
 build/
 examples/
-lint.py
 *.gz
 *.whl
-test.py
-/*.py
