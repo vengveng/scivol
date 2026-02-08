@@ -1,9 +1,9 @@
 # volkit Library Guide for AI Agents
 
-**Last Updated:** 2026-01-30  
+**Last Updated:** 2026-02-08  
 **Purpose:** Essential architectural rules, patterns, and constraints for developing the volkit time series volatility modeling library.
 
-**Reference implementations:** `localdev/arma_garch_estimator.py` contains verified Python+Numba implementations with analytical gradients/Hessians for ARMA-GARCH models (Normal, Student-t, Skew-t). Use as ground truth when porting to C.
+**Reference implementations:** `localdev/arma_garch_estimator.py` contains verified Python+Numba implementations with analytical gradients/Hessians for ARMA-GARCH models (Normal, Student-t, Skew-t). `localdev/gjr_garch_estimator.py` contains the GJR-GARCH reference implementation. Use as ground truth when porting to C.
 
 **Benchmarking:** `benchmark_optimizers.py` tests all optimizer configurations on real data. Run periodically to validate/update default settings.
 
@@ -33,11 +33,15 @@ The user interface is based on **component composition** with a universal `.fit(
 
 ```python
 # Components represent model parts
-from volkit import GARCH, ARMA, Normal, StudentT
+from volkit import GARCH, GJRGARCH, ARMA, Normal, StudentT
 
 # Simple models
 spec = GARCH(1, 1)                           # Auto-adds Normal() density
 spec = GARCH(1, 1) + StudentT()              # Explicit density
+
+# Asymmetric volatility (GJR-GARCH)
+spec = GJRGARCH(1, 1) + Normal()             # GJR-GARCH with Normal
+spec = GJRGARCH(1, 1) + StudentT()           # GJR-GARCH with Student-t
 
 # Composite models
 spec = ARMA(1, 1) + GARCH(1, 1)              # Mean + Volatility
@@ -87,7 +91,7 @@ The sandwich covariance is: `V_robust = H^{-1} @ OPG @ H^{-1}` where H is the He
 
 **Roles** (`volkit/roles.py`):
 - `MEAN`: Mean equation components (e.g., ARMA)
-- `VOLATILITY`: Volatility components (e.g., GARCH, GJR-GARCH)
+- `VOLATILITY`: Volatility components (e.g., GARCH, GJRGARCH)
 - `DENSITY`: Conditional distributions (e.g., Normal, StudentT, SkewT)
 - `CORRELATION`: Multivariate correlation (future)
 
@@ -188,6 +192,11 @@ Examples:
 - `_garch_variance_pq` - GARCH(p,q) variance (generic)
 - `_garch_ll_11_normal` - GARCH(1,1) log-likelihood with Normal
 - `_garch_ll_grad_pq_studentt` - GARCH(p,q) gradient with Student-t
+- `_gjr_garch_variance_11` - GJR-GARCH(1,1) variance (takes raw residuals)
+- `_gjr_garch_ll_11_normal` - GJR-GARCH(1,1) NLL with Normal
+- `_gjr_garch_ll_grad_11_studentt` - GJR-GARCH(1,1) gradient with Student-t
+
+**Note:** GJR-GARCH functions take **raw residuals** (not squared) because the indicator I(ε<0) needs the sign.
 
 **Parameter ordering**:
 1. Parameter array pointer (`theta_ptr`)
@@ -571,12 +580,15 @@ build-backend = "setuptools.build_meta"
 [[tool.setuptools.ext-modules]]
 name = "volkit._core"
 sources = [
-    "volkit/_core.c",
-    "volkit/_csrc/variance_garch.c",
-    "volkit/_csrc/likelihood_garch.c",
-    "volkit/_csrc/likelihood_normal.c",
-    "volkit/_csrc/likelihood_studentt.c",
-    "volkit/_csrc/errors_garch.c",
+ "volkit/_core.c",
+ "volkit/_csrc/variance_garch.c",
+ "volkit/_csrc/variance_gjr_garch.c",
+ "volkit/_csrc/likelihood_garch.c",
+ "volkit/_csrc/likelihood_gjr_garch.c",
+ "volkit/_csrc/likelihood_normal.c",
+ "volkit/_csrc/likelihood_studentt.c",
+ "volkit/_csrc/errors_garch.c",
+ "volkit/_csrc/errors_gjr_garch.c",
 ]
 include-dirs = ["volkit/_csrc"]
 ```
@@ -619,18 +631,22 @@ print(sigma2[:5])  # Should contain positive variances
 **Create and fit a model**:
 
 ```python
-from volkit import GARCH, StudentT
+from volkit import GARCH, GJRGARCH, StudentT
 import numpy as np
 
 # Generate sample data
 returns = np.random.randn(1000) * 0.01
 
-# Specify and fit
+# Symmetric GARCH
 spec = GARCH(1, 1) + StudentT()
 result = spec.fit(returns)
 
+# Asymmetric GJR-GARCH (leverage effect)
+spec = GJRGARCH(1, 1) + StudentT()
+result = spec.fit(returns)
+
 # Access results
-print(f"Log-likelihood: {result.loglikelihood}")
+print(f"Log-likelihood: {result.log_likelihood}")
 print(f"Parameters: {result.params}")
 print(f"AIC: {result.aic}, BIC: {result.bic}")
 ```
@@ -663,9 +679,12 @@ volkit_cursor/                   # Repository root
 │   │   ├── volkit_core.h        # Public C API declarations
 │   │   ├── math_and_helpers.h   # Shared math (lgamma, digamma, constants)
 │   │   ├── variance_garch.c     # GARCH variance recursion
+│   │   ├── variance_gjr_garch.c # GJR-GARCH variance recursion (raw residuals)
 │   │   ├── likelihood_*.c       # Distribution log-likelihoods
+│   │   ├── likelihood_gjr_garch.c # GJR-GARCH NLL + grad + Hessian
 │   │   ├── arma_garch.c         # ARMA-GARCH NLL + gradients (Normal/t/Skew-t)
-│   │   └── errors_garch.c       # OPG and Hessian computation
+│   │   ├── errors_garch.c       # OPG and Hessian computation
+│   │   └── errors_gjr_garch.c   # GJR-GARCH OPG and Hessian
 │   ├── _kernels/                # Optimization kernels (internal)
 │   ├── components/              # User-facing components
 │   ├── spec/                    # Composition logic
@@ -696,10 +715,10 @@ volkit_cursor/                   # Repository root
 
 ```python
 # Public API
-from volkit import GARCH, ARMA, Normal, StudentT, MLE, CompositeSpec, Role
+from volkit import GARCH, GJRGARCH, ARMA, Normal, StudentT, SkewT, MLE, CompositeSpec, Role
 
 # Internal (for development)
-from volkit._core import _garch_variance_11, _garch_ll_pq_normal
+from volkit._core import _garch_variance_11, _gjr_garch_variance_11, _garch_ll_pq_normal
 from volkit._kernels import get_routine
 from volkit.components.base import Component
 from volkit.result import EstimationResult
@@ -717,31 +736,41 @@ from volkit.result import EstimationResult
 - ✅ C implementations for ARMA(p,q)-GARCH(P,Q) NLL (all distributions)
 - ✅ Sensitivity recursion framework for derivatives
 - ✅ Shared math functions in `math_and_helpers.h`
+- ✅ GJR-GARCH Python prototype with Numba (`localdev/gjr_garch_estimator.py`)
+- ✅ GJR-GARCH C implementation (variance, NLL, gradient, Hessian for Normal and Student-t)
+- ✅ GJR-GARCH log-space transforms in C (`transforms_logspace.c`)
+- ✅ GJRGARCH component class with distribution-dependent stationarity
+- ✅ GJR-GARCH kernel modules (Normal, Student-t, Skew-t)
+- ✅ GJR-GARCH DGP estimation tests and gradient validation tests
+- ✅ GJR-GARCH benchmark configuration
 
 ### Immediate Goals
 
-1. **Complete C gradient/Hessian** for Student-t and Skew-t distributions
-2. **Integrate into volkit component system** - wire up C functions to `volkit/` API
-3. **Add missing capabilities** to `volkit/`:
-   - ✅ `SkewT` component wrapping C implementation
-   - ✅ Robust standard errors (QMLE implementation)
-   - ✅ Rich result objects (sigma2, standardized residuals, timing)
-   - Log-space (unconstrained) optimization option (partially implemented)
+1. **Complete C gradient/Hessian** for Student-t and Skew-t distributions (ARMA-GARCH)
+2. Log-space (unconstrained) optimization option (partially implemented)
+
+### GJR-GARCH Stationarity Note
+
+The stationarity constraint for GJR-GARCH is distribution-dependent:
+- **Symmetric distributions** (Normal, Student-t): `α + 0.5·γ + β < 1`
+- **Asymmetric distributions** (Skew-t): `α + γ·P(z_t < 0) + β < 1` where `P(z_t < 0)` depends on the skewness parameter
+
+The `GJRGARCH` component's `persistence()` method accepts a `p_neg` parameter (default 0.5) for this.
 
 ### Future Models
 
 New model families will follow the component pattern:
 
 ```python
-# Example: GJR-GARCH (asymmetric GARCH)
-from volkit import GJRGARCH, StudentT
+# Example: EGARCH (exponential GARCH)
+from volkit import EGARCH, StudentT
 
-spec = GJRGARCH(1, 1) + StudentT()
+spec = EGARCH(1, 1) + StudentT()
 result = spec.fit(returns)
 ```
 
 Each model family will need:
-- Component class (e.g., `GJRGARCH(Component)`)
+- Component class (e.g., `EGARCH(Component)`)
 - C implementations for performance-critical paths
 - Kernel routines for optimization
 - Comprehensive tests with derivative validation
@@ -804,7 +833,7 @@ Results saved to `localdev_benchmark_results/` with recommended defaults.
 - Verifies estimation recovers true parameters (within tolerance)
 - All model/distribution combinations must have tests
 
-**Current Recommended Defaults** (as of 2026-01-30):
+**Current Recommended Defaults** (as of 2026-02-08):
 
 **GARCH(1,1) Models:**
 
@@ -813,6 +842,14 @@ Results saved to `localdev_benchmark_results/` with recommended defaults.
 | Normal       | slsqp  | True     | 0.003s   | 100%      |
 | Student-t    | slsqp  | True     | 0.008s   | 100%      |
 | Skew-t       | slsqp  | False    | 0.033s   | 100%      |
+
+**GJR-GARCH(1,1) Models:**
+
+| Distribution | Solver | Log Mode | Avg Time | Conv Rate |
+|--------------|--------|----------|----------|-----------|
+| Normal       | slsqp  | False    | ~0.008s  | 100%      |
+| Student-t    | slsqp  | True     | ~0.010s  | 100%      |
+| Skew-t       | slsqp  | False    | ~0.030s  | 100%      |
 
 **ARMA(1,1)-GARCH(1,1) Models:**
 
@@ -828,6 +865,7 @@ Key findings:
 - `nelder-mead` is reliable but 5-10x slower than `slsqp`
 - Log-mode (unconstrained) works well for GARCH Normal/Student-t
 - Constrained mode better for Skew-t and all ARMA-GARCH models
+- GJR-GARCH follows similar patterns to GARCH for optimal settings
 
 ### Questions to Ask
 

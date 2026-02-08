@@ -19,7 +19,7 @@ def _family_module(uid: str) -> str:
         ...
     """
     parts = re.split(r"\+|\(", uid)
-    family = [p.lower() for p in parts if p and "," not in p]
+    family = [p.lower().replace("-", "_") for p in parts if p and "," not in p]
     return f"{__name__}." + "_".join(family) # __name__ == volkit._kernels
 
 

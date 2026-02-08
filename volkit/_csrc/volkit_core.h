@@ -218,6 +218,74 @@ void garch_ll_hess_pq_studentt(const double *params,
                                size_t p,
                                size_t q);
 
+/* ======================== GJR-GARCH Functions ============================== */
+
+/* Variance recursion (takes RAW residuals for indicator) */
+void gjr_garch_variance_11(const double *parameters, const double *residuals,
+                           double *sigma2, size_t n);
+
+void gjr_garch_variance_pq(const double *parameters, const double *residuals,
+                           double *sigma2, size_t n, size_t p, size_t q);
+
+/* GJR-GARCH(1,1) | Normal */
+double gjr_garch_ll_11_normal(const double *params, const double *residuals,
+                              double *sigma2, size_t n);
+
+void gjr_garch_ll_grad_11_normal(const double *params, const double *residuals,
+                                 double *sigma2, double *grad, size_t n);
+
+void gjr_garch_ll_hess_11_normal(const double *params, const double *residuals,
+                                 double *sigma2, double *hess, size_t n);
+
+/* GJR-GARCH(1,1) | Student-t */
+double gjr_garch_ll_11_studentt(const double *params, const double *residuals,
+                                double *sigma2, size_t n);
+
+void gjr_garch_ll_grad_11_studentt(const double *params, const double *residuals,
+                                   double *sigma2, double *grad, size_t n);
+
+void gjr_garch_ll_hess_11_studentt(const double *params, const double *residuals,
+                                   double *sigma2, double *hess, size_t n);
+
+/* GJR-GARCH(p,q) | Normal */
+double gjr_garch_ll_pq_normal(const double *params, const double *residuals,
+                              double *sigma2, size_t n, size_t p, size_t q);
+
+/* GJR-GARCH(p,q) | Student-t */
+double gjr_garch_ll_pq_studentt(const double *params, const double *residuals,
+                                double *sigma2, size_t n, size_t p, size_t q);
+
+/* GJR-GARCH OPG and Hessian (Normal, for sandwich SE) */
+void gjr_garch_opg_hess_11(const double *params, const double *residuals,
+                           const double *sigma2, double *OPG, double *HESS,
+                           size_t n);
+
+void gjr_garch_opg_hess_pq(const double *params, const double *residuals,
+                           const double *sigma2, double *OPG, double *HESS,
+                           size_t n, size_t p, size_t q);
+
+/* ======================== GJR-GARCH Log-space transforms =================== */
+
+void pack_gjr_garch_11(const double *z, double *theta);
+void pack_gjr_garch_studentt_11(const double *z, double *theta);
+void pack_gjr_garch_skewt_11(const double *z, double *theta);
+
+void jacobian_gjr_garch_11(const double *theta, double *J);
+void jacobian_gjr_garch_studentt_11(const double *theta, double *J);
+void jacobian_gjr_garch_skewt_11(const double *theta, double *J);
+
+void transform_grad_gjr_11_normal(const double *grad_theta, const double *J, double *grad_z);
+void transform_grad_gjr_11_studentt(const double *grad_theta, const double *J, double *grad_z);
+void transform_grad_gjr_11_skewt(const double *grad_theta, const double *J, double *grad_z);
+
+void pack_gjr_garch_pq(const double *z, double *theta, size_t p, size_t q);
+void pack_gjr_garch_studentt_pq(const double *z, double *theta, size_t p, size_t q);
+void pack_gjr_garch_skewt_pq(const double *z, double *theta, size_t p, size_t q);
+
+void jacobian_gjr_garch_pq(const double *theta, double *J, size_t p, size_t q);
+void jacobian_gjr_garch_studentt_pq(const double *theta, double *J, size_t p, size_t q);
+void jacobian_gjr_garch_skewt_pq(const double *theta, double *J, size_t p, size_t q);
+
 /* ======================== Log-space transforms ============================ */
 
 /* GARCH(1,1) specialized versions */

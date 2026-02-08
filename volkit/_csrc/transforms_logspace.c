@@ -234,6 +234,261 @@ void transform_grad_11_skewt(const double *grad_theta, const double *J, double *
 
 
 // =============================================================================
+// GJR-GARCH(1,1) SPECIALIZED FUNCTIONS
+// =============================================================================
+
+// Pack: z = [z_omega, z_alpha, z_gamma, z_beta] -> theta = [omega, alpha, gamma, beta]
+// Uses 4-class softmax (alpha, gamma, beta, slack=0) to ensure alpha+gamma+beta < 1
+__attribute__((visibility("default"), hot, flatten))
+void pack_gjr_garch_11(const double *z, double *theta)
+{
+    const double z_omega = z[0];
+    const double z_alpha = z[1];
+    const double z_gamma = z[2];
+    const double z_beta  = z[3];
+
+    theta[0] = safe_exp(z_omega);
+
+    const double m = MAX(MAX(MAX(z_alpha, z_gamma), z_beta), 0.0);
+    const double sum_exp = exp(z_alpha - m) + exp(z_gamma - m) + exp(z_beta - m) + exp(-m);
+    const double lse = m + log(sum_exp);
+
+    theta[1] = exp(z_alpha - lse);  // alpha
+    theta[2] = exp(z_gamma - lse);  // gamma
+    theta[3] = exp(z_beta - lse);   // beta
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void pack_gjr_garch_studentt_11(const double *z, double *theta)
+{
+    pack_gjr_garch_11(z, theta);
+    theta[4] = 2.0 + softplus(z[4]);
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void pack_gjr_garch_skewt_11(const double *z, double *theta)
+{
+    pack_gjr_garch_11(z, theta);
+    theta[4] = 2.0 + softplus(z[4]);
+    theta[5] = tanh(z[5]);
+}
+
+// Jacobian for GJR-GARCH(1,1) Normal (4x4)
+__attribute__((visibility("default"), hot, flatten))
+void jacobian_gjr_garch_11(const double *theta, double *J)
+{
+    const double omega = theta[0];
+    const double alpha = theta[1];
+    const double gamma = theta[2];
+    const double beta  = theta[3];
+
+    dzeros(J, 16);
+
+    J[0]  = omega;                        // J[0,0] = d(omega)/d(z_omega)
+    // Softmax Jacobian for (alpha, gamma, beta) in positions [1..3] x [1..3]
+    J[5]  = alpha * (1.0 - alpha);        // J[1,1]
+    J[6]  = -alpha * gamma;               // J[1,2]
+    J[7]  = -alpha * beta;                // J[1,3]
+    J[9]  = -gamma * alpha;               // J[2,1]
+    J[10] = gamma * (1.0 - gamma);        // J[2,2]
+    J[11] = -gamma * beta;                // J[2,3]
+    J[13] = -beta * alpha;                // J[3,1]
+    J[14] = -beta * gamma;                // J[3,2]
+    J[15] = beta * (1.0 - beta);          // J[3,3]
+}
+
+// Jacobian for GJR-GARCH(1,1) Student-t (5x5)
+__attribute__((visibility("default"), hot, flatten))
+void jacobian_gjr_garch_studentt_11(const double *theta, double *J)
+{
+    const double omega = theta[0];
+    const double alpha = theta[1];
+    const double gamma = theta[2];
+    const double beta  = theta[3];
+    const double nu    = theta[4];
+
+    dzeros(J, 25);
+
+    J[0]  = omega;
+    J[6]  = alpha * (1.0 - alpha);
+    J[7]  = -alpha * gamma;
+    J[8]  = -alpha * beta;
+    J[11] = -gamma * alpha;
+    J[12] = gamma * (1.0 - gamma);
+    J[13] = -gamma * beta;
+    J[16] = -beta * alpha;
+    J[17] = -beta * gamma;
+    J[18] = beta * (1.0 - beta);
+
+    const double z_nu = softplus_inv(nu - 2.0);
+    J[24] = softplus_deriv(z_nu);
+}
+
+// Jacobian for GJR-GARCH(1,1) Skew-t (6x6)
+__attribute__((visibility("default"), hot, flatten))
+void jacobian_gjr_garch_skewt_11(const double *theta, double *J)
+{
+    const double omega = theta[0];
+    const double alpha = theta[1];
+    const double gamma = theta[2];
+    const double beta  = theta[3];
+    const double nu    = theta[4];
+    const double lam   = theta[5];
+
+    dzeros(J, 36);
+
+    J[0]  = omega;
+    J[7]  = alpha * (1.0 - alpha);
+    J[8]  = -alpha * gamma;
+    J[9]  = -alpha * beta;
+    J[13] = -gamma * alpha;
+    J[14] = gamma * (1.0 - gamma);
+    J[15] = -gamma * beta;
+    J[19] = -beta * alpha;
+    J[20] = -beta * gamma;
+    J[21] = beta * (1.0 - beta);
+
+    const double z_nu = softplus_inv(nu - 2.0);
+    J[28] = softplus_deriv(z_nu);
+    J[35] = 1.0 - lam * lam;
+}
+
+// Transform gradient for GJR-GARCH(1,1) Normal: grad_z = J^T @ grad_theta (K=4)
+__attribute__((visibility("default"), hot, flatten))
+void transform_grad_gjr_11_normal(const double *grad_theta, const double *J, double *grad_z)
+{
+    grad_z[0] = J[0] * grad_theta[0];
+    grad_z[1] = J[5]  * grad_theta[1] + J[9]  * grad_theta[2] + J[13] * grad_theta[3];
+    grad_z[2] = J[6]  * grad_theta[1] + J[10] * grad_theta[2] + J[14] * grad_theta[3];
+    grad_z[3] = J[7]  * grad_theta[1] + J[11] * grad_theta[2] + J[15] * grad_theta[3];
+}
+
+// Transform gradient for GJR-GARCH(1,1) Student-t (K=5)
+__attribute__((visibility("default"), hot, flatten))
+void transform_grad_gjr_11_studentt(const double *grad_theta, const double *J, double *grad_z)
+{
+    grad_z[0] = J[0] * grad_theta[0];
+    grad_z[1] = J[6]  * grad_theta[1] + J[11] * grad_theta[2] + J[16] * grad_theta[3];
+    grad_z[2] = J[7]  * grad_theta[1] + J[12] * grad_theta[2] + J[17] * grad_theta[3];
+    grad_z[3] = J[8]  * grad_theta[1] + J[13] * grad_theta[2] + J[18] * grad_theta[3];
+    grad_z[4] = J[24] * grad_theta[4];
+}
+
+// Transform gradient for GJR-GARCH(1,1) Skew-t (K=6)
+__attribute__((visibility("default"), hot, flatten))
+void transform_grad_gjr_11_skewt(const double *grad_theta, const double *J, double *grad_z)
+{
+    grad_z[0] = J[0] * grad_theta[0];
+    grad_z[1] = J[7]  * grad_theta[1] + J[13] * grad_theta[2] + J[19] * grad_theta[3];
+    grad_z[2] = J[8]  * grad_theta[1] + J[14] * grad_theta[2] + J[20] * grad_theta[3];
+    grad_z[3] = J[9]  * grad_theta[1] + J[15] * grad_theta[2] + J[21] * grad_theta[3];
+    grad_z[4] = J[28] * grad_theta[4];
+    grad_z[5] = J[35] * grad_theta[5];
+}
+
+
+// =============================================================================
+// GJR-GARCH(p,q) GENERAL FUNCTIONS
+// =============================================================================
+
+// Pack: z = [z_omega, z_alpha_1..p, z_gamma_1..p, z_beta_1..q] ->
+//        theta = [omega, alpha_1..p, gamma_1..p, beta_1..q]
+__attribute__((visibility("default"), hot))
+void pack_gjr_garch_pq(const double *z, double *theta, size_t p, size_t q)
+{
+    const size_t K = 1 + 2 * p + q;
+
+    theta[0] = safe_exp(z[0]);
+
+    // Softmax over z[1..K-1] plus slack = 0
+    double m = 0.0;
+    for (size_t i = 1; i < K; ++i)
+        if (z[i] > m) m = z[i];
+
+    double sum_exp = exp(-m);
+    for (size_t i = 1; i < K; ++i)
+        sum_exp += exp(z[i] - m);
+
+    const double lse = m + log(sum_exp);
+
+    for (size_t i = 1; i < K; ++i)
+        theta[i] = exp(z[i] - lse);
+}
+
+__attribute__((visibility("default"), hot))
+void pack_gjr_garch_studentt_pq(const double *z, double *theta, size_t p, size_t q)
+{
+    const size_t n_gjr = 1 + 2 * p + q;
+    pack_gjr_garch_pq(z, theta, p, q);
+    theta[n_gjr] = 2.0 + softplus(z[n_gjr]);
+}
+
+__attribute__((visibility("default"), hot))
+void pack_gjr_garch_skewt_pq(const double *z, double *theta, size_t p, size_t q)
+{
+    const size_t n_gjr = 1 + 2 * p + q;
+    pack_gjr_garch_pq(z, theta, p, q);
+    theta[n_gjr] = 2.0 + softplus(z[n_gjr]);
+    theta[n_gjr + 1] = tanh(z[n_gjr + 1]);
+}
+
+__attribute__((visibility("default"), hot))
+void jacobian_gjr_garch_pq(const double *theta, double *J, size_t p, size_t q)
+{
+    const size_t K = 1 + 2 * p + q;
+    dzeros(J, K * K);
+    J[0] = theta[0];
+
+    for (size_t i = 1; i < K; ++i)
+        for (size_t j = 1; j < K; ++j) {
+            const double delta_ij = (i == j) ? 1.0 : 0.0;
+            J[i * K + j] = theta[i] * (delta_ij - theta[j]);
+        }
+}
+
+__attribute__((visibility("default"), hot))
+void jacobian_gjr_garch_studentt_pq(const double *theta, double *J, size_t p, size_t q)
+{
+    const size_t n_gjr = 1 + 2 * p + q;
+    const size_t K = n_gjr + 1;
+    dzeros(J, K * K);
+    J[0] = theta[0];
+
+    for (size_t i = 1; i < n_gjr; ++i)
+        for (size_t j = 1; j < n_gjr; ++j) {
+            const double delta_ij = (i == j) ? 1.0 : 0.0;
+            J[i * K + j] = theta[i] * (delta_ij - theta[j]);
+        }
+
+    const double nu = theta[n_gjr];
+    const double z_nu = softplus_inv(nu - 2.0);
+    J[n_gjr * K + n_gjr] = softplus_deriv(z_nu);
+}
+
+__attribute__((visibility("default"), hot))
+void jacobian_gjr_garch_skewt_pq(const double *theta, double *J, size_t p, size_t q)
+{
+    const size_t n_gjr = 1 + 2 * p + q;
+    const size_t K = n_gjr + 2;
+    dzeros(J, K * K);
+    J[0] = theta[0];
+
+    for (size_t i = 1; i < n_gjr; ++i)
+        for (size_t j = 1; j < n_gjr; ++j) {
+            const double delta_ij = (i == j) ? 1.0 : 0.0;
+            J[i * K + j] = theta[i] * (delta_ij - theta[j]);
+        }
+
+    const double nu = theta[n_gjr];
+    const double z_nu = softplus_inv(nu - 2.0);
+    J[n_gjr * K + n_gjr] = softplus_deriv(z_nu);
+
+    const double lam = theta[n_gjr + 1];
+    J[(n_gjr + 1) * K + (n_gjr + 1)] = 1.0 - lam * lam;
+}
+
+
+// =============================================================================
 // GENERAL GARCH(p,q) FUNCTIONS
 // =============================================================================
 

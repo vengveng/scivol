@@ -261,6 +261,123 @@ def simulate_arma_normal(
     return y
 
 
+def simulate_gjr_garch_normal(
+    n: int,
+    omega: float,
+    alpha: float,
+    gamma: float,
+    beta: float,
+    seed: int = 42,
+) -> NDArray[np.float64]:
+    """
+    Simulate GJR-GARCH(1,1) with Normal innovations.
+    
+    Model:
+        σ²_t = ω + α·ε²_{t-1} + γ·I(ε_{t-1}<0)·ε²_{t-1} + β·σ²_{t-1}
+        y_t = σ_t · z_t,  z_t ~ N(0,1)
+    
+    Stationarity requires: α + 0.5·γ + β < 1 (symmetric distributions).
+    """
+    rng = np.random.default_rng(seed)
+    
+    y = np.zeros(n, dtype=np.float64)
+    sigma2 = np.zeros(n, dtype=np.float64)
+    
+    # Unconditional variance: ω / (1 - α - 0.5·γ - β)  [symmetric dist]
+    sigma2_uncond = omega / (1 - alpha - 0.5 * gamma - beta)
+    sigma2[0] = sigma2_uncond
+    y[0] = np.sqrt(sigma2[0]) * rng.standard_normal()
+    
+    for t in range(1, n):
+        e = y[t-1]
+        ind = 1.0 if e < 0 else 0.0
+        sigma2[t] = omega + alpha * e**2 + gamma * ind * e**2 + beta * sigma2[t-1]
+        y[t] = np.sqrt(sigma2[t]) * rng.standard_normal()
+    
+    return y
+
+
+def simulate_gjr_garch_studentt(
+    n: int,
+    omega: float,
+    alpha: float,
+    gamma: float,
+    beta: float,
+    nu: float,
+    seed: int = 42,
+) -> NDArray[np.float64]:
+    """
+    Simulate GJR-GARCH(1,1) with Student-t innovations.
+    
+    Stationarity requires: α + 0.5·γ + β < 1 (Student-t is symmetric).
+    """
+    rng = np.random.default_rng(seed)
+    
+    y = np.zeros(n, dtype=np.float64)
+    sigma2 = np.zeros(n, dtype=np.float64)
+    
+    sigma2_uncond = omega / (1 - alpha - 0.5 * gamma - beta)
+    sigma2[0] = sigma2_uncond
+    
+    scale = np.sqrt((nu - 2) / nu)
+    z = rng.standard_t(nu, size=n) * scale
+    y[0] = np.sqrt(sigma2[0]) * z[0]
+    
+    for t in range(1, n):
+        e = y[t-1]
+        ind = 1.0 if e < 0 else 0.0
+        sigma2[t] = omega + alpha * e**2 + gamma * ind * e**2 + beta * sigma2[t-1]
+        y[t] = np.sqrt(sigma2[t]) * z[t]
+    
+    return y
+
+
+def simulate_gjr_garch_skewt(
+    n: int,
+    omega: float,
+    alpha: float,
+    gamma: float,
+    beta: float,
+    nu: float,
+    lam: float,
+    seed: int = 42,
+) -> NDArray[np.float64]:
+    """
+    Simulate GJR-GARCH(1,1) with Skew-t innovations.
+    
+    Stationarity requires: α + γ·P(z<0) + β < 1 where P(z<0) depends on lambda.
+    For lambda < 0 (left-skew): P(z<0) > 0.5, making the constraint tighter.
+    """
+    rng = np.random.default_rng(seed)
+    
+    y = np.zeros(n, dtype=np.float64)
+    sigma2 = np.zeros(n, dtype=np.float64)
+    
+    # Approximate P(z < 0) for skew-t; for small |lambda|, ≈ 0.5
+    # Conservative: use P(z<0) ≈ 0.5 + 0.3*|lam| when lam < 0
+    p_neg = 0.5  # Simplified; exact value depends on Hansen density
+    sigma2_uncond = omega / (1 - alpha - p_neg * gamma - beta)
+    sigma2[0] = sigma2_uncond
+    
+    t_scale = np.sqrt((nu - 2) / nu)
+    
+    for t in range(n):
+        if t > 0:
+            e = y[t-1]
+            ind = 1.0 if e < 0 else 0.0
+            sigma2[t] = omega + alpha * e**2 + gamma * ind * e**2 + beta * sigma2[t-1]
+        
+        z_raw = rng.standard_t(nu) * t_scale
+        if z_raw < 0:
+            z = z_raw * (1 - lam)
+        else:
+            z = z_raw * (1 + lam)
+        
+        y[t] = np.sqrt(sigma2[t]) * z
+    
+    return y
+
+
 # -----------------------------------------------------------------------------
 # Test Configuration
 # -----------------------------------------------------------------------------
@@ -310,6 +427,27 @@ TRUE_PARAMS = {
         "phi": 0.5,   # Larger phi for better identification
         "theta": -0.3,  # Larger theta for better identification
         "sigma": 0.01,
+    },
+    "gjr_garch_normal": {
+        "omega": 1e-6,
+        "alpha": 0.03,
+        "gamma": 0.07,
+        "beta": 0.88,
+    },
+    "gjr_garch_studentt": {
+        "omega": 1e-6,
+        "alpha": 0.03,
+        "gamma": 0.07,
+        "beta": 0.88,
+        "nu": 8.0,
+    },
+    "gjr_garch_skewt": {
+        "omega": 1e-6,
+        "alpha": 0.03,
+        "gamma": 0.07,
+        "beta": 0.88,
+        "nu": 8.0,
+        "lam": -0.15,
     },
 }
 
@@ -720,6 +858,158 @@ class TestARMANormal:
 
 
 # -----------------------------------------------------------------------------
+# Tests: GJR-GARCH + Normal
+# -----------------------------------------------------------------------------
+
+class TestGJRGARCHNormal:
+    """Tests for GJR-GARCH(1,1) + Normal estimation."""
+    
+    @pytest.fixture
+    def data(self) -> NDArray[np.float64]:
+        p = TRUE_PARAMS["gjr_garch_normal"]
+        return simulate_gjr_garch_normal(
+            N_OBS, p["omega"], p["alpha"], p["gamma"], p["beta"]
+        )
+    
+    def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
+        from volkit import GJRGARCH, Normal
+        
+        spec = GJRGARCH(1, 1) + Normal()
+        result = spec.fit(data)
+        
+        assert result.params is not None
+        assert len(result.params) == 4  # omega, alpha, gamma, beta
+        assert np.all(np.isfinite(result.params))
+        assert result.loglikelihood > 0
+    
+    def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
+        from volkit import GJRGARCH, Normal
+        
+        spec = GJRGARCH(1, 1) + Normal()
+        result = spec.fit(data)
+        
+        true = TRUE_PARAMS["gjr_garch_normal"]
+        
+        alpha_hat = result.params[1]
+        gamma_hat = result.params[2]
+        beta_hat = result.params[3]
+        
+        # Check persistence: α + 0.5·γ + β
+        true_persistence = true["alpha"] + 0.5 * true["gamma"] + true["beta"]
+        est_persistence = alpha_hat + 0.5 * gamma_hat + beta_hat
+        
+        assert abs(est_persistence - true_persistence) < 0.05, \
+            f"Persistence: true={true_persistence:.4f}, est={est_persistence:.4f}"
+        
+        # Leverage effect should be positive
+        assert gamma_hat > 0, f"Gamma should be positive: {gamma_hat:.4f}"
+        
+        # Gamma should be in reasonable range
+        assert abs(gamma_hat - true["gamma"]) / true["gamma"] < 0.5, \
+            f"Gamma: true={true['gamma']:.4f}, est={gamma_hat:.4f}"
+
+
+# -----------------------------------------------------------------------------
+# Tests: GJR-GARCH + Student-t
+# -----------------------------------------------------------------------------
+
+class TestGJRGARCHStudentT:
+    """Tests for GJR-GARCH(1,1) + Student-t estimation."""
+    
+    @pytest.fixture
+    def data(self) -> NDArray[np.float64]:
+        p = TRUE_PARAMS["gjr_garch_studentt"]
+        return simulate_gjr_garch_studentt(
+            N_OBS, p["omega"], p["alpha"], p["gamma"], p["beta"], p["nu"]
+        )
+    
+    def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
+        from volkit import GJRGARCH, StudentT
+        
+        spec = GJRGARCH(1, 1) + StudentT()
+        result = spec.fit(data)
+        
+        assert result.params is not None
+        assert len(result.params) == 5  # omega, alpha, gamma, beta, nu
+        assert np.all(np.isfinite(result.params))
+        assert result.loglikelihood > 0
+    
+    def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
+        from volkit import GJRGARCH, StudentT
+        
+        spec = GJRGARCH(1, 1) + StudentT()
+        result = spec.fit(data)
+        
+        true = TRUE_PARAMS["gjr_garch_studentt"]
+        
+        alpha_hat = result.params[1]
+        gamma_hat = result.params[2]
+        beta_hat = result.params[3]
+        nu_hat = result.params[4]
+        
+        true_persistence = true["alpha"] + 0.5 * true["gamma"] + true["beta"]
+        est_persistence = alpha_hat + 0.5 * gamma_hat + beta_hat
+        
+        assert abs(est_persistence - true_persistence) < 0.05, \
+            f"Persistence: true={true_persistence:.4f}, est={est_persistence:.4f}"
+        
+        assert gamma_hat > 0, f"Gamma should be positive: {gamma_hat:.4f}"
+        assert 4 < nu_hat < 20, f"Nu out of reasonable range: {nu_hat:.2f}"
+
+
+# -----------------------------------------------------------------------------
+# Tests: GJR-GARCH + Skew-t
+# -----------------------------------------------------------------------------
+
+class TestGJRGARCHSkewT:
+    """Tests for GJR-GARCH(1,1) + Skew-t estimation."""
+    
+    @pytest.fixture
+    def data(self) -> NDArray[np.float64]:
+        p = TRUE_PARAMS["gjr_garch_skewt"]
+        return simulate_gjr_garch_skewt(
+            N_OBS, p["omega"], p["alpha"], p["gamma"], p["beta"],
+            p["nu"], p["lam"]
+        )
+    
+    def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
+        from volkit import GJRGARCH, SkewT
+        
+        spec = GJRGARCH(1, 1) + SkewT()
+        result = spec.fit(data)
+        
+        assert result.params is not None
+        assert len(result.params) == 6  # omega, alpha, gamma, beta, nu, lam
+        assert np.all(np.isfinite(result.params))
+        assert result.loglikelihood > 0
+    
+    def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
+        from volkit import GJRGARCH, SkewT
+        
+        spec = GJRGARCH(1, 1) + SkewT()
+        result = spec.fit(data)
+        
+        true = TRUE_PARAMS["gjr_garch_skewt"]
+        
+        alpha_hat = result.params[1]
+        gamma_hat = result.params[2]
+        beta_hat = result.params[3]
+        lam_hat = result.params[5]
+        
+        true_persistence = true["alpha"] + 0.5 * true["gamma"] + true["beta"]
+        est_persistence = alpha_hat + 0.5 * gamma_hat + beta_hat
+        
+        assert abs(est_persistence - true_persistence) < 0.05, \
+            f"Persistence: true={true_persistence:.4f}, est={est_persistence:.4f}"
+        
+        assert gamma_hat > 0, f"Gamma should be positive: {gamma_hat:.4f}"
+        
+        # Skewness parameter should have correct sign
+        assert lam_hat * true["lam"] > 0 or abs(lam_hat) < 0.1, \
+            f"Lambda sign mismatch: true={true['lam']:.3f}, est={lam_hat:.3f}"
+
+
+# -----------------------------------------------------------------------------
 # Smoke test: all models run without error
 # -----------------------------------------------------------------------------
 
@@ -756,6 +1046,30 @@ class TestSmokeAll:
         from volkit import GARCH, SkewT
         
         spec = GARCH(1, 1) + SkewT()
+        result = spec.fit(small_data)
+        assert result is not None
+    
+    def test_gjr_garch_normal_runs(self, small_data: NDArray[np.float64]) -> None:
+        """Test GJR-GARCH + Normal runs."""
+        from volkit import GJRGARCH, Normal
+        
+        spec = GJRGARCH(1, 1) + Normal()
+        result = spec.fit(small_data)
+        assert result is not None
+    
+    def test_gjr_garch_studentt_runs(self, small_data: NDArray[np.float64]) -> None:
+        """Test GJR-GARCH + StudentT runs."""
+        from volkit import GJRGARCH, StudentT
+        
+        spec = GJRGARCH(1, 1) + StudentT()
+        result = spec.fit(small_data)
+        assert result is not None
+    
+    def test_gjr_garch_skewt_runs(self, small_data: NDArray[np.float64]) -> None:
+        """Test GJR-GARCH + SkewT runs."""
+        from volkit import GJRGARCH, SkewT
+        
+        spec = GJRGARCH(1, 1) + SkewT()
         result = spec.fit(small_data)
         assert result is not None
 

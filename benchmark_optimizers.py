@@ -12,6 +12,7 @@ This script:
 
 Models tested (all via volkit C extensions):
 - GARCH(1,1) + Normal/Student-t/Skew-t
+- GJR-GARCH(1,1) + Normal/Student-t/Skew-t
 - ARMA(1,1)-GARCH(1,1) + Normal/Student-t/Skew-t
 
 Keep this file evergreen - run periodically to validate/update defaults.
@@ -29,7 +30,7 @@ from joblib import Parallel, delayed
 import multiprocessing
 
 # volkit library (all models via C extensions)
-from volkit import ARMA, GARCH, Normal, StudentT, SkewT
+from volkit import ARMA, GARCH, GJRGARCH, Normal, StudentT, SkewT
 
 # Suppress convergence warnings during benchmark
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -141,6 +142,24 @@ ARMA_DIST_SPECS = {
 }
 
 ARMA_OPTIMIZER_CONFIGS = [
+    {"solver": "nelder-mead", "log_mode": False},
+    {"solver": "slsqp", "log_mode": False},
+    {"solver": "trust", "log_mode": False},
+    {"solver": "nelder-mead", "log_mode": True},
+    {"solver": "slsqp", "log_mode": True},
+    {"solver": "trust", "log_mode": True},
+]
+
+# =====================
+# GJR-GARCH configs (volkit)
+# =====================
+GJR_GARCH_DIST_SPECS = {
+    "normal": Normal(),
+    "studentt": StudentT(),
+    "skewt": SkewT(),
+}
+
+GJR_GARCH_OPTIMIZER_CONFIGS = [
     {"solver": "nelder-mead", "log_mode": False},
     {"solver": "slsqp", "log_mode": False},
     {"solver": "trust", "log_mode": False},
@@ -455,6 +474,75 @@ def run_arma_benchmark(
 
 
 # =============================================================================
+# GJR-GARCH(1,1) BENCHMARK (volkit)
+# =============================================================================
+
+def run_gjr_garch_benchmark(
+    resid: np.ndarray,
+    asset: str,
+    dist_name: str,
+    config: Dict[str, Any],
+) -> Optional[BenchmarkResult]:
+    """Run single GJR-GARCH(1,1) benchmark using volkit."""
+    try:
+        dist_component = GJR_GARCH_DIST_SPECS[dist_name]
+        spec = GJRGARCH(1, 1) + dist_component
+        
+        result = spec.fit(
+            resid,
+            solver=config["solver"],
+            log_mode=config["log_mode"],
+            verbose=False,
+        )
+        
+        params = result.params
+        omega = params[0]
+        alpha = params[1]
+        gamma = params[2]
+        beta = params[3]
+        persistence = alpha + 0.5 * gamma + beta  # Symmetric dist approximation
+        
+        nu = params[4] if len(params) > 4 else None
+        lam = params[5] if len(params) > 5 else None
+        
+        converged = result.converged if hasattr(result, 'converged') else True
+        n_iter = result.n_iter if hasattr(result, 'n_iter') else 0
+        time_elapsed = result.time_elapsed if hasattr(result, 'time_elapsed') else 0.0
+        
+        return BenchmarkResult(
+            model_type="gjr_garch",
+            asset=asset,
+            dist=dist_name,
+            solver=config["solver"],
+            log_mode=config["log_mode"],
+            converged=converged,
+            n_iter=n_iter,
+            time_elapsed=time_elapsed,
+            log_likelihood=result.log_likelihood,
+            omega=omega,
+            alpha=alpha,
+            beta=beta,
+            persistence=persistence,
+            nu=nu,
+            lam=lam,
+            aic=result.aic if hasattr(result, 'aic') else None,
+            bic=result.bic if hasattr(result, 'bic') else None,
+        )
+    except Exception as e:
+        return BenchmarkResult(
+            model_type="gjr_garch",
+            asset=asset,
+            dist=dist_name,
+            solver=config["solver"],
+            log_mode=config["log_mode"],
+            converged=False,
+            n_iter=0,
+            time_elapsed=0.0,
+            log_likelihood=np.nan,
+        )
+
+
+# =============================================================================
 # MAIN BENCHMARK
 # =============================================================================
 
@@ -482,6 +570,15 @@ def _run_single_arma_task(y: np.ndarray, asset: str, dist_name: str, config: Dic
     config_str = f"{config['solver']}[{mode}]"
     task_desc = f"ARMA/{asset}/{dist_name}: {config_str}"
     result = run_arma_benchmark(y, asset, dist_name, config)
+    return task_desc, result
+
+
+def _run_single_gjr_garch_task(resid: np.ndarray, asset: str, dist_name: str, config: Dict[str, Any]) -> Tuple[str, Optional[BenchmarkResult]]:
+    """Wrapper for running single GJR-GARCH task with descriptive output."""
+    mode = "log" if config["log_mode"] else "con"
+    config_str = f"{config['solver']}[{mode}]"
+    task_desc = f"GJR-GARCH/{asset}/{dist_name}: {config_str}"
+    result = run_gjr_garch_benchmark(resid, asset, dist_name, config)
     return task_desc, result
 
 
@@ -522,7 +619,20 @@ def run_full_benchmark(
                 task_types.append("ARMA-GARCH")
     
     # =====================
-    # 3. Pure ARMA(1,1) Models (volkit, constant variance)
+    # 3. GJR-GARCH(1,1) Models (volkit)
+    # =====================
+    for asset in ASSETS:
+        if asset not in ar1_residuals:
+            continue
+        resid = np.ascontiguousarray(ar1_residuals[asset], dtype=np.float64)
+        
+        for dist_name in GJR_GARCH_DIST_SPECS.keys():
+            for config in GJR_GARCH_OPTIMIZER_CONFIGS:
+                tasks.append(delayed(_run_single_gjr_garch_task)(resid, asset, dist_name, config))
+                task_types.append("GJR-GARCH")
+    
+    # =====================
+    # 4. Pure ARMA(1,1) Models (volkit, constant variance)
     # =====================
     for asset in ASSETS:
         if asset not in log_returns:
@@ -618,7 +728,7 @@ def print_summary(df: pd.DataFrame):
     print(f"Model types: {df['model_type'].unique().tolist()}")
     
     # Summary by model type
-    for model_type in ["garch", "arma_garch"]:
+    for model_type in ["garch", "gjr_garch", "arma_garch"]:
         model_df = df[df["model_type"] == model_type]
         if len(model_df) == 0:
             continue
@@ -649,7 +759,7 @@ def print_summary(df: pd.DataFrame):
     print("RECOMMENDED DEFAULTS")
     print("-" * 80)
     
-    for model_type in ["garch", "arma_garch"]:
+    for model_type in ["garch", "gjr_garch", "arma_garch"]:
         model_df = df[(df["model_type"] == model_type) & (df["converged"])]
         if len(model_df) == 0:
             continue
@@ -692,6 +802,9 @@ def verify_all_models() -> Dict[str, bool]:
         ("GARCH(1,1)+Normal", GARCH(1, 1) + Normal()),
         ("GARCH(1,1)+StudentT", GARCH(1, 1) + StudentT()),
         ("GARCH(1,1)+SkewT", GARCH(1, 1) + SkewT()),
+        ("GJR-GARCH(1,1)+Normal", GJRGARCH(1, 1) + Normal()),
+        ("GJR-GARCH(1,1)+StudentT", GJRGARCH(1, 1) + StudentT()),
+        ("GJR-GARCH(1,1)+SkewT", GJRGARCH(1, 1) + SkewT()),
         ("ARMA(1,1)+GARCH(1,1)+Normal", ARMA(1, 1) + GARCH(1, 1) + Normal()),
         ("ARMA(1,1)+GARCH(1,1)+StudentT", ARMA(1, 1) + GARCH(1, 1) + StudentT()),
         ("ARMA(1,1)+GARCH(1,1)+SkewT", ARMA(1, 1) + GARCH(1, 1) + SkewT()),
@@ -739,7 +852,7 @@ def main():
     print("=" * 80)
     print("VOLKIT OPTIMIZER BENCHMARK")
     print("All models use C extensions via volkit")
-    print("Models: GARCH(1,1), ARMA(1,1)-GARCH(1,1)")
+    print("Models: GARCH(1,1), GJR-GARCH(1,1), ARMA(1,1)-GARCH(1,1)")
     print("=" * 80)
     print()
     

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .base import Component
 from .mean import ARMA
-from .vol import GARCH
+from .vol import GARCH, GJRGARCH
 from .density import Normal, StudentT, SkewT, AutoDensity
 
 __all__: list[str] = [
@@ -11,6 +11,7 @@ __all__: list[str] = [
     "Component",
     "ARMA",
     "GARCH",
+    "GJRGARCH",
     "Normal",
     "SkewT",
     "StudentT",

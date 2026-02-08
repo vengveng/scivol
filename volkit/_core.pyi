@@ -407,6 +407,205 @@ def _transform_grad_pq(
     """Compute grad_z = J^T @ grad_theta for general K. grad_z is modified in-place."""
     ...
 
+# ── GJR-GARCH Functions ───────────────────────────────────────────────────
+# NOTE: GJR-GARCH takes RAW residuals (not squared), because indicator I(ε<0) needs the sign.
+
+def _gjr_garch_variance_11(
+    params_ptr: _IntPtr,   # [omega, alpha, gamma, beta]
+    resid_ptr: _IntPtr,    # Raw residuals (NOT squared)
+    sigma2_ptr: _IntPtr,   # Output: conditional variances (modified in-place)
+    n: _Size,
+) -> None:
+    """GJR-GARCH(1,1) variance recursion."""
+    ...
+
+def _gjr_garch_variance_pq(
+    params_ptr: _IntPtr,   # [omega, alpha_1..p, gamma_1..p, beta_1..q]
+    resid_ptr: _IntPtr,    # Raw residuals
+    sigma2_ptr: _IntPtr,   # Output: conditional variances (modified in-place)
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """GJR-GARCH(p,q) variance recursion."""
+    ...
+
+# GJR-GARCH(1,1) + Normal
+def _gjr_garch_ll_11_normal(
+    params_ptr: _IntPtr,   # [omega, alpha, gamma, beta]
+    resid_ptr: _IntPtr,    # Raw residuals
+    sigma2_ptr: _IntPtr,   # Working array
+    n: _Size,
+) -> float:
+    """GJR-GARCH(1,1) + Normal NLL."""
+    ...
+
+def _gjr_garch_ll_grad_11_normal(
+    params_ptr: _IntPtr,   # [omega, alpha, gamma, beta]
+    resid_ptr: _IntPtr,    # Raw residuals
+    sigma2_ptr: _IntPtr,   # Working array
+    grad_ptr: _IntPtr,     # Output: gradient [4] (modified in-place)
+    n: _Size,
+) -> None:
+    """GJR-GARCH(1,1) + Normal gradient."""
+    ...
+
+def _gjr_garch_ll_hess_11_normal(
+    params_ptr: _IntPtr,   # [omega, alpha, gamma, beta]
+    resid_ptr: _IntPtr,    # Raw residuals
+    sigma2_ptr: _IntPtr,   # Working array
+    hess_ptr: _IntPtr,     # Output: Hessian 4x4 (modified in-place)
+    n: _Size,
+) -> None:
+    """GJR-GARCH(1,1) + Normal Hessian."""
+    ...
+
+# GJR-GARCH(1,1) + Student-t
+def _gjr_garch_ll_11_studentt(
+    params_ptr: _IntPtr,   # [omega, alpha, gamma, beta, nu]
+    resid_ptr: _IntPtr,    # Raw residuals
+    sigma2_ptr: _IntPtr,   # Working array
+    n: _Size,
+) -> float:
+    """GJR-GARCH(1,1) + Student-t NLL."""
+    ...
+
+def _gjr_garch_ll_grad_11_studentt(
+    params_ptr: _IntPtr,   # [omega, alpha, gamma, beta, nu]
+    resid_ptr: _IntPtr,    # Raw residuals
+    sigma2_ptr: _IntPtr,   # Working array
+    grad_ptr: _IntPtr,     # Output: gradient [5] (modified in-place)
+    n: _Size,
+) -> None:
+    """GJR-GARCH(1,1) + Student-t gradient."""
+    ...
+
+def _gjr_garch_ll_hess_11_studentt(
+    params_ptr: _IntPtr,   # [omega, alpha, gamma, beta, nu]
+    resid_ptr: _IntPtr,    # Raw residuals
+    sigma2_ptr: _IntPtr,   # Working array
+    hess_ptr: _IntPtr,     # Output: Hessian 5x5 (modified in-place)
+    n: _Size,
+) -> None:
+    """GJR-GARCH(1,1) + Student-t Hessian."""
+    ...
+
+# GJR-GARCH(p,q)
+def _gjr_garch_ll_pq_normal(
+    params_ptr: _IntPtr,   # [omega, alpha_1..p, gamma_1..p, beta_1..q]
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """GJR-GARCH(p,q) + Normal NLL."""
+    ...
+
+def _gjr_garch_ll_pq_studentt(
+    params_ptr: _IntPtr,   # [omega, alpha_1..p, gamma_1..p, beta_1..q, nu]
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """GJR-GARCH(p,q) + Student-t NLL."""
+    ...
+
+# GJR-GARCH OPG/Hessian (Normal, for sandwich SE)
+def _gjr_garch_opg_hess_11(
+    params_ptr: _IntPtr,   # [omega, alpha, gamma, beta]
+    resid_ptr: _IntPtr,    # Raw residuals (NOT squared)
+    sigma2_ptr: _IntPtr,   # Conditional variances
+    OPG_ptr: _IntPtr,      # Output: 4x4 OPG matrix
+    HESS_ptr: _IntPtr,     # Output: 4x4 Hessian matrix
+    n: _Size,
+) -> None:
+    """GJR-GARCH(1,1) OPG and Hessian for robust standard errors."""
+    ...
+
+def _gjr_garch_opg_hess_pq(
+    params_ptr: _IntPtr,   # [omega, alpha_1..p, gamma_1..p, beta_1..q]
+    resid_ptr: _IntPtr,    # Raw residuals
+    sigma2_ptr: _IntPtr,   # Conditional variances
+    OPG_ptr: _IntPtr,      # Output: K*K OPG matrix
+    HESS_ptr: _IntPtr,     # Output: K*K Hessian matrix
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """GJR-GARCH(p,q) OPG and Hessian for robust standard errors."""
+    ...
+
+# GJR-GARCH log-space transforms (1,1)
+def _pack_gjr_garch_11(z_ptr: _IntPtr, theta_ptr: _IntPtr) -> None:
+    """Transform z -> theta for GJR-GARCH(1,1). theta is modified in-place."""
+    ...
+
+def _pack_gjr_garch_studentt_11(z_ptr: _IntPtr, theta_ptr: _IntPtr) -> None:
+    """Transform z -> theta for GJR-GARCH(1,1)+StudentT. theta is modified in-place."""
+    ...
+
+def _pack_gjr_garch_skewt_11(z_ptr: _IntPtr, theta_ptr: _IntPtr) -> None:
+    """Transform z -> theta for GJR-GARCH(1,1)+SkewT. theta is modified in-place."""
+    ...
+
+def _jacobian_gjr_garch_11(theta_ptr: _IntPtr, J_ptr: _IntPtr) -> None:
+    """Jacobian for GJR-GARCH(1,1). J is 4x4, row-major."""
+    ...
+
+def _jacobian_gjr_garch_studentt_11(theta_ptr: _IntPtr, J_ptr: _IntPtr) -> None:
+    """Jacobian for GJR-GARCH(1,1)+StudentT. J is 5x5, row-major."""
+    ...
+
+def _jacobian_gjr_garch_skewt_11(theta_ptr: _IntPtr, J_ptr: _IntPtr) -> None:
+    """Jacobian for GJR-GARCH(1,1)+SkewT. J is 6x6, row-major."""
+    ...
+
+def _transform_grad_gjr_11_normal(
+    grad_theta_ptr: _IntPtr, J_ptr: _IntPtr, grad_z_ptr: _IntPtr,
+) -> None:
+    """grad_z = J^T @ grad_theta for GJR K=4."""
+    ...
+
+def _transform_grad_gjr_11_studentt(
+    grad_theta_ptr: _IntPtr, J_ptr: _IntPtr, grad_z_ptr: _IntPtr,
+) -> None:
+    """grad_z = J^T @ grad_theta for GJR K=5."""
+    ...
+
+def _transform_grad_gjr_11_skewt(
+    grad_theta_ptr: _IntPtr, J_ptr: _IntPtr, grad_z_ptr: _IntPtr,
+) -> None:
+    """grad_z = J^T @ grad_theta for GJR K=6."""
+    ...
+
+# GJR-GARCH log-space transforms (p,q)
+def _pack_gjr_garch_pq(z_ptr: _IntPtr, theta_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Transform z -> theta for GJR-GARCH(p,q). theta is modified in-place."""
+    ...
+
+def _pack_gjr_garch_studentt_pq(z_ptr: _IntPtr, theta_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Transform z -> theta for GJR-GARCH(p,q)+StudentT."""
+    ...
+
+def _pack_gjr_garch_skewt_pq(z_ptr: _IntPtr, theta_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Transform z -> theta for GJR-GARCH(p,q)+SkewT."""
+    ...
+
+def _jacobian_gjr_garch_pq(theta_ptr: _IntPtr, J_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Jacobian for GJR-GARCH(p,q). J is K*K, row-major."""
+    ...
+
+def _jacobian_gjr_garch_studentt_pq(theta_ptr: _IntPtr, J_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Jacobian for GJR-GARCH(p,q)+StudentT."""
+    ...
+
+def _jacobian_gjr_garch_skewt_pq(theta_ptr: _IntPtr, J_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Jacobian for GJR-GARCH(p,q)+SkewT."""
+    ...
+
 # ── ARMA-GARCH Functions ──────────────────────────────────────────────────
 
 def _arma_garch_nll_11_normal(

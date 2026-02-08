@@ -531,6 +531,194 @@ def transform_grad_c(
 
 
 # =============================================================================
+# GJR-GARCH PARAMETER TRANSFORMS
+# =============================================================================
+
+def pack_gjr_garch(z: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """
+    Transform unconstrained z to constrained GJR-GARCH parameters θ.
+    
+    z = [z_omega, z_alpha_1..p, z_gamma_1..p, z_beta_1..q]
+    θ = [omega, alpha_1..p, gamma_1..p, beta_1..q]
+    
+    Uses 4-class softmax (alpha, gamma, beta, slack=0) ensuring α+γ+β < 1.
+    """
+    K = 1 + 2 * p + q
+    z_omega = z[0]
+    z_softmax = z[1:K]
+    
+    omega = np.exp(np.clip(z_omega, -700.0, 700.0))
+    
+    z_joint = np.concatenate([z_softmax, [0.0]])
+    lse_joint = logsumexp(z_joint)
+    
+    params = np.exp(z_softmax - lse_joint)
+    
+    return np.concatenate([[omega], params])
+
+
+def unpack_gjr_garch(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Transform constrained GJR-GARCH θ to unconstrained z."""
+    K = 1 + 2 * p + q
+    omega = theta[0]
+    params = theta[1:K]
+    
+    z_omega = np.log(omega)
+    
+    r = 1.0 - params.sum()
+    r = max(r, 1e-10)
+    
+    z_params = np.log(np.maximum(params, 1e-10)) - np.log(r)
+    
+    return np.concatenate([[z_omega], z_params])
+
+
+def jacobian_gjr_garch(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Compute Jacobian J = ∂θ/∂z for GJR-GARCH parameters."""
+    K = 1 + 2 * p + q
+    omega = theta[0]
+    params = theta[1:K]
+    
+    J = np.zeros((K, K), dtype=np.float64)
+    J[0, 0] = omega
+    
+    # Softmax Jacobian for [alpha, gamma, beta]
+    for i in range(K - 1):
+        for j in range(K - 1):
+            delta = 1.0 if i == j else 0.0
+            J[1 + i, 1 + j] = params[i] * (delta - params[j])
+    
+    return J
+
+
+def pack_gjr_garch_studentt(z: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained θ for GJR-GARCH + Student-t."""
+    n_gjr = 1 + 2 * p + q
+    theta_gjr = pack_gjr_garch(z[:n_gjr], p, q)
+    nu = pack_studentt(z[n_gjr])
+    return np.concatenate([theta_gjr, [nu]])
+
+
+def unpack_gjr_garch_studentt(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Transform constrained θ to unconstrained z for GJR-GARCH + Student-t."""
+    n_gjr = 1 + 2 * p + q
+    z_gjr = unpack_gjr_garch(theta[:n_gjr], p, q)
+    z_nu = unpack_studentt(theta[n_gjr])
+    return np.concatenate([z_gjr, [z_nu]])
+
+
+def jacobian_gjr_garch_studentt(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Compute full Jacobian for GJR-GARCH + Student-t."""
+    n_gjr = 1 + 2 * p + q
+    K = n_gjr + 1
+    J = np.zeros((K, K), dtype=np.float64)
+    J[:n_gjr, :n_gjr] = jacobian_gjr_garch(theta[:n_gjr], p, q)
+    J[n_gjr, n_gjr] = jacobian_studentt(theta[n_gjr])
+    return J
+
+
+def pack_gjr_garch_skewt(z: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained θ for GJR-GARCH + SkewT."""
+    n_gjr = 1 + 2 * p + q
+    theta_gjr = pack_gjr_garch(z[:n_gjr], p, q)
+    nu, lam = pack_skewt(z[n_gjr], z[n_gjr + 1])
+    return np.concatenate([theta_gjr, [nu, lam]])
+
+
+def unpack_gjr_garch_skewt(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Transform constrained θ to unconstrained z for GJR-GARCH + SkewT."""
+    n_gjr = 1 + 2 * p + q
+    z_gjr = unpack_gjr_garch(theta[:n_gjr], p, q)
+    z_nu, z_lam = unpack_skewt(theta[n_gjr], theta[n_gjr + 1])
+    return np.concatenate([z_gjr, [z_nu, z_lam]])
+
+
+def jacobian_gjr_garch_skewt(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Compute full Jacobian for GJR-GARCH + SkewT."""
+    n_gjr = 1 + 2 * p + q
+    K = n_gjr + 2
+    J = np.zeros((K, K), dtype=np.float64)
+    J[:n_gjr, :n_gjr] = jacobian_gjr_garch(theta[:n_gjr], p, q)
+    J_dist = jacobian_skewt(theta[n_gjr], theta[n_gjr + 1])
+    J[n_gjr:, n_gjr:] = J_dist
+    return J
+
+
+# C-accelerated GJR-GARCH versions
+
+def pack_gjr_garch_c(z: NDArray[np.float64], theta_out: NDArray[np.float64], p: int, q: int) -> None:
+    """C-accelerated pack_gjr_garch (modifies theta_out in-place)."""
+    if p == 1 and q == 1:
+        _core._pack_gjr_garch_11(_as_cptr(z), _as_cptr(theta_out))
+    else:
+        _core._pack_gjr_garch_pq(_as_cptr(z), _as_cptr(theta_out), p, q)
+
+
+def pack_gjr_garch_studentt_c(z: NDArray[np.float64], theta_out: NDArray[np.float64], p: int, q: int) -> None:
+    """C-accelerated pack for GJR-GARCH + Student-t."""
+    if p == 1 and q == 1:
+        _core._pack_gjr_garch_studentt_11(_as_cptr(z), _as_cptr(theta_out))
+    else:
+        _core._pack_gjr_garch_studentt_pq(_as_cptr(z), _as_cptr(theta_out), p, q)
+
+
+def pack_gjr_garch_skewt_c(z: NDArray[np.float64], theta_out: NDArray[np.float64], p: int, q: int) -> None:
+    """C-accelerated pack for GJR-GARCH + SkewT."""
+    if p == 1 and q == 1:
+        _core._pack_gjr_garch_skewt_11(_as_cptr(z), _as_cptr(theta_out))
+    else:
+        _core._pack_gjr_garch_skewt_pq(_as_cptr(z), _as_cptr(theta_out), p, q)
+
+
+def jacobian_gjr_garch_c(theta: NDArray[np.float64], J_out: NDArray[np.float64], p: int, q: int) -> None:
+    """C-accelerated Jacobian for GJR-GARCH."""
+    if p == 1 and q == 1:
+        _core._jacobian_gjr_garch_11(_as_cptr(theta), _as_cptr(J_out))
+    else:
+        _core._jacobian_gjr_garch_pq(_as_cptr(theta), _as_cptr(J_out), p, q)
+
+
+def jacobian_gjr_garch_studentt_c(theta: NDArray[np.float64], J_out: NDArray[np.float64], p: int, q: int) -> None:
+    """C-accelerated Jacobian for GJR-GARCH + Student-t."""
+    if p == 1 and q == 1:
+        _core._jacobian_gjr_garch_studentt_11(_as_cptr(theta), _as_cptr(J_out))
+    else:
+        _core._jacobian_gjr_garch_studentt_pq(_as_cptr(theta), _as_cptr(J_out), p, q)
+
+
+def jacobian_gjr_garch_skewt_c(theta: NDArray[np.float64], J_out: NDArray[np.float64], p: int, q: int) -> None:
+    """C-accelerated Jacobian for GJR-GARCH + SkewT."""
+    if p == 1 and q == 1:
+        _core._jacobian_gjr_garch_skewt_11(_as_cptr(theta), _as_cptr(J_out))
+    else:
+        _core._jacobian_gjr_garch_skewt_pq(_as_cptr(theta), _as_cptr(J_out), p, q)
+
+
+def transform_grad_gjr_c(
+    grad_theta: NDArray[np.float64],
+    J: NDArray[np.float64],
+    grad_z_out: NDArray[np.float64],
+    p: int,
+    q: int,
+    dist: str = "normal"
+) -> None:
+    """C-accelerated gradient transform for GJR-GARCH: grad_z = J^T @ grad_theta."""
+    K = grad_theta.shape[0]
+    
+    if p == 1 and q == 1:
+        if dist == "normal":
+            _core._transform_grad_gjr_11_normal(_as_cptr(grad_theta), _as_cptr(J), _as_cptr(grad_z_out))
+        elif dist == "studentt":
+            _core._transform_grad_gjr_11_studentt(_as_cptr(grad_theta), _as_cptr(J), _as_cptr(grad_z_out))
+        elif dist == "skewt":
+            _core._transform_grad_gjr_11_skewt(_as_cptr(grad_theta), _as_cptr(J), _as_cptr(grad_z_out))
+        else:
+            raise ValueError(f"Unknown distribution: {dist}")
+    else:
+        _core._transform_grad_pq(_as_cptr(grad_theta), _as_cptr(J), _as_cptr(grad_z_out), K)
+
+
+# =============================================================================
 # ARMA-GARCH PARAMETER TRANSFORMS
 # =============================================================================
 
