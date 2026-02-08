@@ -38,6 +38,7 @@ from ..roles import Role
 from .._kernels import get_routine
 from .base import Estimator
 from .. import _core
+from .._settings import settings
 
 if TYPE_CHECKING:
     from ..result import EstimationResult
@@ -774,35 +775,41 @@ class QMLE(Estimator):
     
     def _print_robust_se(self, result, p: int, q: int):
         """Print robust SE info for Normal."""
+        _r = settings.names.resolve
         se_mle = result.std_errors
         se_robust = result.std_errors_robust
         if se_mle is not None and se_robust is not None:
             print("QMLE: Robust (sandwich) standard errors computed successfully.")
-            param_names = ["omega"] + [f"alpha_{i+1}" for i in range(p)] + [f"beta_{j+1}" for j in range(q)]
+            param_names = [_r("omega")] + [_r(f"alpha[{i+1}]") for i in range(p)] + [_r(f"beta[{j+1}]") for j in range(q)]
             for i, name in enumerate(param_names):
                 if i < len(se_mle) and i < len(se_robust):
                     print(f"  SE({name}):  MLE={se_mle[i]:.6f}, Robust={se_robust[i]:.6f}")
     
     def _print_robust_se_studentt(self, result, p: int, q: int, nu: float):
         """Print robust SE info for Student-t."""
+        _r = settings.names.resolve
         se_robust = result.std_errors_robust
         if se_robust is not None:
-            print("QMLE (Student-t two-step): Robust GARCH SEs, MLE SE for nu.")
-            param_names = ["omega"] + [f"alpha_{i+1}" for i in range(p)] + [f"beta_{j+1}" for j in range(q)] + ["nu"]
+            nu_name = _r("nu")
+            print(f"QMLE (Student-t two-step): Robust GARCH SEs, MLE SE for {nu_name}.")
+            param_names = [_r("omega")] + [_r(f"alpha[{i+1}]") for i in range(p)] + [_r(f"beta[{j+1}]") for j in range(q)] + [nu_name]
             for i, name in enumerate(param_names):
                 if i < len(se_robust):
                     se_type = "Robust" if i < (1 + p + q) else "MLE"
                     print(f"  SE({name}):  {se_type}={se_robust[i]:.6f}")
-            print(f"  nu (df) = {nu:.2f}")
+            print(f"  {nu_name} (df) = {nu:.2f}")
     
     def _print_robust_se_skewt(self, result, p: int, q: int, nu: float, lam: float):
         """Print robust SE info for Skew-t."""
+        _r = settings.names.resolve
         se_robust = result.std_errors_robust
         if se_robust is not None:
-            print("QMLE (Skew-t two-step): Robust GARCH SEs, MLE SEs for nu, lambda.")
-            param_names = ["omega"] + [f"alpha_{i+1}" for i in range(p)] + [f"beta_{j+1}" for j in range(q)] + ["nu", "lambda"]
+            nu_name = _r("nu")
+            lam_name = _r("lambda")
+            print(f"QMLE (Skew-t two-step): Robust GARCH SEs, MLE SEs for {nu_name}, {lam_name}.")
+            param_names = [_r("omega")] + [_r(f"alpha[{i+1}]") for i in range(p)] + [_r(f"beta[{j+1}]") for j in range(q)] + [nu_name, lam_name]
             for i, name in enumerate(param_names):
                 if i < len(se_robust):
                     se_type = "Robust" if i < (1 + p + q) else "MLE"
                     print(f"  SE({name}):  {se_type}={se_robust[i]:.6f}")
-            print(f"  nu (df) = {nu:.2f}, lambda = {lam:.4f}")
+            print(f"  {nu_name} (df) = {nu:.2f}, {lam_name} = {lam:.4f}")

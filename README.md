@@ -86,8 +86,9 @@ Half-life (periods):      106.3
 3. [Estimators](#estimators)
 4. [Automatic Model Selection](#automatic-model-selection)
 5. [Results](#results)
-6. [Diagnostic Tools](#diagnostic-tools)
-7. [API Reference](#api-reference)
+6. [Display Settings](#display-settings)
+7. [Diagnostic Tools](#diagnostic-tools)
+8. [API Reference](#api-reference)
 
 ---
 
@@ -358,13 +359,17 @@ volkit can automatically search over multiple model specifications and select th
 
 ### Auto-selection for GARCH Orders
 
-Search over different GARCH lag orders using `auto=True`:
+Search over different lag orders using `auto=True`. Works for both `GARCH` and `GJRGARCH`:
 
 ```python
-from volkit import GARCH, Normal
+from volkit import GARCH, GJRGARCH, Normal
 
 # Search p, q in range [1, 3]
 spec = GARCH(auto=True) + Normal()
+result = spec.fit(returns)
+
+# Same for GJR-GARCH
+spec = GJRGARCH(auto=True) + Normal()
 result = spec.fit(returns)
 
 # Inspect what was selected
@@ -379,7 +384,7 @@ print(result.selection_summary())  # Show all candidates and scores
 spec = GARCH(auto={'max_p': 2, 'max_q': 2}) + Normal()
 
 # Fix p=1, auto-select q from [1, 3]
-spec = GARCH(p=1, q='auto') + Normal()
+spec = GJRGARCH(p=1, q='auto') + StudentT()
 ```
 
 ### Auto-selection for Distributions
@@ -588,6 +593,74 @@ result.density        # Density component (Normal/StudentT/SkewT)
 
 ---
 
+## Display Settings
+
+volkit provides a global `settings` object that lets you customize how parameter names appear in summaries, printed output, and `to_dict()` keys -- without changing any internal variable names or code logic.
+
+### Renaming Parameters
+
+```python
+import volkit
+
+# Rename parameters globally
+volkit.settings.names.gamma = "leverage"
+volkit.settings.names.nu = "df"
+volkit.settings.names.omega = "w"
+
+# All subsequent output uses the new names
+spec = GJRGARCH(1, 1) + StudentT()
+result = spec.fit(returns)
+result.summary()
+# Parameter table now shows: w, alpha[1], leverage[1], beta[1], df
+```
+
+Indexed parameters like `alpha[1]`, `gamma[2]` automatically pick up the renamed base:
+
+```python
+volkit.settings.names.alpha = "a"
+# "alpha[1]" displays as "a[1]", "alpha[2]" as "a[2]", etc.
+```
+
+### Effect on `to_dict()`
+
+Display names also apply to the dictionary keys returned by `result.to_dict()`:
+
+```python
+volkit.settings.names.alpha = "a"
+volkit.settings.names.beta = "b"
+
+d = result.to_dict()
+print(d['garch_params'].keys())
+# dict_keys(['w', 'a', 'b', 'persistence'])
+```
+
+### Resetting to Defaults
+
+```python
+# Clear all overrides
+volkit.settings.names.reset()
+```
+
+### Available Parameter Names
+
+The following canonical names can be overridden:
+
+| Canonical Name | Used By | Default Display |
+|---------------|---------|-----------------|
+| `omega` | GARCH, GJR-GARCH | `omega` |
+| `alpha` | GARCH, GJR-GARCH | `alpha` |
+| `gamma` | GJR-GARCH | `gamma` |
+| `beta` | GARCH, GJR-GARCH | `beta` |
+| `nu` | StudentT, SkewT | `nu` |
+| `lambda` | SkewT | `lambda` |
+| `const` | ARMA | `const` |
+| `ar` | ARMA | `ar` |
+| `ma` | ARMA | `ma` |
+
+**Note:** Only display output is affected. Internal attribute names on dataclasses (`gp.omega`, `gp.alpha`, `dp.nu`, etc.), C function signatures, and component `fitted_params` dictionary keys remain unchanged.
+
+---
+
 ## Diagnostic Tools
 
 ### Derivative Validation
@@ -654,6 +727,9 @@ from volkit import (
     MLE,          # Maximum likelihood estimator
     QMLE,         # Quasi-MLE with robust SEs
     
+    # Settings
+    settings,     # Global display settings (parameter names, etc.)
+    
     # Version
     __version__,
 )
@@ -690,6 +766,11 @@ from volkit import GJRGARCH
 
 # Fixed orders
 gjr = GJRGARCH(p: int, q: int)
+
+# Auto-selection (same interface as GARCH)
+gjr = GJRGARCH(auto=True)  # Search p,q in [1,3]
+gjr = GJRGARCH(auto={'max_p': 2, 'max_q': 2})  # Custom range
+gjr = GJRGARCH(p=1, q='auto')  # Fix p, auto-select q
 
 # Properties
 gjr.p             # ARCH/leverage order
@@ -802,6 +883,27 @@ result = estimator.fit(
 
 # Robust SEs are automatically computed
 result.std_errors_robust
+```
+
+### Settings
+
+```python
+import volkit
+
+# Access the global settings singleton
+volkit.settings                      # Settings object
+volkit.settings.names                # ParamNames object
+
+# Override display names
+volkit.settings.names.gamma = "leverage"
+volkit.settings.names.nu = "df"
+
+# Resolve a name (handles indexed names automatically)
+volkit.settings.names.resolve("gamma")     # "leverage"
+volkit.settings.names.resolve("gamma[1]")  # "leverage[1]"
+
+# Reset all overrides
+volkit.settings.names.reset()
 ```
 
 ---
@@ -940,6 +1042,30 @@ if gp.gamma[0] > 0:
     print(f"Impact ratio (neg/pos): {neg_impact / pos_impact:.2f}x")
 
 result.summary()
+```
+
+### Custom Parameter Display Names
+
+```python
+import volkit
+from volkit import GJRGARCH, StudentT
+
+# Customize how parameters are displayed
+volkit.settings.names.gamma = "leverage"
+volkit.settings.names.nu = "df"
+
+spec = GJRGARCH(1, 1) + StudentT()
+result = spec.fit(returns)
+
+# summary() now shows "leverage[1]" instead of "gamma[1]", "df" instead of "nu"
+result.summary()
+
+# to_dict() keys also reflect the custom names
+d = result.to_dict()
+print(d['garch_params'].keys())  # includes 'leverage' instead of 'gamma'
+
+# Reset when done
+volkit.settings.names.reset()
 ```
 
 ### Volatility Forecasting

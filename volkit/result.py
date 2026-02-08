@@ -10,6 +10,7 @@ from scipy.stats import norm, t as t_dist, chi2
 from scipy.special import gammaln
 
 from .roles import Role
+from ._settings import settings
 
 # Lazy import for pandas to avoid hard dependency
 def _to_pandas_series(
@@ -66,15 +67,23 @@ if TYPE_CHECKING:
 
 @dataclass
 class GARCHParams:
-    """Container for GARCH(p,q) parameters."""
+    """Container for GARCH/GJR-GARCH parameters.
+    
+    For standard GARCH, ``gamma`` is ``None``.
+    For GJR-GARCH, ``gamma`` holds the leverage coefficients.
+    """
     omega: float
     alpha: NDArray[np.float64]  # length p
     beta: NDArray[np.float64]   # length q
+    gamma: Optional[NDArray[np.float64]] = None  # length p (GJR-GARCH only)
     
     @property
     def persistence(self) -> float:
-        """Sum of alpha and beta coefficients."""
-        return float(np.sum(self.alpha) + np.sum(self.beta))
+        """Sum of alpha (+ 0.5*gamma for GJR) + beta coefficients."""
+        p = float(np.sum(self.alpha) + np.sum(self.beta))
+        if self.gamma is not None:
+            p += 0.5 * float(np.sum(self.gamma))
+        return p
     
     @property
     def is_stationary(self) -> bool:
@@ -89,12 +98,20 @@ class GARCHParams:
         return self.omega / (1.0 - self.persistence)
     
     def to_array(self) -> NDArray[np.float64]:
-        """Flatten to 1D array [omega, alpha_1, ..., alpha_p, beta_1, ..., beta_q]."""
-        return np.concatenate([[self.omega], self.alpha, self.beta])
+        """Flatten to 1D array.
+        
+        GARCH:     [omega, alpha..., beta...]
+        GJR-GARCH: [omega, alpha..., gamma..., beta...]
+        """
+        parts = [[self.omega], self.alpha]
+        if self.gamma is not None:
+            parts.append(self.gamma)
+        parts.append(self.beta)
+        return np.concatenate(parts)
     
     @classmethod
     def from_array(cls, arr: NDArray[np.float64], p: int, q: int) -> "GARCHParams":
-        """Construct from flat array."""
+        """Construct from flat array (standard GARCH only)."""
         return cls(
             omega=arr[0],
             alpha=arr[1:1+p],
@@ -335,7 +352,7 @@ class EstimationResult:
     # --------------------------------------------------------------------- #
     @property
     def garch_params(self) -> Optional[GARCHParams]:
-        """Get GARCH parameters as structured object."""
+        """Get GARCH/GJR-GARCH parameters as structured object."""
         vol = self.vol
         if vol is None or not hasattr(vol, 'fitted_params') or not vol.fitted_params:
             return None
@@ -345,7 +362,11 @@ class EstimationResult:
         alpha = np.array(fp.get('alpha', []), dtype=np.float64)
         beta = np.array(fp.get('beta', []), dtype=np.float64)
         
-        return GARCHParams(omega=omega, alpha=alpha, beta=beta)
+        # GJR-GARCH has gamma (leverage) coefficients
+        gamma_raw = fp.get('gamma')
+        gamma = np.array(gamma_raw, dtype=np.float64) if gamma_raw is not None else None
+        
+        return GARCHParams(omega=omega, alpha=alpha, beta=beta, gamma=gamma)
     
     @property
     def arma_params(self) -> Optional[ARMAParams]:
@@ -663,24 +684,28 @@ class EstimationResult:
         print("═" * WIDTH)
     
     def _get_param_names(self) -> List[str]:
-        """Get parameter names from components."""
+        """Get parameter names from components, using display names from settings."""
+        _r = settings.names.resolve
         names: List[str] = []
         
-        # GARCH parameters
+        # GARCH / GJR-GARCH parameters
         gp = self.garch_params
         if gp is not None:
-            names.append("omega")
+            names.append(_r("omega"))
             for i, _ in enumerate(gp.alpha, 1):
-                names.append(f"alpha[{i}]")
+                names.append(_r(f"alpha[{i}]"))
+            if gp.gamma is not None:
+                for i, _ in enumerate(gp.gamma, 1):
+                    names.append(_r(f"gamma[{i}]"))
             for i, _ in enumerate(gp.beta, 1):
-                names.append(f"beta[{i}]")
+                names.append(_r(f"beta[{i}]"))
         
         # Distribution parameters
         dp = self.dist_params
         if dp.nu is not None:
-            names.append("nu")
+            names.append(_r("nu"))
         if dp.lam is not None:
-            names.append("lambda")
+            names.append(_r("lambda"))
         
         # Fill in remaining if needed
         while len(names) < len(self.params):
@@ -720,6 +745,8 @@ class EstimationResult:
         if vol_component is None:
             return
         
+        _r = settings.names.resolve
+        
         print()
         print(f"{'Model Diagnostics':^{width}}")
         print("─" * width)
@@ -727,21 +754,29 @@ class EstimationResult:
         gp = self.garch_params
         if gp is not None:
             persistence = gp.persistence
-            print(f"{'Persistence (α + β):':<25} {persistence:.6f}")
+            # Build persistence label from display names
+            a_name = _r("alpha")
+            b_name = _r("beta")
+            if gp.gamma is not None:
+                g_name = _r("gamma")
+                persist_label = f"Persistence ({a_name} + 0.5{g_name} + {b_name}):"
+            else:
+                persist_label = f"Persistence ({a_name} + {b_name}):"
+            print(f"{persist_label:<35} {persistence:.6f}")
             
             if persistence < 1.0:
-                print(f"{'Stationary:':<25} Yes")
+                print(f"{'Stationary:':<35} Yes")
                 if gp.omega > 0:
                     uncond_var = gp.unconditional_variance
-                    print(f"{'Unconditional Variance:':<25} {uncond_var:.6e}")
-                    print(f"{'Unconditional Volatility:':<25} {np.sqrt(uncond_var):.6f}")
+                    print(f"{'Unconditional Variance:':<35} {uncond_var:.6e}")
+                    print(f"{'Unconditional Volatility:':<35} {np.sqrt(uncond_var):.6f}")
             else:
-                print(f"{'Stationary:':<25} No (IGARCH or explosive)")
+                print(f"{'Stationary:':<35} No (IGARCH or explosive)")
         
         # Half-life of volatility shocks
         if gp is not None and gp.persistence < 1.0 and gp.persistence > 0:
             half_life = np.log(0.5) / np.log(gp.persistence)
-            print(f"{'Half-life (periods):':<25} {half_life:.1f}")
+            print(f"{'Half-life (periods):':<35} {half_life:.1f}")
     
     def _print_warnings(self, width: int) -> None:
         """Print any warnings about the estimation."""
@@ -800,22 +835,26 @@ class EstimationResult:
             'parameters': {},
         }
         
-        # Add GARCH parameters
+        # Add GARCH parameters (keys use display names)
+        _r = settings.names.resolve
         gp = self.garch_params
         if gp is not None:
-            result_dict['garch_params'] = {
-                'omega': gp.omega,
-                'alpha': gp.alpha.tolist(),
-                'beta': gp.beta.tolist(),
+            gp_dict = {
+                _r('omega'): gp.omega,
+                _r('alpha'): gp.alpha.tolist(),
+                _r('beta'): gp.beta.tolist(),
                 'persistence': gp.persistence,
             }
+            if gp.gamma is not None:
+                gp_dict[_r('gamma')] = gp.gamma.tolist()
+            result_dict['garch_params'] = gp_dict
         
-        # Add distribution parameters
+        # Add distribution parameters (keys use display names)
         dp = self.dist_params
         if dp.nu is not None or dp.lam is not None:
             result_dict['dist_params'] = {
-                'nu': dp.nu,
-                'lam': dp.lam,
+                _r('nu'): dp.nu,
+                _r('lam'): dp.lam,
             }
         
         # Add component parameters (legacy)

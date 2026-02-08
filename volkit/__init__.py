@@ -14,6 +14,7 @@ from .components import ARMA, GARCH, GJRGARCH, Normal, StudentT, SkewT, AutoDens
 from .spec import CompositeSpec
 from .estimators import MLE, QMLE
 from .roles import Role
+from ._settings import settings
 # from ._kernels import get_routine
 
 __all__: list[str] = [
@@ -28,6 +29,7 @@ __all__: list[str] = [
     "Normal",
     "QMLE",
     "Role",
+    "settings",
     "SkewT",
     "StudentT",
     "__version__",
