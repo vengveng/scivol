@@ -1,10 +1,11 @@
 # volkit
 
-A high-performance Python library for volatility modeling with GARCH models.
+A high-performance Python library for volatility modeling with GARCH-family models.
 
 ## Features
 
 - **Component-based model specification** - Build models by combining volatility, mean, and density components
+- **Symmetric and asymmetric volatility** - GARCH and GJR-GARCH (leverage effects)
 - **Multiple distributions** - Normal, Student-t, and Skewed Student-t
 - **Automatic model selection** - Search over GARCH orders and distributions with parallel fitting
 - **Fast C extensions** - Optimized likelihood, gradient, and Hessian computation
@@ -97,13 +98,16 @@ volkit uses a **component composition** pattern. Models are built by combining c
 ### Basic Pattern
 
 ```python
-from volkit import GARCH, ARMA, Normal, StudentT, SkewT
+from volkit import GARCH, GJRGARCH, ARMA, Normal, StudentT, SkewT
 
 # Volatility only (density defaults to Normal)
 spec = GARCH(1, 1)
 
 # Volatility + explicit density
 spec = GARCH(1, 1) + StudentT()
+
+# Asymmetric volatility (leverage effects)
+spec = GJRGARCH(1, 1) + StudentT()
 
 # Mean + Volatility + Density
 spec = ARMA(1, 1) + GARCH(1, 1) + SkewT()
@@ -157,6 +161,41 @@ spec = GARCH(2, 1)
 ```
 
 **Stationarity condition:** Σα + Σβ < 1
+
+#### GJRGARCH(p, q)
+
+GJR-GARCH (Glosten-Jagannathan-Runkle) model with asymmetric volatility response. Negative shocks ("bad news") have a larger impact on future volatility than positive shocks of the same magnitude.
+
+```python
+from volkit import GJRGARCH
+
+# GJR-GARCH(1,1) - most common
+spec = GJRGARCH(1, 1)
+
+# With Student-t innovations
+spec = GJRGARCH(1, 1) + StudentT()
+```
+
+**Parameters:**
+- `omega` (ω): Constant term (must be > 0)
+- `alpha[1:p]` (α): ARCH coefficients (symmetric shock response)
+- `gamma[1:p]` (γ): Leverage coefficients (additional response to negative shocks)
+- `beta[1:q]` (β): GARCH coefficients (persistence)
+
+**Model equation:**
+```
+σ²_t = ω + Σᵢ (αᵢ·ε²_{t-i} + γᵢ·I(ε_{t-i}<0)·ε²_{t-i}) + Σⱼ βⱼ·σ²_{t-j}
+```
+
+where I(·) is the indicator function (1 if the condition is true, 0 otherwise).
+
+**Stationarity condition:**
+- Symmetric distributions (Normal, Student-t): α + 0.5·γ + β < 1
+- Asymmetric distributions (Skew-t): α + γ·P(z < 0) + β < 1
+
+**Interpretation:**
+- γ > 0 means negative shocks increase volatility more than positive shocks (leverage effect)
+- The total impact of a negative shock is (α + γ)·ε², while a positive shock contributes α·ε²
 
 ### Mean Components
 
@@ -263,13 +302,14 @@ The `log_mode=True` option transforms the constrained GARCH optimization problem
 |-----------|------------|----------------|
 | ω (omega) | ω > 0 | ω = exp(z_ω) |
 | α (alpha) | α > 0, Σα < 1 | softmax transform |
+| γ (gamma, GJR) | γ > 0 | 4-class softmax (α, γ, β, slack) |
 | β (beta) | β > 0, Σβ < 1 | softmax transform |
 | ν (nu, Student-t) | ν > 2 | ν = 2 + exp(z_ν) |
 | λ (lambda, SkewT) | -1 < λ < 1 | λ = tanh(z_λ) |
 
 **Benefits:**
 - Eliminates boundary issues during optimization
-- Guarantees stationarity (α + β < 1) by construction
+- Guarantees stationarity (α + β < 1 or α + 0.5γ + β < 1) by construction
 - More robust convergence, especially for gradient-based solvers
 - All likelihood evaluations use valid parameters
 
@@ -472,14 +512,17 @@ The `EstimationResult` object provides access to all estimation outputs.
 result = spec.fit(data)
 
 # All parameters as flat array
-params = result.params  # [omega, alpha_1, ..., alpha_p, beta_1, ..., beta_q, nu?, lambda?]
+# GARCH:     [omega, alpha_1, ..., alpha_p, beta_1, ..., beta_q, nu?, lambda?]
+# GJR-GARCH: [omega, alpha_1, ..., alpha_p, gamma_1, ..., gamma_p, beta_1, ..., beta_q, nu?, lambda?]
+params = result.params
 
 # Structured GARCH parameters
 gp = result.garch_params
 print(gp.omega)       # Constant term
 print(gp.alpha)       # ARCH coefficients (array)
+print(gp.gamma)       # Leverage coefficients (array, GJR-GARCH only)
 print(gp.beta)        # GARCH coefficients (array)
-print(gp.persistence) # Sum of alpha + beta
+print(gp.persistence) # α + β (GARCH) or α + 0.5γ + β (GJR-GARCH)
 
 # Distribution parameters
 dp = result.dist_params
@@ -595,6 +638,7 @@ report.hessian_max_rel_error   # Max relative error (%)
 from volkit import (
     # Components
     GARCH,        # GARCH(p, q) volatility model
+    GJRGARCH,     # GJR-GARCH(p, q) asymmetric volatility model
     ARMA,         # ARMA(p, q) mean model
     Normal,       # Normal distribution
     StudentT,     # Student-t distribution
@@ -637,6 +681,28 @@ garch.fitted_params # {'omega': float, 'alpha': list, 'beta': list}
 garch.persistence() # Sum of alpha + beta
 garch.is_stationary()
 garch.unconditional_variance()
+```
+
+### GJRGARCH Component
+
+```python
+from volkit import GJRGARCH
+
+# Fixed orders
+gjr = GJRGARCH(p: int, q: int)
+
+# Properties
+gjr.p             # ARCH/leverage order
+gjr.q             # GARCH order
+gjr.n_params      # Total parameters (1 + 2p + q)
+gjr.signature     # "GJR-GARCH(p,q)"
+
+# After fitting
+gjr.fitted_params  # {'omega': float, 'alpha': list, 'gamma': list, 'beta': list}
+gjr.persistence()  # α + 0.5·γ + β (default, symmetric)
+gjr.persistence(p_neg=0.6)  # α + 0.6·γ + β (asymmetric)
+gjr.is_stationary()
+gjr.unconditional_variance()
 ```
 
 ### AutoDensity Component
@@ -794,21 +860,24 @@ for i, name in enumerate(['omega', 'alpha', 'beta']):
 ### Model Comparison
 
 ```python
-from volkit import GARCH, Normal, StudentT, SkewT
+from volkit import GARCH, GJRGARCH, Normal, StudentT, SkewT
 
-# All distributions support log_mode=True
+# Compare symmetric and asymmetric volatility models
 models = [
     GARCH(1, 1) + Normal(),
     GARCH(1, 1) + StudentT(),
     GARCH(1, 1) + SkewT(),
+    GJRGARCH(1, 1) + Normal(),
+    GJRGARCH(1, 1) + StudentT(),
+    GJRGARCH(1, 1) + SkewT(),
 ]
 
-results = [spec.fit(returns, log_mode=True) for spec in models]
+results = [spec.fit(returns) for spec in models]
 
-print("Model                  LL         AIC        BIC")
-print("-" * 55)
+print("Model                        LL         AIC        BIC")
+print("-" * 60)
 for r in results:
-    print(f"{str(r.spec):20}  {r.loglikelihood:10.2f}  {r.aic:10.2f}  {r.bic:10.2f}")
+    print(f"{str(r.spec):25}  {r.loglikelihood:10.2f}  {r.aic:10.2f}  {r.bic:10.2f}")
 ```
 
 ### Automatic Model Selection
@@ -846,19 +915,43 @@ for i, result in enumerate(results):
     print(f"Series {i}: ω={result.params[0]:.2e}, α={result.params[1]:.3f}, β={result.params[2]:.3f}")
 ```
 
+### GJR-GARCH: Asymmetric Volatility
+
+```python
+from volkit import GJRGARCH, StudentT
+
+# Fit GJR-GARCH(1,1) with Student-t innovations
+spec = GJRGARCH(1, 1) + StudentT()
+result = spec.fit(returns)
+
+# Access parameters
+gp = result.garch_params
+print(f"omega: {gp.omega:.2e}")
+print(f"alpha: {gp.alpha[0]:.4f}")
+print(f"gamma: {gp.gamma[0]:.4f}")  # Leverage coefficient
+print(f"beta:  {gp.beta[0]:.4f}")
+print(f"nu:    {result.dist_params.nu:.2f}")
+
+# Check leverage effect
+if gp.gamma[0] > 0:
+    print("Leverage effect detected: negative shocks increase volatility more")
+    neg_impact = gp.alpha[0] + gp.gamma[0]
+    pos_impact = gp.alpha[0]
+    print(f"Impact ratio (neg/pos): {neg_impact / pos_impact:.2f}x")
+
+result.summary()
+```
+
 ### Volatility Forecasting
 
 ```python
-from volkit import GARCH, Normal
+from volkit import GARCH, GJRGARCH, Normal
 import numpy as np
 
+# --- GARCH(1,1) forecast ---
 spec = GARCH(1, 1) + Normal()
 result = spec.fit(returns)
 
-# Get fitted volatility
-sigma = result.volatility
-
-# One-step-ahead forecast (at last observation)
 omega = result.garch_params.omega
 alpha = result.garch_params.alpha[0]
 beta = result.garch_params.beta[0]
@@ -867,9 +960,21 @@ last_resid2 = returns[-1]**2
 last_sigma2 = result.sigma2[-1]
 
 forecast_sigma2 = omega + alpha * last_resid2 + beta * last_sigma2
-forecast_sigma = np.sqrt(forecast_sigma2)
+print(f"GARCH forecast: {np.sqrt(forecast_sigma2):.4f}")
 
-print(f"Next period volatility forecast: {forecast_sigma:.4f}")
+# --- GJR-GARCH(1,1) forecast ---
+spec_gjr = GJRGARCH(1, 1) + Normal()
+result_gjr = spec_gjr.fit(returns)
+
+gp = result_gjr.garch_params
+last_resid = returns[-1]
+indicator = 1.0 if last_resid < 0 else 0.0
+
+forecast_gjr = (gp.omega
+    + gp.alpha[0] * last_resid**2
+    + gp.gamma[0] * indicator * last_resid**2
+    + gp.beta[0] * result_gjr.sigma2[-1])
+print(f"GJR-GARCH forecast: {np.sqrt(forecast_gjr):.4f}")
 ```
 
 ---
