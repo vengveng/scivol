@@ -599,26 +599,24 @@ volkit provides a global `settings` object that lets you customize how parameter
 
 ### Renaming Parameters
 
+Set a display name once and it applies everywhere -- including indexed variants for higher-order models (e.g., GARCH(2,1) has `alpha[1]` and `alpha[2]`):
+
 ```python
 import volkit
 
 # Rename parameters globally
 volkit.settings.names.gamma = "leverage"
 volkit.settings.names.nu = "df"
-volkit.settings.names.omega = "w"
+volkit.settings.names.alpha = "a"
 
 # All subsequent output uses the new names
 spec = GJRGARCH(1, 1) + StudentT()
 result = spec.fit(returns)
 result.summary()
-# Parameter table now shows: w, alpha[1], leverage[1], beta[1], df
-```
+# Parameter table now shows: omega, a[1], leverage[1], beta[1], df
 
-Indexed parameters like `alpha[1]`, `gamma[2]` automatically pick up the renamed base:
-
-```python
-volkit.settings.names.alpha = "a"
-# "alpha[1]" displays as "a[1]", "alpha[2]" as "a[2]", etc.
+# For higher-order models like GARCH(2,1), the same override covers all indices:
+# a[1], a[2] instead of alpha[1], alpha[2]
 ```
 
 ### Effect on `to_dict()`
@@ -662,6 +660,72 @@ The following canonical names can be overridden:
 ---
 
 ## Diagnostic Tools
+
+### Model Diagnostic Tests
+
+After fitting a model, run the DGT (Density Goodness-of-Fit) and Ljung-Box tests to check whether the fitted distribution adequately captures the data:
+
+```python
+from volkit import GARCH, StudentT
+
+spec = GARCH(1, 1) + StudentT()
+result = spec.fit(returns)
+
+# Run diagnostics and print formatted results
+result.diagnostic_tests()
+```
+
+Output:
+```
+======================================================================
+                     Model Diagnostic Tests
+======================================================================
+Distribution:  StudentT (nu=7.42)
+Observations:  1000
+Alpha:         0.05
+
+DGT Test (Density Goodness-of-Fit)
+----------------------------------------------------------------------
+  Cells:       40         df:          39
+  Chi2 stat:   34.20      p-value:     0.6891
+  Reject H0:   No (uniform PIT)
+
+Ljung-Box Tests on PIT Moments
+----------------------------------------------------------------------
+  Moment       Lags       Q-stat      p-value     Reject
+  ---------- ------ ------------ ------------ ----------
+  (u-0.5)^1     10         8.42       0.5880         No
+  (u-0.5)^2     10         7.91       0.6371         No
+  (u-0.5)^3     10        11.23       0.3396         No
+  (u-0.5)^4     10         9.87       0.4518         No
+======================================================================
+```
+
+**How to interpret:**
+- **DGT test**: Checks if the PIT (Probability Integral Transform) residuals are uniform. A "No" rejection means the fitted distribution is adequate.
+- **Ljung-Box tests**: Check for serial correlation in PIT moments. Moment 1 targets mean misspecification, moment 2 targets variance, moments 3-4 target skewness and kurtosis.
+
+**Customizing the tests:**
+
+```python
+# Adjust significance level, number of cells, and lags
+result.diagnostic_tests(alpha=0.01, n_cells=50, lags=20)
+
+# Suppress printed output and use the returned dict programmatically
+diag = result.diagnostic_tests(print_results=False)
+
+print(diag['dgt']['p_value'])          # DGT p-value
+print(diag['dgt']['reject'])           # True/False
+
+for power in (1, 2, 3, 4):
+    lb = diag['ljung_box'][power]
+    print(f"Moment {power}: Q={lb['q_stat']:.2f}, p={lb['p_value']:.4f}")
+
+# PIT values for custom analysis (e.g., histogram)
+pit_values = diag['pit']
+```
+
+**Note:** These tests are also used internally by the [auto-selection](#automatic-model-selection) machinery to penalize models with poor diagnostics.
 
 ### Derivative Validation
 
@@ -838,6 +902,7 @@ result.time_elapsed         # float - seconds
 result.summary()            # Print detailed summary
 result.summary(robust=True) # Use robust SEs in summary
 result.to_dict()            # Export as dictionary
+result.diagnostic_tests()   # Run DGT + Ljung-Box tests
 result.selection_summary()  # Show auto-selection candidates (if used)
 
 # Auto-selection attributes (if auto=True or AutoDensity used)
@@ -890,19 +955,14 @@ result.std_errors_robust
 ```python
 import volkit
 
-# Access the global settings singleton
-volkit.settings                      # Settings object
-volkit.settings.names                # ParamNames object
-
-# Override display names
-volkit.settings.names.gamma = "leverage"
+# Override display names (applies to all indexed variants automatically)
+volkit.settings.names.gamma = "leverage"  # gamma[1] → leverage[1], gamma[2] → leverage[2], ...
 volkit.settings.names.nu = "df"
 
-# Resolve a name (handles indexed names automatically)
-volkit.settings.names.resolve("gamma")     # "leverage"
-volkit.settings.names.resolve("gamma[1]")  # "leverage[1]"
+# Read back the current display name
+volkit.settings.names.gamma               # "leverage"
 
-# Reset all overrides
+# Reset all overrides to defaults
 volkit.settings.names.reset()
 ```
 
