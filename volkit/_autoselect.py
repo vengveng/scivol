@@ -66,7 +66,7 @@ def select_best_model(
         Score = AIC + diagnostic_weight * n_failed_tests
     
     Where n_failed_tests includes:
-    - 1 if DGT test fails (PIT not uniform)
+    - 1 if DGT (Diebold-Gunther-Tay) test fails (PIT not uniform)
     - 1 for each Ljung-Box moment test that fails
     
     Parameters

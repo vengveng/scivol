@@ -427,7 +427,7 @@ Score = AIC + diagnostic_weight × n_failed_tests
 ```
 
 Where `n_failed_tests` includes:
-- 1 if DGT (Density Goodness-of-fit Test) fails
+- 1 if DGT (Diebold-Gunther-Tay) test fails
 - 1 for each Ljung-Box test (on moments) that fails
 
 By default, `diagnostic_weight = 50.0`, meaning a failed diagnostic test is equivalent to an AIC penalty of 50.
@@ -663,7 +663,7 @@ The following canonical names can be overridden:
 
 ### Model Diagnostic Tests
 
-After fitting a model, run the DGT (Density Goodness-of-Fit) and Ljung-Box tests to check whether the fitted distribution adequately captures the data:
+After fitting a model, run the DGT (Diebold-Gunther-Tay) and Ljung-Box tests to check whether the fitted distribution adequately captures the data:
 
 ```python
 from volkit import GARCH, StudentT
@@ -684,7 +684,7 @@ Distribution:  StudentT (nu=7.42)
 Observations:  1000
 Alpha:         0.05
 
-DGT Test (Density Goodness-of-Fit)
+DGT Test (Diebold-Gunther-Tay)
 ----------------------------------------------------------------------
   Cells:       40         df:          39
   Chi2 stat:   34.20      p-value:     0.6891
@@ -702,7 +702,7 @@ Ljung-Box Tests on PIT Moments
 ```
 
 **How to interpret:**
-- **DGT test**: Checks if the PIT (Probability Integral Transform) residuals are uniform. A "No" rejection means the fitted distribution is adequate.
+- **DGT (Diebold-Gunther-Tay) test**: Checks if the PIT (Probability Integral Transform) residuals are uniform. A "No" rejection means the fitted distribution is adequate.
 - **Ljung-Box tests**: Check for serial correlation in PIT moments. Moment 1 targets mean misspecification, moment 2 targets variance, moments 3-4 target skewness and kurtosis.
 
 **Customizing the tests:**

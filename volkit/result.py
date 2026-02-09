@@ -882,14 +882,14 @@ class EstimationResult:
         print_results: bool = True,
     ) -> Dict[str, Any]:
         """
-        Run DGT (Density Goodness-of-Fit) and Ljung-Box tests on PIT residuals.
+        Run DGT (Diebold-Gunther-Tay) and Ljung-Box tests on PIT residuals.
         
         The Probability Integral Transform (PIT) converts standardized residuals
         to uniform(0,1) using the fitted distribution's CDF. Under correct
         specification, u_t = F(z_t) should be i.i.d. U(0,1).
         
         Tests performed:
-        1. DGT cell test: Pearson chi-square test for uniformity of PIT
+        1. DGT (Diebold-Gunther-Tay) cell test: Pearson chi-square test for uniformity of PIT
         2. Ljung-Box tests on PIT moments: Tests for serial correlation in
            (u - 0.5)^p for p = 1, 2, 3, 4 to detect misspecification in
            conditional mean, variance, skewness, and kurtosis.
@@ -897,7 +897,7 @@ class EstimationResult:
         Parameters
         ----------
         n_cells : int, default 40
-            Number of cells for the DGT chi-square test.
+            Number of cells for the DGT (Diebold-Gunther-Tay) chi-square test.
         lags : int, default 10
             Number of lags for Ljung-Box tests.
         alpha : float, default 0.05
@@ -1050,7 +1050,7 @@ class EstimationResult:
         
         # DGT Test
         print()
-        print("DGT Test (Density Goodness-of-Fit)")
+        print("DGT Test (Diebold-Gunther-Tay)")
         print("-" * WIDTH)
         dgt = results["dgt"]
         print(f"  {'Cells:':<12} {dgt['n_cells']:<10} {'df:':<12} {dgt['df']}")
