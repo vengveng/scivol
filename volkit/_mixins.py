@@ -1,7 +1,8 @@
 # volkit/_mixins.py  (tiny helper module)
 from __future__ import annotations
-from typing import TYPE_CHECKING, Any, Optional, List, Tuple, Dict, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, List, Tuple, Dict, Union
 from abc import abstractmethod
+import warnings
 import numpy as np
 
 if TYPE_CHECKING:
@@ -18,6 +19,7 @@ class FitsMixin:
     - Automatic model selection when components have auto=True
     - Pandas Series/DataFrame input with index preservation
     - Parallel fitting of multiple time series
+    - Custom selection criterion callable
     """
 
     # the concrete class will supply .spec  (Component already has it, CompositeSpec can return self)
@@ -33,6 +35,9 @@ class FitsMixin:
         n_jobs: Optional[int] = None,
         diagnostic_weight: float = 50.0,
         verbose_selection: bool = False,
+        show_progress: Optional[bool] = None,
+        criterion: Optional[Callable[..., float]] = None,
+        diagnostic_kwargs: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Union[EstimationResult, Dict[str, EstimationResult]]:
         """
@@ -59,8 +64,25 @@ class FitsMixin:
             Set to 1 for sequential processing.
         diagnostic_weight : float, default 50.0
             For auto selection: AIC penalty per failed diagnostic test.
+            Ignored when *criterion* is provided.
         verbose_selection : bool, default False
-            For auto selection: print progress during model selection.
+            For auto selection: print detailed per-candidate results (AIC, scores).
+        show_progress : bool, optional
+            Show a tqdm progress bar during auto-selection or multi-series fitting.
+            None (default) uses the global ``volkit.settings.show_progress`` value.
+            Requires tqdm to be installed (``pip install tqdm``).
+        criterion : callable, optional
+            Custom scoring function for automatic model selection.
+            Signature: ``(result, diagnostics) -> float`` where *result* is
+            an :class:`EstimationResult` and *diagnostics* is the dict
+            returned by ``result.diagnostic_tests()`` (or ``None`` if
+            diagnostics failed).  Lower scores are better.  Return
+            ``float('inf')`` to reject a candidate.
+            When ``None`` (default), the built-in AIC + diagnostic penalty
+            criterion is used.
+        diagnostic_kwargs : dict, optional
+            Keyword arguments forwarded to ``result.diagnostic_tests()``
+            during auto-selection (e.g. ``{'lags': 5, 'n_cells': 50}``).
         **kwargs :  
             Additional arguments passed to estimator.fit() or model selection.
             Common: solver, log_mode, method.
@@ -74,6 +96,20 @@ class FitsMixin:
             If auto-selection was used, results have `_selection_candidates` 
             attribute and `selection_summary()` method.
         """
+        # Warn if both criterion and diagnostic_weight are explicitly set
+        if criterion is not None and diagnostic_weight != 50.0:
+            warnings.warn(
+                "Both 'criterion' and 'diagnostic_weight' were provided. "
+                "'diagnostic_weight' is ignored when a custom criterion is set.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        # Resolve show_progress from global settings if not explicitly passed
+        if show_progress is None:
+            from ._settings import settings
+            show_progress = settings.show_progress
+
         # Extract pandas metadata and convert to numpy
         index, name, data_np, columns = self._extract_pandas_info(data)
         
@@ -87,6 +123,9 @@ class FitsMixin:
                 n_jobs=n_jobs,
                 diagnostic_weight=diagnostic_weight,
                 verbose_selection=verbose_selection,
+                show_progress=show_progress,
+                criterion=criterion,
+                diagnostic_kwargs=diagnostic_kwargs,
                 **kwargs,
             )
         
@@ -99,6 +138,9 @@ class FitsMixin:
             n_jobs=n_jobs,
             diagnostic_weight=diagnostic_weight,
             verbose_selection=verbose_selection,
+            show_progress=show_progress,
+            criterion=criterion,
+            diagnostic_kwargs=diagnostic_kwargs,
             **kwargs,
         )
     
@@ -150,6 +192,9 @@ class FitsMixin:
         n_jobs: Optional[int] = None,
         diagnostic_weight: float = 50.0,
         verbose_selection: bool = False,
+        show_progress: bool = False,
+        criterion: Optional[Callable[..., float]] = None,
+        diagnostic_kwargs: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> EstimationResult:
         """Fit a single time series."""
@@ -161,6 +206,9 @@ class FitsMixin:
                 n_jobs=n_jobs,
                 diagnostic_weight=diagnostic_weight,
                 verbose=verbose_selection,
+                show_progress=show_progress,
+                criterion=criterion,
+                diagnostic_kwargs=diagnostic_kwargs,
                 **kwargs,
             )
         else:
@@ -189,18 +237,32 @@ class FitsMixin:
                 return True
         return False
     
-    def _get_vol_candidates(self) -> List[Tuple[int, int]]:
-        """Get list of (p, q) candidates from volatility component."""
+    def _get_vol_candidates(self) -> List[Tuple[str, int, int]]:
+        """
+        Get list of (vol_type, p, q) candidates from volatility component.
+        
+        Returns normalized tuples that include the volatility model type name.
+        AutoVol returns these directly; GARCH/GJRGARCH with auto=True have
+        their type name inferred and prepended.
+        """
         from .roles import Role
+        from .components.vol import AutoVol, GJRGARCH
         
         vol = self.spec.get_component(Role.VOLATILITY)
         if vol is None:
-            return [(1, 1)]  # Default
+            return [('GARCH', 1, 1)]  # Default
         
-        if hasattr(vol, 'get_candidates'):
+        # AutoVol already returns (vol_type, p, q) tuples
+        if isinstance(vol, AutoVol):
             return vol.get_candidates()
         
-        return [(vol.p, vol.q)]
+        # Infer vol type name from class
+        vol_type = 'GJRGARCH' if isinstance(vol, GJRGARCH) else 'GARCH'
+        
+        if hasattr(vol, 'get_candidates'):
+            return [(vol_type, p, q) for p, q in vol.get_candidates()]
+        
+        return [(vol_type, vol.p, vol.q)]
     
     def _get_density_candidates(self) -> List[str]:
         """Get list of density candidate names from density component."""
@@ -224,13 +286,25 @@ class FitsMixin:
         """
         from .roles import Role
         from .components.density import AutoDensity
+        from .components.vol import AutoVol, GJRGARCH
         
         vol = self.spec.get_component(Role.VOLATILITY)
         density = self.spec.get_component(Role.DENSITY)
         mean = self.spec.get_component(Role.MEAN)
         
+        # Determine vol type name
+        if vol is None:
+            vol_type = 'GARCH'
+        elif isinstance(vol, AutoVol):
+            vol_type = 'AutoVol'
+        elif isinstance(vol, GJRGARCH):
+            vol_type = 'GJRGARCH'
+        else:
+            vol_type = 'GARCH'
+        
         return {
-            'vol': (vol.p, vol.q) if vol else None,
+            'vol': (vol.p, vol.q) if vol and not isinstance(vol, AutoVol) else None,
+            'vol_type': vol_type,
             'vol_auto': getattr(vol, '_auto_config', None) if vol else None,
             'density': density.signature if density and not isinstance(density, AutoDensity) else 'Normal',
             'density_auto': isinstance(density, AutoDensity) if density else False,
@@ -247,6 +321,9 @@ class FitsMixin:
         n_jobs: Optional[int] = None,
         diagnostic_weight: float = 50.0,
         verbose_selection: bool = False,
+        show_progress: bool = False,
+        criterion: Optional[Callable[..., float]] = None,
+        diagnostic_kwargs: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Dict[str, EstimationResult]:
         """
@@ -261,12 +338,19 @@ class FitsMixin:
         index : pandas Index or None
         n_jobs : int or None
             Number of workers (None = cpu_count)
+        show_progress : bool
+            Show tqdm progress bar.
+        criterion : callable or None
+            Custom selection criterion.
+        diagnostic_kwargs : dict or None
+            Keyword arguments for ``diagnostic_tests()``.
         
         Returns
         -------
         Dict[str, EstimationResult]
         """
         from ._parallel import fit_multi_parallel, fit_multi_auto_parallel, get_default_workers
+        from ._autoselect import make_default_criterion
         
         n_jobs = n_jobs if n_jobs is not None else get_default_workers()
         
@@ -275,19 +359,23 @@ class FitsMixin:
         
         # Check if auto-selection is enabled
         if self._has_auto_components():
-            # Use flattened parallelism: (n_series × n_candidates) tasks
-            # This maximizes CPU utilization
+            # Use flattened parallelism: (n_series x n_candidates) tasks
             vol_candidates = self._get_vol_candidates()
             density_candidates = self._get_density_candidates()
+            
+            # Build criterion callable
+            crit = criterion if criterion is not None else make_default_criterion(diagnostic_weight)
             
             return fit_multi_auto_parallel(
                 data_dict=data_dict,
                 vol_candidates=vol_candidates,
                 density_candidates=density_candidates,
                 index=index,
-                diagnostic_weight=diagnostic_weight,
+                criterion=crit,
+                diagnostic_kwargs=diagnostic_kwargs,
                 n_jobs=n_jobs,
                 verbose=verbose_selection,
+                show_progress=show_progress,
                 **kwargs,
             )
         
@@ -305,6 +393,7 @@ class FitsMixin:
             data_dict=data_dict,
             index=index,
             n_jobs=n_jobs,
+            show_progress=show_progress,
             **fit_kwargs,
         )
         
@@ -317,13 +406,17 @@ class FitsMixin:
         n_jobs: Optional[int] = None,
         diagnostic_weight: float = 50.0,
         verbose: bool = False,
+        show_progress: bool = False,
+        criterion: Optional[Callable[..., float]] = None,
+        diagnostic_kwargs: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> EstimationResult:
         """
         Perform automatic model selection.
         
         Searches over candidate (p, q) and density combinations,
-        fitting each and selecting the best by blended AIC + diagnostic criterion.
+        fitting each and selecting the best by the criterion callable
+        (or the default AIC + diagnostic penalty criterion).
         """
         from ._autoselect import select_best_model
         
@@ -336,8 +429,11 @@ class FitsMixin:
             data,
             vol_candidates,
             density_candidates,
+            criterion=criterion,
+            diagnostic_kwargs=diagnostic_kwargs,
             diagnostic_weight=diagnostic_weight,
             verbose=verbose,
+            show_progress=show_progress,
             n_jobs=n_jobs,
             **kwargs,
         )

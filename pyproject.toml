@@ -13,6 +13,9 @@ dependencies    = [
     "joblib>=1.2",
 ]
 
+[project.optional-dependencies]
+progress = ["tqdm>=4.0"]
+
 [tool.setuptools]
 packages = [
   "volkit",

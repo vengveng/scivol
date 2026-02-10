@@ -30,23 +30,3 @@ def test_density_replacement_on_lone_component():
     # spec should still have only ONE density (because placeholder replaced)
     density_count = sum(1 for c in spec.components if c.role is Role.DENSITY)
     assert density_count == 1
-
-# # ------------------------------------------------------------------
-# # 4. Fitted-method calls still succeed
-# # ------------------------------------------------------------------
-# def test_fit_through_component(tmp_path, monkeypatch):
-#     """
-#     Mock a very small 'fit' path so we don't need the optimiser here.
-#     We only check that the convenience wrapper calls CompositeSpec.fit().
-#     """
-#     called = {}
-
-#     def fake_fit(self, data, estimator=None, **kw):
-#         called["ok"] = True
-#         return "dummy-result"
-
-#     monkeypatch.setattr("volkit.components.CompositeSpec.fit", fake_fit, raising=True)
-#     g = GARCH(1, 1)
-#     res = g.fit(np.ones(50))          # uses Component.fit -> CompositeSpec.fit
-#     assert res == "dummy-result"
-#     assert called

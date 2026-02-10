@@ -479,7 +479,7 @@ class TestGARCHNormal:
         assert result.params is not None
         assert len(result.params) == 3  # omega, alpha, beta
         assert np.all(np.isfinite(result.params))
-        assert result.loglikelihood > 0  # Should be positive for reasonable fit
+        assert result.log_likelihood > 0  # Should be positive for reasonable fit
     
     def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
         """Test that estimated parameters are close to true values."""
@@ -534,7 +534,7 @@ class TestGARCHStudentT:
         assert result.params is not None
         assert len(result.params) == 4  # omega, alpha, beta, nu
         assert np.all(np.isfinite(result.params))
-        assert result.loglikelihood > 0
+        assert result.log_likelihood > 0
     
     def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
         """Test that estimated parameters are close to true values."""
@@ -585,7 +585,7 @@ class TestGARCHSkewT:
         assert result.params is not None
         assert len(result.params) == 5  # omega, alpha, beta, nu, lam
         assert np.all(np.isfinite(result.params))
-        assert result.loglikelihood > 0
+        assert result.log_likelihood > 0
     
     def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
         """Test that estimated parameters are close to true values."""
@@ -645,7 +645,7 @@ class TestGARCHHigherOrder:
         assert result.params is not None
         assert len(result.params) == 4  # omega, alpha1, alpha2, beta1
         assert np.all(np.isfinite(result.params))
-        assert result.loglikelihood > 0
+        assert result.log_likelihood > 0
     
     def test_garch_22_runs(self, data_22: NDArray[np.float64]) -> None:
         """Test GARCH(2,2) runs and produces valid output."""
@@ -657,7 +657,7 @@ class TestGARCHHigherOrder:
         assert result.params is not None
         assert len(result.params) == 5  # omega, alpha1, alpha2, beta1, beta2
         assert np.all(np.isfinite(result.params))
-        assert result.loglikelihood > 0
+        assert result.log_likelihood > 0
 
 
 # -----------------------------------------------------------------------------
@@ -686,7 +686,7 @@ class TestARMAGARCHNormal:
         assert result.params is not None
         assert len(result.params) == 6  # c, phi, theta, omega, alpha, beta
         assert np.all(np.isfinite(result.params))
-        assert result.loglikelihood > 0
+        assert result.log_likelihood > 0
     
     def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
         """Test that estimated parameters are close to true values."""
@@ -717,7 +717,6 @@ class TestARMAGARCHStudentT:
         # Use same params but with Student-t innovations
         p = TRUE_PARAMS["arma_garch_normal"]
         # Simulate with Student-t-like heavier tails
-        np.random.seed(42)
         n = N_OBS
         rng = np.random.default_rng(42)
         
@@ -752,7 +751,7 @@ class TestARMAGARCHStudentT:
         assert result.params is not None
         assert len(result.params) == 7  # c, phi, theta, omega, alpha, beta, nu
         assert np.all(np.isfinite(result.params))
-        assert result.loglikelihood > 0
+        assert result.log_likelihood > 0
 
 
 class TestARMAGARCHSkewT:
@@ -762,7 +761,6 @@ class TestARMAGARCHSkewT:
     def data(self) -> NDArray[np.float64]:
         """Generate ARMA(1,1)-GARCH(1,1) Skew-t data."""
         p = TRUE_PARAMS["arma_garch_normal"]
-        np.random.seed(42)
         n = N_OBS
         rng = np.random.default_rng(42)
         
@@ -805,7 +803,7 @@ class TestARMAGARCHSkewT:
         assert result.params is not None
         assert len(result.params) == 8  # c, phi, theta, omega, alpha, beta, nu, lam
         assert np.all(np.isfinite(result.params))
-        assert result.loglikelihood > 0
+        assert result.log_likelihood > 0
 
 
 # -----------------------------------------------------------------------------
@@ -833,7 +831,7 @@ class TestARMANormal:
         assert result.params is not None
         assert len(result.params) == 3  # c, phi, theta
         assert np.all(np.isfinite(result.params))
-        assert result.loglikelihood > 0
+        assert result.log_likelihood > 0
     
     def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
         """Test that estimated parameters are close to true values."""
@@ -880,7 +878,7 @@ class TestGJRGARCHNormal:
         assert result.params is not None
         assert len(result.params) == 4  # omega, alpha, gamma, beta
         assert np.all(np.isfinite(result.params))
-        assert result.loglikelihood > 0
+        assert result.log_likelihood > 0
     
     def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
         from volkit import GJRGARCH, Normal
@@ -932,7 +930,7 @@ class TestGJRGARCHStudentT:
         assert result.params is not None
         assert len(result.params) == 5  # omega, alpha, gamma, beta, nu
         assert np.all(np.isfinite(result.params))
-        assert result.loglikelihood > 0
+        assert result.log_likelihood > 0
     
     def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
         from volkit import GJRGARCH, StudentT
@@ -981,7 +979,7 @@ class TestGJRGARCHSkewT:
         assert result.params is not None
         assert len(result.params) == 6  # omega, alpha, gamma, beta, nu, lam
         assert np.all(np.isfinite(result.params))
-        assert result.loglikelihood > 0
+        assert result.log_likelihood > 0
     
     def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
         from volkit import GJRGARCH, SkewT

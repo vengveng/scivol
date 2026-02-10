@@ -8,7 +8,7 @@ using joblib for robust cross-platform parallelism.
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Callable, Dict, List, Tuple, Any, Optional
 import numpy as np
 
 # Use joblib for parallelism (handles spawn/fork issues gracefully)
@@ -27,6 +27,18 @@ def get_default_workers() -> int:
     return os.cpu_count() or 1
 
 
+def _get_vol_map() -> Dict[str, Any]:
+    """Return mapping of volatility type names to classes."""
+    from .components.vol import GARCH, GJRGARCH
+    return {'GARCH': GARCH, 'GJRGARCH': GJRGARCH}
+
+
+def _get_density_map() -> Dict[str, Any]:
+    """Return mapping of density names to classes."""
+    from .components.density import Normal, StudentT, SkewT
+    return {'Normal': Normal, 'StudentT': StudentT, 'SkewT': SkewT}
+
+
 def _reconstruct_spec(params: Dict[str, Any]) -> Any:
     """
     Reconstruct a CompositeSpec from serialized parameters.
@@ -43,27 +55,32 @@ def _reconstruct_spec(params: Dict[str, Any]) -> Any:
     -------
     CompositeSpec
     """
-    from .components.vol import GARCH
-    from .components.density import Normal, StudentT, SkewT, AutoDensity
+    from .components.density import AutoDensity
     from .components.mean import ARMA
+    
+    vol_map = _get_vol_map()
+    density_map = _get_density_map()
+    
+    # Determine volatility class from vol_type key
+    vol_type = params.get('vol_type', 'GARCH')
+    vol_cls = vol_map.get(vol_type, vol_map['GARCH'])
     
     # Build volatility component
     if params['vol'] is not None:
         if params['vol_auto']:
-            vol = GARCH(auto=params['vol_auto'])
+            vol = vol_cls(auto=params['vol_auto'])
         else:
-            vol = GARCH(*params['vol'])
+            vol = vol_cls(*params['vol'])
     else:
-        vol = GARCH(1, 1)  # Default
+        vol = vol_cls(1, 1)  # Default
     
     # Build density component
-    density_map = {'Normal': Normal, 'StudentT': StudentT, 'SkewT': SkewT}
     if params['density_auto']:
         candidates = params.get('density_candidates')
         density = AutoDensity(candidates=candidates)
     else:
         density_name = params.get('density', 'Normal')
-        density = density_map.get(density_name, Normal)()
+        density = density_map.get(density_name, density_map['Normal'])()
     
     # Build mean component if present
     if params.get('mean') is not None:
@@ -122,7 +139,8 @@ def fit_multi_parallel(
     data_dict: Dict[str, np.ndarray],
     index: Optional[Any],
     n_jobs: Optional[int] = None,
-    **fit_kwargs,
+    show_progress: bool = False,
+    **fit_kwargs: Any,
 ) -> Dict[str, Any]:
     """
     Fit multiple series in parallel using joblib.
@@ -137,6 +155,8 @@ def fit_multi_parallel(
         Original index to attach to results
     n_jobs : int, optional
         Number of workers. Default uses cpu_count().
+    show_progress : bool, default False
+        Show tqdm progress bar.
     **fit_kwargs
         Additional arguments passed to spec.fit()
         
@@ -145,13 +165,17 @@ def fit_multi_parallel(
     Dict[str, EstimationResult]
         Mapping of series names to fitted results
     """
+    from ._progress import get_progress_bar, tqdm_joblib
+
     n_jobs = n_jobs if n_jobs is not None else get_default_workers()
     n_series = len(data_dict)
     
     if n_jobs == 1 or n_series == 1:
         # Sequential execution
         results = {}
-        for name, series in data_dict.items():
+        for name, series in get_progress_bar(
+            data_dict.items(), total=n_series, desc="Fitting series", disable=not show_progress
+        ):
             _, result = _fit_single_series_worker(
                 name, series, spec_params, fit_kwargs, index
             )
@@ -161,58 +185,61 @@ def fit_multi_parallel(
     # Parallel execution with joblib
     actual_workers = min(n_jobs, n_series)
     
-    parallel_results = Parallel(n_jobs=actual_workers, prefer="processes")(
-        delayed(_fit_single_series_worker)(
-            name, series, spec_params, fit_kwargs, index
+    with tqdm_joblib(total=n_series, desc="Fitting series", disable=not show_progress):
+        parallel_results = Parallel(n_jobs=actual_workers, prefer="processes")(
+            delayed(_fit_single_series_worker)(
+                name, series, spec_params, fit_kwargs, index
+            )
+            for name, series in data_dict.items()
         )
-        for name, series in data_dict.items()
-    )
     
     # Convert list of tuples to dict
     return {name: result for name, result in parallel_results}
 
 
 def _fit_candidate_worker(
+    vol_type: str,
     p: int,
     q: int,
     density_name: str,
     data: np.ndarray,
     fit_kwargs: Dict[str, Any],
-    diagnostic_weight: float,
+    criterion: Callable[..., float],
+    diagnostic_kwargs: Optional[Dict[str, Any]],
 ) -> Any:
     """
     Worker function for fitting a single model candidate (for auto-selection).
     
     Parameters
     ----------
+    vol_type : str
+        Volatility model type ('GARCH', 'GJRGARCH')
     p, q : int
-        GARCH order
+        Volatility model order
     density_name : str
         Name of density ('Normal', 'StudentT', 'SkewT')
     data : np.ndarray
         Data to fit
     fit_kwargs : dict
         Additional fit arguments
-    diagnostic_weight : float
-        Penalty weight for failed diagnostics
+    criterion : callable
+        ``(result, diagnostics) -> float``
+    diagnostic_kwargs : dict or None
+        Keyword arguments for ``diagnostic_tests()``
         
     Returns
     -------
     ModelCandidate
     """
     import time
-    from .components.vol import GARCH
-    from .components.density import Normal, StudentT, SkewT
-    from ._autoselect import ModelCandidate
+    from ._autoselect import ModelCandidate, _score_candidate
     
-    density_map = {
-        'Normal': Normal,
-        'StudentT': StudentT,
-        'SkewT': SkewT,
-    }
+    vol_map = _get_vol_map()
+    density_map = _get_density_map()
     
-    density_cls = density_map.get(density_name, Normal)
-    spec = GARCH(p, q) + density_cls()
+    vol_cls = vol_map.get(vol_type, vol_map['GARCH'])
+    density_cls = density_map.get(density_name, density_map['Normal'])
+    spec = vol_cls(p, q) + density_cls()
     
     candidate = ModelCandidate(spec=spec)
     start_time = time.perf_counter()
@@ -227,27 +254,20 @@ def _fit_candidate_worker(
         candidate.aic = result.aic
         candidate.fit_time = time.perf_counter() - start_time
         
-        # Run diagnostics
-        try:
-            diag = result.diagnostic_tests(print_results=False)
-            
-            n_failed = 0
-            candidate.dgt_passed = not diag['dgt']['reject']
-            if diag['dgt']['reject']:
-                n_failed += 1
-            
-            lb_failures = sum(
-                1 for lb in diag['ljung_box'].values() if lb['reject']
+        # Score via criterion
+        score, diagnostics = _score_candidate(
+            result, criterion, diagnostic_kwargs
+        )
+        candidate.score = score
+        candidate.diagnostics = diagnostics
+        
+        # Populate convenience fields from diagnostics
+        if diagnostics is not None:
+            candidate.dgt_passed = not diagnostics['dgt']['reject']
+            candidate.lb_failures = sum(
+                1 for lb in diagnostics['ljung_box'].values()
+                if lb['reject']
             )
-            candidate.lb_failures = lb_failures
-            n_failed += lb_failures
-            
-            candidate.diagnostic_penalty = n_failed * diagnostic_weight
-            candidate.score = candidate.aic + candidate.diagnostic_penalty
-            
-        except Exception as diag_err:
-            candidate.score = candidate.aic + diagnostic_weight
-            candidate.error_message = f"Diagnostics failed: {diag_err}"
             
     except Exception as e:
         candidate.fit_time = time.perf_counter() - start_time
@@ -259,12 +279,15 @@ def _fit_candidate_worker(
 
 def select_best_parallel(
     data: np.ndarray,
-    vol_candidates: List[Tuple[int, int]],
+    vol_candidates: List[Tuple[str, int, int]],
     density_candidates: List[str],
-    diagnostic_weight: float = 50.0,
+    *,
+    criterion: Callable[..., float],
+    diagnostic_kwargs: Optional[Dict[str, Any]] = None,
     n_jobs: Optional[int] = None,
     verbose: bool = False,
-    **fit_kwargs,
+    show_progress: bool = False,
+    **fit_kwargs: Any,
 ) -> Tuple[Any, List[Any]]:
     """
     Parallel version of model selection using joblib.
@@ -274,15 +297,19 @@ def select_best_parallel(
     data : np.ndarray
         1-D array of returns/residuals
     vol_candidates : list of tuples
-        List of (p, q) GARCH orders to try
+        List of (vol_type, p, q) volatility model/order candidates to try
     density_candidates : list of str
         List of density names to try
-    diagnostic_weight : float
-        AIC penalty per failed diagnostic
+    criterion : callable
+        ``(result, diagnostics) -> float``
+    diagnostic_kwargs : dict or None
+        Keyword arguments for ``diagnostic_tests()``
     n_jobs : int, optional
         Number of workers
     verbose : bool
-        Print progress
+        Print detailed per-candidate results
+    show_progress : bool
+        Show tqdm progress bar
     **fit_kwargs
         Additional arguments for fitting
         
@@ -291,12 +318,14 @@ def select_best_parallel(
     tuple
         (best_result, all_candidates)
     """
+    from ._progress import get_progress_bar, tqdm_joblib
+
     n_jobs = n_jobs if n_jobs is not None else get_default_workers()
     
     # Build task list
     tasks = [
-        (p, q, d)
-        for p, q in vol_candidates
+        (vol_type, p, q, d)
+        for vol_type, p, q in vol_candidates
         for d in density_candidates
     ]
     
@@ -308,11 +337,16 @@ def select_best_parallel(
     if n_jobs == 1 or total <= 2:
         # Sequential for small number of candidates
         candidates = []
-        for i, (p, q, d) in enumerate(tasks):
+        for i, (vol_type, p, q, d) in enumerate(
+            get_progress_bar(tasks, total=total, desc="Auto-selecting", disable=not show_progress)
+        ):
             if verbose:
-                print(f"  [{i+1}/{total}] Fitting GARCH({p},{q})+{d}...", end=" ")
+                print(f"  [{i+1}/{total}] Fitting {vol_type}({p},{q})+{d}...", end=" ")
             
-            candidate = _fit_candidate_worker(p, q, d, data, fit_kwargs, diagnostic_weight)
+            candidate = _fit_candidate_worker(
+                vol_type, p, q, d, data, fit_kwargs,
+                criterion, diagnostic_kwargs,
+            )
             candidates.append(candidate)
             
             if verbose:
@@ -324,18 +358,22 @@ def select_best_parallel(
         # Parallel execution with joblib
         actual_workers = min(n_jobs, total)
         
-        candidates = Parallel(n_jobs=actual_workers, prefer="processes")(
-            delayed(_fit_candidate_worker)(p, q, d, data, fit_kwargs, diagnostic_weight)
-            for p, q, d in tasks
-        )
+        with tqdm_joblib(total=total, desc="Auto-selecting", disable=not show_progress):
+            candidates = Parallel(n_jobs=actual_workers, prefer="processes")(
+                delayed(_fit_candidate_worker)(
+                    vol_type, p, q, d, data, fit_kwargs,
+                    criterion, diagnostic_kwargs,
+                )
+                for vol_type, p, q, d in tasks
+            )
         
         if verbose:
-            for i, (candidate, (p, q, d)) in enumerate(zip(candidates, tasks)):
+            for i, (candidate, (vol_type, p, q, d)) in enumerate(zip(candidates, tasks)):
                 if candidate.score < float('inf'):
-                    print(f"  [{i+1}/{total}] GARCH({p},{q})+{d}: "
+                    print(f"  [{i+1}/{total}] {vol_type}({p},{q})+{d}: "
                           f"AIC={candidate.aic:.2f}, Score={candidate.score:.2f}")
                 else:
-                    print(f"  [{i+1}/{total}] GARCH({p},{q})+{d}: "
+                    print(f"  [{i+1}/{total}] {vol_type}({p},{q})+{d}: "
                           f"FAILED: {candidate.error_message}")
     
     # Sort by score
@@ -362,12 +400,14 @@ def select_best_parallel(
 
 def _fit_series_candidate_worker(
     series_name: str,
+    vol_type: str,
     p: int,
     q: int,
     density_name: str,
     data: np.ndarray,
     fit_kwargs: Dict[str, Any],
-    diagnostic_weight: float,
+    criterion: Callable[..., float],
+    diagnostic_kwargs: Optional[Dict[str, Any]],
     index: Optional[Any],
 ) -> Tuple[str, Any]:
     """
@@ -379,16 +419,20 @@ def _fit_series_candidate_worker(
     ----------
     series_name : str
         Name of the series
+    vol_type : str
+        Volatility model type ('GARCH', 'GJRGARCH')
     p, q : int
-        GARCH order
+        Volatility model order
     density_name : str
         Density name
     data : np.ndarray
         Data for this series
     fit_kwargs : dict
         Additional fit arguments
-    diagnostic_weight : float
-        Penalty for failed diagnostics
+    criterion : callable
+        ``(result, diagnostics) -> float``
+    diagnostic_kwargs : dict or None
+        Keyword arguments for ``diagnostic_tests()``
     index : any
         Pandas index to attach
         
@@ -398,13 +442,14 @@ def _fit_series_candidate_worker(
         (series_name, ModelCandidate)
     """
     import time
-    from .components.vol import GARCH
-    from .components.density import Normal, StudentT, SkewT
-    from ._autoselect import ModelCandidate
+    from ._autoselect import ModelCandidate, _score_candidate
     
-    density_map = {'Normal': Normal, 'StudentT': StudentT, 'SkewT': SkewT}
-    density_cls = density_map.get(density_name, Normal)
-    spec = GARCH(p, q) + density_cls()
+    vol_map = _get_vol_map()
+    density_map = _get_density_map()
+    
+    vol_cls = vol_map.get(vol_type, vol_map['GARCH'])
+    density_cls = density_map.get(density_name, density_map['Normal'])
+    spec = vol_cls(p, q) + density_cls()
     
     candidate = ModelCandidate(spec=spec)
     start_time = time.perf_counter()
@@ -419,23 +464,20 @@ def _fit_series_candidate_worker(
         candidate.aic = result.aic
         candidate.fit_time = time.perf_counter() - start_time
         
-        # Run diagnostics
-        try:
-            diag = result.diagnostic_tests(print_results=False)
-            
-            n_failed = 0
-            candidate.dgt_passed = not diag['dgt']['reject']
-            if diag['dgt']['reject']:
-                n_failed += 1
-            
-            lb_failures = sum(1 for lb in diag['ljung_box'].values() if lb['reject'])
-            candidate.lb_failures = lb_failures
-            n_failed += lb_failures
-            
-            candidate.diagnostic_penalty = n_failed * diagnostic_weight
-            candidate.score = candidate.aic + candidate.diagnostic_penalty
-        except Exception:
-            candidate.score = candidate.aic + diagnostic_weight
+        # Score via criterion
+        score, diagnostics = _score_candidate(
+            result, criterion, diagnostic_kwargs
+        )
+        candidate.score = score
+        candidate.diagnostics = diagnostics
+        
+        # Populate convenience fields
+        if diagnostics is not None:
+            candidate.dgt_passed = not diagnostics['dgt']['reject']
+            candidate.lb_failures = sum(
+                1 for lb in diagnostics['ljung_box'].values()
+                if lb['reject']
+            )
             
     except Exception as e:
         candidate.fit_time = time.perf_counter() - start_time
@@ -447,19 +489,22 @@ def _fit_series_candidate_worker(
 
 def fit_multi_auto_parallel(
     data_dict: Dict[str, np.ndarray],
-    vol_candidates: List[Tuple[int, int]],
+    vol_candidates: List[Tuple[str, int, int]],
     density_candidates: List[str],
     index: Optional[Any],
-    diagnostic_weight: float = 50.0,
+    *,
+    criterion: Callable[..., float],
+    diagnostic_kwargs: Optional[Dict[str, Any]] = None,
     n_jobs: Optional[int] = None,
     verbose: bool = False,
-    **fit_kwargs,
+    show_progress: bool = False,
+    **fit_kwargs: Any,
 ) -> Dict[str, Any]:
     """
     Fit multiple series with auto-selection using flattened parallelism.
     
-    Instead of:  n_series tasks × sequential auto-selection
-    We do:       n_series × n_candidates tasks in one flat pool
+    Instead of:  n_series tasks x sequential auto-selection
+    We do:       n_series x n_candidates tasks in one flat pool
     
     This maximizes CPU utilization when fitting few series with many candidates.
     
@@ -468,17 +513,21 @@ def fit_multi_auto_parallel(
     data_dict : dict
         Mapping of series names to 1-D numpy arrays
     vol_candidates : list of tuples
-        List of (p, q) GARCH orders to try
+        List of (vol_type, p, q) volatility model/order candidates to try
     density_candidates : list of str
         List of density names to try
     index : pandas Index or None
         Original index for results
-    diagnostic_weight : float
-        AIC penalty per failed diagnostic
+    criterion : callable
+        ``(result, diagnostics) -> float``
+    diagnostic_kwargs : dict or None
+        Keyword arguments for ``diagnostic_tests()``
     n_jobs : int, optional
         Number of workers
     verbose : bool
-        Print progress
+        Print detailed per-candidate results
+    show_progress : bool
+        Show tqdm progress bar
     **fit_kwargs
         Additional fitting arguments
         
@@ -487,13 +536,15 @@ def fit_multi_auto_parallel(
     Dict[str, EstimationResult]
         Best result for each series
     """
+    from ._progress import tqdm_joblib
+
     n_jobs = n_jobs if n_jobs is not None else get_default_workers()
     
-    # Build flattened task list: (series × candidates)
+    # Build flattened task list: (series x candidates)
     tasks = [
-        (series_name, p, q, d, data)
+        (series_name, vol_type, p, q, d, data)
         for series_name, data in data_dict.items()
-        for p, q in vol_candidates
+        for vol_type, p, q in vol_candidates
         for d in density_candidates
     ]
     
@@ -502,18 +553,20 @@ def fit_multi_auto_parallel(
     n_candidates_per = len(vol_candidates) * len(density_candidates)
     
     if verbose:
-        print(f"Auto-selecting {n_series} series × {n_candidates_per} candidates = {total} fits "
+        print(f"Auto-selecting {n_series} series x {n_candidates_per} candidates = {total} fits "
               f"(parallel, {min(n_jobs, total)} workers)...")
     
     # Parallel execution with joblib
     actual_workers = min(n_jobs, total)
     
-    parallel_results = Parallel(n_jobs=actual_workers, prefer="processes")(
-        delayed(_fit_series_candidate_worker)(
-            series_name, p, q, d, data, fit_kwargs, diagnostic_weight, index
+    with tqdm_joblib(total=total, desc="Auto-selecting (multi)", disable=not show_progress):
+        parallel_results = Parallel(n_jobs=actual_workers, prefer="processes")(
+            delayed(_fit_series_candidate_worker)(
+                series_name, vol_type, p, q, d, data, fit_kwargs,
+                criterion, diagnostic_kwargs, index,
+            )
+            for series_name, vol_type, p, q, d, data in tasks
         )
-        for series_name, p, q, d, data in tasks
-    )
     
     # Group results by series
     series_candidates: Dict[str, List[Any]] = {name: [] for name in data_dict.keys()}
@@ -523,12 +576,12 @@ def fit_multi_auto_parallel(
         
         if verbose:
             task = tasks[i]
-            p, q, d = task[1], task[2], task[3]
+            vol_type, p, q, d = task[1], task[2], task[3], task[4]
             if candidate.score < float('inf'):
-                print(f"  [{i+1}/{total}] {series_name}:GARCH({p},{q})+{d}: "
+                print(f"  [{i+1}/{total}] {series_name}:{vol_type}({p},{q})+{d}: "
                       f"AIC={candidate.aic:.2f}, Score={candidate.score:.2f}")
             else:
-                print(f"  [{i+1}/{total}] {series_name}:GARCH({p},{q})+{d}: "
+                print(f"  [{i+1}/{total}] {series_name}:{vol_type}({p},{q})+{d}: "
                       f"FAILED: {candidate.error_message}")
     
     # Select best for each series

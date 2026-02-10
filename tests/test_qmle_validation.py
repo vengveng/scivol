@@ -24,7 +24,7 @@ from volkit import GARCH, Normal, StudentT, SkewT, MLE, QMLE
 def generate_garch_data(n: int, omega: float, alpha: float, beta: float, 
                         seed: int = 42) -> np.ndarray:
     """Generate GARCH(1,1) data with Normal innovations."""
-    np.random.seed(seed)
+    rng = np.random.default_rng(seed)
     
     y = np.zeros(n)
     sigma2 = np.zeros(n)
@@ -32,7 +32,7 @@ def generate_garch_data(n: int, omega: float, alpha: float, beta: float,
     
     for t in range(1, n):
         sigma2[t] = omega + alpha * y[t-1]**2 + beta * sigma2[t-1]
-        y[t] = np.sqrt(sigma2[t]) * np.random.randn()
+        y[t] = np.sqrt(sigma2[t]) * rng.standard_normal()
     
     return y
 
@@ -40,7 +40,7 @@ def generate_garch_data(n: int, omega: float, alpha: float, beta: float,
 def generate_garch_studentt_data(n: int, omega: float, alpha: float, beta: float,
                                   nu: float, seed: int = 42) -> np.ndarray:
     """Generate GARCH(1,1) data with Student-t innovations."""
-    np.random.seed(seed)
+    rng = np.random.default_rng(seed)
     
     # Standardized t distribution (variance = 1)
     scale = np.sqrt((nu - 2) / nu)
@@ -51,7 +51,7 @@ def generate_garch_studentt_data(n: int, omega: float, alpha: float, beta: float
     
     for t in range(1, n):
         sigma2[t] = omega + alpha * y[t-1]**2 + beta * sigma2[t-1]
-        z = np.random.standard_t(df=nu) * scale  # standardized to unit variance
+        z = rng.standard_t(df=nu) * scale  # standardized to unit variance
         y[t] = np.sqrt(sigma2[t]) * z
     
     return y

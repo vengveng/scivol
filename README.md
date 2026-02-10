@@ -7,7 +7,7 @@ A high-performance Python library for volatility modeling with GARCH-family mode
 - **Component-based model specification** - Build models by combining volatility, mean, and density components
 - **Symmetric and asymmetric volatility** - GARCH and GJR-GARCH (leverage effects)
 - **Multiple distributions** - Normal, Student-t, and Skewed Student-t
-- **Automatic model selection** - Search over GARCH orders and distributions with parallel fitting
+- **Automatic model selection** - Search over volatility models, GARCH orders, and distributions with parallel fitting
 - **Fast C extensions** - Optimized likelihood, gradient, and Hessian computation
 - **Robust standard errors** - QMLE with sandwich covariance estimation
 - **Multi-series support** - Fit the same model to multiple time series in parallel
@@ -387,6 +387,30 @@ spec = GARCH(auto={'max_p': 2, 'max_q': 2}) + Normal()
 spec = GJRGARCH(p=1, q='auto') + StudentT()
 ```
 
+### Auto-selection for Volatility Models
+
+Use `AutoVol` to automatically search across different volatility model families (GARCH and GJR-GARCH) and lag orders:
+
+```python
+from volkit import AutoVol, Normal, StudentT
+
+# Search GARCH and GJRGARCH with p,q in [1,3] (default)
+spec = AutoVol() + Normal()
+result = spec.fit(returns)
+
+# Custom search grid
+spec = AutoVol(candidates=['GARCH', 'GJRGARCH'], max_p=2, max_q=2) + Normal()
+
+# Only search GJR-GARCH variants
+spec = AutoVol(candidates=['GJRGARCH']) + StudentT()
+
+# Inspect what was selected
+print(f"Selected model: {result.spec}")
+result.selection_summary()
+```
+
+**Note:** `AutoVol` replaces the `GARCH(auto=True)` pattern when you want to compare across volatility model types. Use `GARCH(auto=True)` or `GJRGARCH(auto=True)` when you already know the model type and only want to search lag orders.
+
 ### Auto-selection for Distributions
 
 Use `AutoDensity` to automatically select the best distribution:
@@ -405,22 +429,32 @@ result = spec.fit(returns)
 
 ### Combined Auto-selection
 
-Search over both GARCH orders and distributions simultaneously:
+Search over volatility models, lag orders, and distributions simultaneously:
+
+```python
+from volkit import AutoVol, AutoDensity
+
+# Search (GARCH + GJRGARCH) × p,q in [1,3] × 3 distributions = 54 models
+spec = AutoVol() + AutoDensity()
+result = spec.fit(returns, verbose_selection=True)
+
+print(f"Best model: {result.spec}")
+result.selection_summary()
+```
+
+You can also combine `GARCH(auto=True)` with `AutoDensity` if you only want to search lag orders for a single model type:
 
 ```python
 from volkit import GARCH, AutoDensity
 
 # Search GARCH(p,q) where p,q in [1,3] × 3 distributions = 27 models
 spec = GARCH(auto=True) + AutoDensity()
-result = spec.fit(returns, verbose=True)
-
-print(f"Best model: {result.spec}")
-result.selection_summary()
+result = spec.fit(returns, verbose_selection=True)
 ```
 
 ### Selection Criterion
 
-The selection score is computed as:
+By default the selection score is:
 
 ```
 Score = AIC + diagnostic_weight × n_failed_tests
@@ -432,7 +466,7 @@ Where `n_failed_tests` includes:
 
 By default, `diagnostic_weight = 50.0`, meaning a failed diagnostic test is equivalent to an AIC penalty of 50.
 
-**Customize the selection criterion:**
+**Adjust the default criterion:**
 
 ```python
 # Increase diagnostic penalty (favors models with better diagnostics)
@@ -441,6 +475,76 @@ result = spec.fit(returns, diagnostic_weight=100.0)
 # Disable diagnostic penalties (use AIC only)
 result = spec.fit(returns, diagnostic_weight=0.0)
 ```
+
+#### Custom criterion callable
+
+For full control, pass a `criterion` callable to `.fit()`. The callable receives the fitted `EstimationResult` and the raw diagnostics dict (or `None` if diagnostics failed), and must return a float score (lower is better). Return `float('inf')` to reject a candidate outright.
+
+```python
+def my_criterion(result, diagnostics):
+    """BIC-based criterion with DGT and mean-misspec penalties."""
+    score = result.bic
+    if diagnostics is not None:
+        # Penalize if DGT p-value is very low
+        if diagnostics['dgt']['p_value'] < 0.01:
+            score += 200
+        # Penalize mean misspecification (Ljung-Box moment 1)
+        if diagnostics['ljung_box'][1]['reject']:
+            score += 100
+    return score
+
+spec = AutoVol() + AutoDensity()
+result = spec.fit(returns, criterion=my_criterion)
+```
+
+The `diagnostics` dict is the same structure returned by `result.diagnostic_tests()`:
+
+```python
+{
+    'distribution': 'StudentT',
+    'dist_params': {'nu': 7.42, 'lam': None},
+    'n_obs': 1000,
+    'alpha': 0.05,
+    'dgt': {
+        'n_cells': 40,
+        'chi2_stat': 34.2,
+        'df': 39,
+        'p_value': 0.689,
+        'reject': False,
+    },
+    'ljung_box': {
+        1: {'lags': 10, 'q_stat': 8.42, 'p_value': 0.588, 'reject': False},
+        2: {'lags': 10, 'q_stat': 7.91, 'p_value': 0.637, 'reject': False},
+        3: {'lags': 10, 'q_stat': 11.2, 'p_value': 0.340, 'reject': False},
+        4: {'lags': 10, 'q_stat': 9.87, 'p_value': 0.452, 'reject': False},
+    },
+    'pit': np.ndarray,  # raw PIT values
+}
+```
+
+#### Custom diagnostic settings
+
+Use `diagnostic_kwargs` to control how diagnostic tests are run during auto-selection (these are forwarded to `result.diagnostic_tests()`):
+
+```python
+result = spec.fit(
+    returns,
+    criterion=my_criterion,
+    diagnostic_kwargs={'lags': 5, 'n_cells': 50, 'alpha': 0.01},
+)
+```
+
+`diagnostic_kwargs` also works with the default criterion (without a custom callable):
+
+```python
+# Default AIC + penalty criterion, but with 20 Ljung-Box lags
+result = spec.fit(returns, diagnostic_kwargs={'lags': 20})
+```
+
+**Notes:**
+- When `criterion` is provided, `diagnostic_weight` is ignored (a warning is issued if both are explicitly set).
+- The criterion must handle `diagnostics=None` gracefully (diagnostics can fail for edge-case models).
+- Lambda and closure callables are supported, including in parallel execution.
 
 ### Parallel Model Selection
 
@@ -781,6 +885,7 @@ from volkit import (
     StudentT,     # Student-t distribution
     SkewT,        # Skewed Student-t distribution
     AutoDensity,  # Automatic distribution selection
+    AutoVol,      # Automatic volatility model selection
     Component,    # Base class for components
     
     # Specification
@@ -848,6 +953,28 @@ gjr.persistence()  # α + 0.5·γ + β (default, symmetric)
 gjr.persistence(p_neg=0.6)  # α + 0.6·γ + β (asymmetric)
 gjr.is_stationary()
 gjr.unconditional_variance()
+```
+
+### AutoVol Component
+
+```python
+from volkit import AutoVol
+
+# Search GARCH and GJRGARCH with default p,q in [1,3]
+auto_vol = AutoVol()
+
+# Custom candidates and search range
+auto_vol = AutoVol(candidates=['GARCH', 'GJRGARCH'], max_p=2, max_q=2)
+
+# Only GJR-GARCH
+auto_vol = AutoVol(candidates=['GJRGARCH'])
+
+# Properties
+auto_vol.candidates     # List of volatility model names to search
+auto_vol.max_p          # Maximum ARCH lag order (default 3)
+auto_vol.max_q          # Maximum GARCH lag order (default 3)
+auto_vol.signature      # "AutoVol"
+auto_vol.get_candidates()  # List of (vol_type, p, q) tuples
 ```
 
 ### AutoDensity Component
@@ -923,6 +1050,8 @@ result = estimator.fit(
     verbose=False,             # Print progress
     n_jobs=None,               # Parallel workers (for auto-selection)
     diagnostic_weight=50.0,    # AIC penalty per failed test (auto-selection)
+    criterion=None,            # Custom (result, diagnostics)->float callable
+    diagnostic_kwargs=None,    # Dict forwarded to diagnostic_tests()
 )
 
 # Multi-series fitting
@@ -1045,11 +1174,11 @@ for r in results:
 ### Automatic Model Selection
 
 ```python
-from volkit import GARCH, AutoDensity
+from volkit import AutoVol, AutoDensity
 
-# Automatically select best GARCH order and distribution
-spec = GARCH(auto=True) + AutoDensity()
-result = spec.fit(returns, verbose=True)
+# Full auto: search volatility models, orders, and distributions
+spec = AutoVol() + AutoDensity()
+result = spec.fit(returns, verbose_selection=True)
 
 # View what was selected
 print(f"Best model: {result.spec}")

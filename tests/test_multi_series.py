@@ -26,11 +26,11 @@ class TestMultiSeriesFitting:
     @pytest.fixture
     def multi_series_df(self):
         dates = pd.date_range('2020-01-01', periods=500, freq='D')
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         return pd.DataFrame({
-            'SPY': np.random.randn(500) * 0.01,
-            'AAPL': np.random.randn(500) * 0.015,
-            'GOOGL': np.random.randn(500) * 0.012,
+            'SPY': rng.standard_normal(500) * 0.01,
+            'AAPL': rng.standard_normal(500) * 0.015,
+            'GOOGL': rng.standard_normal(500) * 0.012,
         }, index=dates)
     
     def test_returns_dict(self, multi_series_df):
@@ -51,7 +51,7 @@ class TestMultiSeriesFitting:
             assert result.sigma2 is not None, f"No sigma2 for {name}"
             assert len(result.sigma2) == 500
             # Check log-likelihood is finite (optimizer may report success=False but still converge)
-            assert np.isfinite(result.loglikelihood), f"Invalid LL for {name}"
+            assert np.isfinite(result.log_likelihood), f"Invalid LL for {name}"
     
     def test_index_preserved_multi(self, multi_series_df):
         """Each series result should have correct index."""
@@ -87,10 +87,10 @@ class TestMultiSeriesParallel:
     @pytest.fixture
     def two_series_df(self):
         dates = pd.date_range('2020-01-01', periods=500, freq='D')
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         return pd.DataFrame({
-            'A': np.random.randn(500) * 0.01,
-            'B': np.random.randn(500) * 0.01,
+            'A': rng.standard_normal(500) * 0.01,
+            'B': rng.standard_normal(500) * 0.01,
         }, index=dates)
     
     def test_parallel_execution(self, two_series_df):
@@ -103,7 +103,7 @@ class TestMultiSeriesParallel:
         for name, result in results.items():
             # Check we got valid results (sigma2 exists and LL is finite)
             assert result.sigma2 is not None
-            assert np.isfinite(result.loglikelihood)
+            assert np.isfinite(result.log_likelihood)
 
 
 class TestMultiSeriesNumpy:
@@ -111,8 +111,8 @@ class TestMultiSeriesNumpy:
     
     def test_2d_numpy_array(self):
         """2D numpy array should be treated as multi-series."""
-        np.random.seed(42)
-        data = np.random.randn(500, 3) * 0.01
+        rng = np.random.default_rng(42)
+        data = rng.standard_normal((500, 3)) * 0.01
         
         spec = GARCH(1, 1) + Normal()
         results = spec.fit(data, n_jobs=1)
@@ -125,8 +125,8 @@ class TestMultiSeriesNumpy:
     
     def test_2d_numpy_no_index(self):
         """2D numpy array results should have no index."""
-        np.random.seed(42)
-        data = np.random.randn(500, 2) * 0.01
+        rng = np.random.default_rng(42)
+        data = rng.standard_normal((500, 2)) * 0.01
         
         spec = GARCH(1, 1) + Normal()
         results = spec.fit(data, n_jobs=1)
@@ -144,10 +144,10 @@ class TestMultiSeriesAuto:
     @pytest.fixture
     def two_series_df(self):
         dates = pd.date_range('2020-01-01', periods=500, freq='D')
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         return pd.DataFrame({
-            'A': np.random.randn(500) * 0.01,
-            'B': np.random.randn(500) * 0.01,
+            'A': rng.standard_normal(500) * 0.01,
+            'B': rng.standard_normal(500) * 0.01,
         }, index=dates)
     
     def test_auto_with_multi_series(self, two_series_df):

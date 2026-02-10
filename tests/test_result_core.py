@@ -73,12 +73,12 @@ def test_scalar_properties():
 
     # optimisation proxy
     assert res.params is opt.x
-    assert res.niter == opt.nit
-    assert res.success is True
+    assert res.n_iter == opt.nit
+    assert res.converged is True
     assert res.convergence_message == "converged"
 
     # log-likelihood sign convention
-    assert res.loglikelihood == pytest.approx(-opt.fun)
+    assert res.log_likelihood == pytest.approx(-opt.fun)
 
     # information criteria
     expected_aic = 2 * k + 2 * opt.fun
@@ -153,7 +153,8 @@ def test_summary_prints(capsys):
 # ------------------------------------------------------------------ #
 def test_forecast_returns_dict():
     """forecast() should return dict with variance and volatility."""
-    data = np.random.randn(100) * 0.01
+    rng = np.random.default_rng(99)
+    data = rng.standard_normal(100) * 0.01
     spec = _build_fitted_spec()
     # Create params with reasonable GARCH values
     params = np.array([1e-6, 0.1, 0.85, 8.0, 0.0, 0.0, 0.0])
@@ -161,7 +162,7 @@ def test_forecast_returns_dict():
     res = EstimationResult(spec, opt, data)
     
     # Need to set sigma2 for forecast to work
-    res._sigma2 = np.random.rand(len(data)) * 1e-4
+    res._sigma2 = rng.random(len(data)) * 1e-4
     
     fc = res.forecast(horizon=5)
     
@@ -179,7 +180,7 @@ def test_forecast_convergence():
     # Use simulated GARCH data for proper convergence test
     from volkit import GARCH, Normal
     
-    np.random.seed(42)
+    rng = np.random.default_rng(42)
     n = 500
     omega, alpha, beta = 1e-6, 0.1, 0.85  # Known parameters
     
@@ -190,7 +191,7 @@ def test_forecast_convergence():
     
     for t in range(1, n):
         sigma2[t] = omega + alpha * y[t-1]**2 + beta * sigma2[t-1]
-        y[t] = np.sqrt(sigma2[t]) * np.random.randn()
+        y[t] = np.sqrt(sigma2[t]) * rng.standard_normal()
     
     spec = GARCH(1, 1) + Normal()
     res = spec.fit(y, solver='slsqp', verbose=False)

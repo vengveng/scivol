@@ -42,10 +42,8 @@ class TestInvalidInputData:
     
     def test_2d_array_treated_as_multi_series(self):
         """2D array input is treated as multiple series."""
-        # Note: volkit treats 2D arrays as multi-column data (each column is a series)
-        # This test documents that behavior rather than expecting an error
-        np.random.seed(42)
-        data = np.random.randn(100, 2) * 0.01
+        rng = np.random.default_rng(42)
+        data = rng.standard_normal((100, 2)) * 0.01
         spec = GARCH(1, 1) + Normal()
         
         # Should fit each column as a separate series
@@ -82,14 +80,14 @@ class TestSmallSamples:
     @pytest.fixture
     def very_small_data(self):
         """20 observations."""
-        np.random.seed(42)
-        return np.random.randn(20) * 0.01
+        rng = np.random.default_rng(42)
+        return rng.standard_normal(20) * 0.01
     
     @pytest.fixture
     def small_data(self):
         """50 observations."""
-        np.random.seed(42)
-        return np.random.randn(50) * 0.01
+        rng = np.random.default_rng(42)
+        return rng.standard_normal(50) * 0.01
     
     def test_garch_normal_small_sample(self, small_data):
         """GARCH + Normal should work with 50 observations."""
@@ -140,23 +138,23 @@ class TestBoundaryParameters:
     @pytest.fixture
     def sample_data(self):
         """Standard sample data."""
-        np.random.seed(42)
-        return np.random.randn(500) * 0.01
+        rng = np.random.default_rng(42)
+        return rng.standard_normal(500) * 0.01
     
     def test_high_persistence_data(self):
-        """Test data simulated with high persistence (α + β → 1)."""
-        np.random.seed(42)
+        """Test data simulated with high persistence (alpha + beta -> 1)."""
+        rng = np.random.default_rng(42)
         n = 500
         omega, alpha, beta = 1e-6, 0.15, 0.84  # persistence = 0.99
         
-        # Simulate GARCH process
+        # Simulate GARCH(1,1) process
         y = np.zeros(n)
         sigma2 = np.zeros(n)
-        sigma2[0] = omega / (1 - alpha - beta)
+        sigma2[0] = omega / (1 - alpha - beta)  # unconditional variance
         
         for t in range(1, n):
             sigma2[t] = omega + alpha * y[t-1]**2 + beta * sigma2[t-1]
-            y[t] = np.sqrt(sigma2[t]) * np.random.randn()
+            y[t] = np.sqrt(sigma2[t]) * rng.standard_normal()
         
         # Fit model
         spec = GARCH(1, 1) + Normal()
@@ -212,8 +210,8 @@ class TestNumericalStability:
     
     def test_near_zero_variance_data(self):
         """Very low variance data should be handled."""
-        np.random.seed(42)
-        data = np.random.randn(500) * 1e-10
+        rng = np.random.default_rng(42)
+        data = rng.standard_normal(500) * 1e-10
         spec = GARCH(1, 1) + Normal()
         
         # Should complete - may have numerical issues
@@ -226,8 +224,8 @@ class TestNumericalStability:
     
     def test_large_magnitude_data(self):
         """Large magnitude data should be handled."""
-        np.random.seed(42)
-        data = np.random.randn(500) * 100
+        rng = np.random.default_rng(42)
+        data = rng.standard_normal(500) * 100
         spec = GARCH(1, 1) + Normal()
         
         result = spec.fit(data, solver='nelder-mead', verbose=False)
@@ -246,8 +244,8 @@ class TestConvergence:
     @pytest.fixture
     def sample_data(self):
         """Standard sample data."""
-        np.random.seed(42)
-        return np.random.randn(1000) * 0.01
+        rng = np.random.default_rng(42)
+        return rng.standard_normal(1000) * 0.01
     
     def test_slsqp_converges(self, sample_data):
         """SLSQP solver should converge on well-behaved data."""

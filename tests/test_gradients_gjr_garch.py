@@ -540,9 +540,10 @@ class TestGJRGARCHLogTransforms:
         from volkit._kernels.transforms import pack_gjr_garch
         
         # Test with various unconstrained values
+        rng = np.random.default_rng(42)
         for _ in range(100):
-            z = np.random.randn(4)
-            z[0] = np.random.randn() * 5  # Larger range for omega
+            z = rng.standard_normal(4)
+            z[0] = rng.standard_normal() * 5  # Larger range for omega
             theta = pack_gjr_garch(z, 1, 1)
             
             assert theta[0] > 0, "omega must be positive"

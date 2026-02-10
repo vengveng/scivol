@@ -19,8 +19,8 @@ class TestPandasSeries:
     @pytest.fixture
     def sample_series(self):
         dates = pd.date_range('2020-01-01', periods=500, freq='D')
-        np.random.seed(42)
-        return pd.Series(np.random.randn(500) * 0.01, index=dates, name='returns')
+        rng = np.random.default_rng(42)
+        return pd.Series(rng.standard_normal(500) * 0.01, index=dates, name='returns')
     
     def test_series_index_preserved(self, sample_series):
         """sigma2 and std_resid should have same index as input."""
@@ -68,8 +68,8 @@ class TestPandasDataFrame:
     @pytest.fixture
     def single_col_df(self):
         dates = pd.date_range('2020-01-01', periods=500, freq='D')
-        np.random.seed(42)
-        return pd.DataFrame({'SPY': np.random.randn(500) * 0.01}, index=dates)
+        rng = np.random.default_rng(42)
+        return pd.DataFrame({'SPY': rng.standard_normal(500) * 0.01}, index=dates)
     
     def test_single_column_df(self, single_col_df):
         """Single-column DataFrame should work like Series."""
@@ -101,8 +101,8 @@ class TestNumpyInput:
     
     def test_numpy_returns_numpy(self):
         """numpy input should return numpy arrays."""
-        np.random.seed(42)
-        data = np.random.randn(500) * 0.01
+        rng = np.random.default_rng(42)
+        data = rng.standard_normal(500) * 0.01
         
         spec = GARCH(1, 1) + Normal()
         result = spec.fit(data, n_jobs=1)
@@ -114,8 +114,8 @@ class TestNumpyInput:
     
     def test_numpy_no_index(self):
         """numpy input should have None index."""
-        np.random.seed(42)
-        data = np.random.randn(500) * 0.01
+        rng = np.random.default_rng(42)
+        data = rng.standard_normal(500) * 0.01
         
         spec = GARCH(1, 1) + Normal()
         result = spec.fit(data, n_jobs=1)
@@ -131,8 +131,8 @@ class TestDateTimeIndex:
     def test_datetime_index(self):
         """DatetimeIndex should be preserved."""
         dates = pd.date_range('2020-01-01', periods=500, freq='D')
-        np.random.seed(42)
-        series = pd.Series(np.random.randn(500) * 0.01, index=dates)
+        rng = np.random.default_rng(42)
+        series = pd.Series(rng.standard_normal(500) * 0.01, index=dates)
         
         spec = GARCH(1, 1) + Normal()
         result = spec.fit(series, n_jobs=1)
@@ -141,8 +141,8 @@ class TestDateTimeIndex:
     
     def test_int_index(self):
         """Integer index should be preserved."""
-        np.random.seed(42)
-        series = pd.Series(np.random.randn(500) * 0.01, index=range(100, 600))
+        rng = np.random.default_rng(42)
+        series = pd.Series(rng.standard_normal(500) * 0.01, index=range(100, 600))
         
         spec = GARCH(1, 1) + Normal()
         result = spec.fit(series, n_jobs=1)
@@ -151,9 +151,9 @@ class TestDateTimeIndex:
     
     def test_string_index(self):
         """String index should be preserved."""
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         index = [f"obs_{i}" for i in range(500)]
-        series = pd.Series(np.random.randn(500) * 0.01, index=index)
+        series = pd.Series(rng.standard_normal(500) * 0.01, index=index)
         
         spec = GARCH(1, 1) + Normal()
         result = spec.fit(series, n_jobs=1)

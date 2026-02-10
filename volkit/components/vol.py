@@ -318,3 +318,92 @@ class GARCH(Component):
             return np.inf
         assert self.fitted_params is not None, "Unconditional_variance called before fitting"
         return self.fitted_params['omega'] / (1 - self.persistence())
+
+
+class AutoVol(Component):
+    """
+    Placeholder component for automatic volatility model selection.
+    
+    When used in a spec, the fit method will search over candidate volatility
+    models (e.g., GARCH and GJR-GARCH) and lag orders, selecting the best one
+    based on a blended criterion of AIC and diagnostic tests.
+    
+    Parameters
+    ----------
+    candidates : list of str, optional
+        List of volatility model names to search over.
+        Default is ``['GARCH', 'GJRGARCH']``.
+        Valid names: ``'GARCH'``, ``'GJRGARCH'``.
+    max_p : int, default 3
+        Maximum ARCH lag order to search (searches ``range(1, max_p + 1)``).
+    max_q : int, default 3
+        Maximum GARCH lag order to search (searches ``range(1, max_q + 1)``).
+        
+    Examples
+    --------
+    >>> from volkit import AutoVol, Normal, AutoDensity
+    >>> spec = AutoVol() + Normal()                    # Search GARCH & GJRGARCH, p,q in [1,3]
+    >>> spec = AutoVol(max_p=2, max_q=2) + Normal()   # Smaller search grid
+    >>> spec = AutoVol(candidates=['GJRGARCH'])         # Only GJR-GARCH variants
+    >>> spec = AutoVol() + AutoDensity()               # Full auto: vol + density
+    
+    Notes
+    -----
+    When used with QMLE estimation, density selection is overridden to Normal
+    (same as AutoDensity + QMLE).
+    """
+    role = Role.VOLATILITY
+    
+    CANDIDATES = ['GARCH', 'GJRGARCH']
+    
+    def __init__(
+        self,
+        candidates: Optional[List[str]] = None,
+        *,
+        max_p: int = 3,
+        max_q: int = 3,
+    ):
+        self.candidates = candidates or self.CANDIDATES.copy()
+        self.max_p = max_p
+        self.max_q = max_q
+        self.fitted_params = {}
+        self._is_auto = True
+    
+    @property
+    def signature(self) -> str:
+        return "AutoVol"
+    
+    @property
+    def n_params(self) -> int:
+        # Placeholder - actual n_params depends on selected model
+        return 0
+    
+    def default_start(self, data: np.ndarray) -> np.ndarray:
+        return np.array([])
+    
+    def bounds(self) -> List[Tuple[float, float]]:
+        return []
+    
+    def pack(self, params_dict: dict) -> np.ndarray:
+        return np.array([])
+    
+    def unpack(self, flat_params: np.ndarray) -> dict:
+        return {}
+    
+    def get_candidates(self) -> List[Tuple[str, int, int]]:
+        """
+        Return list of (vol_type, p, q) candidates.
+        
+        Cross-product of candidate model types and (p, q) lag orders.
+        
+        Returns
+        -------
+        list of (str, int, int)
+            Each tuple is ``(vol_type_name, p, q)``.
+        """
+        candidates = []
+        for vol_name in self.candidates:
+            for p_val in range(1, self.max_p + 1):
+                for q_val in range(1, self.max_q + 1):
+                    candidates.append((vol_name, p_val, q_val))
+        return candidates

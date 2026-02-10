@@ -101,9 +101,10 @@ class Settings:
 
     def __init__(self) -> None:
         self.names: ParamNames = ParamNames()
+        self.show_progress: bool = False
 
     def __repr__(self) -> str:
-        return f"Settings(names={self.names!r})"
+        return f"Settings(names={self.names!r}, show_progress={self.show_progress!r})"
 
 
 # Module-level singleton

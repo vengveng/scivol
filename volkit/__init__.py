@@ -10,7 +10,7 @@ except ModuleNotFoundError:
         "Build wheels or run `pip install .` with a C compiler."
     )
 
-from .components import ARMA, GARCH, GJRGARCH, Normal, StudentT, SkewT, AutoDensity, Component
+from .components import ARMA, GARCH, GJRGARCH, Normal, StudentT, SkewT, AutoDensity, AutoVol, Component
 from .spec import CompositeSpec
 from .estimators import MLE, QMLE
 from .roles import Role
@@ -20,6 +20,7 @@ from ._settings import settings
 __all__: list[str] = [
     "ARMA",
     "AutoDensity",
+    "AutoVol",
     "Component",
     "CompositeSpec",
     "GARCH",

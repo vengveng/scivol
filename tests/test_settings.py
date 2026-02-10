@@ -165,7 +165,7 @@ def _make_garch_result(gamma: bool = False):
     params = np.zeros(n_vol)
     opt = DummyOpt(x=params)
 
-    return EstimationResult(spec, opt, np.random.randn(100))
+    return EstimationResult(spec, opt, np.random.default_rng(0).standard_normal(100))
 
 
 class TestParamNamesInResult:

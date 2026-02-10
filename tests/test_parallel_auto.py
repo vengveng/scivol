@@ -16,8 +16,8 @@ class TestParallelAutoSelection:
     
     @pytest.fixture
     def sample_data(self):
-        np.random.seed(42)
-        return np.random.randn(500) * 0.01
+        rng = np.random.default_rng(42)
+        return rng.standard_normal(500) * 0.01
     
     def test_sequential_auto_works(self, sample_data):
         """Auto-selection should work with n_jobs=1."""
@@ -26,7 +26,7 @@ class TestParallelAutoSelection:
         
         # Check we got valid results
         assert result.sigma2 is not None
-        assert np.isfinite(result.loglikelihood)
+        assert np.isfinite(result.log_likelihood)
         assert hasattr(result, '_selection_candidates')
     
     def test_parallel_auto_works(self, sample_data):
@@ -36,7 +36,7 @@ class TestParallelAutoSelection:
         
         # Check we got valid results
         assert result.sigma2 is not None
-        assert np.isfinite(result.loglikelihood)
+        assert np.isfinite(result.log_likelihood)
         assert hasattr(result, '_selection_candidates')
     
     def test_parallel_same_result_as_sequential(self, sample_data):
@@ -56,7 +56,7 @@ class TestParallelAutoSelection:
         
         # Check we got valid results
         assert result.sigma2 is not None
-        assert np.isfinite(result.loglikelihood)
+        assert np.isfinite(result.log_likelihood)
     
     def test_candidates_count(self, sample_data):
         """Should have correct number of candidates."""
@@ -81,8 +81,8 @@ class TestEdgeCases:
     
     def test_n_jobs_exceeds_tasks(self):
         """n_jobs > number of tasks should still work."""
-        np.random.seed(42)
-        data = np.random.randn(500) * 0.01
+        rng = np.random.default_rng(42)
+        data = rng.standard_normal(500) * 0.01
         
         # Only 1 candidate (fixed spec)
         spec = GARCH(1, 1) + Normal()
@@ -90,12 +90,12 @@ class TestEdgeCases:
         
         # Check we got valid results
         assert result.sigma2 is not None
-        assert np.isfinite(result.loglikelihood)
+        assert np.isfinite(result.log_likelihood)
     
     def test_default_n_jobs(self):
         """Default n_jobs (None) should work."""
-        np.random.seed(42)
-        data = np.random.randn(500) * 0.01
+        rng = np.random.default_rng(42)
+        data = rng.standard_normal(500) * 0.01
         
         spec = GARCH(1, 1) + Normal()
         # n_jobs=None (default)
@@ -103,12 +103,12 @@ class TestEdgeCases:
         
         # Check we got valid results
         assert result.sigma2 is not None
-        assert np.isfinite(result.loglikelihood)
+        assert np.isfinite(result.log_likelihood)
     
     def test_small_search_space(self):
         """Small search space (<=2 candidates) should use sequential."""
-        np.random.seed(42)
-        data = np.random.randn(500) * 0.01
+        rng = np.random.default_rng(42)
+        data = rng.standard_normal(500) * 0.01
         
         spec = GARCH(auto={'max_p': 1, 'max_q': 2}) + Normal()
         result = spec.fit(data, n_jobs=4)
@@ -117,12 +117,12 @@ class TestEdgeCases:
         assert len(result._selection_candidates) == 2
         # Check we got valid results
         assert result.sigma2 is not None
-        assert np.isfinite(result.loglikelihood)
+        assert np.isfinite(result.log_likelihood)
     
     def test_verbose_parallel(self, capsys):
         """Verbose mode should print progress in parallel mode."""
-        np.random.seed(42)
-        data = np.random.randn(500) * 0.01
+        rng = np.random.default_rng(42)
+        data = rng.standard_normal(500) * 0.01
         
         spec = GARCH(auto={'max_p': 2, 'max_q': 2}) + Normal()
         result = spec.fit(data, n_jobs=2, verbose_selection=True)
@@ -133,8 +133,8 @@ class TestEdgeCases:
     
     def test_verbose_sequential(self, capsys):
         """Verbose mode should print progress in sequential mode."""
-        np.random.seed(42)
-        data = np.random.randn(500) * 0.01
+        rng = np.random.default_rng(42)
+        data = rng.standard_normal(500) * 0.01
         
         spec = GARCH(auto={'max_p': 2, 'max_q': 1}) + Normal()
         result = spec.fit(data, n_jobs=1, verbose_selection=True)
@@ -148,8 +148,8 @@ class TestDifferentDistributions:
     
     @pytest.fixture
     def sample_data(self):
-        np.random.seed(42)
-        return np.random.randn(500) * 0.01
+        rng = np.random.default_rng(42)
+        return rng.standard_normal(500) * 0.01
     
     def test_auto_density_candidates(self, sample_data):
         """AutoDensity should try all specified distributions."""

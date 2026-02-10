@@ -35,9 +35,13 @@ def dummy_routines(monkeypatch):
     calls: Dict[str, dict] = {}
 
     import volkit._kernels as _k
-    _k._ROUTINES["GARCH(1,1)+Normal"] = _make_dummy("GARCH(1,1)+Normal", calls)
-    _k._ROUTINES["ARMA(1,1)+GARCH(1,1)+Normal"] = _make_dummy(
-        "ARMA(1,1)+GARCH(1,1)+Normal", calls
+    monkeypatch.setitem(
+        _k._ROUTINES, "GARCH(1,1)+Normal",
+        _make_dummy("GARCH(1,1)+Normal", calls),
+    )
+    monkeypatch.setitem(
+        _k._ROUTINES, "ARMA(1,1)+GARCH(1,1)+Normal",
+        _make_dummy("ARMA(1,1)+GARCH(1,1)+Normal", calls),
     )
     return calls
 
@@ -46,7 +50,8 @@ def dummy_routines(monkeypatch):
 # 1. Dispatcher uses the routine registered for a Component spec
 # ------------------------------------------------------------------ #
 def test_mle_component_spec(dummy_routines):
-    data = np.random.randn(30)
+    rng = np.random.default_rng(42)
+    data = rng.standard_normal(30)
     model = GARCH(1, 1)
 
     res = MLE().fit(model, data, foo="bar")
@@ -54,14 +59,20 @@ def test_mle_component_spec(dummy_routines):
     assert res.n_obs == 30
     assert dummy_routines["uid"] == "GARCH(1,1)+Normal"
     assert np.all(dummy_routines["y"] == data)
-    assert dummy_routines["kw"] == {"foo": "bar"}
+    assert dummy_routines["kw"] == {
+        "foo": "bar",
+        "solver": "trust",
+        "log_mode": True,
+        "verbose": False,
+    }
 
 
 # ------------------------------------------------------------------ #
 # 2. Dispatcher works for a CompositeSpec
 # ------------------------------------------------------------------ #
 def test_mle_composite_spec(dummy_routines):
-    data = np.random.randn(20)
+    rng = np.random.default_rng(42)
+    data = rng.standard_normal(20)
     spec = ARMA(1, 1) + GARCH(1, 1)
 
     res = MLE().fit(spec, data)
