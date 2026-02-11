@@ -1,4 +1,10 @@
 # test/test_mle_core.py
+"""
+Tests for MLE fitting dispatch through the kernel routine system.
+
+MLE fitting is now inlined in _mixins._fit_single(); these tests verify
+that spec.fit() still dispatches to the correct kernel routine.
+"""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -8,8 +14,7 @@ import numpy as np
 import pytest
 
 from volkit import ARMA, GARCH
-from volkit.estimators import MLE
-from volkit.result import EstimationResult
+from volkit._validation import validate_data
 from volkit._kernels.routine import Routine
 
 
@@ -22,7 +27,7 @@ def _make_dummy(uid: str, calls: Dict[str, dict]) -> Routine:
         calls["y"] = y
         calls["kw"] = kw
         # simple stand-in that looks like EstimationResult
-        return SimpleNamespace(spec=uid, n_obs=len(y))
+        return SimpleNamespace(spec=uid, n_obs=len(y), _index=None, _name=None)
 
     return Routine(uid=uid, n_params=1, fit=_fit)
 
@@ -54,17 +59,12 @@ def test_mle_component_spec(dummy_routines):
     data = rng.standard_normal(30)
     model = GARCH(1, 1)
 
-    res = MLE().fit(model, data, foo="bar")
+    res = model.fit(data, foo="bar")
 
     assert res.n_obs == 30
     assert dummy_routines["uid"] == "GARCH(1,1)+Normal"
     assert np.all(dummy_routines["y"] == data)
-    assert dummy_routines["kw"] == {
-        "foo": "bar",
-        "solver": "trust",
-        "log_mode": True,
-        "verbose": False,
-    }
+    assert dummy_routines["kw"] == {"foo": "bar"}
 
 
 # ------------------------------------------------------------------ #
@@ -75,7 +75,7 @@ def test_mle_composite_spec(dummy_routines):
     data = rng.standard_normal(20)
     spec = ARMA(1, 1) + GARCH(1, 1)
 
-    res = MLE().fit(spec, data)
+    res = spec.fit(data)
 
     assert isinstance(res, SimpleNamespace)  # dummy result
     assert dummy_routines["uid"] == "ARMA(1,1)+GARCH(1,1)+Normal"
@@ -95,4 +95,4 @@ def test_mle_composite_spec(dummy_routines):
 )
 def test_validate_data_raises(bad):
     with pytest.raises(ValueError):
-        MLE()._validate_data(bad)
+        validate_data(bad)

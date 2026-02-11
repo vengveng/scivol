@@ -51,22 +51,20 @@ spec = ARMA(1, 1) + GARCH(1, 1) + StudentT() # Full specification
 result = spec.fit(data)
 
 # QMLE with robust (sandwich) standard errors
-from volkit.estimators import QMLE
-result = QMLE().fit(spec, data)
+result = spec.fit(data, method='qmle')
 print(result.std_errors_robust)
 ```
 
 #### QMLE (Quasi-Maximum Likelihood Estimation)
 
-QMLE provides robust standard errors that are valid even when the distributional assumption is wrong:
+QMLE provides robust standard errors that are valid even when the distributional assumption is wrong. It is invoked via the `method` parameter on `spec.fit()`:
 
 ```python
-from volkit import GARCH, Normal, StudentT, SkewT
-from volkit.estimators import QMLE
+from volkit import GARCH, GJRGARCH, Normal, StudentT, SkewT
 
 # Normal: robust SEs for all GARCH parameters
 spec = GARCH(1, 1) + Normal()
-result = QMLE().fit(spec, data)
+result = spec.fit(data, method='qmle')
 print(result.std_errors)        # MLE standard errors
 print(result.std_errors_robust) # Sandwich (robust) standard errors
 
@@ -74,15 +72,19 @@ print(result.std_errors_robust) # Sandwich (robust) standard errors
 # Step 1: Fit GARCH with Normal LL → robust SEs for GARCH params
 # Step 2: Fix GARCH, fit nu → MLE SE for nu
 spec = GARCH(1, 1) + StudentT()
-result = QMLE().fit(spec, data)
+result = spec.fit(data, method='qmle')
 # result.std_errors_robust[0:3] = robust SEs for [omega, alpha, beta]
 # result.std_errors_robust[3]   = MLE SE for nu
 
 # Skew-t: same two-step procedure
 spec = GARCH(1, 1) + SkewT()
-result = QMLE().fit(spec, data)
+result = spec.fit(data, method='qmle')
 # result.std_errors_robust[0:3] = robust SEs for [omega, alpha, beta]
 # result.std_errors_robust[3:5] = MLE SEs for [nu, lambda]
+
+# GJR-GARCH also supported with QMLE
+spec = GJRGARCH(1, 1) + Normal()
+result = spec.fit(data, method='qmle')
 ```
 
 The sandwich covariance is: `V_robust = H^{-1} @ OPG @ H^{-1}` where H is the Hessian and OPG is the outer product of gradients.
@@ -688,7 +690,9 @@ volkit_cursor/                   # Repository root
 │   ├── _kernels/                # Optimization kernels (internal)
 │   ├── components/              # User-facing components
 │   ├── spec/                    # Composition logic
-│   ├── estimators/              # Estimation methods
+│   ├── _qmle.py                 # QMLE fitting with robust SEs
+│   ├── _validation.py           # Shared validation helpers
+│   ├── estimators/              # Estimation methods (reserved)
 │   ├── result.py                # EstimationResult class
 │   ├── roles.py                 # Role enum (MEAN, VOLATILITY, DENSITY)
 │   └── _mixins.py               # FitsMixin helper
@@ -715,7 +719,7 @@ volkit_cursor/                   # Repository root
 
 ```python
 # Public API
-from volkit import GARCH, GJRGARCH, ARMA, Normal, StudentT, SkewT, MLE, CompositeSpec, Role
+from volkit import GARCH, GJRGARCH, ARMA, Normal, StudentT, SkewT, CompositeSpec, Role
 
 # Internal (for development)
 from volkit._core import _garch_variance_11, _gjr_garch_variance_11, _garch_ll_pq_normal

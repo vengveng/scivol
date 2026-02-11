@@ -1,47 +1,33 @@
 # volkit
 
-A high-performance Python library for volatility modeling with GARCH-family models.
+Volatility modeling in Python. GARCH-family models with C extensions for speed.
 
-## Features
-
-- **Component-based model specification** - Build models by combining volatility, mean, and density components
-- **Symmetric and asymmetric volatility** - GARCH and GJR-GARCH (leverage effects)
-- **Multiple distributions** - Normal, Student-t, and Skewed Student-t
-- **Automatic model selection** - Search over volatility models, GARCH orders, and distributions with parallel fitting
-- **Fast C extensions** - Optimized likelihood, gradient, and Hessian computation
-- **Robust standard errors** - QMLE with sandwich covariance estimation
-- **Multi-series support** - Fit the same model to multiple time series in parallel
-- **Professional output** - Clean, tabular estimation summaries
-
-## Installation
+## Install
 
 ```bash
-# Development install (requires C compiler)
+# Requires a C compiler
 pip install -e .
 
-# Or use the Makefile
+# Or:
 make dev
 ```
 
-## Quick Start
+## Quick start
 
 ```python
 import numpy as np
-from volkit import GARCH, Normal, StudentT, MLE
+from volkit import GARCH, Normal, StudentT
 
-# Generate sample data
 np.random.seed(42)
 returns = np.random.randn(1000) * 0.01
 
-# Specify and fit a GARCH(1,1) model with Normal distribution
 spec = GARCH(1, 1) + Normal()
 result = spec.fit(returns)
-
-# View results
 result.summary()
 ```
 
 Output:
+
 ```
 ══════════════════════════════════════════════════════════════════════
                     GARCH Model Estimation Results                    
@@ -79,50 +65,35 @@ Half-life (periods):      106.3
 
 ---
 
-## Table of Contents
+## Contents
 
-1. [Model Specification](#model-specification)
+1. [Model specification](#model-specification)
 2. [Components](#components)
-3. [Estimators](#estimators)
-4. [Automatic Model Selection](#automatic-model-selection)
+3. [Estimation](#estimation)
+4. [Automatic model selection](#automatic-model-selection)
 5. [Results](#results)
-6. [Display Settings](#display-settings)
-7. [Diagnostic Tools](#diagnostic-tools)
-8. [API Reference](#api-reference)
+6. [Display settings](#display-settings)
+7. [Diagnostics](#diagnostics)
+8. [API reference](#api-reference)
 
 ---
 
-## Model Specification
+## Model specification
 
-volkit uses a **component composition** pattern. Models are built by combining components with the `+` operator.
-
-### Basic Pattern
+Build models by combining components with `+`. volkit orders them automatically: MEAN, then VOLATILITY, then DENSITY.
 
 ```python
 from volkit import GARCH, GJRGARCH, ARMA, Normal, StudentT, SkewT
 
-# Volatility only (density defaults to Normal)
-spec = GARCH(1, 1)
-
-# Volatility + explicit density
-spec = GARCH(1, 1) + StudentT()
-
-# Asymmetric volatility (leverage effects)
-spec = GJRGARCH(1, 1) + StudentT()
-
-# Mean + Volatility + Density
-spec = ARMA(1, 1) + GARCH(1, 1) + SkewT()
+spec = GARCH(1, 1)                          # Normal density by default
+spec = GARCH(1, 1) + StudentT()             # Explicit density
+spec = GJRGARCH(1, 1) + StudentT()          # Asymmetric volatility
+spec = ARMA(1, 1) + GARCH(1, 1) + SkewT()  # Mean + volatility + density
 ```
 
-### Composition Rules
+One component per role. If you omit the density, `Normal()` is added for you.
 
-- **Canonical ordering**: Components are automatically ordered as MEAN → VOLATILITY → DENSITY
-- **Auto-injection**: If no density is specified, `Normal()` is added automatically
-- **Single role**: Only one component per role is allowed
-
-### Alternative Syntax
-
-Multiple syntaxes produce identical results:
+Alternative operators produce the same result:
 
 ```python
 spec = garch + normal      # __add__
@@ -135,360 +106,205 @@ spec = normal >> garch     # __rlshift__
 
 ## Components
 
-### Volatility Components
+### GARCH(p, q)
 
-#### GARCH(p, q)
+Conditional variance:
 
-Generalized Autoregressive Conditional Heteroskedasticity model.
-
-```python
-from volkit import GARCH
-
-# GARCH(1,1) - most common
-spec = GARCH(1, 1)
-
-# GARCH(2,1)
-spec = GARCH(2, 1)
-```
-
-**Parameters:**
-- `omega` (ω): Constant term (must be > 0)
-- `alpha[1:p]` (α): ARCH coefficients (reaction to shocks)
-- `beta[1:q]` (β): GARCH coefficients (persistence)
-
-**Model equation:**
 ```
 σ²_t = ω + Σᵢ αᵢ·ε²_{t-i} + Σⱼ βⱼ·σ²_{t-j}
 ```
 
-**Stationarity condition:** Σα + Σβ < 1
-
-#### GJRGARCH(p, q)
-
-GJR-GARCH (Glosten-Jagannathan-Runkle) model with asymmetric volatility response. Negative shocks ("bad news") have a larger impact on future volatility than positive shocks of the same magnitude.
+Stationary when Σα + Σβ < 1.
 
 ```python
-from volkit import GJRGARCH
+spec = GARCH(1, 1)  # most common
+spec = GARCH(2, 1)
+```
 
-# GJR-GARCH(1,1) - most common
-spec = GJRGARCH(1, 1)
+Parameters: `omega` (ω > 0), `alpha[1:p]` (ARCH terms), `beta[1:q]` (GARCH terms).
 
-# With Student-t innovations
+### GJRGARCH(p, q)
+
+Adds a leverage term so that negative shocks raise volatility more than positive shocks of the same size:
+
+```
+σ²_t = ω + Σᵢ (αᵢ + γᵢ·I(ε_{t-i}<0))·ε²_{t-i} + Σⱼ βⱼ·σ²_{t-j}
+```
+
+A negative shock contributes (α + γ)·ε² to the next period's variance; a positive shock contributes α·ε².
+
+Stationarity:
+- Symmetric densities (Normal, Student-t): α + 0.5·γ + β < 1
+- Asymmetric densities (Skew-t): α + γ·P(z < 0) + β < 1
+
+```python
 spec = GJRGARCH(1, 1) + StudentT()
 ```
 
-**Parameters:**
-- `omega` (ω): Constant term (must be > 0)
-- `alpha[1:p]` (α): ARCH coefficients (symmetric shock response)
-- `gamma[1:p]` (γ): Leverage coefficients (additional response to negative shocks)
-- `beta[1:q]` (β): GARCH coefficients (persistence)
+Parameters: `omega`, `alpha[1:p]`, `gamma[1:p]` (leverage), `beta[1:q]`.
 
-**Model equation:**
-```
-σ²_t = ω + Σᵢ (αᵢ·ε²_{t-i} + γᵢ·I(ε_{t-i}<0)·ε²_{t-i}) + Σⱼ βⱼ·σ²_{t-j}
-```
+### ARMA(p, q)
 
-where I(·) is the indicator function (1 if the condition is true, 0 otherwise).
-
-**Stationarity condition:**
-- Symmetric distributions (Normal, Student-t): α + 0.5·γ + β < 1
-- Asymmetric distributions (Skew-t): α + γ·P(z < 0) + β < 1
-
-**Interpretation:**
-- γ > 0 means negative shocks increase volatility more than positive shocks (leverage effect)
-- The total impact of a negative shock is (α + γ)·ε², while a positive shock contributes α·ε²
-
-### Mean Components
-
-#### ARMA(p, q)
-
-Autoregressive Moving Average model for the conditional mean.
+Conditional mean. Currently limited to ARMA(1,1).
 
 ```python
-from volkit import ARMA
-
 spec = ARMA(1, 1) + GARCH(1, 1)
 ```
 
-**Note:** ARMA support is currently limited.
+### Normal()
 
-### Density Components
+Gaussian density. No extra parameters. Default when none is specified.
 
-#### Normal()
+### StudentT()
 
-Standard Gaussian distribution (no additional parameters).
+Heavier tails than Normal. One extra parameter: `nu` (ν > 2). Lower ν means fatter tails; as ν grows, the distribution approaches Normal.
 
-```python
-from volkit import Normal
+### SkewT()
 
-spec = GARCH(1, 1) + Normal()
-# Or simply:
-spec = GARCH(1, 1)  # Normal is default
-```
-
-#### StudentT()
-
-Student-t distribution with heavier tails.
-
-```python
-from volkit import StudentT
-
-spec = GARCH(1, 1) + StudentT()
-```
-
-**Parameters:**
-- `nu` (ν): Degrees of freedom (must be > 2)
-  - Lower ν → heavier tails
-  - As ν → ∞, approaches Normal
-
-#### SkewT()
-
-Hansen's Skewed Student-t distribution.
-
-```python
-from volkit import SkewT
-
-spec = GARCH(1, 1) + SkewT()
-```
-
-**Parameters:**
-- `nu` (ν): Degrees of freedom (must be > 2)
-- `lambda` (λ): Skewness parameter (-1 < λ < 1)
-  - λ = 0: Symmetric (same as StudentT)
-  - λ < 0: Left skew (negative returns more likely)
-  - λ > 0: Right skew (positive returns more likely)
+Hansen's skewed Student-t. Two extra parameters: `nu` (ν > 2) and `lambda` (−1 < λ < 1). λ = 0 gives a symmetric Student-t; λ < 0 shifts weight to the left tail.
 
 ---
 
-## Estimators
+## Estimation
 
-### MLE (Maximum Likelihood Estimation)
+### MLE
 
-The default and recommended estimator.
+The default method.
 
 ```python
-from volkit import GARCH, Normal, MLE
-
-spec = GARCH(1, 1) + Normal()
-
-# Method 1: Direct MLE estimator
-estimator = MLE()
-result = estimator.fit(spec, data)
-
-# Method 2: Shortcut via spec.fit()
 result = spec.fit(data)
 
-# With options
 result = spec.fit(
     data,
-    solver="trust",       # Optimization method
-    log_mode=True,        # Optimize in log-space (recommended)
-    verbose=True,         # Print progress
+    solver="trust",
+    log_mode=True,
+    verbose=True,
 )
 ```
 
-**Solver options:**
-| Solver | Description | Speed | Robustness |
-|--------|-------------|-------|------------|
-| `"nelder-mead"` | Derivative-free simplex | Slow | High |
-| `"slsqp"` | Sequential quadratic programming | Medium | Medium |
-| `"trust"` | Trust-region with gradient + Hessian | Fast | High |
-| `"trust-exact"` | Trust-region in log-space | Fast | Highest |
+Solvers:
 
-**Unconstrained Optimization (`log_mode`):**
+| Solver | Method | Notes |
+|--------|--------|-------|
+| `"slsqp"` | Sequential quadratic programming | Default; fast and reliable |
+| `"nelder-mead"` | Derivative-free simplex | Slow but dependable |
+| `"trust"` | Trust-region (gradient + Hessian) | Fast when it converges |
+| `"trust-exact"` | Trust-region in log-space | Most stable for difficult data |
 
-The `log_mode=True` option transforms the constrained GARCH optimization problem into an unconstrained one via parameter transformations:
+**Log-mode** (`log_mode=True`) transforms constrained parameters into unconstrained space before optimization:
 
-| Parameter | Constraint | Transformation |
-|-----------|------------|----------------|
-| ω (omega) | ω > 0 | ω = exp(z_ω) |
-| α (alpha) | α > 0, Σα < 1 | softmax transform |
-| γ (gamma, GJR) | γ > 0 | 4-class softmax (α, γ, β, slack) |
-| β (beta) | β > 0, Σβ < 1 | softmax transform |
-| ν (nu, Student-t) | ν > 2 | ν = 2 + exp(z_ν) |
-| λ (lambda, SkewT) | -1 < λ < 1 | λ = tanh(z_λ) |
+| Parameter | Constraint | Transform |
+|-----------|------------|-----------|
+| ω | ω > 0 | exp(z) |
+| α, β | > 0, sum < 1 | softmax |
+| γ (GJR) | γ > 0 | 4-class softmax |
+| ν | ν > 2 | 2 + exp(z) |
+| λ | −1 < λ < 1 | tanh(z) |
 
-**Benefits:**
-- Eliminates boundary issues during optimization
-- Guarantees stationarity (α + β < 1 or α + 0.5γ + β < 1) by construction
-- More robust convergence, especially for gradient-based solvers
-- All likelihood evaluations use valid parameters
+This guarantees stationarity by construction and avoids boundary problems during optimization.
 
-**Usage:**
+### QMLE
+
+Quasi-maximum likelihood: fit under Normal likelihood, then compute sandwich standard errors valid under distributional misspecification. Pass `method='qmle'`:
+
 ```python
-# Recommended: use log_mode for robust optimization
-result = spec.fit(data, solver="trust", log_mode=True)
-
-# For all distributions
 spec = GARCH(1, 1) + Normal()
-spec.fit(data, log_mode=True)  # ✓
+result = spec.fit(data, method='qmle')
 
+result.std_errors        # MLE standard errors
+result.std_errors_robust # sandwich (robust) standard errors
+```
+
+For Student-t or Skew-t, QMLE runs a two-step procedure: first it estimates GARCH parameters under Normal likelihood with sandwich errors, then it fixes those parameters and estimates the distribution parameters by MLE.
+
+```python
 spec = GARCH(1, 1) + StudentT()
-spec.fit(data, log_mode=True)  # ✓
+result = spec.fit(data, method='qmle')
 
-spec = GARCH(1, 1) + SkewT()
-spec.fit(data, log_mode=True)  # ✓
+spec = GJRGARCH(1, 1) + Normal()
+result = spec.fit(data, method='qmle')
 ```
-
-### QMLE (Quasi-Maximum Likelihood Estimation)
-
-Uses Normal likelihood but computes **robust (sandwich) standard errors** that are valid even when the true distribution is non-Normal.
-
-```python
-from volkit import GARCH, Normal, QMLE
-
-spec = GARCH(1, 1) + Normal()
-estimator = QMLE()
-result = estimator.fit(spec, data)
-
-# Access both types of standard errors
-print(result.std_errors)        # MLE standard errors
-print(result.std_errors_robust) # Robust (sandwich) standard errors
-```
-
-**When to use QMLE:**
-- When you suspect the true distribution is not Normal
-- For inference that is robust to distribution misspecification
-- When comparing MLE and robust standard errors for diagnostic purposes
 
 ---
 
-## Automatic Model Selection
+## Automatic model selection
 
-volkit can automatically search over multiple model specifications and select the best one based on a blended criterion of AIC and diagnostic tests.
+### By GARCH order
 
-### Auto-selection for GARCH Orders
-
-Search over different lag orders using `auto=True`. Works for both `GARCH` and `GJRGARCH`:
+Search over lag orders with `auto=True`:
 
 ```python
-from volkit import GARCH, GJRGARCH, Normal
-
-# Search p, q in range [1, 3]
-spec = GARCH(auto=True) + Normal()
-result = spec.fit(returns)
-
-# Same for GJR-GARCH
+spec = GARCH(auto=True) + Normal()      # p, q in [1, 3]
 spec = GJRGARCH(auto=True) + Normal()
-result = spec.fit(returns)
 
-# Inspect what was selected
-print(f"Selected model: {result.spec}")  # e.g., GARCH(2,1)+Normal
-print(result.selection_summary())  # Show all candidates and scores
+spec = GARCH(auto={'max_p': 2, 'max_q': 2}) + Normal()  # narrower grid
+spec = GJRGARCH(p=1, q='auto') + StudentT()              # fix p, search q
 ```
 
-**Customizing the search range:**
+### By volatility model
+
+`AutoVol` searches across both GARCH and GJRGARCH families:
 
 ```python
-# Search p in [1, 2], q in [1, 2]
-spec = GARCH(auto={'max_p': 2, 'max_q': 2}) + Normal()
+from volkit import AutoVol
 
-# Fix p=1, auto-select q from [1, 3]
-spec = GJRGARCH(p=1, q='auto') + StudentT()
-```
-
-### Auto-selection for Volatility Models
-
-Use `AutoVol` to automatically search across different volatility model families (GARCH and GJR-GARCH) and lag orders:
-
-```python
-from volkit import AutoVol, Normal, StudentT
-
-# Search GARCH and GJRGARCH with p,q in [1,3] (default)
 spec = AutoVol() + Normal()
 result = spec.fit(returns)
 
-# Custom search grid
-spec = AutoVol(candidates=['GARCH', 'GJRGARCH'], max_p=2, max_q=2) + Normal()
-
-# Only search GJR-GARCH variants
-spec = AutoVol(candidates=['GJRGARCH']) + StudentT()
-
-# Inspect what was selected
-print(f"Selected model: {result.spec}")
-result.selection_summary()
+spec = AutoVol(candidates=['GJRGARCH'], max_p=2, max_q=2) + StudentT()
 ```
 
-**Note:** `AutoVol` replaces the `GARCH(auto=True)` pattern when you want to compare across volatility model types. Use `GARCH(auto=True)` or `GJRGARCH(auto=True)` when you already know the model type and only want to search lag orders.
+### By distribution
 
-### Auto-selection for Distributions
-
-Use `AutoDensity` to automatically select the best distribution:
+`AutoDensity` searches across Normal, StudentT, and SkewT:
 
 ```python
-from volkit import GARCH, AutoDensity
+from volkit import AutoDensity
 
-# Search over all distributions (Normal, StudentT, SkewT)
 spec = GARCH(1, 1) + AutoDensity()
-result = spec.fit(returns)
-
-# Or specify candidates
 spec = GARCH(1, 1) + AutoDensity(candidates=['Normal', 'StudentT'])
-result = spec.fit(returns)
 ```
 
-### Combined Auto-selection
+### Full search
 
-Search over volatility models, lag orders, and distributions simultaneously:
+Combine them to search volatility model, order, and distribution at once:
 
 ```python
 from volkit import AutoVol, AutoDensity
 
-# Search (GARCH + GJRGARCH) × p,q in [1,3] × 3 distributions = 54 models
 spec = AutoVol() + AutoDensity()
 result = spec.fit(returns, verbose_selection=True)
 
-print(f"Best model: {result.spec}")
+print(result.spec)
 result.selection_summary()
 ```
 
-You can also combine `GARCH(auto=True)` with `AutoDensity` if you only want to search lag orders for a single model type:
+### Selection criterion
 
-```python
-from volkit import GARCH, AutoDensity
-
-# Search GARCH(p,q) where p,q in [1,3] × 3 distributions = 27 models
-spec = GARCH(auto=True) + AutoDensity()
-result = spec.fit(returns, verbose_selection=True)
-```
-
-### Selection Criterion
-
-By default the selection score is:
+The default score is:
 
 ```
 Score = AIC + diagnostic_weight × n_failed_tests
 ```
 
-Where `n_failed_tests` includes:
-- 1 if DGT (Diebold-Gunther-Tay) test fails
-- 1 for each Ljung-Box test (on moments) that fails
-
-By default, `diagnostic_weight = 50.0`, meaning a failed diagnostic test is equivalent to an AIC penalty of 50.
-
-**Adjust the default criterion:**
+where `n_failed_tests` counts failures of the DGT and Ljung-Box tests. Default `diagnostic_weight` is 50.
 
 ```python
-# Increase diagnostic penalty (favors models with better diagnostics)
+# Heavier diagnostic penalty
 result = spec.fit(returns, diagnostic_weight=100.0)
 
-# Disable diagnostic penalties (use AIC only)
+# AIC only
 result = spec.fit(returns, diagnostic_weight=0.0)
 ```
 
-#### Custom criterion callable
-
-For full control, pass a `criterion` callable to `.fit()`. The callable receives the fitted `EstimationResult` and the raw diagnostics dict (or `None` if diagnostics failed), and must return a float score (lower is better). Return `float('inf')` to reject a candidate outright.
+For full control, pass a callable:
 
 ```python
 def my_criterion(result, diagnostics):
-    """BIC-based criterion with DGT and mean-misspec penalties."""
     score = result.bic
     if diagnostics is not None:
-        # Penalize if DGT p-value is very low
         if diagnostics['dgt']['p_value'] < 0.01:
             score += 200
-        # Penalize mean misspecification (Ljung-Box moment 1)
         if diagnostics['ljung_box'][1]['reject']:
             score += 100
     return score
@@ -497,7 +313,7 @@ spec = AutoVol() + AutoDensity()
 result = spec.fit(returns, criterion=my_criterion)
 ```
 
-The `diagnostics` dict is the same structure returned by `result.diagnostic_tests()`:
+The `diagnostics` dict matches what `result.diagnostic_tests()` returns:
 
 ```python
 {
@@ -506,11 +322,8 @@ The `diagnostics` dict is the same structure returned by `result.diagnostic_test
     'n_obs': 1000,
     'alpha': 0.05,
     'dgt': {
-        'n_cells': 40,
-        'chi2_stat': 34.2,
-        'df': 39,
-        'p_value': 0.689,
-        'reject': False,
+        'n_cells': 40, 'chi2_stat': 34.2,
+        'df': 39, 'p_value': 0.689, 'reject': False,
     },
     'ljung_box': {
         1: {'lags': 10, 'q_stat': 8.42, 'p_value': 0.588, 'reject': False},
@@ -518,268 +331,159 @@ The `diagnostics` dict is the same structure returned by `result.diagnostic_test
         3: {'lags': 10, 'q_stat': 11.2, 'p_value': 0.340, 'reject': False},
         4: {'lags': 10, 'q_stat': 9.87, 'p_value': 0.452, 'reject': False},
     },
-    'pit': np.ndarray,  # raw PIT values
+    'pit': np.ndarray,
 }
 ```
 
-#### Custom diagnostic settings
-
-Use `diagnostic_kwargs` to control how diagnostic tests are run during auto-selection (these are forwarded to `result.diagnostic_tests()`):
+Pass `diagnostic_kwargs` to tune test settings:
 
 ```python
-result = spec.fit(
-    returns,
-    criterion=my_criterion,
-    diagnostic_kwargs={'lags': 5, 'n_cells': 50, 'alpha': 0.01},
-)
+result = spec.fit(returns, diagnostic_kwargs={'lags': 20, 'n_cells': 50})
 ```
 
-`diagnostic_kwargs` also works with the default criterion (without a custom callable):
+When `criterion` is provided, `diagnostic_weight` is ignored.
+
+### Parallel fitting
+
+Auto-selection fits candidates in parallel by default:
 
 ```python
-# Default AIC + penalty criterion, but with 20 Ljung-Box lags
-result = spec.fit(returns, diagnostic_kwargs={'lags': 20})
+result = spec.fit(returns)           # all cores
+result = spec.fit(returns, n_jobs=4) # 4 workers
+result = spec.fit(returns, n_jobs=1) # sequential
 ```
 
-**Notes:**
-- When `criterion` is provided, `diagnostic_weight` is ignored (a warning is issued if both are explicitly set).
-- The criterion must handle `diagnostics=None` gracefully (diagnostics can fail for edge-case models).
-- Lambda and closure callables are supported, including in parallel execution.
+### Multi-series fitting
 
-### Parallel Model Selection
-
-Auto-selection can fit multiple candidates in parallel for faster execution:
+Fit one specification to many series at once:
 
 ```python
-# Use all CPU cores (default)
-result = spec.fit(returns)
-
-# Specify number of workers
-result = spec.fit(returns, n_jobs=4)
-
-# Sequential execution (useful for debugging)
-result = spec.fit(returns, n_jobs=1)
-```
-
-### Multi-series Fitting
-
-Fit the same model specification to multiple time series at once:
-
-```python
-from volkit import GARCH, Normal
-
-# List of return series
-returns_list = [returns1, returns2, returns3, returns4]
-
 spec = GARCH(1, 1) + Normal()
+results = spec.fit_multiple([returns1, returns2, returns3], n_jobs=4)
 
-# Fit all series in parallel
-results = spec.fit_multiple(returns_list, n_jobs=4)
-
-# Each result is independent
-for i, result in enumerate(results):
-    print(f"Series {i}: persistence = {result.garch_params.persistence:.4f}")
+for i, r in enumerate(results):
+    print(f"Series {i}: persistence = {r.garch_params.persistence:.4f}")
 ```
 
-**Multi-series with auto-selection:**
+Auto-selection works here too -- each series gets its own best model:
 
 ```python
-# Auto-select best model for each series independently
 spec = GARCH(auto=True) + AutoDensity()
-results = spec.fit_multiple(returns_list, n_jobs=4, verbose=True)
+results = spec.fit_multiple(returns_list, n_jobs=4)
 ```
 
-### Inspecting Selection Results
-
-Access the full set of candidates and their scores:
+### Inspecting candidates
 
 ```python
-# After fitting with auto-selection
-result = spec.fit(returns)
-
-# Summary table
 result.selection_summary()
 
-# Programmatic access to candidates
-candidates = result._selection_candidates  # List of ModelCandidate objects
-
-for candidate in candidates[:5]:  # Top 5
-    print(f"{candidate.spec}: AIC={candidate.aic:.2f}, Score={candidate.score:.2f}")
+for c in result._selection_candidates[:5]:
+    print(f"{c.spec}: AIC={c.aic:.2f}, Score={c.score:.2f}")
 ```
 
-**Note:** QMLE with AutoDensity is redundant since QMLE always uses Normal likelihood. A warning will be issued and only Normal will be fitted.
+QMLE with AutoDensity is redundant (QMLE always uses Normal likelihood). volkit warns and fits Normal only.
 
 ---
 
 ## Results
 
-The `EstimationResult` object provides access to all estimation outputs.
+`spec.fit()` returns an `EstimationResult`.
 
-### Parameter Access
+### Parameters
 
 ```python
-result = spec.fit(data)
+result.params            # flat array: [omega, alpha_1, ..., beta_q, nu?, lambda?]
 
-# All parameters as flat array
-# GARCH:     [omega, alpha_1, ..., alpha_p, beta_1, ..., beta_q, nu?, lambda?]
-# GJR-GARCH: [omega, alpha_1, ..., alpha_p, gamma_1, ..., gamma_p, beta_1, ..., beta_q, nu?, lambda?]
-params = result.params
-
-# Structured GARCH parameters
 gp = result.garch_params
-print(gp.omega)       # Constant term
-print(gp.alpha)       # ARCH coefficients (array)
-print(gp.gamma)       # Leverage coefficients (array, GJR-GARCH only)
-print(gp.beta)        # GARCH coefficients (array)
-print(gp.persistence) # α + β (GARCH) or α + 0.5γ + β (GJR-GARCH)
+gp.omega                 # constant
+gp.alpha                 # ARCH coefficients (array)
+gp.gamma                 # leverage coefficients (GJR-GARCH only)
+gp.beta                  # GARCH coefficients (array)
+gp.persistence           # α+β (GARCH) or α+0.5γ+β (GJR-GARCH)
 
-# Distribution parameters
 dp = result.dist_params
-print(dp.nu)          # Degrees of freedom (if StudentT/SkewT)
-print(dp.lam)         # Skewness (if SkewT)
+dp.nu                    # degrees of freedom (StudentT, SkewT)
+dp.lam                   # skewness (SkewT)
 ```
 
-### Model Fit Statistics
+### Fit statistics
 
 ```python
-result.loglikelihood  # Log-likelihood value
-result.aic            # Akaike Information Criterion
-result.bic            # Bayesian Information Criterion  
-result.hqic           # Hannan-Quinn Information Criterion
+result.loglikelihood
+result.aic
+result.bic
+result.hqic
 ```
 
-### Conditional Variances and Residuals
+### Conditional variances and residuals
 
 ```python
-result.sigma2         # Conditional variances (σ²_t)
-result.volatility     # Conditional volatility (σ_t = sqrt(σ²_t))
-result.std_resid      # Standardized residuals (ε_t / σ_t)
+result.sigma2        # σ²_t
+result.volatility    # σ_t
+result.std_resid     # ε_t / σ_t
 ```
 
-### Standard Errors
+### Standard errors
 
 ```python
-# MLE standard errors
-result.std_errors     # From inverse Hessian
-
-# Robust standard errors (QMLE only)
-result.std_errors_robust  # From sandwich estimator
-
-# Covariance matrices
-result.cov_matrix     # MLE covariance (H⁻¹)
-result.cov_robust     # Robust covariance (H⁻¹ @ OPG @ H⁻¹)
+result.std_errors        # MLE (from inverse Hessian)
+result.std_errors_robust # sandwich (QMLE only)
+result.cov_matrix        # H⁻¹
+result.cov_robust        # H⁻¹ @ OPG @ H⁻¹
 ```
 
-### Summary Output
+### Output
 
 ```python
-# Full summary with parameter table
-result.summary()
-
-# With robust standard errors (if available)
-result.summary(robust=True)
-
-# Compact string representation
-print(result)
-
-# For programmatic access
-result.to_dict()
-```
-
-### Component Access
-
-```python
-# Access individual components
-result.vol            # Volatility component (GARCH)
-result.mean           # Mean component (ARMA)
-result.density        # Density component (Normal/StudentT/SkewT)
+result.summary()              # full table
+result.summary(robust=True)   # with sandwich SEs
+print(result)                 # compact
+result.to_dict()              # for programmatic use
 ```
 
 ---
 
-## Display Settings
+## Display settings
 
-volkit provides a global `settings` object that lets you customize how parameter names appear in summaries, printed output, and `to_dict()` keys -- without changing any internal variable names or code logic.
-
-### Renaming Parameters
-
-Set a display name once and it applies everywhere -- including indexed variants for higher-order models (e.g., GARCH(2,1) has `alpha[1]` and `alpha[2]`):
+Override how parameter names appear in summaries, print output, and `to_dict()` keys:
 
 ```python
 import volkit
 
-# Rename parameters globally
 volkit.settings.names.gamma = "leverage"
 volkit.settings.names.nu = "df"
 volkit.settings.names.alpha = "a"
 
-# All subsequent output uses the new names
-spec = GJRGARCH(1, 1) + StudentT()
-result = spec.fit(returns)
-result.summary()
-# Parameter table now shows: omega, a[1], leverage[1], beta[1], df
-
-# For higher-order models like GARCH(2,1), the same override covers all indices:
-# a[1], a[2] instead of alpha[1], alpha[2]
+# Now result.summary() shows "leverage[1]" instead of "gamma[1]"
+# and result.to_dict() uses "leverage" as a key
 ```
 
-### Effect on `to_dict()`
+Overrides apply to indexed variants too: renaming `alpha` to `a` turns `alpha[1]`, `alpha[2]` into `a[1]`, `a[2]`.
 
-Display names also apply to the dictionary keys returned by `result.to_dict()`:
-
-```python
-volkit.settings.names.alpha = "a"
-volkit.settings.names.beta = "b"
-
-d = result.to_dict()
-print(d['garch_params'].keys())
-# dict_keys(['w', 'a', 'b', 'persistence'])
-```
-
-### Resetting to Defaults
+Reset with:
 
 ```python
-# Clear all overrides
 volkit.settings.names.reset()
 ```
 
-### Available Parameter Names
+Available names: `omega`, `alpha`, `gamma`, `beta`, `nu`, `lambda`, `const`, `ar`, `ma`.
 
-The following canonical names can be overridden:
-
-| Canonical Name | Used By | Default Display |
-|---------------|---------|-----------------|
-| `omega` | GARCH, GJR-GARCH | `omega` |
-| `alpha` | GARCH, GJR-GARCH | `alpha` |
-| `gamma` | GJR-GARCH | `gamma` |
-| `beta` | GARCH, GJR-GARCH | `beta` |
-| `nu` | StudentT, SkewT | `nu` |
-| `lambda` | SkewT | `lambda` |
-| `const` | ARMA | `const` |
-| `ar` | ARMA | `ar` |
-| `ma` | ARMA | `ma` |
-
-**Note:** Only display output is affected. Internal attribute names on dataclasses (`gp.omega`, `gp.alpha`, `dp.nu`, etc.), C function signatures, and component `fitted_params` dictionary keys remain unchanged.
+Internal attribute names (`gp.omega`, `dp.nu`, etc.) never change.
 
 ---
 
-## Diagnostic Tools
+## Diagnostics
 
-### Model Diagnostic Tests
+### DGT and Ljung-Box tests
 
-After fitting a model, run the DGT (Diebold-Gunther-Tay) and Ljung-Box tests to check whether the fitted distribution adequately captures the data:
+Check whether the fitted distribution captures the data:
 
 ```python
-from volkit import GARCH, StudentT
-
 spec = GARCH(1, 1) + StudentT()
 result = spec.fit(returns)
-
-# Run diagnostics and print formatted results
 result.diagnostic_tests()
 ```
 
-Output:
 ```
 ======================================================================
                      Model Diagnostic Tests
@@ -805,491 +509,218 @@ Ljung-Box Tests on PIT Moments
 ======================================================================
 ```
 
-**How to interpret:**
-- **DGT (Diebold-Gunther-Tay) test**: Checks if the PIT (Probability Integral Transform) residuals are uniform. A "No" rejection means the fitted distribution is adequate.
-- **Ljung-Box tests**: Check for serial correlation in PIT moments. Moment 1 targets mean misspecification, moment 2 targets variance, moments 3-4 target skewness and kurtosis.
-
-**Customizing the tests:**
+The DGT test checks whether PIT residuals are uniform -- "No" rejection means the distribution fits. Ljung-Box tests check for serial correlation in PIT moments: moment 1 targets the mean, moment 2 the variance, moments 3--4 skewness and kurtosis.
 
 ```python
-# Adjust significance level, number of cells, and lags
 result.diagnostic_tests(alpha=0.01, n_cells=50, lags=20)
 
-# Suppress printed output and use the returned dict programmatically
 diag = result.diagnostic_tests(print_results=False)
-
-print(diag['dgt']['p_value'])          # DGT p-value
-print(diag['dgt']['reject'])           # True/False
-
-for power in (1, 2, 3, 4):
-    lb = diag['ljung_box'][power]
-    print(f"Moment {power}: Q={lb['q_stat']:.2f}, p={lb['p_value']:.4f}")
-
-# PIT values for custom analysis (e.g., histogram)
-pit_values = diag['pit']
+diag['dgt']['p_value']
+diag['ljung_box'][2]['reject']
 ```
 
-**Note:** These tests are also used internally by the [auto-selection](#automatic-model-selection) machinery to penalize models with poor diagnostics.
+Auto-selection uses these tests internally to penalize poorly fitting candidates.
 
-### Derivative Validation
+### Derivative validation
 
-Validate that analytical gradient and Hessian match numerical finite differences.
+Confirm that analytical gradients and Hessians match finite differences:
 
 ```python
-from volkit import GARCH, Normal
-
-spec = GARCH(1, 1) + Normal()
-
-# Method 1: Via spec
 report = spec.validate_derivatives(data)
 report.summary()
 
-# Method 2: Direct function
-from volkit._devtools import validate_derivatives, quick_check
-
-report = validate_derivatives(spec, data, params=None)
-report.summary()
-
-# Quick pass/fail check
-passed = quick_check(spec, data)
+report.gradient_passed       # bool
+report.hessian_passed        # bool
+report.gradient_max_rel_error
+report.hessian_max_rel_error
 ```
 
-**Report contents:**
+Or use the standalone functions:
+
 ```python
-report.gradient_passed      # bool
-report.hessian_passed       # bool
-report.passed               # Overall bool
+from volkit._devtools import validate_derivatives, quick_check
 
-report.gradient_analytical  # Analytical gradient
-report.gradient_numerical   # Finite difference gradient
-report.gradient_max_rel_error  # Max relative error (%)
-
-report.hessian_analytical   # Analytical Hessian
-report.hessian_numerical    # Finite difference Hessian
-report.hessian_max_rel_error   # Max relative error (%)
+report = validate_derivatives(spec, data)
+passed = quick_check(spec, data)
 ```
 
 ---
 
-## API Reference
+## API reference
 
-### Top-level exports
+### Exports
 
 ```python
 from volkit import (
-    # Components
-    GARCH,        # GARCH(p, q) volatility model
-    GJRGARCH,     # GJR-GARCH(p, q) asymmetric volatility model
-    ARMA,         # ARMA(p, q) mean model
-    Normal,       # Normal distribution
-    StudentT,     # Student-t distribution
-    SkewT,        # Skewed Student-t distribution
-    AutoDensity,  # Automatic distribution selection
-    AutoVol,      # Automatic volatility model selection
-    Component,    # Base class for components
-    
-    # Specification
-    CompositeSpec,  # Model specification container
-    Role,           # Enum: MEAN, VOLATILITY, DENSITY
-    
-    # Estimators
-    MLE,          # Maximum likelihood estimator
-    QMLE,         # Quasi-MLE with robust SEs
-    
-    # Settings
-    settings,     # Global display settings (parameter names, etc.)
-    
-    # Version
-    __version__,
+    GARCH, GJRGARCH, ARMA,
+    Normal, StudentT, SkewT,
+    AutoDensity, AutoVol,
+    Component, CompositeSpec, Role,
+    settings, __version__,
 )
 ```
 
-### GARCH Component
+### spec.fit()
 
 ```python
-# Fixed orders
-garch = GARCH(p: int, q: int)
-
-# Auto-selection
-garch = GARCH(auto=True)  # Search p,q in [1,3]
-garch = GARCH(auto={'max_p': 2, 'max_q': 2})  # Custom range
-garch = GARCH(p=1, q='auto')  # Fix p, auto-select q
-
-# Properties
-garch.p             # ARCH order
-garch.q             # GARCH order
-garch.n_params      # Total parameters (1 + p + q)
-garch.signature     # "GARCH(p,q)"
-
-# After fitting
-garch.fitted_params # {'omega': float, 'alpha': list, 'beta': list}
-garch.persistence() # Sum of alpha + beta
-garch.is_stationary()
-garch.unconditional_variance()
+result = spec.fit(
+    data,                      # 1D array, Series, or DataFrame
+    method="mle",              # "mle" or "qmle"
+    solver="trust",
+    log_mode=True,
+    verbose=False,
+    n_jobs=None,               # parallel workers (auto-selection)
+    diagnostic_weight=50.0,    # AIC penalty per failed test
+    criterion=None,            # custom scoring callable
+    diagnostic_kwargs=None,    # forwarded to diagnostic_tests()
+)
 ```
 
-### GJRGARCH Component
+### GARCH
 
 ```python
-from volkit import GJRGARCH
+g = GARCH(1, 1)
+g = GARCH(auto=True)
+g = GARCH(auto={'max_p': 2, 'max_q': 2})
 
-# Fixed orders
-gjr = GJRGARCH(p: int, q: int)
-
-# Auto-selection (same interface as GARCH)
-gjr = GJRGARCH(auto=True)  # Search p,q in [1,3]
-gjr = GJRGARCH(auto={'max_p': 2, 'max_q': 2})  # Custom range
-gjr = GJRGARCH(p=1, q='auto')  # Fix p, auto-select q
-
-# Properties
-gjr.p             # ARCH/leverage order
-gjr.q             # GARCH order
-gjr.n_params      # Total parameters (1 + 2p + q)
-gjr.signature     # "GJR-GARCH(p,q)"
-
-# After fitting
-gjr.fitted_params  # {'omega': float, 'alpha': list, 'gamma': list, 'beta': list}
-gjr.persistence()  # α + 0.5·γ + β (default, symmetric)
-gjr.persistence(p_neg=0.6)  # α + 0.6·γ + β (asymmetric)
-gjr.is_stationary()
-gjr.unconditional_variance()
+g.p, g.q, g.n_params, g.signature
+g.fitted_params   # {'omega': ..., 'alpha': [...], 'beta': [...]}
+g.persistence()
+g.is_stationary()
+g.unconditional_variance()
 ```
 
-### AutoVol Component
+### GJRGARCH
 
 ```python
-from volkit import AutoVol
+gjr = GJRGARCH(1, 1)
+gjr = GJRGARCH(auto=True)
 
-# Search GARCH and GJRGARCH with default p,q in [1,3]
-auto_vol = AutoVol()
-
-# Custom candidates and search range
-auto_vol = AutoVol(candidates=['GARCH', 'GJRGARCH'], max_p=2, max_q=2)
-
-# Only GJR-GARCH
-auto_vol = AutoVol(candidates=['GJRGARCH'])
-
-# Properties
-auto_vol.candidates     # List of volatility model names to search
-auto_vol.max_p          # Maximum ARCH lag order (default 3)
-auto_vol.max_q          # Maximum GARCH lag order (default 3)
-auto_vol.signature      # "AutoVol"
-auto_vol.get_candidates()  # List of (vol_type, p, q) tuples
+gjr.n_params              # 1 + 2p + q
+gjr.fitted_params         # includes 'gamma'
+gjr.persistence()         # α + 0.5·γ + β
+gjr.persistence(p_neg=0.6)
 ```
 
-### AutoDensity Component
+### AutoVol
 
 ```python
-from volkit import AutoDensity
+av = AutoVol()
+av = AutoVol(candidates=['GJRGARCH'], max_p=2, max_q=2)
+av.get_candidates()  # list of (model, p, q) tuples
+```
 
-# All distributions
-auto_dens = AutoDensity()
+### AutoDensity
 
-# Specific candidates
-auto_dens = AutoDensity(candidates=['Normal', 'StudentT'])
-
-# Properties
-auto_dens.candidates     # List of distribution names to search
-auto_dens.signature      # "AutoDensity"
+```python
+ad = AutoDensity()
+ad = AutoDensity(candidates=['Normal', 'StudentT'])
 ```
 
 ### EstimationResult
 
 ```python
-result = spec.fit(data)
-
-# Parameters
-result.params               # NDArray - all parameters
-result.garch_params         # GARCHParams object
-result.dist_params          # DistributionParams object
-
-# Fit statistics
-result.loglikelihood        # float
-result.aic                  # float
-result.bic                  # float
-result.hqic                 # float
-
-# Time series
-result.sigma2               # NDArray - conditional variances
-result.volatility           # NDArray - sqrt(sigma2)
-result.std_resid            # NDArray - standardized residuals
-
-# Standard errors
-result.std_errors           # NDArray - MLE standard errors
-result.std_errors_robust    # NDArray - Robust standard errors (QMLE)
-result.cov_matrix           # NDArray - MLE covariance
-result.cov_robust           # NDArray - Robust covariance
-
-# Optimization info
-result.success              # bool - convergence status
-result.niter                # int - iterations
-result.time_elapsed         # float - seconds
-
-# Methods
-result.summary()            # Print detailed summary
-result.summary(robust=True) # Use robust SEs in summary
-result.to_dict()            # Export as dictionary
-result.diagnostic_tests()   # Run DGT + Ljung-Box tests
-result.selection_summary()  # Show auto-selection candidates (if used)
-
-# Auto-selection attributes (if auto=True or AutoDensity used)
-result._selection_candidates  # List[ModelCandidate] - all evaluated models
-```
-
-### MLE Estimator
-
-```python
-from volkit import MLE
-
-estimator = MLE()
-result = estimator.fit(
-    spec,                      # Model specification
-    data,                      # 1D array of returns/residuals
-    solver="trust",            # Optimization method
-    log_mode=True,             # Optimize in log-space
-    verbose=False,             # Print progress
-    n_jobs=None,               # Parallel workers (for auto-selection)
-    diagnostic_weight=50.0,    # AIC penalty per failed test (auto-selection)
-    criterion=None,            # Custom (result, diagnostics)->float callable
-    diagnostic_kwargs=None,    # Dict forwarded to diagnostic_tests()
-)
-
-# Multi-series fitting
-results = spec.fit_multiple(
-    data_list,                 # List of 1D arrays
-    n_jobs=4,                  # Parallel workers
-    **fit_kwargs               # Other fit() arguments
-)
-```
-
-### QMLE Estimator
-
-```python
-from volkit import QMLE
-
-estimator = QMLE()
-result = estimator.fit(
-    spec,                   # Model specification
-    data,                   # 1D array of returns/residuals
-    solver="trust",         # Optimization method
-    verbose=False,          # Print progress
-)
-
-# Robust SEs are automatically computed
-result.std_errors_robust
-```
-
-### Settings
-
-```python
-import volkit
-
-# Override display names (applies to all indexed variants automatically)
-volkit.settings.names.gamma = "leverage"  # gamma[1] → leverage[1], gamma[2] → leverage[2], ...
-volkit.settings.names.nu = "df"
-
-# Read back the current display name
-volkit.settings.names.gamma               # "leverage"
-
-# Reset all overrides to defaults
-volkit.settings.names.reset()
+result.params, result.garch_params, result.dist_params
+result.loglikelihood, result.aic, result.bic, result.hqic
+result.sigma2, result.volatility, result.std_resid
+result.std_errors, result.std_errors_robust
+result.cov_matrix, result.cov_robust
+result.success, result.niter, result.time_elapsed
+result.summary(), result.to_dict(), result.diagnostic_tests()
+result.selection_summary()
+result._selection_candidates  # list of all evaluated models
 ```
 
 ---
 
 ## Examples
 
-### Basic GARCH(1,1) Estimation
+### Fit GARCH(1,1) and inspect results
 
 ```python
 import numpy as np
 from volkit import GARCH, Normal
 
-# Load or generate data
 returns = np.random.randn(1000) * 0.01
 
-# Fit model
 spec = GARCH(1, 1) + Normal()
 result = spec.fit(returns)
 
-# Check results
 print(f"Persistence: {result.garch_params.persistence:.4f}")
 print(f"Log-likelihood: {result.loglikelihood:.2f}")
 result.summary()
 ```
 
-### Student-t Distribution
-
-```python
-from volkit import GARCH, StudentT
-
-spec = GARCH(1, 1) + StudentT()
-result = spec.fit(returns, log_mode=True)  # log_mode supported for all distributions
-
-# Access degrees of freedom
-nu = result.dist_params.nu
-print(f"Degrees of freedom: {nu:.2f}")
-```
-
-### Robust Standard Errors
-
-```python
-from volkit import GARCH, Normal, QMLE
-
-spec = GARCH(1, 1) + Normal()
-result = QMLE().fit(spec, returns)
-
-# Compare MLE vs robust SEs
-print("Parameter       MLE SE    Robust SE")
-print("-" * 40)
-for i, name in enumerate(['omega', 'alpha', 'beta']):
-    se_mle = result.std_errors[i]
-    se_robust = result.std_errors_robust[i]
-    print(f"{name:10}  {se_mle:10.6f}  {se_robust:10.6f}")
-```
-
-### Model Comparison
-
-```python
-from volkit import GARCH, GJRGARCH, Normal, StudentT, SkewT
-
-# Compare symmetric and asymmetric volatility models
-models = [
-    GARCH(1, 1) + Normal(),
-    GARCH(1, 1) + StudentT(),
-    GARCH(1, 1) + SkewT(),
-    GJRGARCH(1, 1) + Normal(),
-    GJRGARCH(1, 1) + StudentT(),
-    GJRGARCH(1, 1) + SkewT(),
-]
-
-results = [spec.fit(returns) for spec in models]
-
-print("Model                        LL         AIC        BIC")
-print("-" * 60)
-for r in results:
-    print(f"{str(r.spec):25}  {r.loglikelihood:10.2f}  {r.aic:10.2f}  {r.bic:10.2f}")
-```
-
-### Automatic Model Selection
-
-```python
-from volkit import AutoVol, AutoDensity
-
-# Full auto: search volatility models, orders, and distributions
-spec = AutoVol() + AutoDensity()
-result = spec.fit(returns, verbose_selection=True)
-
-# View what was selected
-print(f"Best model: {result.spec}")
-result.selection_summary()
-
-# Access all candidates
-for candidate in result._selection_candidates[:3]:
-    print(f"{candidate.spec}: AIC={candidate.aic:.2f}, Score={candidate.score:.2f}")
-```
-
-### Multi-series Fitting
+### Compare MLE and sandwich standard errors
 
 ```python
 from volkit import GARCH, Normal
 
-# Multiple return series
-returns_list = [returns1, returns2, returns3]
-
-# Fit all in parallel
 spec = GARCH(1, 1) + Normal()
-results = spec.fit_multiple(returns_list, n_jobs=4)
+result = spec.fit(returns, method='qmle')
 
-# Compare results
-for i, result in enumerate(results):
-    print(f"Series {i}: ω={result.params[0]:.2e}, α={result.params[1]:.3f}, β={result.params[2]:.3f}")
+print("Parameter       MLE SE    Robust SE")
+print("-" * 40)
+for i, name in enumerate(['omega', 'alpha', 'beta']):
+    print(f"{name:10}  {result.std_errors[i]:10.6f}  {result.std_errors_robust[i]:10.6f}")
 ```
 
-### GJR-GARCH: Asymmetric Volatility
+### GJR-GARCH leverage effect
 
 ```python
 from volkit import GJRGARCH, StudentT
 
-# Fit GJR-GARCH(1,1) with Student-t innovations
 spec = GJRGARCH(1, 1) + StudentT()
 result = spec.fit(returns)
 
-# Access parameters
 gp = result.garch_params
-print(f"omega: {gp.omega:.2e}")
 print(f"alpha: {gp.alpha[0]:.4f}")
-print(f"gamma: {gp.gamma[0]:.4f}")  # Leverage coefficient
+print(f"gamma: {gp.gamma[0]:.4f}")
 print(f"beta:  {gp.beta[0]:.4f}")
 print(f"nu:    {result.dist_params.nu:.2f}")
 
-# Check leverage effect
 if gp.gamma[0] > 0:
-    print("Leverage effect detected: negative shocks increase volatility more")
-    neg_impact = gp.alpha[0] + gp.gamma[0]
-    pos_impact = gp.alpha[0]
-    print(f"Impact ratio (neg/pos): {neg_impact / pos_impact:.2f}x")
-
-result.summary()
+    ratio = (gp.alpha[0] + gp.gamma[0]) / gp.alpha[0]
+    print(f"Negative shocks hit {ratio:.1f}x harder than positive")
 ```
 
-### Custom Parameter Display Names
+### Full automatic search
 
 ```python
-import volkit
-from volkit import GJRGARCH, StudentT
+from volkit import AutoVol, AutoDensity
 
-# Customize how parameters are displayed
-volkit.settings.names.gamma = "leverage"
-volkit.settings.names.nu = "df"
+spec = AutoVol() + AutoDensity()
+result = spec.fit(returns, verbose_selection=True)
 
-spec = GJRGARCH(1, 1) + StudentT()
-result = spec.fit(returns)
-
-# summary() now shows "leverage[1]" instead of "gamma[1]", "df" instead of "nu"
-result.summary()
-
-# to_dict() keys also reflect the custom names
-d = result.to_dict()
-print(d['garch_params'].keys())  # includes 'leverage' instead of 'gamma'
-
-# Reset when done
-volkit.settings.names.reset()
+print(f"Best: {result.spec}")
+result.selection_summary()
 ```
 
-### Volatility Forecasting
+### One-step-ahead variance forecast
 
 ```python
 from volkit import GARCH, GJRGARCH, Normal
 import numpy as np
 
-# --- GARCH(1,1) forecast ---
+# GARCH(1,1)
 spec = GARCH(1, 1) + Normal()
 result = spec.fit(returns)
 
-omega = result.garch_params.omega
-alpha = result.garch_params.alpha[0]
-beta = result.garch_params.beta[0]
+gp = result.garch_params
+h_next = gp.omega + gp.alpha[0] * returns[-1]**2 + gp.beta[0] * result.sigma2[-1]
+print(f"GARCH forecast σ: {np.sqrt(h_next):.6f}")
 
-last_resid2 = returns[-1]**2
-last_sigma2 = result.sigma2[-1]
-
-forecast_sigma2 = omega + alpha * last_resid2 + beta * last_sigma2
-print(f"GARCH forecast: {np.sqrt(forecast_sigma2):.4f}")
-
-# --- GJR-GARCH(1,1) forecast ---
+# GJR-GARCH(1,1)
 spec_gjr = GJRGARCH(1, 1) + Normal()
 result_gjr = spec_gjr.fit(returns)
 
 gp = result_gjr.garch_params
-last_resid = returns[-1]
-indicator = 1.0 if last_resid < 0 else 0.0
-
-forecast_gjr = (gp.omega
-    + gp.alpha[0] * last_resid**2
-    + gp.gamma[0] * indicator * last_resid**2
+indicator = 1.0 if returns[-1] < 0 else 0.0
+h_next = (gp.omega
+    + gp.alpha[0] * returns[-1]**2
+    + gp.gamma[0] * indicator * returns[-1]**2
     + gp.beta[0] * result_gjr.sigma2[-1])
-print(f"GJR-GARCH forecast: {np.sqrt(forecast_gjr):.4f}")
+print(f"GJR forecast σ:   {np.sqrt(h_next):.6f}")
 ```
 
 ---

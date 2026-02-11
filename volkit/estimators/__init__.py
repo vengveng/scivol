@@ -1,10 +1,7 @@
 # volkit/estimators/__init__.py
-from __future__ import annotations
+"""
+Estimator subpackage (reserved for future estimation methods).
 
-from ..estimators.base import Estimator
-# from ..estimators.mle import MLE
-from ..estimators.qmle import QMLE
-
-from .mle import MLE
-
-__all__ = ["MLE", "Estimator", "QMLE"]
+MLE fitting is handled by the kernel routines via ``spec.fit(data)``.
+QMLE fitting is handled by ``spec.fit(data, method='qmle')``.
+"""
