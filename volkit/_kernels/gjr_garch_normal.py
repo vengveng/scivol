@@ -133,26 +133,19 @@ def _build(p: int, q: int) -> Routine:
 
             elif solver.lower() == "slsqp":
                 start[0] = 0.05
-                slsqp_kw: dict = dict(
-                    bounds=bounds, constraints=lc, tol=1e-12,
-                    options={"disp": verbose, 'ftol': 1e-12, "maxiter": 5000},
-                )
-                if jac is not None:
-                    slsqp_kw["jac"] = jac
-                res = minimize(obj, start, method="SLSQP", **slsqp_kw)
+                res = minimize(obj, start, method="SLSQP",
+                              jac=jac, bounds=bounds, constraints=lc,
+                              tol=1e-12,
+                              options={"disp": verbose, 'ftol': 1e-12, "maxiter": 5000})
 
             elif solver.lower() in ("trust", "trust-constr"):
                 radius = max(1 / (10 ** (2*p + q + 1)), 1e-6)
-                tc_kw: dict = dict(
-                    bounds=bounds, constraints=lc, tol=1e-12,
-                    options={"disp": verbose, "xtol": 1e-6, "maxiter": 5000,
-                             'initial_tr_radius': radius},
-                )
-                if jac is not None:
-                    tc_kw["jac"] = jac
-                if hess is not None:
-                    tc_kw["hess"] = hess
-                res = minimize(obj, start, method="trust-constr", **tc_kw)
+                res = minimize(obj, start, method="trust-constr",
+                              jac=jac, hess=hess,
+                              bounds=bounds, constraints=lc,
+                              tol=1e-12,
+                              options={"disp": verbose, "xtol": 1e-6, "maxiter": 5000,
+                                      'initial_tr_radius': radius})
             else:
                 raise ValueError(f"Unknown solver '{solver}'")
 

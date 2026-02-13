@@ -52,9 +52,9 @@ void gjr_garch_variance_pq(const double* __restrict parameters,
 
     const size_t max_lag = (p > q) ? p : q;
 
-    for (size_t i = max_lag; i < n; ++i) {
+    /* Pre-loop: i=1..max_lag-1, guarded (not all lags available) */
+    for (size_t i = 1; i < max_lag && i < n; ++i) {
         double s = omega;
-
         for (size_t j = 0; j < p; ++j) {
             if (i > j) {
                 const double e_lag  = residuals[i - 1 - j];
@@ -63,14 +63,27 @@ void gjr_garch_variance_pq(const double* __restrict parameters,
                 s += alpha[j] * e2_lag + gam[j] * ind * e2_lag;
             }
         }
-
         for (size_t k = 0; k < q; ++k) {
             if (i > k)
                 s += beta[k] * sigma2[i - 1 - k];
         }
-
         sigma2[i] = s;
+        if (sigma2[i] < H_FLOOR || !isfinite(sigma2[i]))
+            sigma2[i] = H_FLOOR;
+    }
 
+    /* Main loop: i=max_lag..n-1, guard-free (all lags available) */
+    for (size_t i = max_lag; i < n; ++i) {
+        double s = omega;
+        for (size_t j = 0; j < p; ++j) {
+            const double e_lag  = residuals[i - 1 - j];
+            const double e2_lag = e_lag * e_lag;
+            const double ind    = (e_lag < 0.0) ? 1.0 : 0.0;
+            s += alpha[j] * e2_lag + gam[j] * ind * e2_lag;
+        }
+        for (size_t k = 0; k < q; ++k)
+            s += beta[k] * sigma2[i - 1 - k];
+        sigma2[i] = s;
         if (sigma2[i] < H_FLOOR || !isfinite(sigma2[i]))
             sigma2[i] = H_FLOOR;
     }

@@ -403,12 +403,10 @@ double gjr_garch_ll_pq_normal(const double* __restrict params,
     const double *beta  = params + 1 + 2 * p;
 
     const size_t max_lag = MAX(p, q);
-    double sum_ll = 0.0;
+    double sum_ll = log(sigma2[0]) + residuals[0] * residuals[0] / sigma2[0];
 
-    for (size_t i = 0; i < max_lag && i < n; ++i)
-        sum_ll += log(sigma2[i]) + residuals[i] * residuals[i] / sigma2[i];
-
-    for (size_t t = max_lag; t < n; ++t) {
+    /* Pre-loop: t=1..max_lag-1, guarded (not all lags available) */
+    for (size_t t = 1; t < max_lag && t < n; ++t) {
         double s = omega;
         for (size_t j = 0; j < p; ++j) {
             if (t > j) {
@@ -422,6 +420,24 @@ double gjr_garch_ll_pq_normal(const double* __restrict params,
             if (t > k)
                 s += beta[k] * sigma2[t - 1 - k];
         }
+        sigma2[t] = s;
+        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
+
+        const double e2 = residuals[t] * residuals[t];
+        sum_ll += log(sigma2[t]) + e2 / sigma2[t];
+    }
+
+    /* Main loop: t=max_lag..n-1, guard-free (all lags available) */
+    for (size_t t = max_lag; t < n; ++t) {
+        double s = omega;
+        for (size_t j = 0; j < p; ++j) {
+            const double e = residuals[t - 1 - j];
+            const double e2 = e * e;
+            const double ind = (e < 0.0) ? 1.0 : 0.0;
+            s += alpha[j] * e2 + gam[j] * ind * e2;
+        }
+        for (size_t k = 0; k < q; ++k)
+            s += beta[k] * sigma2[t - 1 - k];
         sigma2[t] = s;
         if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
@@ -448,8 +464,8 @@ void gjr_garch_ll_grad_pq_normal(const double* __restrict params,
     const double *alpha = params + alpha_base;
     const double *gam   = params + gamma_base;
     const double *beta  = params + beta_base;
-    const size_t max_lag = MAX(p, q);
 
+    const size_t max_lag = MAX(p, q);
     dzeros(grad, K);
 
     /* Ring buffer for first derivatives: (q+1) x K */
@@ -457,8 +473,8 @@ void gjr_garch_ll_grad_pq_normal(const double* __restrict params,
     double *d_buf = (double *)calloc(ring * K, sizeof(double));
     if (!d_buf) return;
 
-    for (size_t t = max_lag; t < n; ++t) {
-        /* 1. Variance recursion */
+    /* Pre-loop: t=1..max_lag-1, guarded (not all lags available) */
+    for (size_t t = 1; t < max_lag && t < n; ++t) {
         double s = omega;
         for (size_t j = 0; j < p; ++j) {
             if (t > j) {
@@ -474,10 +490,9 @@ void gjr_garch_ll_grad_pq_normal(const double* __restrict params,
         sigma2[t] = s;
         if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
-        /* 2. First derivative recursion */
         double *d_t = d_buf + (t % ring) * K;
         dzeros(d_t, K);
-        d_t[0] = 1.0;  /* ∂h/∂ω */
+        d_t[0] = 1.0;
 
         for (size_t k = 1; k <= q && t >= k; ++k) {
             const double *d_prev = d_buf + ((t - k) % ring) * K;
@@ -485,7 +500,6 @@ void gjr_garch_ll_grad_pq_normal(const double* __restrict params,
             for (size_t i = 0; i < K; ++i)
                 d_t[i] += b * d_prev[i];
         }
-
         for (size_t j = 1; j <= p && t >= j; ++j) {
             const double e = residuals[t - j];
             const double e2 = e * e;
@@ -493,15 +507,53 @@ void gjr_garch_ll_grad_pq_normal(const double* __restrict params,
             d_t[alpha_base + j - 1] += e2;
             d_t[gamma_base + j - 1] += ind * e2;
         }
-
         for (size_t k = 1; k <= q && t >= k; ++k)
             d_t[beta_base + k - 1] += sigma2[t - k];
 
-        /* 3. Gradient contribution */
         const double inv_s2 = 1.0 / sigma2[t];
         const double e2_t   = residuals[t] * residuals[t];
         const double c_grad = 0.5 * (1.0 - e2_t * inv_s2) * inv_s2;
+        for (size_t i = 0; i < K; ++i)
+            grad[i] += c_grad * d_t[i];
+    }
 
+    /* Main loop: t=max_lag..n-1, guard-free (all lags available) */
+    for (size_t t = max_lag; t < n; ++t) {
+        double s = omega;
+        for (size_t j = 0; j < p; ++j) {
+            const double e = residuals[t - 1 - j];
+            const double e2 = e * e;
+            const double ind = (e < 0.0) ? 1.0 : 0.0;
+            s += alpha[j] * e2 + gam[j] * ind * e2;
+        }
+        for (size_t k = 0; k < q; ++k)
+            s += beta[k] * sigma2[t - 1 - k];
+        sigma2[t] = s;
+        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
+
+        double *d_t = d_buf + (t % ring) * K;
+        dzeros(d_t, K);
+        d_t[0] = 1.0;
+
+        for (size_t k = 1; k <= q; ++k) {
+            const double *d_prev = d_buf + ((t - k) % ring) * K;
+            const double b = beta[k - 1];
+            for (size_t i = 0; i < K; ++i)
+                d_t[i] += b * d_prev[i];
+        }
+        for (size_t j = 1; j <= p; ++j) {
+            const double e = residuals[t - j];
+            const double e2 = e * e;
+            const double ind = (e < 0.0) ? 1.0 : 0.0;
+            d_t[alpha_base + j - 1] += e2;
+            d_t[gamma_base + j - 1] += ind * e2;
+        }
+        for (size_t k = 1; k <= q; ++k)
+            d_t[beta_base + k - 1] += sigma2[t - k];
+
+        const double inv_s2 = 1.0 / sigma2[t];
+        const double e2_t   = residuals[t] * residuals[t];
+        const double c_grad = 0.5 * (1.0 - e2_t * inv_s2) * inv_s2;
         for (size_t i = 0; i < K; ++i)
             grad[i] += c_grad * d_t[i];
     }
@@ -526,8 +578,8 @@ void gjr_garch_ll_hess_pq_normal(const double* __restrict params,
     const double *alpha = params + alpha_base;
     const double *gam   = params + gamma_base;
     const double *beta  = params + beta_base;
-    const size_t max_lag = MAX(p, q);
 
+    const size_t max_lag = MAX(p, q);
     dzeros(hess, K * K);
 
     const size_t ring = q + 1;
@@ -535,8 +587,8 @@ void gjr_garch_ll_hess_pq_normal(const double* __restrict params,
     double *d2_buf = (double *)calloc(ring * K * K, sizeof(double));
     if (!d_buf || !d2_buf) { free(d_buf); free(d2_buf); return; }
 
-    for (size_t t = max_lag; t < n; ++t) {
-        /* 1. Variance recursion */
+    /* Pre-loop: t=1..max_lag-1, guarded */
+    for (size_t t = 1; t < max_lag && t < n; ++t) {
         double s = omega;
         for (size_t j = 0; j < p; ++j) {
             if (t > j) {
@@ -552,18 +604,15 @@ void gjr_garch_ll_hess_pq_normal(const double* __restrict params,
         sigma2[t] = s;
         if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
-        /* 2. First derivative recursion */
         double *d_t = d_buf + (t % ring) * K;
         dzeros(d_t, K);
         d_t[0] = 1.0;
-
         for (size_t k = 1; k <= q && t >= k; ++k) {
             const double *d_prev = d_buf + ((t - k) % ring) * K;
             const double b = beta[k - 1];
             for (size_t i = 0; i < K; ++i)
                 d_t[i] += b * d_prev[i];
         }
-
         for (size_t j = 1; j <= p && t >= j; ++j) {
             const double e = residuals[t - j];
             const double e2 = e * e;
@@ -571,22 +620,17 @@ void gjr_garch_ll_hess_pq_normal(const double* __restrict params,
             d_t[alpha_base + j - 1] += e2;
             d_t[gamma_base + j - 1] += ind * e2;
         }
-
         for (size_t k = 1; k <= q && t >= k; ++k)
             d_t[beta_base + k - 1] += sigma2[t - k];
 
-        /* 3. Second derivative recursion */
         double *d2_t = d2_buf + (t % ring) * K * K;
         dzeros(d2_t, K * K);
-
         for (size_t k = 1; k <= q && t >= k; ++k) {
             const double b       = beta[k - 1];
             const double *d2_prev = d2_buf + ((t - k) % ring) * K * K;
             const double *d_prev  = d_buf  + ((t - k) % ring) * K;
-
             for (size_t idx = 0; idx < K * K; ++idx)
                 d2_t[idx] += b * d2_prev[idx];
-
             const size_t b_idx = beta_base + k - 1;
             for (size_t j = 0; j < K; ++j) {
                 d2_t[b_idx * K + j] += d_prev[j];
@@ -594,14 +638,72 @@ void gjr_garch_ll_hess_pq_normal(const double* __restrict params,
             }
         }
 
-        /* 4. Hessian contribution */
         const double inv_s2 = 1.0 / sigma2[t];
         const double e2_t   = residuals[t] * residuals[t];
         const double res_os = e2_t * inv_s2;
-
         const double c_grad = -0.5 * (res_os - 1.0) * inv_s2;
         const double c_hess = -0.5 * inv_s2 * inv_s2 * (1.0 - 2.0 * res_os);
+        for (size_t i = 0; i < K; ++i) {
+            for (size_t j = i; j < K; ++j) {
+                hessian_accumulate(hess, i, j, K,
+                    c_hess * d_t[i] * d_t[j] + c_grad * d2_t[i * K + j]);
+            }
+        }
+    }
 
+    /* Main loop: t=max_lag..n-1, guard-free */
+    for (size_t t = max_lag; t < n; ++t) {
+        double s = omega;
+        for (size_t j = 0; j < p; ++j) {
+            const double e = residuals[t - 1 - j];
+            const double e2 = e * e;
+            const double ind = (e < 0.0) ? 1.0 : 0.0;
+            s += alpha[j] * e2 + gam[j] * ind * e2;
+        }
+        for (size_t k = 0; k < q; ++k)
+            s += beta[k] * sigma2[t - 1 - k];
+        sigma2[t] = s;
+        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
+
+        double *d_t = d_buf + (t % ring) * K;
+        dzeros(d_t, K);
+        d_t[0] = 1.0;
+        for (size_t k = 1; k <= q; ++k) {
+            const double *d_prev = d_buf + ((t - k) % ring) * K;
+            const double b = beta[k - 1];
+            for (size_t i = 0; i < K; ++i)
+                d_t[i] += b * d_prev[i];
+        }
+        for (size_t j = 1; j <= p; ++j) {
+            const double e = residuals[t - j];
+            const double e2 = e * e;
+            const double ind = (e < 0.0) ? 1.0 : 0.0;
+            d_t[alpha_base + j - 1] += e2;
+            d_t[gamma_base + j - 1] += ind * e2;
+        }
+        for (size_t k = 1; k <= q; ++k)
+            d_t[beta_base + k - 1] += sigma2[t - k];
+
+        double *d2_t = d2_buf + (t % ring) * K * K;
+        dzeros(d2_t, K * K);
+        for (size_t k = 1; k <= q; ++k) {
+            const double b       = beta[k - 1];
+            const double *d2_prev = d2_buf + ((t - k) % ring) * K * K;
+            const double *d_prev  = d_buf  + ((t - k) % ring) * K;
+            for (size_t idx = 0; idx < K * K; ++idx)
+                d2_t[idx] += b * d2_prev[idx];
+            const size_t b_idx = beta_base + k - 1;
+            for (size_t j = 0; j < K; ++j) {
+                d2_t[b_idx * K + j] += d_prev[j];
+                d2_t[j * K + b_idx] += d_prev[j];
+            }
+        }
+
+        const double inv_s2 = 1.0 / sigma2[t];
+        const double e2_t   = residuals[t] * residuals[t];
+        const double res_os = e2_t * inv_s2;
+        const double c_grad = -0.5 * (res_os - 1.0) * inv_s2;
+        const double c_hess = -0.5 * inv_s2 * inv_s2 * (1.0 - 2.0 * res_os);
         for (size_t i = 0; i < K; ++i) {
             for (size_t j = i; j < K; ++j) {
                 hessian_accumulate(hess, i, j, K,
@@ -635,14 +737,11 @@ double gjr_garch_ll_pq_studentt(const double* __restrict params,
     const double constant  = n * (lgamma(0.5 * (nu + 1)) - lgamma(0.5 * nu) - 0.5 * log(M_PI / inv_nu_m2));
 
     const size_t max_lag = MAX(p, q);
+    double var1 = log(sigma2[0]);
+    double var2 = log1p(residuals[0] * residuals[0] / sigma2[0] * inv_nu_m2);
 
-    double var1 = 0.0, var2 = 0.0;
-    for (size_t i = 0; i < max_lag && i < n; ++i) {
-        var1 += log(sigma2[i]);
-        var2 += log1p(residuals[i] * residuals[i] / sigma2[i] * inv_nu_m2);
-    }
-
-    for (size_t t = max_lag; t < n; ++t) {
+    /* Pre-loop: t=1..max_lag-1, guarded */
+    for (size_t t = 1; t < max_lag && t < n; ++t) {
         double s = omega;
         for (size_t j = 0; j < p; ++j) {
             if (t > j) {
@@ -656,6 +755,25 @@ double gjr_garch_ll_pq_studentt(const double* __restrict params,
             if (t > k)
                 s += beta[k] * sigma2[t - 1 - k];
         }
+        sigma2[t] = s;
+        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
+
+        const double e2 = residuals[t] * residuals[t];
+        var1 += log(sigma2[t]);
+        var2 += log1p(e2 / sigma2[t] * inv_nu_m2);
+    }
+
+    /* Main loop: t=max_lag..n-1, guard-free */
+    for (size_t t = max_lag; t < n; ++t) {
+        double s = omega;
+        for (size_t j = 0; j < p; ++j) {
+            const double e = residuals[t - 1 - j];
+            const double e2 = e * e;
+            const double ind = (e < 0.0) ? 1.0 : 0.0;
+            s += alpha[j] * e2 + gam[j] * ind * e2;
+        }
+        for (size_t k = 0; k < q; ++k)
+            s += beta[k] * sigma2[t - 1 - k];
         sigma2[t] = s;
         if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
@@ -687,8 +805,8 @@ void gjr_garch_ll_grad_pq_studentt(const double* __restrict params,
     const double *gam   = params + gamma_base;
     const double *beta  = params + beta_base;
     const double  nu    = params[K_garch];
-    const size_t max_lag = MAX(p, q);
 
+    const size_t max_lag = MAX(p, q);
     const double inv_nu_m2 = 1.0 / (nu - 2.0);
     const double psi_half_nu1 = digamma_approx(0.5 * (nu + 1.0));
     const double psi_half_nu  = digamma_approx(0.5 * nu);
@@ -699,8 +817,8 @@ void gjr_garch_ll_grad_pq_studentt(const double* __restrict params,
     double *d_buf = (double *)calloc(ring * K, sizeof(double));
     if (!d_buf) return;
 
-    for (size_t t = max_lag; t < n; ++t) {
-        /* 1. Variance recursion */
+    /* Pre-loop: t=1..max_lag-1, guarded */
+    for (size_t t = 1; t < max_lag && t < n; ++t) {
         double s = omega;
         for (size_t j = 0; j < p; ++j) {
             if (t > j) {
@@ -716,18 +834,15 @@ void gjr_garch_ll_grad_pq_studentt(const double* __restrict params,
         sigma2[t] = s;
         if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
-        /* 2. Derivative recursion */
         double *d_t = d_buf + (t % ring) * K;
         dzeros(d_t, K);
         d_t[0] = 1.0;
-
         for (size_t k = 1; k <= q && t >= k; ++k) {
             const double *d_prev = d_buf + ((t - k) % ring) * K;
             const double b = beta[k - 1];
             for (size_t i = 0; i < K; ++i)
                 d_t[i] += b * d_prev[i];
         }
-
         for (size_t j = 1; j <= p && t >= j; ++j) {
             const double e = residuals[t - j];
             const double e2 = e * e;
@@ -735,24 +850,70 @@ void gjr_garch_ll_grad_pq_studentt(const double* __restrict params,
             d_t[alpha_base + j - 1] += e2;
             d_t[gamma_base + j - 1] += ind * e2;
         }
-
         for (size_t k = 1; k <= q && t >= k; ++k)
             d_t[beta_base + k - 1] += sigma2[t - k];
 
-        /* 3. Student-t scalar kernels */
         const double inv_s2 = 1.0 / sigma2[t];
         const double e2_t   = residuals[t] * residuals[t];
         const double r_os   = e2_t * inv_s2;
         const double tail   = 1.0 + r_os * inv_nu_m2;
-
         const double S_h = 0.5 * inv_s2
                          - 0.5 * (nu + 1.0) * e2_t * inv_nu_m2
                            * inv_s2 * inv_s2 / tail;
-
         for (size_t i = 0; i < K_garch; ++i)
             grad[i] += S_h * d_t[i];
+        const double g_nu = -0.5 * psi_half_nu1
+                           + 0.5 * psi_half_nu
+                           + 0.5 * inv_nu_m2
+                           + 0.5 * log(tail)
+                           - 0.5 * (nu + 1.0) * e2_t
+                                 * inv_nu_m2 * inv_nu_m2
+                                 * inv_s2 / tail;
+        grad[K - 1] += g_nu;
+    }
 
-        /* ∂NLL/∂ν */
+    /* Main loop: t=max_lag..n-1, guard-free */
+    for (size_t t = max_lag; t < n; ++t) {
+        double s = omega;
+        for (size_t j = 0; j < p; ++j) {
+            const double e = residuals[t - 1 - j];
+            const double e2 = e * e;
+            const double ind = (e < 0.0) ? 1.0 : 0.0;
+            s += alpha[j] * e2 + gam[j] * ind * e2;
+        }
+        for (size_t k = 0; k < q; ++k)
+            s += beta[k] * sigma2[t - 1 - k];
+        sigma2[t] = s;
+        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
+
+        double *d_t = d_buf + (t % ring) * K;
+        dzeros(d_t, K);
+        d_t[0] = 1.0;
+        for (size_t k = 1; k <= q; ++k) {
+            const double *d_prev = d_buf + ((t - k) % ring) * K;
+            const double b = beta[k - 1];
+            for (size_t i = 0; i < K; ++i)
+                d_t[i] += b * d_prev[i];
+        }
+        for (size_t j = 1; j <= p; ++j) {
+            const double e = residuals[t - j];
+            const double e2 = e * e;
+            const double ind = (e < 0.0) ? 1.0 : 0.0;
+            d_t[alpha_base + j - 1] += e2;
+            d_t[gamma_base + j - 1] += ind * e2;
+        }
+        for (size_t k = 1; k <= q; ++k)
+            d_t[beta_base + k - 1] += sigma2[t - k];
+
+        const double inv_s2 = 1.0 / sigma2[t];
+        const double e2_t   = residuals[t] * residuals[t];
+        const double r_os   = e2_t * inv_s2;
+        const double tail   = 1.0 + r_os * inv_nu_m2;
+        const double S_h = 0.5 * inv_s2
+                         - 0.5 * (nu + 1.0) * e2_t * inv_nu_m2
+                           * inv_s2 * inv_s2 / tail;
+        for (size_t i = 0; i < K_garch; ++i)
+            grad[i] += S_h * d_t[i];
         const double g_nu = -0.5 * psi_half_nu1
                            + 0.5 * psi_half_nu
                            + 0.5 * inv_nu_m2
@@ -786,8 +947,8 @@ void gjr_garch_ll_hess_pq_studentt(const double* __restrict params,
     const double *gam   = params + gamma_base;
     const double *beta  = params + beta_base;
     const double  nu    = params[K_garch];
-    const size_t max_lag = MAX(p, q);
 
+    const size_t max_lag = MAX(p, q);
     const double inv_nu_m2   = 1.0 / (nu - 2.0);
     const double inv_nu_m2_2 = inv_nu_m2 * inv_nu_m2;
     const double inv_nu_m2_3 = inv_nu_m2_2 * inv_nu_m2;
@@ -802,8 +963,8 @@ void gjr_garch_ll_hess_pq_studentt(const double* __restrict params,
     double *d2_buf = (double *)calloc(ring * K * K, sizeof(double));
     if (!d_buf || !d2_buf) { free(d_buf); free(d2_buf); return; }
 
-    for (size_t t = max_lag; t < n; ++t) {
-        /* 1. Variance recursion */
+    /* Pre-loop: t=1..max_lag-1, guarded */
+    for (size_t t = 1; t < max_lag && t < n; ++t) {
         double s = omega;
         for (size_t j = 0; j < p; ++j) {
             if (t > j) {
@@ -819,18 +980,15 @@ void gjr_garch_ll_hess_pq_studentt(const double* __restrict params,
         sigma2[t] = s;
         if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
-        /* 2. First derivative recursion */
         double *d_t = d_buf + (t % ring) * K;
         dzeros(d_t, K);
         d_t[0] = 1.0;
-
         for (size_t k = 1; k <= q && t >= k; ++k) {
             const double *d_prev = d_buf + ((t - k) % ring) * K;
             const double b = beta[k - 1];
             for (size_t i = 0; i < K; ++i)
                 d_t[i] += b * d_prev[i];
         }
-
         for (size_t j = 1; j <= p && t >= j; ++j) {
             const double e = residuals[t - j];
             const double e2 = e * e;
@@ -838,22 +996,17 @@ void gjr_garch_ll_hess_pq_studentt(const double* __restrict params,
             d_t[alpha_base + j - 1] += e2;
             d_t[gamma_base + j - 1] += ind * e2;
         }
-
         for (size_t k = 1; k <= q && t >= k; ++k)
             d_t[beta_base + k - 1] += sigma2[t - k];
 
-        /* 3. Second derivative recursion */
         double *d2_t = d2_buf + (t % ring) * K * K;
         dzeros(d2_t, K * K);
-
         for (size_t k = 1; k <= q && t >= k; ++k) {
             const double b        = beta[k - 1];
             const double *d2_prev = d2_buf + ((t - k) % ring) * K * K;
             const double *d_prev  = d_buf  + ((t - k) % ring) * K;
-
             for (size_t idx = 0; idx < K * K; ++idx)
                 d2_t[idx] += b * d2_prev[idx];
-
             const size_t b_idx = beta_base + k - 1;
             for (size_t j = 0; j < K; ++j) {
                 d2_t[b_idx * K + j] += d_prev[j];
@@ -861,42 +1014,115 @@ void gjr_garch_ll_hess_pq_studentt(const double* __restrict params,
             }
         }
 
-        /* 4. Scalar kernels */
         const double inv_s2 = 1.0 / sigma2[t];
         const double e2_t   = residuals[t] * residuals[t];
         const double r_os   = e2_t * inv_s2;
         const double tail   = 1.0 + r_os * inv_nu_m2;
         const double tail2  = tail * tail;
-
         const double S_h = 0.5 * inv_s2
                          - 0.5 * (nu + 1.0) * e2_t * inv_nu_m2
                            * inv_s2 * inv_s2 / tail;
-
         const double H_h = -0.5 * inv_s2 * inv_s2
                           + (nu + 1.0) * e2_t * inv_nu_m2
                             * inv_s2 * inv_s2 * inv_s2 / tail
                           - 0.5 * (nu + 1.0) * e2_t * e2_t
                             * inv_nu_m2_2 * inv_s2 * inv_s2
                             * inv_s2 * inv_s2 / tail2;
-
-        /* GARCH block */
         for (size_t i = 0; i < K_garch; ++i) {
             for (size_t j = i; j < K_garch; ++j) {
                 hessian_accumulate(hess, i, j, K,
                     H_h * d_t[i] * d_t[j] + S_h * d2_t[i * K + j]);
             }
         }
-
-        /* dS_h/dν cross terms */
         const double zi = r_os * inv_nu_m2;
         const double dS_dnu = 0.5 * r_os * inv_s2 * inv_nu_m2_2
                               / tail2
                               * (3.0 * tail - (nu + 1.0) * zi);
-
         for (size_t i = 0; i < K_garch; ++i)
             hessian_accumulate(hess, i, K - 1, K, dS_dnu * d_t[i]);
+        const double H_nu_nu = -0.25 * tri_half_nu1
+                              + 0.25 * tri_half_nu
+                              - 0.5  * inv_nu_m2_2
+                              - r_os * inv_nu_m2_2 / (2.0 * tail)
+                              - 0.5  * (nu + 1.0) * r_os * r_os
+                                * inv_nu_m2_3 / tail2;
+        hessian_accumulate(hess, K - 1, K - 1, K, H_nu_nu);
+    }
 
-        /* H_νν */
+    /* Main loop: t=max_lag..n-1, guard-free */
+    for (size_t t = max_lag; t < n; ++t) {
+        double s = omega;
+        for (size_t j = 0; j < p; ++j) {
+            const double e = residuals[t - 1 - j];
+            const double e2 = e * e;
+            const double ind = (e < 0.0) ? 1.0 : 0.0;
+            s += alpha[j] * e2 + gam[j] * ind * e2;
+        }
+        for (size_t k = 0; k < q; ++k)
+            s += beta[k] * sigma2[t - 1 - k];
+        sigma2[t] = s;
+        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
+
+        double *d_t = d_buf + (t % ring) * K;
+        dzeros(d_t, K);
+        d_t[0] = 1.0;
+        for (size_t k = 1; k <= q; ++k) {
+            const double *d_prev = d_buf + ((t - k) % ring) * K;
+            const double b = beta[k - 1];
+            for (size_t i = 0; i < K; ++i)
+                d_t[i] += b * d_prev[i];
+        }
+        for (size_t j = 1; j <= p; ++j) {
+            const double e = residuals[t - j];
+            const double e2 = e * e;
+            const double ind = (e < 0.0) ? 1.0 : 0.0;
+            d_t[alpha_base + j - 1] += e2;
+            d_t[gamma_base + j - 1] += ind * e2;
+        }
+        for (size_t k = 1; k <= q; ++k)
+            d_t[beta_base + k - 1] += sigma2[t - k];
+
+        double *d2_t = d2_buf + (t % ring) * K * K;
+        dzeros(d2_t, K * K);
+        for (size_t k = 1; k <= q; ++k) {
+            const double b        = beta[k - 1];
+            const double *d2_prev = d2_buf + ((t - k) % ring) * K * K;
+            const double *d_prev  = d_buf  + ((t - k) % ring) * K;
+            for (size_t idx = 0; idx < K * K; ++idx)
+                d2_t[idx] += b * d2_prev[idx];
+            const size_t b_idx = beta_base + k - 1;
+            for (size_t j = 0; j < K; ++j) {
+                d2_t[b_idx * K + j] += d_prev[j];
+                d2_t[j * K + b_idx] += d_prev[j];
+            }
+        }
+
+        const double inv_s2 = 1.0 / sigma2[t];
+        const double e2_t   = residuals[t] * residuals[t];
+        const double r_os   = e2_t * inv_s2;
+        const double tail   = 1.0 + r_os * inv_nu_m2;
+        const double tail2  = tail * tail;
+        const double S_h = 0.5 * inv_s2
+                         - 0.5 * (nu + 1.0) * e2_t * inv_nu_m2
+                           * inv_s2 * inv_s2 / tail;
+        const double H_h = -0.5 * inv_s2 * inv_s2
+                          + (nu + 1.0) * e2_t * inv_nu_m2
+                            * inv_s2 * inv_s2 * inv_s2 / tail
+                          - 0.5 * (nu + 1.0) * e2_t * e2_t
+                            * inv_nu_m2_2 * inv_s2 * inv_s2
+                            * inv_s2 * inv_s2 / tail2;
+        for (size_t i = 0; i < K_garch; ++i) {
+            for (size_t j = i; j < K_garch; ++j) {
+                hessian_accumulate(hess, i, j, K,
+                    H_h * d_t[i] * d_t[j] + S_h * d2_t[i * K + j]);
+            }
+        }
+        const double zi = r_os * inv_nu_m2;
+        const double dS_dnu = 0.5 * r_os * inv_s2 * inv_nu_m2_2
+                              / tail2
+                              * (3.0 * tail - (nu + 1.0) * zi);
+        for (size_t i = 0; i < K_garch; ++i)
+            hessian_accumulate(hess, i, K - 1, K, dS_dnu * d_t[i]);
         const double H_nu_nu = -0.25 * tri_half_nu1
                               + 0.25 * tri_half_nu
                               - 0.5  * inv_nu_m2_2
