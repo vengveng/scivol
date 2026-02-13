@@ -334,8 +334,10 @@ def select_best_parallel(
     if verbose:
         print(f"Auto-selecting from {total} candidate models (parallel, {n_jobs} workers)...")
     
-    if n_jobs == 1 or total <= 2:
-        # Sequential for small number of candidates
+    # Sequential fallback: process spawn overhead (~1-2 s) exceeds the
+    # total computation time when candidate counts are small (≤100).
+    _MIN_PARALLEL_CANDIDATES = 100
+    if n_jobs == 1 or total < _MIN_PARALLEL_CANDIDATES:
         candidates = []
         for i, (vol_type, p, q, d) in enumerate(
             get_progress_bar(tasks, total=total, desc="Auto-selecting", disable=not show_progress)

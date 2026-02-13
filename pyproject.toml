@@ -41,6 +41,7 @@ sources = [
   "volkit/_csrc/variance_gjr_garch.c",
   "volkit/_csrc/likelihood_gjr_garch.c",
   "volkit/_csrc/errors_gjr_garch.c",
+  "volkit/_csrc/log_wrappers.c",
 ]
 include-dirs       = ["volkit/_csrc"]
 extra-compile-args = ["-O3", "-ffast-math", "-march=native", "-ffp-contract=fast", "-funroll-loops"]

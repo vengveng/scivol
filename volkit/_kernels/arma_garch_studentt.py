@@ -45,9 +45,6 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
     
     def fit(y: NDArray[np.float64], solver: str = "slsqp", log_mode: bool = False, verbose: bool = False, **_) -> EstimationResult:
         from scipy.optimize import minimize, LinearConstraint
-        from .transforms import (
-            pack_arma_garch_studentt, unpack_arma_garch_studentt, jacobian_arma_garch_studentt
-        )
         
         t_start = time.perf_counter()
         
@@ -140,36 +137,35 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
             
         else:
             # =========================================================
-            # LOG MODE: Unconstrained optimization
+            # LOG MODE: Fused C log-space functions
             # =========================================================
+            from .transforms import unpack_arma_garch_studentt, pack_arma_garch_studentt
+            
             K = n_params
             p_scaler = 2
-            
-            def pack(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                return pack_arma_garch_studentt(z, p_ar, q_ma, P_arch, Q_garch)
-            
-            def unpack(theta: NDArray[np.float64]) -> NDArray[np.float64]:
-                return unpack_arma_garch_studentt(theta, p_ar, q_ma, P_arch, Q_garch)
+            _grad_z_buf = np.zeros(K, dtype=np.float64)
+            _grad_z_ptr = _as_cptr(_grad_z_buf)
             
             def obj_log(z: NDArray[np.float64]) -> float:
-                theta = pack(z)
-                return call_nll(theta) * p_scaler
+                return _core._log_arma_garch_nll_pq_studentt(
+                    _as_cptr(z), y_ptr, resid_ptr, sigma2_ptr,
+                    e0_ptr, h0_ptr, n, p_ar, q_ma, P_arch, Q_garch
+                ) * p_scaler
             
-            def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                theta = pack(z)
-                if call_grad is not None:
-                    # Analytical gradient: ∇_z = J^T @ ∇_θ
-                    grad_theta = call_grad(theta) * p_scaler
-                    J = jacobian_arma_garch_studentt(theta, p_ar, q_ma, P_arch, Q_garch)
-                    return J.T @ grad_theta
-                else:
-                    # Numerical gradient for general case
+            if use_specialized:
+                def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                    _core._log_arma_garch_nll_grad_pq_studentt(
+                        _as_cptr(z), y_ptr, resid_ptr, sigma2_ptr,
+                        e0_ptr, h0_ptr, _grad_z_ptr, n, p_ar, q_ma, P_arch, Q_garch
+                    )
+                    return _grad_z_buf * p_scaler
+            else:
+                def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
                     eps = 1e-7
                     grad = np.zeros(K, dtype=np.float64)
                     f0 = obj_log(z)
                     for i in range(K):
-                        z_p = z.copy()
-                        z_p[i] += eps
+                        z_p = z.copy(); z_p[i] += eps
                         grad[i] = (obj_log(z_p) - f0) / eps
                     return grad
             
@@ -185,7 +181,7 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
                         H[i, j] = (obj_log(z_pp) - obj_log(z_pm) - obj_log(z_mp) + obj_log(z_mm)) / (4 * eps * eps)
                 return H
             
-            z0 = unpack(start)
+            z0 = unpack_arma_garch_studentt(start, p_ar, q_ma, P_arch, Q_garch)
             
             if solver.lower() == "nelder-mead":
                 res = minimize(obj_log, z0, method="Nelder-Mead", tol=1e-12,
@@ -204,7 +200,7 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
             else:
                 raise ValueError(f"Unknown solver: {solver}")
             
-            theta_hat = pack(res.x)
+            theta_hat = pack_arma_garch_studentt(res.x, p_ar, q_ma, P_arch, Q_garch)
             nll_final = res.fun / p_scaler
         
         t_elapsed = time.perf_counter() - t_start

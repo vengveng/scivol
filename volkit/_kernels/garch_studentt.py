@@ -21,11 +21,7 @@ from ..components.density import StudentT
 from ..spec.composite import CompositeSpec
 from ..result import EstimationResult
 from .routine import Routine
-from .transforms import (
-    pack_garch_studentt,
-    unpack_garch_studentt,
-    jacobian_garch_studentt,
-)
+from .transforms import unpack_garch_studentt, jacobian_garch_studentt
 
 # ------------------------------------------------------------------ #
 # cache (p,q) → Routine
@@ -225,10 +221,10 @@ def _build(p: int, q: int) -> Routine:
         
         else:
             # =========================================================
-            # LOG MODE: Unconstrained optimization with C-accelerated transforms
+            # LOG MODE: Fused C-accelerated unconstrained optimization
             # =========================================================
             from .transforms import (
-                pack_garch_studentt_c, jacobian_garch_studentt_c, transform_grad_c,
+                pack_garch_studentt_c,
                 unpack_garch_studentt, jacobian_garch_studentt, pack_garch_studentt,
                 compute_se_via_logspace,
             )
@@ -236,10 +232,10 @@ def _build(p: int, q: int) -> Routine:
             K = vol.n_params + dens.n_params  # Total parameters
             p_scaler = 2  # Scale factor for numerical stability
             
-            # Pre-allocate buffers for C functions
+            # Pre-allocate buffers for fused C calls
             _theta_buf = np.empty(K, dtype=np.float64)
-            _J_buf = np.empty((K, K), dtype=np.float64)
             _grad_z_buf = np.empty(K, dtype=np.float64)
+            _grad_z_c = _as_cptr(_grad_z_buf)
             
             def pack(z: NDArray[np.float64]) -> NDArray[np.float64]:
                 """C-accelerated transform: z -> theta."""
@@ -250,21 +246,20 @@ def _build(p: int, q: int) -> Routine:
                 """Transform constrained theta to unconstrained z."""
                 return unpack_garch_studentt(theta, p, q)
             
+            # ------------------------------------------------------------------
+            # Fused log-space objective and gradient (single C call each)
+            # ------------------------------------------------------------------
+            
             def obj_log(z: NDArray[np.float64]) -> float:
-                """Objective function in z-space."""
-                pack_garch_studentt_c(z, _theta_buf, p, q)
-                return call_c_obj(_theta_buf) * p_scaler
+                return _core._log_garch_ll_pq_studentt(
+                    _as_cptr(z), resid2_c, sigma2_c, n, p, q
+                ) * p_scaler
             
             def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                """C-accelerated gradient: ∇_z = Jᵀ ∇_θ."""
-                pack_garch_studentt_c(z, _theta_buf, p, q)
-                call_c_jac(_theta_buf)
-                grad_theta = grad_vec * p_scaler
-                
-                # Use C Jacobian and gradient transform
-                jacobian_garch_studentt_c(_theta_buf, _J_buf, p, q)
-                transform_grad_c(grad_theta, _J_buf, _grad_z_buf, p, q, "studentt")
-                return _grad_z_buf.copy()
+                _core._log_garch_ll_grad_pq_studentt(
+                    _as_cptr(z), resid2_c, sigma2_c, _grad_z_c, n, p, q
+                )
+                return _grad_z_buf.copy() * p_scaler
             
             def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
                 """Numerical Hessian in z-space."""

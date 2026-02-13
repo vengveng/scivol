@@ -69,9 +69,9 @@ def _build(p: int, q: int) -> Routine:
         c_hess = getattr(_core, f"_gjr_garch_ll_hess_{p}{q}_studentt")
         special = True
     except AttributeError:
-        c_obj = _core._gjr_garch_ll_pq_studentt
-        c_jac = None
-        c_hess = None
+        c_obj  = _core._gjr_garch_ll_pq_studentt
+        c_jac  = _core._gjr_garch_ll_grad_pq_studentt
+        c_hess = _core._gjr_garch_ll_hess_pq_studentt
         special = False
 
     def fit(
@@ -107,10 +107,14 @@ def _build(p: int, q: int) -> Routine:
         def call_c_jac(theta: NDArray[np.float64]) -> None:
             if special:
                 c_jac(_as_cptr(theta), resid_ptr, sigma2_c, grad_vec_c, n)
+            else:
+                c_jac(_as_cptr(theta), resid_ptr, sigma2_c, grad_vec_c, n, p, q)
 
         def call_c_hess(theta: NDArray[np.float64]) -> None:
             if special:
                 c_hess(_as_cptr(theta), resid_ptr, sigma2_c, hess_mat_c, n)
+            else:
+                c_hess(_as_cptr(theta), resid_ptr, sigma2_c, hess_mat_c, n, p, q)
 
         if not log_mode:
             def obj(theta: NDArray[np.float64]) -> float:
@@ -139,18 +143,25 @@ def _build(p: int, q: int) -> Routine:
 
             elif solver.lower() == "slsqp":
                 start[0] = 0.025
-                res = minimize(obj, start, method="SLSQP",
-                              jac=jac, bounds=bounds, constraints=lc,
-                              tol=1e-12,
-                              options={"disp": verbose, 'ftol': 1e-16, "maxiter": 5000})
+                slsqp_kw: dict = dict(
+                    bounds=bounds, constraints=lc, tol=1e-12,
+                    options={"disp": verbose, 'ftol': 1e-16, "maxiter": 5000},
+                )
+                if jac is not None:
+                    slsqp_kw["jac"] = jac
+                res = minimize(obj, start, method="SLSQP", **slsqp_kw)
 
             elif solver.lower() in ("trust", "trust-constr"):
-                res = minimize(obj, start, method="trust-constr",
-                              jac=jac, hess=hess,
-                              bounds=bounds, constraints=lc,
-                              tol=1e-12,
-                              options={"disp": verbose, "xtol": 1e-6, "maxiter": 5000,
-                                      'initial_tr_radius': 1e-2})
+                tc_kw: dict = dict(
+                    bounds=bounds, constraints=lc, tol=1e-12,
+                    options={"disp": verbose, "xtol": 1e-6, "maxiter": 5000,
+                             'initial_tr_radius': 1e-2},
+                )
+                if jac is not None:
+                    tc_kw["jac"] = jac
+                if hess is not None:
+                    tc_kw["hess"] = hess
+                res = minimize(obj, start, method="trust-constr", **tc_kw)
             else:
                 raise ValueError(f"Unknown solver '{solver}'")
 
@@ -185,29 +196,31 @@ def _build(p: int, q: int) -> Routine:
             )
 
         else:
-            # LOG MODE
+            # LOG MODE: Fused C-accelerated unconstrained optimization
             from .transforms import (
-                pack_gjr_garch_studentt_c, jacobian_gjr_garch_studentt_c,
-                transform_grad_gjr_c, compute_se_via_logspace,
+                pack_gjr_garch_studentt_c, compute_se_via_logspace,
             )
 
             p_scaler = 2
 
             _theta_buf = np.empty(K, dtype=np.float64)
-            _J_buf = np.empty((K, K), dtype=np.float64)
             _grad_z_buf = np.empty(K, dtype=np.float64)
+            _grad_z_c = _as_cptr(_grad_z_buf)
+
+            # ------------------------------------------------------------------
+            # Fused log-space objective and gradient (single C call each)
+            # ------------------------------------------------------------------
 
             def obj_log(z: NDArray[np.float64]) -> float:
-                pack_gjr_garch_studentt_c(z, _theta_buf, p, q)
-                return call_c_obj(_theta_buf) * p_scaler
+                return _core._log_gjr_garch_ll_pq_studentt(
+                    _as_cptr(z), resid_ptr, sigma2_c, n, p, q
+                ) * p_scaler
 
             def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                pack_gjr_garch_studentt_c(z, _theta_buf, p, q)
-                call_c_jac(_theta_buf)
-                grad_theta = grad_vec * p_scaler
-                jacobian_gjr_garch_studentt_c(_theta_buf, _J_buf, p, q)
-                transform_grad_gjr_c(grad_theta, _J_buf, _grad_z_buf, p, q, "studentt")
-                return _grad_z_buf.copy()
+                _core._log_gjr_garch_ll_grad_pq_studentt(
+                    _as_cptr(z), resid_ptr, sigma2_c, _grad_z_c, n, p, q
+                )
+                return _grad_z_buf.copy() * p_scaler
 
             def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
                 eps = 1e-5

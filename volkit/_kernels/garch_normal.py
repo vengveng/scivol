@@ -176,19 +176,15 @@ def _build(p: int, q: int) -> Routine:
             return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
         
         else:
-            from .transforms import pack_garch_c, jacobian_garch_c, transform_grad_c, unpack_garch
+            from .transforms import pack_garch_c, unpack_garch
             
             p_scaler = 2
             K = 1 + p + q
             
-            # Pre-allocate buffers for C functions (reused across calls)
+            # Pre-allocate buffers for fused C calls (reused across iterations)
             _theta_buf = np.empty(K, dtype=np.float64)
-            _J_buf = np.empty((K, K), dtype=np.float64)
             _grad_z_buf = np.empty(K, dtype=np.float64)
-            
-            # ------------------------------------------------------------------
-            # log-mode helpers using C-accelerated transforms
-            # ------------------------------------------------------------------
+            _grad_z_c = _as_cptr(_grad_z_buf)
             
             def pack(z: np.ndarray) -> np.ndarray:
                 """C-accelerated transform: z -> theta."""
@@ -200,23 +196,19 @@ def _build(p: int, q: int) -> Routine:
                 return unpack_garch(theta, p, q)
 
             # ------------------------------------------------------------------
-            # objective wrapper working in z-space
+            # Fused log-space objective and gradient (single C call each)
             # ------------------------------------------------------------------
 
             def obj_log(z: NDArray[np.float64]) -> float:
-                pack_garch_c(z, _theta_buf, p, q)
-                return call_c_obj(_theta_buf) * p_scaler
+                return _core._log_garch_ll_pq_normal(
+                    _as_cptr(z), resid2_c, sigma2_c, n, p, q
+                ) * p_scaler
             
             def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                """C-accelerated gradient: ∇_z = Jᵀ ∇_θ."""
-                pack_garch_c(z, _theta_buf, p, q)
-                call_c_jac(_theta_buf)
-                grad_theta = grad_vec * p_scaler
-                
-                # Use C Jacobian and gradient transform
-                jacobian_garch_c(_theta_buf, _J_buf, p, q)
-                transform_grad_c(grad_theta, _J_buf, _grad_z_buf, p, q, "normal")
-                return _grad_z_buf.copy()
+                _core._log_garch_ll_grad_pq_normal(
+                    _as_cptr(z), resid2_c, sigma2_c, _grad_z_c, n, p, q
+                )
+                return _grad_z_buf.copy() * p_scaler
             
             def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
                 """Numerical Hessian in z-space."""
@@ -231,75 +223,9 @@ def _build(p: int, q: int) -> Routine:
                         H[i, j] = (obj_log(z_pp) - obj_log(z_pm) - obj_log(z_mp) + obj_log(z_mm)) / (4 * eps * eps)
                 return H
 
-            def _hess_log_analytical_UNUSED(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                """OLD: Analytical Hessian (kept for reference)."""
-                theta = pack(z)
-
-                call_c_jac(theta)
-                call_c_hess(theta)
-
-                g_theta = grad_vec.copy() * p_scaler
-                H_theta = hess_mat.copy() * p_scaler
-
-                omega = theta[0]
-                alpha = theta[1 : 1+p]
-                beta  = theta[1+p : 1+p+q]
-
-                K       = 1 + p + q
-                # 2. build Jacobian  J  -----------------------------------------------
-                J       = np.zeros((K, K), dtype=np.float64)
-
-                # omega row/col
-                J[0, 0] = omega                                # ∂omega/∂omegã
-
-                # alpha block
-                Jalpha          = np.diag(alpha) - np.outer(alpha, alpha)      # alpha_i(δ_ik-alpha_k)
-                J[1:1+p, 1:1+p] = Jalpha
-
-                # beta block
-                Jbeta          = np.diag(beta) - np.outer(beta, beta)
-                J[1+p:, 1+p:]  = Jbeta
-
-                # 3. first term  H1 = Jᵀ Hθ J  ----------------------------------------
-                H1 = J.T @ Hθ @ J
-
-                # 4. correction term  H2 = Σ gθk · J''_k  -----------------------------
-                H2 = np.zeros((K, K), dtype=np.float64)
-
-                # omega second derivative:  ∂²omega/∂omegã² = omega
-                H2[0, 0] += gθ[0] * omega
-
-                # alpha block
-                for i in range(p):
-                    gi = gθ[1 + i]
-                    ai = alpha[i]
-                    for j in range(p):
-                        for k in range(p):
-                            δij = 1.0 if i == j else 0.0
-                            δik = 1.0 if i == k else 0.0
-                            δjk = 1.0 if j == k else 0.0
-                            d2  = ai * ((δij - alpha[j]) * (δik - alpha[k]) - (δjk - alpha[k]))
-                            H2[1 + j, 1 + k] += gi * d2
-
-                # beta block
-                for i in range(q):
-                    gi = gθ[1 + p + i]
-                    bi = beta[i]
-                    for j in range(q):
-                        for k in range(q):
-                            δij = 1.0 if i == j else 0.0
-                            δik = 1.0 if i == k else 0.0
-                            δjk = 1.0 if j == k else 0.0
-                            d2  = bi * ((δij - beta[j]) * (δik - beta[k]) - (δjk - beta[k]))
-                            H2[1 + p + j, 1 + p + k] += gi * d2
-
-                # (cross-blocks are zero because alpha,beta depend on disjoint logits)
-
-                return H1 + H2
-
-            θ0      = np.concatenate((vol.default_start(resid),     # omega, alpha
-                                    dens.default_start(resid)))   # (empty here)
-            z0      = unpack(θ0)
+            theta_0 = np.concatenate((vol.default_start(resid),
+                                      dens.default_start(resid)))
+            z0 = unpack(theta_0)
 
             if solver.lower() == "nelder-mead":
                 solver_args = dict(
@@ -346,16 +272,16 @@ def _build(p: int, q: int) -> Routine:
             else:
                 raise ValueError(f"Unknown solver '{solver}'")
 
-            θ_hat   = pack(res.x)
-            res.x   = θ_hat
+            theta_hat = pack(res.x)
+            res.x = theta_hat
             res.fun = -(-res.fun / p_scaler + constant_ll)
 
-            vol.unpack(θ_hat)
+            vol.unpack(theta_hat)
             
             t_elapsed = time.perf_counter() - t_start
             
             # Compute final sigma2 for storage
-            _compute_garch_variance(θ_hat, resid2, sigma2, p, q)
+            _compute_garch_variance(theta_hat, resid2, sigma2, p, q)
             
             return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
 

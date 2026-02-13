@@ -64,8 +64,8 @@ def _build(p: int, q: int) -> Routine:
         special = True
     except AttributeError:
         c_obj  = _core._gjr_garch_ll_pq_normal
-        c_jac  = None  # No general gradient yet
-        c_hess = None
+        c_jac  = _core._gjr_garch_ll_grad_pq_normal
+        c_hess = _core._gjr_garch_ll_hess_pq_normal
         special = False
 
     def fit(resid: NDArray[np.float64], solver: str = "slsqp", log_mode: bool = False, verbose: bool = False, **_) -> EstimationResult:
@@ -97,13 +97,13 @@ def _build(p: int, q: int) -> Routine:
             if special:
                 c_jac(_as_cptr(theta), resid_ptr, sigma2_c, grad_vec_c, n)
             else:
-                raise NotImplementedError("General GJR-GARCH gradient not available")
+                c_jac(_as_cptr(theta), resid_ptr, sigma2_c, grad_vec_c, n, p, q)
 
         def call_c_hess(theta: NDArray[np.float64]) -> None:
             if special:
                 c_hess(_as_cptr(theta), resid_ptr, sigma2_c, hess_mat_c, n)
             else:
-                raise NotImplementedError("General GJR-GARCH Hessian not available")
+                c_hess(_as_cptr(theta), resid_ptr, sigma2_c, hess_mat_c, n, p, q)
 
         if not log_mode:
             def obj(theta: NDArray[np.float64]) -> float:
@@ -133,19 +133,26 @@ def _build(p: int, q: int) -> Routine:
 
             elif solver.lower() == "slsqp":
                 start[0] = 0.05
-                res = minimize(obj, start, method="SLSQP",
-                              jac=jac, bounds=bounds, constraints=lc,
-                              tol=1e-12,
-                              options={"disp": verbose, 'ftol': 1e-12, "maxiter": 5000})
+                slsqp_kw: dict = dict(
+                    bounds=bounds, constraints=lc, tol=1e-12,
+                    options={"disp": verbose, 'ftol': 1e-12, "maxiter": 5000},
+                )
+                if jac is not None:
+                    slsqp_kw["jac"] = jac
+                res = minimize(obj, start, method="SLSQP", **slsqp_kw)
 
             elif solver.lower() in ("trust", "trust-constr"):
                 radius = max(1 / (10 ** (2*p + q + 1)), 1e-6)
-                res = minimize(obj, start, method="trust-constr",
-                              jac=jac, hess=hess,
-                              bounds=bounds, constraints=lc,
-                              tol=1e-12,
-                              options={"disp": verbose, "xtol": 1e-6, "maxiter": 5000,
-                                      'initial_tr_radius': radius})
+                tc_kw: dict = dict(
+                    bounds=bounds, constraints=lc, tol=1e-12,
+                    options={"disp": verbose, "xtol": 1e-6, "maxiter": 5000,
+                             'initial_tr_radius': radius},
+                )
+                if jac is not None:
+                    tc_kw["jac"] = jac
+                if hess is not None:
+                    tc_kw["hess"] = hess
+                res = minimize(obj, start, method="trust-constr", **tc_kw)
             else:
                 raise ValueError(f"Unknown solver '{solver}'")
 
@@ -158,28 +165,28 @@ def _build(p: int, q: int) -> Routine:
             return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
 
         else:
-            from .transforms import (
-                pack_gjr_garch_c, jacobian_gjr_garch_c, transform_grad_gjr_c,
-                unpack_gjr_garch,
-            )
+            from .transforms import pack_gjr_garch_c, unpack_gjr_garch
 
             p_scaler = 2
 
             _theta_buf = np.empty(K, dtype=np.float64)
-            _J_buf = np.empty((K, K), dtype=np.float64)
             _grad_z_buf = np.empty(K, dtype=np.float64)
+            _grad_z_c = _as_cptr(_grad_z_buf)
+
+            # ------------------------------------------------------------------
+            # Fused log-space objective and gradient (single C call each)
+            # ------------------------------------------------------------------
 
             def obj_log(z: NDArray[np.float64]) -> float:
-                pack_gjr_garch_c(z, _theta_buf, p, q)
-                return call_c_obj(_theta_buf) * p_scaler
+                return _core._log_gjr_garch_ll_pq_normal(
+                    _as_cptr(z), resid_ptr, sigma2_c, n, p, q
+                ) * p_scaler
 
             def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                pack_gjr_garch_c(z, _theta_buf, p, q)
-                call_c_jac(_theta_buf)
-                grad_theta = grad_vec * p_scaler
-                jacobian_gjr_garch_c(_theta_buf, _J_buf, p, q)
-                transform_grad_gjr_c(grad_theta, _J_buf, _grad_z_buf, p, q, "normal")
-                return _grad_z_buf.copy()
+                _core._log_gjr_garch_ll_grad_pq_normal(
+                    _as_cptr(z), resid_ptr, sigma2_c, _grad_z_c, n, p, q
+                )
+                return _grad_z_buf.copy() * p_scaler
 
             def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
                 eps = 1e-5

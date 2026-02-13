@@ -502,6 +502,30 @@ def _gjr_garch_ll_pq_normal(
     """GJR-GARCH(p,q) + Normal NLL."""
     ...
 
+def _gjr_garch_ll_grad_pq_normal(
+    params_ptr: _IntPtr,   # [omega, alpha_1..p, gamma_1..p, beta_1..q]
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,     # Output: gradient [K] (modified in-place), K = 1 + 2p + q
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """GJR-GARCH(p,q) + Normal gradient."""
+    ...
+
+def _gjr_garch_ll_hess_pq_normal(
+    params_ptr: _IntPtr,   # [omega, alpha_1..p, gamma_1..p, beta_1..q]
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,     # Output: Hessian K*K (modified in-place)
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """GJR-GARCH(p,q) + Normal Hessian."""
+    ...
+
 def _gjr_garch_ll_pq_studentt(
     params_ptr: _IntPtr,   # [omega, alpha_1..p, gamma_1..p, beta_1..q, nu]
     resid_ptr: _IntPtr,
@@ -511,6 +535,30 @@ def _gjr_garch_ll_pq_studentt(
     q: _Size,
 ) -> float:
     """GJR-GARCH(p,q) + Student-t NLL."""
+    ...
+
+def _gjr_garch_ll_grad_pq_studentt(
+    params_ptr: _IntPtr,   # [omega, alpha_1..p, gamma_1..p, beta_1..q, nu]
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,     # Output: gradient [K] (modified in-place), K = 1 + 2p + q + 1
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """GJR-GARCH(p,q) + Student-t gradient."""
+    ...
+
+def _gjr_garch_ll_hess_pq_studentt(
+    params_ptr: _IntPtr,   # [omega, alpha_1..p, gamma_1..p, beta_1..q, nu]
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,     # Output: Hessian K*K (modified in-place)
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """GJR-GARCH(p,q) + Student-t Hessian."""
     ...
 
 # GJR-GARCH OPG/Hessian (Normal, for sandwich SE)
@@ -782,6 +830,169 @@ def _arma_hess_pq_normal(
     q_ma: _Size,
 ) -> None:
     """ARMA(p,q) Hessian (expected, concentrated likelihood)."""
+    ...
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fused log-space wrappers
+#
+# Accept unconstrained z, internally pack to θ, compute NLL/grad in θ-space,
+# then transform gradient to z-space via Jacobian chain rule.
+# Dispatches to specialized _11 kernels when p=1, q=1.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _log_garch_ll_pq_normal(
+    z_ptr: _IntPtr,
+    resid2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size, p: _Size, q: _Size,
+) -> float:
+    """Log-space GARCH(p,q) + Normal NLL. Fused pack → NLL."""
+    ...
+
+def _log_garch_ll_grad_pq_normal(
+    z_ptr: _IntPtr,
+    resid2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size, p: _Size, q: _Size,
+) -> None:
+    """Log-space GARCH(p,q) + Normal gradient. Fused pack → grad → J^T transform."""
+    ...
+
+def _log_garch_ll_pq_studentt(
+    z_ptr: _IntPtr,
+    resid2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size, p: _Size, q: _Size,
+) -> float:
+    """Log-space GARCH(p,q) + Student-t NLL. Fused pack → NLL."""
+    ...
+
+def _log_garch_ll_grad_pq_studentt(
+    z_ptr: _IntPtr,
+    resid2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size, p: _Size, q: _Size,
+) -> None:
+    """Log-space GARCH(p,q) + Student-t gradient. Fused pack → grad → J^T transform."""
+    ...
+
+def _log_gjr_garch_ll_pq_normal(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size, p: _Size, q: _Size,
+) -> float:
+    """Log-space GJR-GARCH(p,q) + Normal NLL. Fused pack → NLL."""
+    ...
+
+def _log_gjr_garch_ll_grad_pq_normal(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size, p: _Size, q: _Size,
+) -> None:
+    """Log-space GJR-GARCH(p,q) + Normal gradient. Fused pack → grad → J^T transform."""
+    ...
+
+def _log_gjr_garch_ll_pq_studentt(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size, p: _Size, q: _Size,
+) -> float:
+    """Log-space GJR-GARCH(p,q) + Student-t NLL. Fused pack → NLL."""
+    ...
+
+def _log_gjr_garch_ll_grad_pq_studentt(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size, p: _Size, q: _Size,
+) -> None:
+    """Log-space GJR-GARCH(p,q) + Student-t gradient. Fused pack → grad → J^T transform."""
+    ...
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fused log-space wrappers — ARMA-GARCH
+#
+# NLL: all distributions, all orders (dispatches to _11 when applicable)
+# Gradient: Normal & Student-t only, _11 dispatch only
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _log_arma_garch_nll_pq_normal(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_garch: _Size,
+) -> float:
+    """Log-space ARMA-GARCH + Normal NLL. Fused pack → NLL."""
+    ...
+
+def _log_arma_garch_nll_grad_pq_normal(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_garch: _Size,
+) -> None:
+    """Log-space ARMA-GARCH + Normal gradient (11 dispatch only)."""
+    ...
+
+def _log_arma_garch_nll_pq_studentt(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_garch: _Size,
+) -> float:
+    """Log-space ARMA-GARCH + Student-t NLL. Fused pack → NLL."""
+    ...
+
+def _log_arma_garch_nll_grad_pq_studentt(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_garch: _Size,
+) -> None:
+    """Log-space ARMA-GARCH + Student-t gradient (11 dispatch only)."""
+    ...
+
+def _log_arma_garch_nll_pq_skewt(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_garch: _Size,
+) -> float:
+    """Log-space ARMA-GARCH + Skew-t NLL. Fused pack → NLL."""
     ...
 
 # Nothing is meant for star-import; keep top-level clean

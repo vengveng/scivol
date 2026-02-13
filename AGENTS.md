@@ -367,6 +367,15 @@ np.testing.assert_allclose(hess_analytical, hess_numerical, rtol=1e-4, atol=1e-6
 - Correctness: Does it match finite differences?
 - Boundary cases: Does it handle constraints properly?
 
+### Model Reference (Keep Evergreen)
+
+**`MODELS.md`** lists every available model with its analytical/numerical kernel coverage.
+
+**Keep this file updated** when adding or modifying models:
+- Add new model rows when a new model family or distribution is implemented
+- Update the constrained/log columns when analytical gradients or Hessians are added
+- Update the "Gaps" section as gaps are closed
+
 ### Master DGP Test File (Keep Evergreen)
 
 **`tests/test_dgp_estimation.py`** is the canonical test file for volkit estimation accuracy.
@@ -686,7 +695,8 @@ volkit_cursor/                   # Repository root
 │   │   ├── likelihood_gjr_garch.c # GJR-GARCH NLL + grad + Hessian
 │   │   ├── arma_garch.c         # ARMA-GARCH NLL + gradients (Normal/t/Skew-t)
 │   │   ├── errors_garch.c       # OPG and Hessian computation
-│   │   └── errors_gjr_garch.c   # GJR-GARCH OPG and Hessian
+│   │   ├── errors_gjr_garch.c   # GJR-GARCH OPG and Hessian
+│   │   └── log_wrappers.c       # Fused log-space NLL+gradient wrappers
 │   ├── _kernels/                # Optimization kernels (internal)
 │   ├── components/              # User-facing components
 │   ├── spec/                    # Composition logic
@@ -747,11 +757,54 @@ from volkit.result import EstimationResult
 - ✅ GJR-GARCH kernel modules (Normal, Student-t, Skew-t)
 - ✅ GJR-GARCH DGP estimation tests and gradient validation tests
 - ✅ GJR-GARCH benchmark configuration
+- ✅ GJR-GARCH(p,q) C gradient and Hessian (Normal and Student-t)
+- ✅ Fused log-space C wrappers (`log_wrappers.c`) for GARCH/GJR-GARCH + Normal/Student-t
+- ✅ ARMA-GARCH C pack/jacobian in `transforms_logspace.c` (6 pack + 6 jacobian = 12 functions)
+- ✅ Fused log-space C wrappers for ARMA-GARCH (3 NLL + 2 gradient functions)
+- ✅ ARMA-GARCH kernel files updated to use fused functions
 
 ### Immediate Goals
 
-1. **Complete C gradient/Hessian** for Student-t and Skew-t distributions (ARMA-GARCH)
-2. Log-space (unconstrained) optimization option (partially implemented)
+1. Add GJR-GARCH + Skew-t C NLL/gradient functions
+2. Add GARCH + Skew-t pq gradient C function
+3. Log-space (unconstrained) optimization option (partially implemented)
+
+### Fused Log-Space Wrappers
+
+**Location**: `volkit/_csrc/log_wrappers.c`
+
+Fused C functions that perform the full unconstrained optimization pipeline in a single C call:
+1. `pack(z -> theta)` - unconstrained to constrained parameters
+2. Compute NLL or gradient in theta-space
+3. `jacobian(theta -> J)` - Jacobian of the transform
+4. `transform(J^T @ grad)` - chain rule to z-space gradient
+
+**Naming**: `_log_{model}_ll[_grad]_pq_{distribution}`
+
+**Available functions**:
+- `_log_garch_ll_pq_normal` / `_log_garch_ll_grad_pq_normal` (takes resid2)
+- `_log_garch_ll_pq_studentt` / `_log_garch_ll_grad_pq_studentt` (takes resid2)
+- `_log_gjr_garch_ll_pq_normal` / `_log_gjr_garch_ll_grad_pq_normal` (takes raw resid)
+- `_log_gjr_garch_ll_pq_studentt` / `_log_gjr_garch_ll_grad_pq_studentt` (takes raw resid)
+- `_log_arma_garch_nll_pq_normal` / `_log_arma_garch_nll_grad_pq_normal` (takes y, resid, sigma2, e0, h0)
+- `_log_arma_garch_nll_pq_studentt` / `_log_arma_garch_nll_grad_pq_studentt` (takes y, resid, sigma2, e0, h0)
+- `_log_arma_garch_nll_pq_skewt` (NLL only, no C gradient for Skew-t)
+
+Each dispatches to specialized `_11` kernels when applicable (all orders == 1).
+ARMA-GARCH gradient functions only work for (1,1,1,1); Python uses numerical z-space gradient for other orders.
+
+**Not yet available** (missing C building blocks):
+- GARCH/GJR-GARCH + Skew-t (missing pq gradient or NLL C functions)
+
+**Python kernel pattern** (after fused wrappers):
+```python
+def obj_log(z):
+    return _core._log_garch_ll_pq_normal(_as_cptr(z), resid2_c, sigma2_c, n, p, q) * p_scaler
+
+def jac_log(z):
+    _core._log_garch_ll_grad_pq_normal(_as_cptr(z), resid2_c, sigma2_c, _grad_z_c, n, p, q)
+    return _grad_z_buf.copy() * p_scaler
+```
 
 ### GJR-GARCH Stationarity Note
 
@@ -816,6 +869,7 @@ This pattern was used for `localdev/arma_garch_estimator.py` → `arma_garch.c`.
 **IMPORTANT: When adding a new model/routine, you MUST add it to:**
 1. **`benchmark_optimizers.py`** - Tests optimizer configurations with real data
 2. **`tests/test_dgp_estimation.py`** - Tests parameter recovery with DGP data
+3. **`MODELS.md`** - Documents analytical/numerical kernel coverage for every model
 
 `benchmark_optimizers.py` tests all optimizer configurations:
 - Model types: GARCH(1,1), ARMA(1,1)-GARCH(1,1)

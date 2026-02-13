@@ -646,3 +646,349 @@ void transform_grad_pq(const double *grad_theta, const double *J, double *grad_z
         grad_z[i] = sum;
     }
 }
+
+
+// =============================================================================
+// ARMA-GARCH(1,1) SPECIALIZED FUNCTIONS
+// =============================================================================
+//
+// Parameter layout (Normal): [c, phi, theta_ma, omega, alpha, beta]   K=6
+//                 (StudentT): [c, phi, theta_ma, omega, alpha, beta, nu]  K=7
+//                 (SkewT):    [c, phi, theta_ma, omega, alpha, beta, nu, lam] K=8
+//
+// Transforms:
+//   c       = z_c                    (identity)
+//   phi     = 0.99 * tanh(z_phi)     (|phi| < 0.99)
+//   theta_ma= 0.99 * tanh(z_theta)   (|theta| < 0.99)
+//   omega   = exp(z_omega)            (omega > 0)
+//   (alpha, beta) = softmax(z_alpha, z_beta, 0)  (alpha + beta < 1)
+//   nu      = 2 + softplus(z_nu)      (nu > 2)
+//   lam     = tanh(z_lam)             (|lam| < 1)
+
+#define ARMA_TANH_BOUND 0.99
+
+__attribute__((visibility("default"), hot, flatten))
+void pack_arma_garch_normal_11(const double *z, double *theta)
+{
+    // Mean: c (identity), phi (tanh), theta_ma (tanh)
+    theta[0] = z[0];                           // c
+    theta[1] = ARMA_TANH_BOUND * tanh(z[1]);   // phi
+    theta[2] = ARMA_TANH_BOUND * tanh(z[2]);   // theta_ma
+
+    // Vol: omega (exp), alpha/beta (softmax with slack=0)
+    theta[3] = safe_exp(z[3]);
+
+    const double z_alpha = z[4];
+    const double z_beta  = z[5];
+    const double m = MAX(MAX(z_alpha, z_beta), 0.0);
+    const double sum_exp = exp(z_alpha - m) + exp(z_beta - m) + exp(-m);
+    const double lse = m + log(sum_exp);
+    theta[4] = exp(z_alpha - lse);  // alpha
+    theta[5] = exp(z_beta - lse);   // beta
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void pack_arma_garch_studentt_11(const double *z, double *theta)
+{
+    pack_arma_garch_normal_11(z, theta);
+    theta[6] = 2.0 + softplus(z[6]);  // nu
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void pack_arma_garch_skewt_11(const double *z, double *theta)
+{
+    pack_arma_garch_normal_11(z, theta);
+    theta[6] = 2.0 + softplus(z[6]);  // nu
+    theta[7] = tanh(z[7]);             // lam
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void jacobian_arma_garch_normal_11(const double *theta, double *J)
+{
+    // J is 6x6 row-major
+    dzeros(J, 36);
+
+    // J[0,0] = d(c)/d(z_c) = 1
+    J[0] = 1.0;
+
+    // J[1,1] = d(phi)/d(z_phi) = 0.99 * (1 - (phi/0.99)^2)
+    const double phi = theta[1];
+    J[7] = ARMA_TANH_BOUND * (1.0 - (phi / ARMA_TANH_BOUND) * (phi / ARMA_TANH_BOUND));
+
+    // J[2,2] = d(theta_ma)/d(z_theta) = 0.99 * (1 - (theta_ma/0.99)^2)
+    const double th = theta[2];
+    J[14] = ARMA_TANH_BOUND * (1.0 - (th / ARMA_TANH_BOUND) * (th / ARMA_TANH_BOUND));
+
+    // J[3,3] = d(omega)/d(z_omega) = omega
+    J[21] = theta[3];
+
+    // Softmax block for alpha, beta at [4..5] x [4..5]
+    const double alpha = theta[4];
+    const double beta  = theta[5];
+    J[28] = alpha * (1.0 - alpha);   // J[4,4]
+    J[29] = -alpha * beta;           // J[4,5]
+    J[34] = -beta * alpha;           // J[5,4]
+    J[35] = beta * (1.0 - beta);    // J[5,5]
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void jacobian_arma_garch_studentt_11(const double *theta, double *J)
+{
+    // J is 7x7 row-major
+    dzeros(J, 49);
+
+    const double phi = theta[1];
+    const double th  = theta[2];
+    const double alpha = theta[4];
+    const double beta  = theta[5];
+    const double nu    = theta[6];
+
+    J[0]  = 1.0;                                                             // J[0,0] c
+    J[8]  = ARMA_TANH_BOUND * (1.0 - (phi / ARMA_TANH_BOUND) * (phi / ARMA_TANH_BOUND));  // J[1,1] phi
+    J[16] = ARMA_TANH_BOUND * (1.0 - (th / ARMA_TANH_BOUND) * (th / ARMA_TANH_BOUND));   // J[2,2] theta_ma
+    J[24] = theta[3];                                                        // J[3,3] omega
+    J[32] = alpha * (1.0 - alpha);                                           // J[4,4]
+    J[33] = -alpha * beta;                                                   // J[4,5]
+    J[39] = -beta * alpha;                                                   // J[5,4]
+    J[40] = beta * (1.0 - beta);                                            // J[5,5]
+
+    const double z_nu = softplus_inv(nu - 2.0);
+    J[48] = softplus_deriv(z_nu);                                            // J[6,6] nu
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void jacobian_arma_garch_skewt_11(const double *theta, double *J)
+{
+    // J is 8x8 row-major
+    dzeros(J, 64);
+
+    const double phi   = theta[1];
+    const double th    = theta[2];
+    const double alpha = theta[4];
+    const double beta  = theta[5];
+    const double nu    = theta[6];
+    const double lam   = theta[7];
+
+    J[0]  = 1.0;                                                             // J[0,0] c
+    J[9]  = ARMA_TANH_BOUND * (1.0 - (phi / ARMA_TANH_BOUND) * (phi / ARMA_TANH_BOUND));  // J[1,1] phi
+    J[18] = ARMA_TANH_BOUND * (1.0 - (th / ARMA_TANH_BOUND) * (th / ARMA_TANH_BOUND));   // J[2,2] theta_ma
+    J[27] = theta[3];                                                        // J[3,3] omega
+    J[36] = alpha * (1.0 - alpha);                                           // J[4,4]
+    J[37] = -alpha * beta;                                                   // J[4,5]
+    J[44] = -beta * alpha;                                                   // J[5,4]
+    J[45] = beta * (1.0 - beta);                                            // J[5,5]
+
+    const double z_nu = softplus_inv(nu - 2.0);
+    J[54] = softplus_deriv(z_nu);                                            // J[6,6] nu
+    J[63] = 1.0 - lam * lam;                                                // J[7,7] lam
+}
+
+
+// =============================================================================
+// ARMA-GARCH(p,q) GENERAL FUNCTIONS
+// =============================================================================
+//
+// Parameter layout (Normal):
+//   theta = [c, phi_1..p_ar, theta_1..q_ma, omega, alpha_1..P, beta_1..Q]
+//   K = 1 + p_ar + q_ma + 1 + P + Q  =  n_mean + n_vol
+//
+// (StudentT): K + 1  (append nu)
+// (SkewT):    K + 2  (append nu, lam)
+
+__attribute__((visibility("default"), hot))
+void pack_arma_garch_normal_pq(const double *z, double *theta,
+                                size_t p_ar, size_t q_ma, size_t P, size_t Q)
+{
+    const size_t n_mean = 1 + p_ar + q_ma;
+    const size_t n_vol  = 1 + P + Q;
+
+    // Mean parameters
+    theta[0] = z[0];  // c (identity)
+    for (size_t i = 0; i < p_ar; ++i)
+        theta[1 + i] = ARMA_TANH_BOUND * tanh(z[1 + i]);
+    for (size_t j = 0; j < q_ma; ++j)
+        theta[1 + p_ar + j] = ARMA_TANH_BOUND * tanh(z[1 + p_ar + j]);
+
+    // omega = exp(z_omega)
+    theta[n_mean] = safe_exp(z[n_mean]);
+
+    // Softmax for alpha_1..P, beta_1..Q with slack=0
+    const size_t n_sm = P + Q;  // number of softmax entries
+    double m = 0.0;  // slack
+    for (size_t i = 0; i < n_sm; ++i) {
+        const double zi = z[n_mean + 1 + i];
+        if (zi > m) m = zi;
+    }
+    double sum_exp = exp(-m);  // slack
+    for (size_t i = 0; i < n_sm; ++i)
+        sum_exp += exp(z[n_mean + 1 + i] - m);
+    const double lse = m + log(sum_exp);
+    for (size_t i = 0; i < n_sm; ++i)
+        theta[n_mean + 1 + i] = exp(z[n_mean + 1 + i] - lse);
+}
+
+__attribute__((visibility("default"), hot))
+void pack_arma_garch_studentt_pq(const double *z, double *theta,
+                                  size_t p_ar, size_t q_ma, size_t P, size_t Q)
+{
+    const size_t n_mean = 1 + p_ar + q_ma;
+    const size_t n_vol  = 1 + P + Q;
+    pack_arma_garch_normal_pq(z, theta, p_ar, q_ma, P, Q);
+    theta[n_mean + n_vol] = 2.0 + softplus(z[n_mean + n_vol]);
+}
+
+__attribute__((visibility("default"), hot))
+void pack_arma_garch_skewt_pq(const double *z, double *theta,
+                                size_t p_ar, size_t q_ma, size_t P, size_t Q)
+{
+    const size_t n_mean = 1 + p_ar + q_ma;
+    const size_t n_vol  = 1 + P + Q;
+    pack_arma_garch_normal_pq(z, theta, p_ar, q_ma, P, Q);
+    theta[n_mean + n_vol]     = 2.0 + softplus(z[n_mean + n_vol]);
+    theta[n_mean + n_vol + 1] = tanh(z[n_mean + n_vol + 1]);
+}
+
+__attribute__((visibility("default"), hot))
+void jacobian_arma_garch_normal_pq(const double *theta, double *J,
+                                    size_t p_ar, size_t q_ma, size_t P, size_t Q)
+{
+    const size_t n_mean = 1 + p_ar + q_ma;
+    const size_t n_vol  = 1 + P + Q;
+    const size_t K = n_mean + n_vol;
+
+    dzeros(J, K * K);
+
+    // c: identity
+    J[0] = 1.0;
+
+    // phi: 0.99 * sech^2
+    for (size_t i = 0; i < p_ar; ++i) {
+        const size_t idx = 1 + i;
+        const double v = theta[idx];
+        J[idx * K + idx] = ARMA_TANH_BOUND * (1.0 - (v / ARMA_TANH_BOUND) * (v / ARMA_TANH_BOUND));
+    }
+
+    // theta_ma: 0.99 * sech^2
+    for (size_t j = 0; j < q_ma; ++j) {
+        const size_t idx = 1 + p_ar + j;
+        const double v = theta[idx];
+        J[idx * K + idx] = ARMA_TANH_BOUND * (1.0 - (v / ARMA_TANH_BOUND) * (v / ARMA_TANH_BOUND));
+    }
+
+    // omega
+    J[n_mean * K + n_mean] = theta[n_mean];
+
+    // softmax block for alpha, beta at [n_mean+1 .. n_mean+n_vol-1]
+    const size_t n_sm = P + Q;
+    for (size_t i = 0; i < n_sm; ++i) {
+        const size_t ri = n_mean + 1 + i;
+        const double ti = theta[ri];
+        for (size_t j = 0; j < n_sm; ++j) {
+            const size_t cj = n_mean + 1 + j;
+            const double delta = (i == j) ? 1.0 : 0.0;
+            J[ri * K + cj] = ti * (delta - theta[cj]);
+        }
+    }
+}
+
+__attribute__((visibility("default"), hot))
+void jacobian_arma_garch_studentt_pq(const double *theta, double *J,
+                                      size_t p_ar, size_t q_ma, size_t P, size_t Q)
+{
+    const size_t n_mean = 1 + p_ar + q_ma;
+    const size_t n_vol  = 1 + P + Q;
+    const size_t K_base = n_mean + n_vol;
+    const size_t K = K_base + 1;
+
+    dzeros(J, K * K);
+
+    // c: identity
+    J[0] = 1.0;
+
+    // phi
+    for (size_t i = 0; i < p_ar; ++i) {
+        const size_t idx = 1 + i;
+        const double v = theta[idx];
+        J[idx * K + idx] = ARMA_TANH_BOUND * (1.0 - (v / ARMA_TANH_BOUND) * (v / ARMA_TANH_BOUND));
+    }
+
+    // theta_ma
+    for (size_t j = 0; j < q_ma; ++j) {
+        const size_t idx = 1 + p_ar + j;
+        const double v = theta[idx];
+        J[idx * K + idx] = ARMA_TANH_BOUND * (1.0 - (v / ARMA_TANH_BOUND) * (v / ARMA_TANH_BOUND));
+    }
+
+    // omega
+    J[n_mean * K + n_mean] = theta[n_mean];
+
+    // softmax
+    const size_t n_sm = P + Q;
+    for (size_t i = 0; i < n_sm; ++i) {
+        const size_t ri = n_mean + 1 + i;
+        const double ti = theta[ri];
+        for (size_t j = 0; j < n_sm; ++j) {
+            const size_t cj = n_mean + 1 + j;
+            const double delta = (i == j) ? 1.0 : 0.0;
+            J[ri * K + cj] = ti * (delta - theta[cj]);
+        }
+    }
+
+    // nu
+    const double nu = theta[K_base];
+    const double z_nu = softplus_inv(nu - 2.0);
+    J[K_base * K + K_base] = softplus_deriv(z_nu);
+}
+
+__attribute__((visibility("default"), hot))
+void jacobian_arma_garch_skewt_pq(const double *theta, double *J,
+                                    size_t p_ar, size_t q_ma, size_t P, size_t Q)
+{
+    const size_t n_mean = 1 + p_ar + q_ma;
+    const size_t n_vol  = 1 + P + Q;
+    const size_t K_base = n_mean + n_vol;
+    const size_t K = K_base + 2;
+
+    dzeros(J, K * K);
+
+    // c: identity
+    J[0] = 1.0;
+
+    // phi
+    for (size_t i = 0; i < p_ar; ++i) {
+        const size_t idx = 1 + i;
+        const double v = theta[idx];
+        J[idx * K + idx] = ARMA_TANH_BOUND * (1.0 - (v / ARMA_TANH_BOUND) * (v / ARMA_TANH_BOUND));
+    }
+
+    // theta_ma
+    for (size_t j = 0; j < q_ma; ++j) {
+        const size_t idx = 1 + p_ar + j;
+        const double v = theta[idx];
+        J[idx * K + idx] = ARMA_TANH_BOUND * (1.0 - (v / ARMA_TANH_BOUND) * (v / ARMA_TANH_BOUND));
+    }
+
+    // omega
+    J[n_mean * K + n_mean] = theta[n_mean];
+
+    // softmax
+    const size_t n_sm = P + Q;
+    for (size_t i = 0; i < n_sm; ++i) {
+        const size_t ri = n_mean + 1 + i;
+        const double ti = theta[ri];
+        for (size_t j = 0; j < n_sm; ++j) {
+            const size_t cj = n_mean + 1 + j;
+            const double delta = (i == j) ? 1.0 : 0.0;
+            J[ri * K + cj] = ti * (delta - theta[cj]);
+        }
+    }
+
+    // nu
+    const double nu = theta[K_base];
+    const double z_nu = softplus_inv(nu - 2.0);
+    J[K_base * K + K_base] = softplus_deriv(z_nu);
+
+    // lam
+    const double lam = theta[K_base + 1];
+    J[(K_base + 1) * K + (K_base + 1)] = 1.0 - lam * lam;
+}

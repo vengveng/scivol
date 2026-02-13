@@ -239,8 +239,24 @@ def select_best_model(
     total = len(vol_candidates) * len(density_candidates)
     n_jobs_actual = n_jobs if n_jobs is not None else get_default_workers()
     
-    # Use parallel execution if n_jobs > 1 and multiple candidates
-    if n_jobs_actual > 1 and total > 2:
+    # Parallel execution for auto-selection.
+    #
+    # Process-based parallelism (joblib/loky) incurs ~1-2 seconds of
+    # spawn + serialization overhead on macOS/Linux.  Individual model
+    # fits typically take 3-60 ms, so the overhead dwarfs the computation
+    # for the candidate counts produced by AutoVol+AutoDensity (≤54).
+    #
+    # Threshold: only go parallel when the user explicitly requested
+    # n_jobs > 1 *and* there are enough candidates that the total
+    # sequential work is likely to exceed the spawn overhead (~2 s).
+    # With ~20 ms average per candidate, break-even is ~100 candidates.
+    _MIN_PARALLEL_CANDIDATES = 100
+    use_parallel = (
+        n_jobs_actual > 1
+        and total >= _MIN_PARALLEL_CANDIDATES
+    )
+    
+    if use_parallel:
         from ._parallel import select_best_parallel
         return select_best_parallel(
             data,

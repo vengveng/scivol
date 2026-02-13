@@ -388,6 +388,441 @@ class TestGJRGARCHStudentTHessian:
 
 
 # =============================================================================
+# Tests: GJR-GARCH(p,q) + Normal
+# =============================================================================
+
+class TestGJRGARCHpqNormalGradient:
+    """Validate C gradient for GJR-GARCH(p,q) + Normal against finite differences."""
+
+    @pytest.mark.parametrize("p,q", [(1, 1), (2, 1), (1, 2), (2, 2)])
+    def test_gradient_matches_finite_diff(self, resid: NDArray[np.float64], p: int, q: int) -> None:
+        """Non-omega gradient components should match finite differences tightly."""
+        n = len(resid)
+        K = 1 + 2 * p + q
+        max_lag = max(p, q)
+
+        # Build params: distribute alpha/gamma/beta evenly
+        params = np.zeros(K, dtype=np.float64)
+        params[0] = 1e-4  # larger omega for reliable FD
+        for j in range(p):
+            params[1 + j] = 0.05 / p
+            params[1 + p + j] = 0.04 / p
+        for k in range(q):
+            params[1 + 2 * p + k] = 0.85 / q
+
+        h0 = np.mean(resid**2)
+        resid_c = np.ascontiguousarray(resid, dtype=np.float64)
+        resid_ptr = _as_cptr(resid_c)
+
+        def nll(theta):
+            s2 = np.zeros(n, dtype=np.float64)
+            for i in range(max_lag):
+                s2[i] = h0
+            return _c._gjr_garch_ll_pq_normal(_as_cptr(theta), resid_ptr, _as_cptr(s2), n, p, q)
+
+        sigma2 = np.zeros(n, dtype=np.float64)
+        for i in range(max_lag):
+            sigma2[i] = h0
+
+        grad_c = np.zeros(K, dtype=np.float64)
+        _c._gjr_garch_ll_grad_pq_normal(
+            _as_cptr(params), resid_ptr, _as_cptr(sigma2), _as_cptr(grad_c), n, p, q
+        )
+
+        grad_num = numerical_gradient(nll, params)
+
+        # All components should match (using larger omega for FD reliability)
+        np.testing.assert_allclose(
+            grad_c, grad_num,
+            rtol=5e-3, atol=1e-2,
+            err_msg=f"GJR-GARCH({p},{q}) Normal gradient mismatch"
+        )
+
+    @pytest.mark.parametrize("p,q", [(1, 1), (2, 1), (1, 2)])
+    def test_gradient_nonomega_tight(self, resid: NDArray[np.float64], p: int, q: int) -> None:
+        """Non-omega gradient at small omega should match tightly."""
+        n = len(resid)
+        K = 1 + 2 * p + q
+        max_lag = max(p, q)
+
+        params = np.zeros(K, dtype=np.float64)
+        params[0] = 1e-6
+        for j in range(p):
+            params[1 + j] = 0.05 / p
+            params[1 + p + j] = 0.04 / p
+        for k in range(q):
+            params[1 + 2 * p + k] = 0.90 / q
+
+        h0 = np.mean(resid**2)
+        resid_c = np.ascontiguousarray(resid, dtype=np.float64)
+        resid_ptr = _as_cptr(resid_c)
+
+        def nll(theta):
+            s2 = np.zeros(n, dtype=np.float64)
+            for i in range(max_lag):
+                s2[i] = h0
+            return _c._gjr_garch_ll_pq_normal(_as_cptr(theta), resid_ptr, _as_cptr(s2), n, p, q)
+
+        sigma2 = np.zeros(n, dtype=np.float64)
+        for i in range(max_lag):
+            sigma2[i] = h0
+
+        grad_c = np.zeros(K, dtype=np.float64)
+        _c._gjr_garch_ll_grad_pq_normal(
+            _as_cptr(params), resid_ptr, _as_cptr(sigma2), _as_cptr(grad_c), n, p, q
+        )
+
+        grad_num = numerical_gradient(nll, params)
+
+        # Non-omega components should match very tightly
+        np.testing.assert_allclose(
+            grad_c[1:], grad_num[1:],
+            rtol=1e-4, atol=1e-3,
+            err_msg=f"GJR-GARCH({p},{q}) Normal gradient mismatch (non-omega)"
+        )
+
+
+class TestGJRGARCHpqNormalHessian:
+    """Validate C Hessian for GJR-GARCH(p,q) + Normal against finite differences."""
+
+    @pytest.mark.parametrize("p,q", [(1, 1), (2, 1), (1, 2), (2, 2)])
+    def test_hessian_matches_finite_diff(self, resid: NDArray[np.float64], p: int, q: int) -> None:
+        n = len(resid)
+        K = 1 + 2 * p + q
+        max_lag = max(p, q)
+
+        params = np.zeros(K, dtype=np.float64)
+        params[0] = 1e-4
+        for j in range(p):
+            params[1 + j] = 0.05 / p
+            params[1 + p + j] = 0.04 / p
+        for k in range(q):
+            params[1 + 2 * p + k] = 0.85 / q
+
+        h0 = np.mean(resid**2)
+        resid_c = np.ascontiguousarray(resid, dtype=np.float64)
+        resid_ptr = _as_cptr(resid_c)
+
+        def nll(theta):
+            s2 = np.zeros(n, dtype=np.float64)
+            for i in range(max_lag):
+                s2[i] = h0
+            return _c._gjr_garch_ll_pq_normal(_as_cptr(theta), resid_ptr, _as_cptr(s2), n, p, q)
+
+        sigma2 = np.zeros(n, dtype=np.float64)
+        for i in range(max_lag):
+            sigma2[i] = h0
+
+        hess_c = np.zeros(K * K, dtype=np.float64)
+        _c._gjr_garch_ll_hess_pq_normal(
+            _as_cptr(params), resid_ptr, _as_cptr(sigma2), _as_cptr(hess_c), n, p, q
+        )
+        hess_c = hess_c.reshape(K, K)
+
+        hess_num = numerical_hessian(nll, params)
+
+        # Compare non-omega block
+        np.testing.assert_allclose(
+            hess_c[1:, 1:], hess_num[1:, 1:],
+            rtol=5e-2, atol=1.0,
+            err_msg=f"GJR-GARCH({p},{q}) Normal Hessian mismatch"
+        )
+
+    @pytest.mark.parametrize("p,q", [(1, 1), (2, 1), (1, 2)])
+    def test_hessian_symmetry(self, resid: NDArray[np.float64], p: int, q: int) -> None:
+        n = len(resid)
+        K = 1 + 2 * p + q
+        max_lag = max(p, q)
+
+        params = np.zeros(K, dtype=np.float64)
+        params[0] = 1e-6
+        for j in range(p):
+            params[1 + j] = 0.05 / p
+            params[1 + p + j] = 0.04 / p
+        for k in range(q):
+            params[1 + 2 * p + k] = 0.90 / q
+
+        h0 = np.mean(resid**2)
+        sigma2 = np.zeros(n, dtype=np.float64)
+        for i in range(max_lag):
+            sigma2[i] = h0
+
+        hess_c = np.zeros(K * K, dtype=np.float64)
+        _c._gjr_garch_ll_hess_pq_normal(
+            _as_cptr(params), _as_cptr(resid), _as_cptr(sigma2), _as_cptr(hess_c), n, p, q
+        )
+        hess_c = hess_c.reshape(K, K)
+
+        np.testing.assert_allclose(
+            hess_c, hess_c.T,
+            rtol=1e-10, atol=1e-12,
+            err_msg=f"GJR-GARCH({p},{q}) Normal Hessian not symmetric"
+        )
+
+
+# =============================================================================
+# Tests: GJR-GARCH(p,q) + Student-t
+# =============================================================================
+
+class TestGJRGARCHpqStudentTGradient:
+    """Validate C gradient for GJR-GARCH(p,q) + Student-t against finite differences."""
+
+    @pytest.mark.parametrize("p,q", [(1, 1), (2, 1), (1, 2), (2, 2)])
+    def test_gradient_matches_finite_diff(self, resid: NDArray[np.float64], p: int, q: int) -> None:
+        n = len(resid)
+        K_garch = 1 + 2 * p + q
+        K = K_garch + 1
+        max_lag = max(p, q)
+
+        params = np.zeros(K, dtype=np.float64)
+        params[0] = 1e-4
+        for j in range(p):
+            params[1 + j] = 0.05 / p
+            params[1 + p + j] = 0.04 / p
+        for k in range(q):
+            params[1 + 2 * p + k] = 0.85 / q
+        params[K_garch] = 8.0  # nu
+
+        h0 = np.mean(resid**2)
+        resid_c = np.ascontiguousarray(resid, dtype=np.float64)
+        resid_ptr = _as_cptr(resid_c)
+
+        def nll(theta):
+            s2 = np.zeros(n, dtype=np.float64)
+            for i in range(max_lag):
+                s2[i] = h0
+            return _c._gjr_garch_ll_pq_studentt(_as_cptr(theta), resid_ptr, _as_cptr(s2), n, p, q)
+
+        sigma2 = np.zeros(n, dtype=np.float64)
+        for i in range(max_lag):
+            sigma2[i] = h0
+
+        grad_c = np.zeros(K, dtype=np.float64)
+        _c._gjr_garch_ll_grad_pq_studentt(
+            _as_cptr(params), resid_ptr, _as_cptr(sigma2), _as_cptr(grad_c), n, p, q
+        )
+
+        grad_num = numerical_gradient(nll, params)
+
+        # Non-omega, non-nu components
+        np.testing.assert_allclose(
+            grad_c[1:K_garch], grad_num[1:K_garch],
+            rtol=1e-3, atol=1e-2,
+            err_msg=f"GJR-GARCH({p},{q}) Student-t gradient mismatch (GARCH params)"
+        )
+        # omega: looser tolerance
+        np.testing.assert_allclose(
+            grad_c[0], grad_num[0],
+            rtol=0.10,
+            err_msg=f"GJR-GARCH({p},{q}) Student-t gradient mismatch (omega)"
+        )
+        # nu: digamma_approx precision
+        np.testing.assert_allclose(
+            grad_c[K - 1], grad_num[K - 1],
+            rtol=5e-2, atol=0.1,
+            err_msg=f"GJR-GARCH({p},{q}) Student-t gradient mismatch (nu)"
+        )
+
+
+class TestGJRGARCHpqStudentTHessian:
+    """Validate C Hessian for GJR-GARCH(p,q) + Student-t against finite differences."""
+
+    @pytest.mark.parametrize("p,q", [(1, 1), (2, 1), (1, 2), (2, 2)])
+    def test_hessian_matches_finite_diff(self, resid: NDArray[np.float64], p: int, q: int) -> None:
+        n = len(resid)
+        K_garch = 1 + 2 * p + q
+        K = K_garch + 1
+        max_lag = max(p, q)
+
+        params = np.zeros(K, dtype=np.float64)
+        params[0] = 1e-4
+        for j in range(p):
+            params[1 + j] = 0.05 / p
+            params[1 + p + j] = 0.04 / p
+        for k in range(q):
+            params[1 + 2 * p + k] = 0.85 / q
+        params[K_garch] = 8.0
+
+        h0 = np.mean(resid**2)
+        resid_c = np.ascontiguousarray(resid, dtype=np.float64)
+        resid_ptr = _as_cptr(resid_c)
+
+        def nll(theta):
+            s2 = np.zeros(n, dtype=np.float64)
+            for i in range(max_lag):
+                s2[i] = h0
+            return _c._gjr_garch_ll_pq_studentt(_as_cptr(theta), resid_ptr, _as_cptr(s2), n, p, q)
+
+        sigma2 = np.zeros(n, dtype=np.float64)
+        for i in range(max_lag):
+            sigma2[i] = h0
+
+        hess_c = np.zeros(K * K, dtype=np.float64)
+        _c._gjr_garch_ll_hess_pq_studentt(
+            _as_cptr(params), resid_ptr, _as_cptr(sigma2), _as_cptr(hess_c), n, p, q
+        )
+        hess_c = hess_c.reshape(K, K)
+
+        hess_num = numerical_hessian(nll, params)
+
+        # GARCH block (excluding omega and nu)
+        np.testing.assert_allclose(
+            hess_c[1:K_garch, 1:K_garch], hess_num[1:K_garch, 1:K_garch],
+            rtol=5e-2, atol=1.0,
+            err_msg=f"GJR-GARCH({p},{q}) Student-t Hessian mismatch (GARCH block)"
+        )
+
+    @pytest.mark.parametrize("p,q", [(1, 1), (2, 1), (1, 2)])
+    def test_hessian_symmetry(self, resid: NDArray[np.float64], p: int, q: int) -> None:
+        n = len(resid)
+        K_garch = 1 + 2 * p + q
+        K = K_garch + 1
+        max_lag = max(p, q)
+
+        params = np.zeros(K, dtype=np.float64)
+        params[0] = 1e-6
+        for j in range(p):
+            params[1 + j] = 0.05 / p
+            params[1 + p + j] = 0.04 / p
+        for k in range(q):
+            params[1 + 2 * p + k] = 0.90 / q
+        params[K_garch] = 8.0
+
+        h0 = np.mean(resid**2)
+        sigma2 = np.zeros(n, dtype=np.float64)
+        for i in range(max_lag):
+            sigma2[i] = h0
+
+        hess_c = np.zeros(K * K, dtype=np.float64)
+        _c._gjr_garch_ll_hess_pq_studentt(
+            _as_cptr(params), _as_cptr(resid), _as_cptr(sigma2), _as_cptr(hess_c), n, p, q
+        )
+        hess_c = hess_c.reshape(K, K)
+
+        np.testing.assert_allclose(
+            hess_c, hess_c.T,
+            rtol=1e-10, atol=1e-12,
+            err_msg=f"GJR-GARCH({p},{q}) Student-t Hessian not symmetric"
+        )
+
+
+# =============================================================================
+# Tests: GJR-GARCH(p,q) consistency with (1,1) specialized functions
+# =============================================================================
+
+class TestGJRGARCHpqConsistency:
+    """Verify pq functions with p=1,q=1 match the specialized (1,1) functions."""
+
+    def test_normal_gradient_pq_matches_11(self, resid: NDArray[np.float64]) -> None:
+        params = np.array([1e-6, 0.05, 0.04, 0.90], dtype=np.float64)
+        n = len(resid)
+        h0 = np.mean(resid**2)
+        resid_c = np.ascontiguousarray(resid, dtype=np.float64)
+        resid_ptr = _as_cptr(resid_c)
+
+        sigma2_11 = np.zeros(n, dtype=np.float64)
+        sigma2_11[0] = h0
+        grad_11 = np.zeros(4, dtype=np.float64)
+        _c._gjr_garch_ll_grad_11_normal(
+            _as_cptr(params), resid_ptr, _as_cptr(sigma2_11), _as_cptr(grad_11), n
+        )
+
+        sigma2_pq = np.zeros(n, dtype=np.float64)
+        sigma2_pq[0] = h0
+        grad_pq = np.zeros(4, dtype=np.float64)
+        _c._gjr_garch_ll_grad_pq_normal(
+            _as_cptr(params), resid_ptr, _as_cptr(sigma2_pq), _as_cptr(grad_pq), n, 1, 1
+        )
+
+        np.testing.assert_allclose(
+            grad_pq, grad_11,
+            rtol=1e-10, atol=1e-12,
+            err_msg="GJR-GARCH pq Normal gradient doesn't match 11"
+        )
+
+    def test_normal_hessian_pq_matches_11(self, resid: NDArray[np.float64]) -> None:
+        params = np.array([1e-6, 0.05, 0.04, 0.90], dtype=np.float64)
+        n = len(resid)
+        h0 = np.mean(resid**2)
+        resid_c = np.ascontiguousarray(resid, dtype=np.float64)
+        resid_ptr = _as_cptr(resid_c)
+
+        sigma2_11 = np.zeros(n, dtype=np.float64)
+        sigma2_11[0] = h0
+        hess_11 = np.zeros(16, dtype=np.float64)
+        _c._gjr_garch_ll_hess_11_normal(
+            _as_cptr(params), resid_ptr, _as_cptr(sigma2_11), _as_cptr(hess_11), n
+        )
+
+        sigma2_pq = np.zeros(n, dtype=np.float64)
+        sigma2_pq[0] = h0
+        hess_pq = np.zeros(16, dtype=np.float64)
+        _c._gjr_garch_ll_hess_pq_normal(
+            _as_cptr(params), resid_ptr, _as_cptr(sigma2_pq), _as_cptr(hess_pq), n, 1, 1
+        )
+
+        np.testing.assert_allclose(
+            hess_pq, hess_11,
+            rtol=1e-10, atol=1e-12,
+            err_msg="GJR-GARCH pq Normal Hessian doesn't match 11"
+        )
+
+    def test_studentt_gradient_pq_matches_11(self, resid: NDArray[np.float64]) -> None:
+        params = np.array([1e-6, 0.05, 0.04, 0.90, 8.0], dtype=np.float64)
+        n = len(resid)
+        h0 = np.mean(resid**2)
+        resid_c = np.ascontiguousarray(resid, dtype=np.float64)
+        resid_ptr = _as_cptr(resid_c)
+
+        sigma2_11 = np.zeros(n, dtype=np.float64)
+        sigma2_11[0] = h0
+        grad_11 = np.zeros(5, dtype=np.float64)
+        _c._gjr_garch_ll_grad_11_studentt(
+            _as_cptr(params), resid_ptr, _as_cptr(sigma2_11), _as_cptr(grad_11), n
+        )
+
+        sigma2_pq = np.zeros(n, dtype=np.float64)
+        sigma2_pq[0] = h0
+        grad_pq = np.zeros(5, dtype=np.float64)
+        _c._gjr_garch_ll_grad_pq_studentt(
+            _as_cptr(params), resid_ptr, _as_cptr(sigma2_pq), _as_cptr(grad_pq), n, 1, 1
+        )
+
+        np.testing.assert_allclose(
+            grad_pq, grad_11,
+            rtol=1e-10, atol=1e-12,
+            err_msg="GJR-GARCH pq Student-t gradient doesn't match 11"
+        )
+
+    def test_studentt_hessian_pq_matches_11(self, resid: NDArray[np.float64]) -> None:
+        params = np.array([1e-6, 0.05, 0.04, 0.90, 8.0], dtype=np.float64)
+        n = len(resid)
+        h0 = np.mean(resid**2)
+        resid_c = np.ascontiguousarray(resid, dtype=np.float64)
+        resid_ptr = _as_cptr(resid_c)
+
+        sigma2_11 = np.zeros(n, dtype=np.float64)
+        sigma2_11[0] = h0
+        hess_11 = np.zeros(25, dtype=np.float64)
+        _c._gjr_garch_ll_hess_11_studentt(
+            _as_cptr(params), resid_ptr, _as_cptr(sigma2_11), _as_cptr(hess_11), n
+        )
+
+        sigma2_pq = np.zeros(n, dtype=np.float64)
+        sigma2_pq[0] = h0
+        hess_pq = np.zeros(25, dtype=np.float64)
+        _c._gjr_garch_ll_hess_pq_studentt(
+            _as_cptr(params), resid_ptr, _as_cptr(sigma2_pq), _as_cptr(hess_pq), n, 1, 1
+        )
+
+        np.testing.assert_allclose(
+            hess_pq, hess_11,
+            rtol=1e-10, atol=1e-12,
+            err_msg="GJR-GARCH pq Student-t Hessian doesn't match 11"
+        )
+
+
+# =============================================================================
 # Tests: OPG + Hessian (Normal)
 # =============================================================================
 
