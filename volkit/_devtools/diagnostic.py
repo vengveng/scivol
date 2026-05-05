@@ -2,11 +2,11 @@
 Derivative Validation Diagnostic Tool
 ======================================
 
-This module provides tools for validating analytical derivatives against
-numerical finite differences. This is essential for ensuring correctness
-of the C extension gradient and Hessian implementations.
+This module provides internal development helpers for validating analytical
+derivatives against an independent AD oracle. This is essential for ensuring
+correctness of the C extension gradient and Hessian implementations.
 
-Usage:
+Usage in development:
     from volkit import GARCH, Normal
     from volkit._devtools.diagnostic import validate_derivatives
     
@@ -48,7 +48,7 @@ class DerivativeValidationReport:
     gradient_analytical : NDArray
         Gradient computed via analytical formulas
     gradient_numerical : NDArray
-        Gradient computed via finite differences
+        Gradient computed via the AD oracle
     gradient_abs_diff : NDArray
         Absolute differences for each element
     gradient_rel_diff : NDArray
@@ -63,7 +63,7 @@ class DerivativeValidationReport:
     hessian_analytical : NDArray
         Hessian computed via analytical formulas
     hessian_numerical : NDArray
-        Hessian computed via finite differences
+        Hessian computed via the AD oracle
     hessian_abs_diff : NDArray
         Absolute differences for each element
     hessian_rel_diff : NDArray
@@ -126,7 +126,7 @@ class DerivativeValidationReport:
         
         if verbose:
             print(f"\n  Analytical: {self._format_array(self.gradient_analytical)}")
-            print(f"  Numerical:  {self._format_array(self.gradient_numerical)}")
+            print(f"  Reference:  {self._format_array(self.gradient_numerical)}")
         
         # Hessian results
         hess_status = "PASS" if self.hessian_passed else "FAIL"
@@ -136,7 +136,7 @@ class DerivativeValidationReport:
         
         if verbose and len(self.params) <= 5:
             print(f"\n  Analytical:\n{self.hessian_analytical}")
-            print(f"\n  Numerical:\n{self.hessian_numerical}")
+            print(f"\n  Reference:\n{self.hessian_numerical}")
         
         # Overall
         print("─" * WIDTH)
@@ -151,85 +151,6 @@ class DerivativeValidationReport:
 
 
 # =============================================================================
-# NUMERICAL DERIVATIVES
-# =============================================================================
-
-def _numerical_gradient(
-    objective: Callable[[NDArray[np.float64]], float],
-    params: NDArray[np.float64],
-    eps: float = 1e-7,
-) -> NDArray[np.float64]:
-    """
-    Compute gradient via central finite differences.
-    
-    Uses the formula: ∂f/∂x_i ≈ [f(x + e_i·h) - f(x - e_i·h)] / (2h)
-    """
-    k = len(params)
-    grad = np.empty(k, dtype=np.float64)
-    
-    for i in range(k):
-        # Adaptive step size based on parameter magnitude
-        h = max(eps * abs(params[i]), eps)
-        
-        params_plus = params.copy()
-        params_minus = params.copy()
-        params_plus[i] += h
-        params_minus[i] -= h
-        
-        grad[i] = (objective(params_plus) - objective(params_minus)) / (2 * h)
-    
-    return grad
-
-
-def _numerical_hessian(
-    objective: Callable[[NDArray[np.float64]], float],
-    params: NDArray[np.float64],
-    eps: float = 1e-5,
-) -> NDArray[np.float64]:
-    """
-    Compute Hessian via central finite differences.
-    
-    Uses the formula for mixed partials:
-    ∂²f/∂x_i∂x_j ≈ [f(x+h_i+h_j) - f(x+h_i-h_j) - f(x-h_i+h_j) + f(x-h_i-h_j)] / (4h²)
-    """
-    k = len(params)
-    hess = np.empty((k, k), dtype=np.float64)
-    
-    for i in range(k):
-        for j in range(k):
-            # Adaptive step size
-            h_i = max(eps * abs(params[i]), eps)
-            h_j = max(eps * abs(params[j]), eps)
-            h = (h_i + h_j) / 2  # Average step size
-            
-            params_pp = params.copy()
-            params_pm = params.copy()
-            params_mp = params.copy()
-            params_mm = params.copy()
-            
-            params_pp[i] += h
-            params_pp[j] += h
-            
-            params_pm[i] += h
-            params_pm[j] -= h
-            
-            params_mp[i] -= h
-            params_mp[j] += h
-            
-            params_mm[i] -= h
-            params_mm[j] -= h
-            
-            hess[i, j] = (
-                objective(params_pp) 
-                - objective(params_pm) 
-                - objective(params_mp) 
-                + objective(params_mm)
-            ) / (4 * h * h)
-    
-    return hess
-
-
-# =============================================================================
 # MAIN VALIDATION FUNCTION
 # =============================================================================
 
@@ -239,12 +160,12 @@ def validate_derivatives(
     params: Optional[NDArray[np.float64]] = None,
     *,
     rtol_grad: float = 1e-2,  # 1% relative tolerance for gradient
-    rtol_hess: float = 0.1,   # 10% relative tolerance for Hessian (FD is less accurate)
+    rtol_hess: float = 0.1,
     eps_grad: float = 1e-7,
     eps_hess: float = 1e-5,
 ) -> DerivativeValidationReport:
     """
-    Validate analytical derivatives against numerical finite differences.
+    Validate analytical derivatives against an independent AD oracle.
     
     Parameters
     ----------
@@ -257,11 +178,11 @@ def validate_derivatives(
     rtol_grad : float
         Relative tolerance for gradient validation (default 1e-4 = 0.01%)
     rtol_hess : float
-        Relative tolerance for Hessian validation (default 1e-3 = 0.1%)
+        Relative tolerance for Hessian validation.
     eps_grad : float
-        Step size for gradient finite differences (default 1e-7)
+        Unused legacy argument retained for API compatibility.
     eps_hess : float
-        Step size for Hessian finite differences (default 1e-5)
+        Unused legacy argument retained for API compatibility.
     
     Returns
     -------
@@ -281,6 +202,7 @@ def validate_derivatives(
     """
     from .. import _core
     from .._kernels import get_routine
+    from .ad_oracle import garch_value_grad_hess
     
     # Ensure data is proper
     data = np.ascontiguousarray(data, dtype=np.float64)
@@ -343,11 +265,6 @@ def validate_derivatives(
     else:
         raise ValueError(f"Unsupported distribution in UID: {uid}")
     
-    # Define objective function
-    def objective(theta: NDArray[np.float64]) -> float:
-        sigma2[0] = np.mean(resid2)
-        return c_obj(_as_cptr(theta), _as_cptr(resid2), _as_cptr(sigma2), n, *extra_args)
-    
     # Compute analytical gradient
     grad_analytical = np.empty(k, dtype=np.float64)
     sigma2[0] = np.mean(resid2)
@@ -358,9 +275,14 @@ def validate_derivatives(
     sigma2[0] = np.mean(resid2)
     c_hess(_as_cptr(params), _as_cptr(resid2), _as_cptr(sigma2), _as_cptr(hess_analytical), n, *extra_args)
     
-    # Compute numerical derivatives
-    grad_numerical = _numerical_gradient(objective, params, eps=eps_grad)
-    hess_numerical = _numerical_hessian(objective, params, eps=eps_hess)
+    # Compute AD-oracle derivatives
+    _, grad_numerical, hess_numerical = garch_value_grad_hess(
+        params,
+        resid2,
+        p,
+        q,
+        dist="normal" if is_normal else "studentt",
+    )
     
     # Compute errors
     grad_abs_diff = np.abs(grad_analytical - grad_numerical)
@@ -379,37 +301,30 @@ def validate_derivatives(
     hess_max_abs = float(np.nanmax(hess_abs_diff))
     hess_max_rel = float(np.nanmax(hess_rel_diff))
     
-    # Pass/fail - handle NaN values gracefully
-    # Only consider finite elements for comparison
     grad_finite_mask = np.isfinite(grad_numerical) & np.isfinite(grad_analytical)
     hess_finite_mask = np.isfinite(hess_numerical) & np.isfinite(hess_analytical)
-    
-    if np.any(grad_finite_mask):
-        grad_passed = np.allclose(
-            grad_analytical[grad_finite_mask], 
-            grad_numerical[grad_finite_mask], 
-            rtol=rtol_grad, atol=0
-        )
-    else:
-        grad_passed = False  # No finite elements to compare
-    
-    if np.any(hess_finite_mask):
-        hess_passed = np.allclose(
-            hess_analytical[hess_finite_mask], 
-            hess_numerical[hess_finite_mask], 
-            rtol=rtol_hess, atol=0
-        )
-    else:
-        hess_passed = False  # No finite elements to compare
+
+    grad_passed = np.any(grad_finite_mask) and np.allclose(
+        grad_analytical[grad_finite_mask],
+        grad_numerical[grad_finite_mask],
+        rtol=rtol_grad,
+        atol=0,
+    )
+    hess_passed = np.any(hess_finite_mask) and np.allclose(
+        hess_analytical[hess_finite_mask],
+        hess_numerical[hess_finite_mask],
+        rtol=rtol_hess,
+        atol=0,
+    )
     
     overall_passed = grad_passed and hess_passed
     
     # Message
     nan_warnings = []
     if not np.all(grad_finite_mask):
-        nan_warnings.append("gradient has NaN (omega too small for FD)")
+        nan_warnings.append("gradient has non-finite AD-oracle entries")
     if not np.all(hess_finite_mask):
-        nan_warnings.append("Hessian has NaN (omega too small for FD)")
+        nan_warnings.append("Hessian has non-finite AD-oracle entries")
     
     if overall_passed:
         message = "All derivatives validated successfully"

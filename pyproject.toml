@@ -15,10 +15,12 @@ dependencies    = [
 
 [project.optional-dependencies]
 progress = ["tqdm>=4.0"]
+dev = ["jax", "tqdm>=4.0"]
 
 [tool.setuptools]
 packages = [
   "volkit",
+  "volkit._devtools",
   "volkit.components",
   "volkit.spec",
   "volkit.estimators",
@@ -42,6 +44,7 @@ sources = [
   "volkit/_csrc/likelihood_gjr_garch.c",
   "volkit/_csrc/errors_gjr_garch.c",
   "volkit/_csrc/log_wrappers.c",
+  "volkit/_csrc/dcc_gaussian.c",
 ]
 include-dirs       = ["volkit/_csrc"]
 extra-compile-args = ["-O3", "-ffast-math", "-march=native", "-ffp-contract=fast", "-funroll-loops"]

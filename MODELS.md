@@ -1,6 +1,6 @@
 # volkit — Available Models
 
-**Last Updated:** 2026-02-13
+**Last Updated:** 2026-05-05
 
 Legend for tables below:
 
@@ -8,10 +8,12 @@ Legend for tables below:
 |--------|---------|
 | **C** | Analytical C implementation |
 | **C-fused** | Fused log-space C function (pack + NLL/grad + Jacobian + chain rule in one C call) |
-| **FD** | Numerical finite differences (Python) |
+| **FD** | Runtime numerical finite differences (Python) |
 | **Py+C** | Python-side pack/Jacobian + C NLL (not fused) |
 | **—** | Not available / not used |
 | **(1,1 only)** | Analytical path exists only for specialized (1,1) orders; generic (p,q) falls back to numerical |
+
+Internal derivative validation is AD-oracle-based. The `FD` entries below describe runtime optimization or standard-error paths, not the primary development validator.
 
 ---
 
@@ -72,6 +74,19 @@ Legend for tables below:
 
 ---
 
+## 5. DCC(p,q) — Gaussian Correlation
+
+| Distribution | Constrained NLL | Constrained Grad | Constrained Hess | Log NLL | Log Grad | Log Hess | `_11` specialization |
+|---|---|---|---|---|---|---|---|
+| **Gaussian** | C | C | C | — | — | — | Yes |
+
+**Notes:**
+- DCC uses a two-step workflow: univariate volatility models first, then Gaussian correlation dynamics on standardised residuals.
+- The result API exposes `Rt`, `corr(i, j)`, and `unconditional_corr`. The pseudo-correlation path `Qt` is internal.
+- Internal development validation is handled against the shipped AD oracle in `volkit._devtools.ad_oracle`.
+
+---
+
 ## Summary
 
 ### Constrained Mode — Analytical Coverage
@@ -88,6 +103,7 @@ Legend for tables below:
 | ARMA-GARCH + Student-t | All orders | (1,1,1,1) only | — |
 | ARMA-GARCH + Skew-t | All orders | — | — |
 | ARMA + Normal | All (p,q) | All (p,q) | All (p,q) |
+| DCC + Gaussian | All (p,q) | All (p,q) | All (p,q) |
 
 ### Log Mode — Analytical Coverage
 
@@ -104,9 +120,23 @@ Legend for tables below:
 | ARMA-GARCH + Skew-t | C-fused, all orders | FD | FD |
 | ARMA + Normal | Py+C | Py+C (J^T @ grad) | FD |
 
+### Development Validation Coverage
+
+AD-oracle coverage currently ships for:
+
+| Model | Oracle Coverage |
+|---|---|
+| GARCH + Normal / Student-t | Value, gradient, Hessian |
+| GJR-GARCH + Normal / Student-t | Value, gradient, Hessian |
+| ARMA + Normal | Value, gradient, Hessian |
+| ARMA-GARCH + Normal / Student-t | Value, gradient, Hessian |
+| DCC + Gaussian | Value, gradient, Hessian |
+
+Finite differences remain backup-only for internal development, and primarily matter now in runtime paths where a closed-form or fused derivative implementation is still missing.
+
 ### Gaps (Missing Analytical Implementations)
 
 1. **Skew-t gradients**: No analytical gradient for any Skew-t model in either mode (GARCH+SkewT has one but it's disabled).
 2. **ARMA-GARCH generic gradients**: Analytical gradient exists only for (1,1,1,1); generic (p,q,P,Q) uses numerical.
 3. **ARMA + Normal log mode**: Still uses Python-side transforms, not fused C wrappers.
-4. **Log-mode Hessians**: All models use numerical finite differences for the Hessian in log mode.
+4. **Log-mode Hessians**: All current log-mode runtime Hessians use numerical finite differences.

@@ -8,6 +8,9 @@ Volatility modeling in Python. GARCH-family models with C extensions for speed.
 # Requires a C compiler
 pip install -e .
 
+# Development install: includes JAX-backed validation tools
+pip install -e .[dev]
+
 # Or:
 make dev
 ```
@@ -521,28 +524,7 @@ diag['ljung_box'][2]['reject']
 
 Auto-selection uses these tests internally to penalize poorly fitting candidates.
 
-### Derivative validation
-
-Confirm that analytical gradients and Hessians match finite differences:
-
-```python
-report = spec.validate_derivatives(data)
-report.summary()
-
-report.gradient_passed       # bool
-report.hessian_passed        # bool
-report.gradient_max_rel_error
-report.hessian_max_rel_error
-```
-
-Or use the standalone functions:
-
-```python
-from volkit._devtools import validate_derivatives, quick_check
-
-report = validate_derivatives(spec, data)
-passed = quick_check(spec, data)
-```
+Analytical gradients and Hessians are verified in the internal development test suite against independent AD reference implementations. That validation machinery is intended for library development rather than end-user workflows.
 
 ---
 

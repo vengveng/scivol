@@ -1,9 +1,11 @@
 # volkit Library Guide for AI Agents
 
-**Last Updated:** 2026-02-08  
+**Last Updated:** 2026-05-05 
 **Purpose:** Essential architectural rules, patterns, and constraints for developing the volkit time series volatility modeling library.
 
 **Reference implementations:** `localdev/arma_garch_estimator.py` contains verified Python+Numba implementations with analytical gradients/Hessians for ARMA-GARCH models (Normal, Student-t, Skew-t). `localdev/gjr_garch_estimator.py` contains the GJR-GARCH reference implementation. Use as ground truth when porting to C.
+
+**Derivative validation:** Use AD-based development oracles as the primary validation path. Prefer `volkit._devtools.ad_oracle` and the shipped AD-backed tests over finite differences. Keep finite differences only as a coarse backup smoke test when an AD oracle is not yet available.
 
 **Benchmarking:** `benchmark_optimizers.py` tests all optimizer configurations on real data. Run periodically to validate/update default settings.
 
@@ -95,7 +97,7 @@ The sandwich covariance is: `V_robust = H^{-1} @ OPG @ H^{-1}` where H is the He
 - `MEAN`: Mean equation components (e.g., ARMA)
 - `VOLATILITY`: Volatility components (e.g., GARCH, GJRGARCH)
 - `DENSITY`: Conditional distributions (e.g., Normal, StudentT, SkewT)
-- `CORRELATION`: Multivariate correlation (future)
+- `CORRELATION`: Multivariate correlation components (e.g., DCC)
 
 **Canonical ordering**: MEAN → VOLATILITY → DENSITY
 
@@ -345,27 +347,33 @@ For Hessians, also track ∂²e_t/∂θ∂θ' and ∂²h_t/∂θ∂θ'.
 
 ### Derivative Validation (Required)
 
-**All analytical derivatives must be validated against finite differences.**
+**All analytical derivatives must be validated against an independent AD oracle.**
 
-Pattern from `localdev/numerical_hessians.py`:
+Primary pattern:
 
 ```python
-# 1. Compute analytical gradient/Hessian
+# 1. Compute analytical gradient/Hessian from the production kernel
 grad_analytical = compute_gradient(params)
 hess_analytical = compute_hessian(params)
 
-# 2. Compute numerical approximation
-grad_numerical = finite_difference_gradient(objective, params, eps=1e-5)
-hess_numerical = finite_difference_hessian(objective, params, eps=1e-5)
+# 2. Compute AD-oracle derivatives from an independent reference objective
+_, grad_reference, hess_reference = ad_oracle_value_grad_hess(params, data)
 
 # 3. Assert close (adjust tolerance as needed)
-np.testing.assert_allclose(grad_analytical, grad_numerical, rtol=1e-5, atol=1e-8)
-np.testing.assert_allclose(hess_analytical, hess_numerical, rtol=1e-4, atol=1e-6)
+np.testing.assert_allclose(grad_analytical, grad_reference, rtol=1e-6, atol=1e-8)
+np.testing.assert_allclose(hess_analytical, hess_reference, rtol=1e-5, atol=1e-6)
 ```
 
+Preferred development oracles:
+- Scalar recursive models (`GARCH`, `GJR-GARCH`): AD oracle from `volkit._devtools.ad_oracle`
+- Matrix-heavy models (`DCC`): JAX-based AD reference objective
+- Log-space / transformed objectives: validate the full optimized object `L(theta(z))`, not only the inner constrained objective
+
+Finite differences are still acceptable as a weak smoke test or temporary fallback, but they are no longer the source of truth.
+
 **Test both**:
-- Correctness: Does it match finite differences?
-- Boundary cases: Does it handle constraints properly?
+- Correctness: Does it match the AD oracle?
+- Boundary cases: Does it handle constraints and transforms properly?
 
 ### Model Reference (Keep Evergreen)
 
@@ -677,7 +685,7 @@ print(f"AIC: {result.aic}, BIC: {result.bic}")
 2. Declare in `volkit/_csrc/volkit_core.h`
 3. Wrap in `volkit/_core.c` with proper pointer handling
 4. Add type stub to `volkit/_core.pyi`
-5. Validate with finite differences
+5. Validate with an AD oracle
 
 ### Directory Structure
 
@@ -717,7 +725,7 @@ volkit_cursor/                   # Repository root
 └── localdev/                    # Development scripts (git-ignored)
     ├── arma_garch_estimator.py  # Reference: ARMA-GARCH with analytical grad/Hess
     ├── likelihoods.py           # Reference: Log-likelihood functions
-    ├── numerical_hessians.py    # Reference: Finite difference validation
+    ├── numerical_hessians.py    # Legacy FD tooling (backup only)
     ├── utilities.py             # Reference: Statistical tests
     ├── analysis.py              # Analysis scripts
     └── ...                      # Other experiments and dev tools
@@ -842,7 +850,7 @@ Each model family will need:
 2. **C functions**: Always single source of truth for computation
 3. **Memory**: Pre-allocate in Python, pass pointers to C
 4. **Arrays**: Always `np.ascontiguousarray(arr, dtype=np.float64)`
-5. **Derivatives**: Validate with finite differences
+5. **Derivatives**: Validate with an independent AD oracle
 6. **Types**: Annotate everything with proper type hints
 
 ### Common Pitfalls
@@ -858,7 +866,7 @@ Each model family will need:
 
 For new models:
 1. **Implement in Python with `@numba.njit`** - Fast iteration, easy debugging
-2. **Validate derivatives** against finite differences
+2. **Validate derivatives** against an independent AD oracle
 3. **Port to C** using the Numba code as reference
 4. **Verify C matches Numba** to <1e-12 precision
 

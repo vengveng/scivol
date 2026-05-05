@@ -564,6 +564,45 @@ void log_arma_garch_nll_grad_pq_studentt(const double *z, const double *y,
                                            size_t n, size_t p_ar, size_t q_ma,
                                            size_t P, size_t Q);
 
+/* ======================== DCC Gaussian Functions ============================ */
+
+/* DCC(1,1) Gaussian NLL (returns average NLL) */
+double dcc_nll_11_gaussian(const double *theta, const double *eps,
+                           const double *Qbar, size_t T, size_t N);
+
+/* DCC(1,1) Gaussian NLL + gradient (+ optional per-obs scores) */
+void dcc_nll_grad_11_gaussian(const double *theta, const double *eps,
+                              const double *Qbar,
+                              double *grad, double *nll,
+                              double *scores,  /* NULL ok */
+                              size_t T, size_t N);
+
+/* DCC(1,1) Gaussian NLL + gradient + Hessian (+ optional per-obs scores) */
+void dcc_nll_grad_hess_11_gaussian(const double *theta, const double *eps,
+                                   const double *Qbar,
+                                   double *grad, double *hess, double *nll,
+                                   double *scores,  /* NULL ok */
+                                   size_t T, size_t N);
+
+/* DCC(p,q) Gaussian NLL */
+double dcc_nll_pq_gaussian(const double *theta, const double *eps,
+                           const double *Qbar,
+                           size_t T, size_t N, size_t p, size_t q);
+
+/* DCC(p,q) Gaussian NLL + gradient (+ optional per-obs scores) */
+void dcc_nll_grad_pq_gaussian(const double *theta, const double *eps,
+                              const double *Qbar,
+                              double *grad, double *nll,
+                              double *scores,  /* NULL ok */
+                              size_t T, size_t N, size_t p, size_t q);
+
+/* DCC(p,q) Gaussian NLL + gradient + Hessian (+ optional per-obs scores) */
+void dcc_nll_grad_hess_pq_gaussian(const double *theta, const double *eps,
+                                   const double *Qbar,
+                                   double *grad, double *hess, double *nll,
+                                   double *scores,  /* NULL ok */
+                                   size_t T, size_t N, size_t p, size_t q);
+
 #ifdef __cplusplus
 }
 #endif

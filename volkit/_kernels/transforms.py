@@ -338,9 +338,10 @@ def compute_se_via_logspace(
     pack_fn: callable,
 ) -> tuple[NDArray[np.float64] | None, NDArray[np.float64] | None]:
     """
-    Compute standard errors via numerical Hessian in unconstrained (log) space.
+    Compute runtime standard errors via a numerical Hessian in unconstrained
+    (log) space.
     
-    This approach avoids boundary issues when computing finite differences:
+    This runtime fallback avoids boundary issues when computing finite differences:
     1. Transform θ_hat → z_hat (unconstrained space)
     2. Compute numerical Hessian H_z in z-space (safe - no boundaries)
     3. Compute Cov_z = inv(H_z)

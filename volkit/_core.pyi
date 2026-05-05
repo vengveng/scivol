@@ -995,5 +995,93 @@ def _log_arma_garch_nll_pq_skewt(
     """Log-space ARMA-GARCH + Skew-t NLL. Fused pack → NLL."""
     ...
 
+# ═══════════════════════════════════════════════════════════════════════════
+# DCC Gaussian
+#
+# All DCC functions take standardized residuals (T×N row-major),
+# unconditional second-moment matrix Qbar (N×N), and pre-allocated
+# work buffers.  Python manages all memory; C only computes.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _dcc_nll_11_gaussian(
+    theta_ptr: _IntPtr,    # [a, b]
+    eps_ptr: _IntPtr,      # Standardized residuals T*N (row-major)
+    Qbar_ptr: _IntPtr,     # Unconditional correlation N*N (row-major)
+    T: _Size,              # Number of time steps
+    N: _Size,              # Number of series
+) -> float:
+    """DCC(1,1) Gaussian NLL (average over T). C manages internal memory."""
+    ...
+
+def _dcc_nll_grad_11_gaussian(
+    theta_ptr: _IntPtr,    # [a, b]
+    eps_ptr: _IntPtr,      # T*N row-major
+    Qbar_ptr: _IntPtr,     # N*N row-major
+    grad_ptr: _IntPtr,     # Output: gradient [2] (modified in-place)
+    nll_ptr: _IntPtr,      # Output: NLL scalar [1] (modified in-place)
+    scores_ptr: _IntPtr,   # Output: per-obs scores T*2 (0 to skip)
+    T: _Size,
+    N: _Size,
+) -> None:
+    """DCC(1,1) Gaussian NLL + gradient (+ optional per-obs scores)."""
+    ...
+
+def _dcc_nll_grad_hess_11_gaussian(
+    theta_ptr: _IntPtr,    # [a, b]
+    eps_ptr: _IntPtr,      # T*N row-major
+    Qbar_ptr: _IntPtr,     # N*N row-major
+    grad_ptr: _IntPtr,     # Output: gradient [2]
+    hess_ptr: _IntPtr,     # Output: Hessian [4] (2x2 row-major)
+    nll_ptr: _IntPtr,      # Output: NLL scalar [1]
+    scores_ptr: _IntPtr,   # Output: per-obs scores T*2 (0 to skip)
+    T: _Size,
+    N: _Size,
+) -> None:
+    """DCC(1,1) Gaussian NLL + gradient + Hessian."""
+    ...
+
+def _dcc_nll_pq_gaussian(
+    theta_ptr: _IntPtr,    # [a_1..a_p, b_1..b_q]
+    eps_ptr: _IntPtr,      # T*N row-major
+    Qbar_ptr: _IntPtr,     # N*N row-major
+    T: _Size,
+    N: _Size,
+    p: _Size,              # Number of a parameters
+    q: _Size,              # Number of b parameters
+) -> float:
+    """DCC(p,q) Gaussian NLL (average over T). C manages internal memory."""
+    ...
+
+def _dcc_nll_grad_pq_gaussian(
+    theta_ptr: _IntPtr,    # [a_1..a_p, b_1..b_q]
+    eps_ptr: _IntPtr,      # T*N row-major
+    Qbar_ptr: _IntPtr,     # N*N row-major
+    grad_ptr: _IntPtr,     # Output: gradient [K] (K=p+q, modified in-place)
+    nll_ptr: _IntPtr,      # Output: NLL scalar [1] (modified in-place)
+    scores_ptr: _IntPtr,   # Output: per-obs scores T*K (0 to skip)
+    T: _Size,
+    N: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """DCC(p,q) Gaussian NLL + gradient (+ optional per-obs scores)."""
+    ...
+
+def _dcc_nll_grad_hess_pq_gaussian(
+    theta_ptr: _IntPtr,    # [a_1..a_p, b_1..b_q]
+    eps_ptr: _IntPtr,      # T*N row-major
+    Qbar_ptr: _IntPtr,     # N*N row-major
+    grad_ptr: _IntPtr,     # Output: gradient [K]
+    hess_ptr: _IntPtr,     # Output: Hessian [K*K] row-major
+    nll_ptr: _IntPtr,      # Output: NLL scalar [1]
+    scores_ptr: _IntPtr,   # Output: per-obs scores T*K (0 to skip)
+    T: _Size,
+    N: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """DCC(p,q) Gaussian NLL + gradient + Hessian."""
+    ...
+
 # Nothing is meant for star-import; keep top-level clean
 __all__: list[str] = []

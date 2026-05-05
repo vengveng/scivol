@@ -141,7 +141,8 @@ double skewt_nll(
 // Computes NLL and gradient for GARCH(1,1) with Hansen Skew-t errors.
 // Parameters: theta = [omega, alpha, beta, nu, lam]
 //
-// Verified against numerical finite differences in verify_skewt_gradient.py
+// Legacy checks used finite differences in verify_skewt_gradient.py.
+// This kernel should be re-enabled only after AD-oracle validation.
 
 __attribute__((visibility("default"), hot, flatten))
 double garch_ll_grad_11_skewt(

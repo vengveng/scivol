@@ -78,8 +78,8 @@ def _build(p: int, q: int) -> Routine:
     n_dist = dens.n_params  # 2 (nu, lam)
     n_total = n_garch + n_dist
     
-    # Note: GARCH(1,1)+SkewT has C gradient function but it needs verification
-    # against numerical derivatives before enabling. For now, use numerical gradients.
+    # Note: GARCH(1,1)+SkewT has a C gradient function but it still needs
+    # AD-oracle validation before being enabled in the production path.
     use_analytical_grad = False  # Disabled pending verification
 
     # -------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # volkit/spec/composite.py
 from __future__ import annotations
-from typing import Union, Tuple, List, Dict, Optional, TYPE_CHECKING
+from typing import Union, Tuple, List, Dict, Optional
 import numpy as np
 from numpy.typing import NDArray
 
@@ -8,9 +8,6 @@ from ..roles import Role
 from .._mixins import FitsMixin
 from ..components.base import Component
 from ..components.density import Normal
-
-if TYPE_CHECKING:
-    from .._devtools.diagnostic import DerivativeValidationReport
 
 SPECIAL_KERNELS = {'boom'}
 CANONICAL = ("mean", "volatility", "density")
@@ -96,49 +93,6 @@ class CompositeSpec(FitsMixin):
     
     def has_special_kernel(self): return self._sig in SPECIAL_KERNELS
     
-    def validate_derivatives(
-        self,
-        data: NDArray[np.float64],
-        params: Optional[NDArray[np.float64]] = None,
-        *,
-        verbose: bool = True,
-    ) -> DerivativeValidationReport:
-        """
-        Validate analytical derivatives against numerical finite differences.
-        
-        This method is useful for debugging and ensuring correctness of the
-        C extension gradient and Hessian implementations.
-        
-        Parameters
-        ----------
-        data : array
-            1-D array of residuals/returns
-        params : array, optional
-            Parameter vector to validate at. If None, uses default starting values.
-        verbose : bool
-            If True, prints a summary of the validation report.
-        
-        Returns
-        -------
-        DerivativeValidationReport
-            Detailed validation report with computed quantities and pass/fail status.
-        
-        Examples
-        --------
-        >>> from volkit import GARCH, Normal
-        >>> import numpy as np
-        >>> 
-        >>> spec = GARCH(1, 1) + Normal()
-        >>> data = np.random.randn(500) * 0.01
-        >>> report = spec.validate_derivatives(data)
-        """
-        from .._devtools.diagnostic import validate_derivatives
-        
-        report = validate_derivatives(self, data, params)
-        if verbose:
-            report.summary(verbose=True)
-        return report
-
     def __lt__(self, other: Union[Component, CompositeSpec]) -> CompositeSpec:
         return self.__add__(other)
 

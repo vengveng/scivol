@@ -1072,6 +1072,160 @@ class TestSmokeAll:
         assert result is not None
 
 
+# =============================================================================
+# DCC-GARCH(1,1) + Normal  (two-step DGP recovery)
+# =============================================================================
+
+# True parameters for the DCC-GARCH DGP
+DCC_GARCH_TRUE = {
+    "garch": [
+        (1e-6, 0.08, 0.90),   # series 0
+        (2e-6, 0.10, 0.87),   # series 1
+        (1.5e-6, 0.06, 0.92), # series 2
+    ],
+    "dcc_a": 0.04,
+    "dcc_b": 0.94,
+    "Qbar": np.array([
+        [1.0, 0.5, 0.3],
+        [0.5, 1.0, 0.4],
+        [0.3, 0.4, 1.0],
+    ]),
+}
+
+
+def simulate_dcc_garch_11(
+    T: int,
+    garch_params: list,
+    dcc_a: float,
+    dcc_b: float,
+    Qbar: NDArray[np.float64],
+    seed: int = 42,
+) -> NDArray[np.float64]:
+    """
+    Simulate DCC(1,1)-GARCH(1,1) with Normal innovations.
+
+    Returns raw returns (T, N) — the input the user would provide.
+    """
+    rng = np.random.default_rng(seed)
+    N = len(garch_params)
+    c = 1.0 - dcc_a - dcc_b
+
+    returns = np.zeros((T, N))
+    sigma2 = np.zeros((T, N))
+
+    # Initialise h_0 at unconditional variance
+    for i in range(N):
+        omega, alpha, beta = garch_params[i]
+        sigma2[0, i] = omega / (1.0 - alpha - beta)
+
+    Q_prev = Qbar.copy()
+    e_prev = np.zeros(N)
+
+    for t in range(T):
+        # DCC recursion
+        Q = c * Qbar + dcc_b * Q_prev + dcc_a * np.outer(e_prev, e_prev)
+        diag = np.sqrt(np.maximum(np.diag(Q), 1e-12))
+        R = Q / np.outer(diag, diag)
+
+        # Correlated standard-normal innovations
+        L = np.linalg.cholesky(R)
+        z = L @ rng.standard_normal(N)
+
+        # GARCH variance and returns
+        if t > 0:
+            for i in range(N):
+                omega, alpha, beta = garch_params[i]
+                sigma2[t, i] = omega + alpha * returns[t - 1, i] ** 2 + beta * sigma2[t - 1, i]
+        returns[t] = np.sqrt(sigma2[t]) * z
+
+        # Standardised residuals for DCC
+        e_prev = z.copy()
+        Q_prev = Q.copy()
+
+    return returns
+
+
+class TestDCCGARCH:
+    """
+    End-to-end DCC-GARCH(1,1) estimation from raw returns.
+
+    DGP:  3-series DCC(1,1)-GARCH(1,1) with Normal innovations.
+    Estimation uses DCC.fit(returns) which:
+      Step 1: fits univariate GARCH(1,1)+Normal to each series
+      Step 2: fits DCC(1,1) on the standardised residuals
+    """
+
+    N_OBS = 10_000
+
+    @pytest.fixture(scope="class")
+    def dcc_returns(self) -> NDArray[np.float64]:
+        p = DCC_GARCH_TRUE
+        return simulate_dcc_garch_11(
+            self.N_OBS, p["garch"], p["dcc_a"], p["dcc_b"], p["Qbar"], seed=123,
+        )
+
+    @pytest.fixture(scope="class")
+    def dcc_result(self, dcc_returns):
+        from volkit import DCC, GARCH, Normal
+        dcc = DCC(1, 1)
+        return dcc.fit(dcc_returns, univariate_spec=GARCH(1, 1) + Normal())
+
+    # -- Step 1: univariate GARCH recovery --
+
+    def test_univariate_convergence(self, dcc_result) -> None:
+        """All univariate fits should converge."""
+        for i, r in enumerate(dcc_result.univariate_results):
+            assert r.converged, f"Series {i} failed to converge"
+
+    def test_univariate_parameter_recovery(self, dcc_result) -> None:
+        """Univariate GARCH parameters should be close to truth."""
+        for i, r in enumerate(dcc_result.univariate_results):
+            omega_true, alpha_true, beta_true = DCC_GARCH_TRUE["garch"][i]
+            np.testing.assert_allclose(r.params[0], omega_true, rtol=0.40,
+                                       err_msg=f"omega mismatch, series {i}")
+            np.testing.assert_allclose(r.params[1], alpha_true, rtol=0.25,
+                                       err_msg=f"alpha mismatch, series {i}")
+            np.testing.assert_allclose(r.params[2], beta_true, rtol=0.05,
+                                       err_msg=f"beta mismatch, series {i}")
+
+    # -- Step 2: DCC recovery --
+
+    def test_dcc_convergence(self, dcc_result) -> None:
+        """DCC optimisation should converge."""
+        assert dcc_result.converged
+
+    def test_dcc_parameter_recovery(self, dcc_result) -> None:
+        """DCC parameters should be close to truth."""
+        a_true = DCC_GARCH_TRUE["dcc_a"]
+        b_true = DCC_GARCH_TRUE["dcc_b"]
+        a_hat = dcc_result.params.a[0]
+        b_hat = dcc_result.params.b[0]
+        np.testing.assert_allclose(a_hat, a_true, rtol=0.30,
+                                   err_msg=f"DCC a: {a_hat:.5f} vs {a_true}")
+        np.testing.assert_allclose(b_hat, b_true, rtol=0.05,
+                                   err_msg=f"DCC b: {b_hat:.5f} vs {b_true}")
+
+    def test_dcc_persistence(self, dcc_result) -> None:
+        """Persistence should be close to truth and < 1."""
+        pers_true = DCC_GARCH_TRUE["dcc_a"] + DCC_GARCH_TRUE["dcc_b"]
+        pers_hat = dcc_result.params.persistence
+        assert 0 < pers_hat < 1
+        np.testing.assert_allclose(pers_hat, pers_true, atol=0.03)
+
+    def test_dcc_standard_errors(self, dcc_result) -> None:
+        """MLE and robust SEs should exist and be positive."""
+        assert dcc_result.std_errors is not None
+        assert dcc_result.std_errors_robust is not None
+        assert np.all(dcc_result.std_errors > 0)
+        assert np.all(dcc_result.std_errors_robust > 0)
+
+    def test_dcc_summary(self, dcc_result) -> None:
+        """Summary should print without error."""
+        s = dcc_result.summary()
+        assert "DCC(1,1)" in s
+        assert "a[1]" in s and "b[1]" in s
+
+
 # -----------------------------------------------------------------------------
 # Run tests directly
 # -----------------------------------------------------------------------------

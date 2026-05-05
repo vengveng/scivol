@@ -14,6 +14,7 @@ from .components import ARMA, GARCH, GJRGARCH, Normal, StudentT, SkewT, AutoDens
 from .spec import CompositeSpec
 from .roles import Role
 from ._settings import settings
+from .dcc import DCC, DCCResult, DCCParams
 # from ._kernels import get_routine
 
 __all__: list[str] = [
@@ -22,6 +23,9 @@ __all__: list[str] = [
     "AutoVol",
     "Component",
     "CompositeSpec",
+    "DCC",
+    "DCCParams",
+    "DCCResult",
     "GARCH",
     "GJRGARCH",
     # "get_routine",
