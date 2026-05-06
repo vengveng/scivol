@@ -21,7 +21,8 @@ Usage::
     # Access results:
     print(result.params)            # DCCParams(a=..., b=...)
     print(result.Rt)                # time-varying correlations (T, N, N)
-    print(result.Rt_df("stock", "bond"))  # pairwise as pandas Series
+    print(result.corr("stock", "bond"))   # pairwise correlation series
+    print(result.unconditional_corr)      # long-run correlation matrix
     print(result.std_errors)        # MLE standard errors
     print(result.std_errors_robust) # Sandwich (robust) standard errors
 """

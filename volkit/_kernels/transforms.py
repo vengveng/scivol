@@ -330,20 +330,331 @@ def transform_covariance(cov_z: NDArray[np.float64], J: NDArray[np.float64]) -> 
     return J @ cov_z @ J.T
 
 
+def pack_arma_normal(z: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained θ for ARMA(p,q)+Normal."""
+    theta = np.empty(1 + p + q, dtype=np.float64)
+    theta[0] = z[0]
+    if p > 0:
+        theta[1:1 + p] = 0.99 * np.tanh(z[1:1 + p])
+    if q > 0:
+        theta[1 + p:] = 0.99 * np.tanh(z[1 + p:])
+    return theta
+
+
+def unpack_arma_normal(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Transform constrained θ to unconstrained z for ARMA(p,q)+Normal."""
+    z = np.empty(1 + p + q, dtype=np.float64)
+    z[0] = theta[0]
+    if p > 0:
+        z[1:1 + p] = np.arctanh(np.clip(theta[1:1 + p] / 0.99, -0.999, 0.999))
+    if q > 0:
+        z[1 + p:] = np.arctanh(np.clip(theta[1 + p:] / 0.99, -0.999, 0.999))
+    return z
+
+
+def jacobian_arma_normal(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Compute Jacobian J = ∂θ/∂z for ARMA(p,q)+Normal."""
+    K = 1 + p + q
+    J = np.eye(K, dtype=np.float64)
+    scale = 0.99
+    for idx in range(1, K):
+        ratio = theta[idx] / scale
+        J[idx, idx] = scale * (1.0 - ratio * ratio)
+    return J
+
+
+def _softmax_second_derivatives(params: NDArray[np.float64]) -> NDArray[np.float64]:
+    """
+    Second derivatives for active softmax outputs.
+
+    Returns tensor T with shape (m, m, m) where
+    T[i, j, k] = ∂² params[i] / ∂z_j ∂z_k.
+    """
+    m = params.shape[0]
+    tensor = np.zeros((m, m, m), dtype=np.float64)
+    for i in range(m):
+        p_i = params[i]
+        for j in range(m):
+            delta_ij = 1.0 if i == j else 0.0
+            p_j = params[j]
+            for k in range(m):
+                delta_ik = 1.0 if i == k else 0.0
+                delta_jk = 1.0 if j == k else 0.0
+                p_k = params[k]
+                tensor[i, j, k] = p_i * (
+                    (delta_ik - p_k) * (delta_ij - p_j)
+                    - p_j * (delta_jk - p_k)
+                )
+    return tensor
+
+
+def _softplus_second_derivative(nu: float) -> float:
+    """Second derivative of nu = 2 + softplus(z_nu)."""
+    first = jacobian_studentt(nu)
+    return first * (1.0 - first)
+
+
+def _tanh_scaled_second_derivative(value: float, scale: float = 0.99) -> float:
+    """Second derivative of value = scale * tanh(z) expressed in θ-space."""
+    ratio = value / scale
+    return -2.0 * value * (1.0 - ratio * ratio)
+
+
+def _tanh_second_derivative(value: float) -> float:
+    """Second derivative of value = tanh(z) expressed in θ-space."""
+    return -2.0 * value * (1.0 - value * value)
+
+
+def transform_hessian(
+    hess_theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    J: NDArray[np.float64],
+    second_derivatives: NDArray[np.float64],
+) -> NDArray[np.float64]:
+    """
+    Transform Hessian from θ-space to z-space.
+
+    H_z = Jᵀ H_θ J + Σ_i grad_θ[i] * ∂²θ_i/∂z∂zᵀ
+    """
+    hess_z = J.T @ hess_theta @ J + np.tensordot(grad_theta, second_derivatives, axes=(0, 0))
+    return 0.5 * (hess_z + hess_z.T)
+
+
+def second_derivatives_arma_normal(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Second-derivative tensor for the ARMA(p,q)+Normal log transform."""
+    K = 1 + p + q
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+    for idx in range(1, K):
+        tensor[idx, idx, idx] = _tanh_scaled_second_derivative(theta[idx])
+    return tensor
+
+
+def log_hessian_arma_normal(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p: int,
+    q: int,
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for ARMA(p,q)+Normal."""
+    J = jacobian_arma_normal(theta, p, q)
+    second = second_derivatives_arma_normal(theta, p, q)
+    return transform_hessian(hess_theta, grad_theta, J, second)
+
+
+def second_derivatives_arma_garch_normal(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Second-derivative tensor for ARMA(p,q)+GARCH(P,Q)+Normal log transforms."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + P_arch + Q_garch
+    K = n_mean + n_vol
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+
+    for idx in range(1, n_mean):
+        tensor[idx, idx, idx] = _tanh_scaled_second_derivative(theta[idx])
+
+    tensor[n_mean:, n_mean:, n_mean:] = second_derivatives_garch(
+        theta[n_mean:], P_arch, Q_garch, dist="normal"
+    )
+    return tensor
+
+
+def log_hessian_arma_garch_normal(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for ARMA(p,q)+GARCH(P,Q)+Normal."""
+    J = jacobian_arma_garch_normal(theta, p_ar, q_ma, P_arch, Q_garch)
+    second = second_derivatives_arma_garch_normal(theta, p_ar, q_ma, P_arch, Q_garch)
+    return transform_hessian(hess_theta, grad_theta, J, second)
+
+
+def second_derivatives_arma_garch_studentt(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Second-derivative tensor for ARMA(p,q)+GARCH(P,Q)+Student-t log transforms."""
+    n_mean = 1 + p_ar + q_ma
+    K = n_mean + 1 + P_arch + Q_garch + 1
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+
+    for idx in range(1, n_mean):
+        tensor[idx, idx, idx] = _tanh_scaled_second_derivative(theta[idx])
+
+    tensor[n_mean:, n_mean:, n_mean:] = second_derivatives_garch(
+        theta[n_mean:], P_arch, Q_garch, dist="studentt"
+    )
+    return tensor
+
+
+def log_hessian_arma_garch_studentt(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for ARMA(p,q)+GARCH(P,Q)+Student-t."""
+    J = jacobian_arma_garch_studentt(theta, p_ar, q_ma, P_arch, Q_garch)
+    second = second_derivatives_arma_garch_studentt(theta, p_ar, q_ma, P_arch, Q_garch)
+    return transform_hessian(hess_theta, grad_theta, J, second)
+
+
+def second_derivatives_arma_garch_skewt(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Second-derivative tensor for ARMA(p,q)+GARCH(P,Q)+Skew-t log transforms."""
+    n_mean = 1 + p_ar + q_ma
+    K = n_mean + 1 + P_arch + Q_garch + 2
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+
+    for idx in range(1, n_mean):
+        tensor[idx, idx, idx] = _tanh_scaled_second_derivative(theta[idx])
+
+    tensor[n_mean:, n_mean:, n_mean:] = second_derivatives_garch(
+        theta[n_mean:], P_arch, Q_garch, dist="skewt"
+    )
+    return tensor
+
+
+def log_hessian_arma_garch_skewt(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for ARMA(p,q)+GARCH(P,Q)+Skew-t."""
+    J = jacobian_arma_garch_skewt(theta, p_ar, q_ma, P_arch, Q_garch)
+    second = second_derivatives_arma_garch_skewt(theta, p_ar, q_ma, P_arch, Q_garch)
+    return transform_hessian(hess_theta, grad_theta, J, second)
+
+
+def second_derivatives_garch(
+    theta: NDArray[np.float64],
+    p: int,
+    q: int,
+    dist: str = "normal",
+) -> NDArray[np.float64]:
+    """Second-derivative tensor for GARCH(p,q) log transforms."""
+    K = 1 + p + q + (1 if dist == "studentt" else 2 if dist == "skewt" else 0)
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+    tensor[0, 0, 0] = theta[0]
+
+    m = p + q
+    if m > 0:
+        tensor[1:1 + m, 1:1 + m, 1:1 + m] = _softmax_second_derivatives(theta[1:1 + m])
+
+    if dist == "studentt":
+        tensor[K - 1, K - 1, K - 1] = _softplus_second_derivative(theta[K - 1])
+    elif dist == "skewt":
+        tensor[K - 2, K - 2, K - 2] = _softplus_second_derivative(theta[K - 2])
+        tensor[K - 1, K - 1, K - 1] = _tanh_second_derivative(theta[K - 1])
+
+    return tensor
+
+
+def log_hessian_garch(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p: int,
+    q: int,
+    dist: str = "normal",
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for GARCH log-mode transforms."""
+    if dist == "normal":
+        J = jacobian_garch(theta, p, q)
+    elif dist == "studentt":
+        J = jacobian_garch_studentt(theta, p, q)
+    elif dist == "skewt":
+        J = jacobian_garch_skewt(theta, p, q)
+    else:
+        raise ValueError(f"Unknown distribution: {dist}")
+    second = second_derivatives_garch(theta, p, q, dist)
+    return transform_hessian(hess_theta, grad_theta, J, second)
+
+
+def second_derivatives_gjr_garch(
+    theta: NDArray[np.float64],
+    p: int,
+    q: int,
+    dist: str = "normal",
+) -> NDArray[np.float64]:
+    """Second-derivative tensor for GJR-GARCH(p,q) log transforms."""
+    m = 2 * p + q
+    K = 1 + m + (1 if dist == "studentt" else 2 if dist == "skewt" else 0)
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+    tensor[0, 0, 0] = theta[0]
+
+    if m > 0:
+        tensor[1:1 + m, 1:1 + m, 1:1 + m] = _softmax_second_derivatives(theta[1:1 + m])
+
+    if dist == "studentt":
+        tensor[K - 1, K - 1, K - 1] = _softplus_second_derivative(theta[K - 1])
+    elif dist == "skewt":
+        tensor[K - 2, K - 2, K - 2] = _softplus_second_derivative(theta[K - 2])
+        tensor[K - 1, K - 1, K - 1] = _tanh_second_derivative(theta[K - 1])
+
+    return tensor
+
+
+def log_hessian_gjr_garch(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p: int,
+    q: int,
+    dist: str = "normal",
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for GJR-GARCH log-mode transforms."""
+    if dist == "normal":
+        J = jacobian_gjr_garch(theta, p, q)
+    elif dist == "studentt":
+        J = jacobian_gjr_garch_studentt(theta, p, q)
+    elif dist == "skewt":
+        J = jacobian_gjr_garch_skewt(theta, p, q)
+    else:
+        raise ValueError(f"Unknown distribution: {dist}")
+    second = second_derivatives_gjr_garch(theta, p, q, dist)
+    return transform_hessian(hess_theta, grad_theta, J, second)
+
+
 def compute_se_via_logspace(
     theta_hat: NDArray[np.float64],
     nll_theta: callable,
     unpack_fn: callable,
     jacobian_fn: callable,
     pack_fn: callable,
+    hess_z_fn: callable | None = None,
 ) -> tuple[NDArray[np.float64] | None, NDArray[np.float64] | None]:
     """
-    Compute runtime standard errors via a numerical Hessian in unconstrained
-    (log) space.
+    Compute runtime standard errors via a Hessian in unconstrained (log) space.
     
-    This runtime fallback avoids boundary issues when computing finite differences:
+    This runtime fallback avoids boundary issues by working in unconstrained space:
     1. Transform θ_hat → z_hat (unconstrained space)
-    2. Compute numerical Hessian H_z in z-space (safe - no boundaries)
+    2. Compute Hessian H_z in z-space (analytical when available, otherwise numerical)
     3. Compute Cov_z = inv(H_z)
     4. Transform back: Cov_θ = J @ Cov_z @ J^T
     
@@ -359,6 +670,9 @@ def compute_se_via_logspace(
         Compute Jacobian: jacobian_fn(theta) -> J where J = ∂θ/∂z
     pack_fn : callable
         Transform z → θ: pack_fn(z) -> theta
+    hess_z_fn : callable, optional
+        Analytical Hessian in z-space: hess_z_fn(z_hat) -> H_z. If omitted,
+        a numerical Hessian in z-space is used.
     
     Returns
     -------
@@ -372,38 +686,37 @@ def compute_se_via_logspace(
     # Transform to unconstrained space
     z_hat = unpack_fn(theta_hat)
     
-    # Define NLL in z-space
-    def nll_z(z: NDArray[np.float64]) -> float:
-        theta = pack_fn(z)
-        return nll_theta(theta)
-    
-    # Pre-allocate buffers for finite difference computation (avoids 4×K² allocations)
-    z_pp = np.empty(K, dtype=np.float64)
-    z_pm = np.empty(K, dtype=np.float64)
-    z_mp = np.empty(K, dtype=np.float64)
-    z_mm = np.empty(K, dtype=np.float64)
-    
-    # Pre-compute step sizes for each parameter
-    eps = np.array([1e-5 * max(abs(z_hat[k]), 1.0) for k in range(K)], dtype=np.float64)
-    
-    # Compute numerical Hessian in z-space using relative step sizes
-    # Step size 1e-5 is optimal for second derivative finite differences:
-    # - Smaller values (1e-7, 1e-8) cause round-off error amplification
-    # - Larger values (1e-3, 1e-4) cause truncation error
-    # In unconstrained space, no boundary issues, so 1e-5 is reliable
-    H_z = np.zeros((K, K), dtype=np.float64)
-    for i in range(K):
-        eps_i = eps[i]
-        for j in range(K):
-            eps_j = eps[j]
-            
-            # Reuse pre-allocated buffers instead of calling z.copy()
-            z_pp[:] = z_hat; z_pp[i] += eps_i; z_pp[j] += eps_j
-            z_pm[:] = z_hat; z_pm[i] += eps_i; z_pm[j] -= eps_j
-            z_mp[:] = z_hat; z_mp[i] -= eps_i; z_mp[j] += eps_j
-            z_mm[:] = z_hat; z_mm[i] -= eps_i; z_mm[j] -= eps_j
-            
-            H_z[i, j] = (nll_z(z_pp) - nll_z(z_pm) - nll_z(z_mp) + nll_z(z_mm)) / (4 * eps_i * eps_j)
+    if hess_z_fn is not None:
+        H_z = np.asarray(hess_z_fn(z_hat), dtype=np.float64)
+    else:
+        # Define NLL in z-space
+        def nll_z(z: NDArray[np.float64]) -> float:
+            theta = pack_fn(z)
+            return nll_theta(theta)
+
+        # Pre-allocate buffers for finite difference computation (avoids 4×K² allocations)
+        z_pp = np.empty(K, dtype=np.float64)
+        z_pm = np.empty(K, dtype=np.float64)
+        z_mp = np.empty(K, dtype=np.float64)
+        z_mm = np.empty(K, dtype=np.float64)
+
+        # Pre-compute step sizes for each parameter
+        eps = np.array([1e-5 * max(abs(z_hat[k]), 1.0) for k in range(K)], dtype=np.float64)
+
+        # Compute numerical Hessian in z-space using relative step sizes
+        H_z = np.zeros((K, K), dtype=np.float64)
+        for i in range(K):
+            eps_i = eps[i]
+            for j in range(K):
+                eps_j = eps[j]
+
+                z_pp[:] = z_hat; z_pp[i] += eps_i; z_pp[j] += eps_j
+                z_pm[:] = z_hat; z_pm[i] += eps_i; z_pm[j] -= eps_j
+                z_mp[:] = z_hat; z_mp[i] -= eps_i; z_mp[j] += eps_j
+                z_mm[:] = z_hat; z_mm[i] -= eps_i; z_mm[j] -= eps_j
+
+                H_z[i, j] = (nll_z(z_pp) - nll_z(z_pm) - nll_z(z_mp) + nll_z(z_mm)) / (4 * eps_i * eps_j)
+    H_z = 0.5 * (H_z + H_z.T)
     
     # Compute covariance in z-space
     try:

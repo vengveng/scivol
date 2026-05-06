@@ -649,6 +649,35 @@ void transform_grad_pq(const double *grad_theta, const double *J, double *grad_z
 
 
 // =============================================================================
+// ARMA(p,q) + Normal
+// =============================================================================
+
+#define ARMA_TANH_BOUND 0.99
+
+__attribute__((visibility("default"), hot))
+void pack_arma_normal_pq(const double *z, double *theta, size_t p_ar, size_t q_ma)
+{
+    const size_t K = 1 + p_ar + q_ma;
+    theta[0] = z[0];
+    for (size_t i = 1; i < K; ++i) {
+        theta[i] = ARMA_TANH_BOUND * tanh(z[i]);
+    }
+}
+
+__attribute__((visibility("default"), hot))
+void jacobian_arma_normal_pq(const double *theta, double *J, size_t p_ar, size_t q_ma)
+{
+    const size_t K = 1 + p_ar + q_ma;
+    dzeros(J, K * K);
+    J[0] = 1.0;
+    for (size_t i = 1; i < K; ++i) {
+        const double ratio = theta[i] / ARMA_TANH_BOUND;
+        J[i * K + i] = ARMA_TANH_BOUND * (1.0 - ratio * ratio);
+    }
+}
+
+
+// =============================================================================
 // ARMA-GARCH(1,1) SPECIALIZED FUNCTIONS
 // =============================================================================
 //
@@ -664,8 +693,6 @@ void transform_grad_pq(const double *grad_theta, const double *J, double *grad_z
 //   (alpha, beta) = softmax(z_alpha, z_beta, 0)  (alpha + beta < 1)
 //   nu      = 2 + softplus(z_nu)      (nu > 2)
 //   lam     = tanh(z_lam)             (|lam| < 1)
-
-#define ARMA_TANH_BOUND 0.99
 
 __attribute__((visibility("default"), hot, flatten))
 void pack_arma_garch_normal_11(const double *z, double *theta)

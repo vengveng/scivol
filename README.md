@@ -86,12 +86,13 @@ Half-life (periods):      106.3
 Build models by combining components with `+`. volkit orders them automatically: MEAN, then VOLATILITY, then DENSITY.
 
 ```python
-from volkit import GARCH, GJRGARCH, ARMA, Normal, StudentT, SkewT
+from volkit import GARCH, GJRGARCH, ARMA, DCC, Normal, StudentT, SkewT
 
 spec = GARCH(1, 1)                          # Normal density by default
 spec = GARCH(1, 1) + StudentT()             # Explicit density
 spec = GJRGARCH(1, 1) + StudentT()          # Asymmetric volatility
 spec = ARMA(1, 1) + GARCH(1, 1) + SkewT()  # Mean + volatility + density
+dcc = DCC(1, 1)                             # Dynamic correlations (multivariate)
 ```
 
 One component per role. If you omit the density, `Normal()` is added for you.
@@ -145,6 +146,26 @@ spec = GJRGARCH(1, 1) + StudentT()
 ```
 
 Parameters: `omega`, `alpha[1:p]`, `gamma[1:p]` (leverage), `beta[1:q]`.
+
+### DCC(p, q)
+
+Dynamic Conditional Correlation for multivariate return series.
+
+`DCC.fit()` uses a two-step workflow:
+1. Fit a univariate volatility model to each series.
+2. Fit Gaussian DCC dynamics to the resulting standardised residuals.
+
+```python
+from volkit import DCC, GARCH, StudentT
+
+dcc = DCC(1, 1)
+result = dcc.fit(returns_df, univariate_spec=GARCH(1, 1) + StudentT())
+```
+
+Result access focuses on the economically useful correlation objects:
+- `result.Rt` for the full time-varying correlation path
+- `result.corr(i, j)` for a single pair
+- `result.unconditional_corr` for the long-run correlation matrix
 
 ### ARMA(p, q)
 
@@ -534,10 +555,11 @@ Analytical gradients and Hessians are verified in the internal development test 
 
 ```python
 from volkit import (
-    GARCH, GJRGARCH, ARMA,
+    GARCH, GJRGARCH, ARMA, DCC,
     Normal, StudentT, SkewT,
     AutoDensity, AutoVol,
     Component, CompositeSpec, Role,
+    DCCParams, DCCResult,
     settings, __version__,
 )
 ```
@@ -599,6 +621,13 @@ ad = AutoDensity()
 ad = AutoDensity(candidates=['Normal', 'StudentT'])
 ```
 
+### DCC
+
+```python
+dcc = DCC(1, 1)
+dcc.p, dcc.q, dcc.n_params, dcc.signature
+```
+
 ### EstimationResult
 
 ```python
@@ -611,6 +640,17 @@ result.success, result.niter, result.time_elapsed
 result.summary(), result.to_dict(), result.diagnostic_tests()
 result.selection_summary()
 result._selection_candidates  # list of all evaluated models
+```
+
+### DCCResult
+
+```python
+result.params, result.log_likelihood, result.aic, result.bic
+result.Rt
+result.corr(0, 1)
+result.unconditional_corr
+result.std_errors, result.std_errors_robust
+result.summary()
 ```
 
 ---
@@ -676,6 +716,31 @@ result = spec.fit(returns, verbose_selection=True)
 
 print(f"Best: {result.spec}")
 result.selection_summary()
+```
+
+### Fit DCC and inspect correlations
+
+```python
+import numpy as np
+import pandas as pd
+from volkit import DCC, GARCH, Normal
+
+rng = np.random.default_rng(42)
+returns = rng.standard_normal(1000) * 0.01
+returns_df = pd.DataFrame(
+    {
+        "stock": returns,
+        "bond": returns * 0.3 + rng.standard_normal(len(returns)) * 0.005,
+        "commodity": returns * -0.2 + rng.standard_normal(len(returns)) * 0.008,
+    }
+)
+
+dcc = DCC(1, 1)
+result = dcc.fit(returns_df, univariate_spec=GARCH(1, 1) + Normal())
+
+stock_bond = result.corr("stock", "bond")
+print(stock_bond.tail())
+print(result.unconditional_corr)
 ```
 
 ### One-step-ahead variance forecast

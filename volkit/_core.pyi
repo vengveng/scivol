@@ -124,6 +124,40 @@ def _garch_ll_grad_11_skewt(
     """GARCH(1,1) + Skew-t NLL with analytical gradient. Returns NLL."""
     ...
 
+def _garch_ll_grad_pq_skewt(
+    params_ptr: _IntPtr,   # [omega, alpha..., beta..., nu, lam]
+    resid_ptr: _IntPtr,    # Residuals / returns
+    sigma2_ptr: _IntPtr,   # Working conditional variances (modified in-place)
+    grad_ptr: _IntPtr,     # Output gradient (modified in-place)
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """GARCH(p,q) + Skew-t analytical gradient."""
+    ...
+
+def _garch_ll_hess_11_skewt(
+    params_ptr: _IntPtr,   # [omega, alpha, beta, nu, lam]
+    resid_ptr: _IntPtr,    # Residuals / returns
+    sigma2_ptr: _IntPtr,   # Working conditional variances (modified in-place)
+    hess_ptr: _IntPtr,     # Output Hessian (modified in-place)
+    n: _Size,
+) -> None:
+    """GARCH(1,1) + Skew-t analytical Hessian."""
+    ...
+
+def _garch_ll_hess_pq_skewt(
+    params_ptr: _IntPtr,   # [omega, alpha..., beta..., nu, lam]
+    resid_ptr: _IntPtr,    # Residuals / returns
+    sigma2_ptr: _IntPtr,   # Working conditional variances (modified in-place)
+    hess_ptr: _IntPtr,     # Output Hessian (modified in-place)
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """GARCH(p,q) + Skew-t analytical Hessian."""
+    ...
+
 # ── Standard error computation (OPG & Hessian) ────────────────────────────
 
 def _garch_opg_hess_pq(
@@ -561,6 +595,50 @@ def _gjr_garch_ll_hess_pq_studentt(
     """GJR-GARCH(p,q) + Student-t Hessian."""
     ...
 
+def _gjr_garch_ll_grad_11_skewt(
+    params_ptr: _IntPtr,   # [omega, alpha, gamma, beta, nu, lam]
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,     # Output gradient [6]
+    n: _Size,
+) -> None:
+    """GJR-GARCH(1,1) + Skew-t gradient."""
+    ...
+
+def _gjr_garch_ll_hess_11_skewt(
+    params_ptr: _IntPtr,   # [omega, alpha, gamma, beta, nu, lam]
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,     # Output Hessian 6x6
+    n: _Size,
+) -> None:
+    """GJR-GARCH(1,1) + Skew-t Hessian."""
+    ...
+
+def _gjr_garch_ll_grad_pq_skewt(
+    params_ptr: _IntPtr,   # [omega, alpha_1..p, gamma_1..p, beta_1..q, nu, lam]
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,     # Output gradient [K]
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """GJR-GARCH(p,q) + Skew-t gradient."""
+    ...
+
+def _gjr_garch_ll_hess_pq_skewt(
+    params_ptr: _IntPtr,   # [omega, alpha_1..p, gamma_1..p, beta_1..q, nu, lam]
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,     # Output Hessian K*K
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """GJR-GARCH(p,q) + Skew-t Hessian."""
+    ...
+
 # GJR-GARCH OPG/Hessian (Normal, for sandwich SE)
 def _gjr_garch_opg_hess_11(
     params_ptr: _IntPtr,   # [omega, alpha, gamma, beta]
@@ -679,6 +757,18 @@ def _arma_garch_nll_grad_11_normal(
     """ARMA(1,1)-GARCH(1,1) NLL and gradient with Normal innovations."""
     ...
 
+def _arma_garch_hess_11_normal(
+    params_ptr: _IntPtr,   # [c, phi, theta, omega, alpha, beta]
+    y_ptr: _IntPtr,        # Observations
+    resid_ptr: _IntPtr,    # Output: residuals
+    sigma2_ptr: _IntPtr,   # Output: variances
+    hess_ptr: _IntPtr,     # Output: Hessian (6x6 row-major)
+    h0: float,             # Initial variance
+    n: _Size,              # Number of observations
+) -> None:
+    """ARMA(1,1)-GARCH(1,1) analytical Hessian with Normal innovations."""
+    ...
+
 def _arma_garch_nll_11_studentt(
     params_ptr: _IntPtr,   # [c, phi, theta, omega, alpha, beta, nu]
     y_ptr: _IntPtr,
@@ -702,6 +792,18 @@ def _arma_garch_nll_grad_11_studentt(
     """ARMA(1,1)-GARCH(1,1) NLL with analytical gradient for Student-t innovations."""
     ...
 
+def _arma_garch_hess_11_studentt(
+    params_ptr: _IntPtr,   # [c, phi, theta, omega, alpha, beta, nu]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,     # Output: Hessian (7x7 row-major)
+    h0: float,
+    n: _Size,
+) -> None:
+    """ARMA(1,1)-GARCH(1,1) analytical Hessian for Student-t innovations."""
+    ...
+
 def _arma_garch_nll_11_skewt(
     params_ptr: _IntPtr,   # [c, phi, theta, omega, alpha, beta, nu, lam]
     y_ptr: _IntPtr,
@@ -711,6 +813,30 @@ def _arma_garch_nll_11_skewt(
     n: _Size,
 ) -> float:
     """ARMA(1,1)-GARCH(1,1) NLL with Skew-t innovations."""
+    ...
+
+def _arma_garch_nll_grad_11_skewt(
+    params_ptr: _IntPtr,   # [c, phi, theta, omega, alpha, beta, nu, lam]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,     # Output: gradient (8 elements, modified in-place)
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-GARCH(1,1) NLL with analytical gradient for Skew-t innovations."""
+    ...
+
+def _arma_garch_hess_11_skewt(
+    params_ptr: _IntPtr,   # [c, phi, theta, omega, alpha, beta, nu, lam]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,     # Output: Hessian (8x8 row-major)
+    h0: float,
+    n: _Size,
+) -> None:
+    """ARMA(1,1)-GARCH(1,1) analytical Hessian for Skew-t innovations."""
     ...
 
 def _arma_garch_nll_pq_normal(
@@ -729,6 +855,40 @@ def _arma_garch_nll_pq_normal(
     """General ARMA(p,q)-GARCH(P,Q) NLL with Normal innovations."""
     ...
 
+def _arma_garch_nll_grad_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> float:
+    """General ARMA(p,q)-GARCH(P,Q) NLL with analytical gradient for Normal innovations."""
+    ...
+
+def _arma_garch_hess_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> None:
+    """General ARMA(p,q)-GARCH(P,Q) analytical Hessian for Normal innovations."""
+    ...
+
 def _arma_garch_nll_pq_studentt(
     params_ptr: _IntPtr,   # [..., nu]
     y_ptr: _IntPtr,
@@ -745,6 +905,40 @@ def _arma_garch_nll_pq_studentt(
     """General ARMA(p,q)-GARCH(P,Q) NLL with Student-t innovations."""
     ...
 
+def _arma_garch_nll_grad_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> float:
+    """General ARMA(p,q)-GARCH(P,Q) NLL with analytical gradient for Student-t innovations."""
+    ...
+
+def _arma_garch_hess_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> None:
+    """General ARMA(p,q)-GARCH(P,Q) analytical Hessian for Student-t innovations."""
+    ...
+
 def _arma_garch_nll_pq_skewt(
     params_ptr: _IntPtr,   # [..., nu, lam]
     y_ptr: _IntPtr,
@@ -759,6 +953,40 @@ def _arma_garch_nll_pq_skewt(
     Q_garch: _Size,
 ) -> float:
     """General ARMA(p,q)-GARCH(P,Q) NLL with Skew-t innovations."""
+    ...
+
+def _arma_garch_nll_grad_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> float:
+    """General ARMA(p,q)-GARCH(P,Q) NLL with analytical gradient for Skew-t innovations."""
+    ...
+
+def _arma_garch_hess_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> None:
+    """General ARMA(p,q)-GARCH(P,Q) analytical Hessian for Skew-t innovations."""
     ...
 
 # =============================================================================
@@ -916,11 +1144,36 @@ def _log_gjr_garch_ll_grad_pq_studentt(
     """Log-space GJR-GARCH(p,q) + Student-t gradient. Fused pack → grad → J^T transform."""
     ...
 
+def _log_arma_nll_pq_normal(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+) -> float:
+    """Log-space ARMA(p,q) + Normal NLL. Fused pack → NLL."""
+    ...
+
+def _log_arma_nll_grad_pq_normal(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+) -> None:
+    """Log-space ARMA(p,q) + Normal gradient. Fused pack → grad → J^T transform."""
+    ...
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Fused log-space wrappers — ARMA-GARCH
 #
 # NLL: all distributions, all orders (dispatches to _11 when applicable)
-# Gradient: Normal & Student-t only, _11 dispatch only
+# Gradient: Normal & Student-t for all orders
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _log_arma_garch_nll_pq_normal(
@@ -949,7 +1202,7 @@ def _log_arma_garch_nll_grad_pq_normal(
     p_ar: _Size, q_ma: _Size,
     P_arch: _Size, Q_garch: _Size,
 ) -> None:
-    """Log-space ARMA-GARCH + Normal gradient (11 dispatch only)."""
+    """Log-space ARMA-GARCH + Normal gradient."""
     ...
 
 def _log_arma_garch_nll_pq_studentt(
@@ -978,7 +1231,7 @@ def _log_arma_garch_nll_grad_pq_studentt(
     p_ar: _Size, q_ma: _Size,
     P_arch: _Size, Q_garch: _Size,
 ) -> None:
-    """Log-space ARMA-GARCH + Student-t gradient (11 dispatch only)."""
+    """Log-space ARMA-GARCH + Student-t gradient."""
     ...
 
 def _log_arma_garch_nll_pq_skewt(

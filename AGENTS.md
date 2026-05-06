@@ -701,7 +701,7 @@ volkit_cursor/                   # Repository root
 │   │   ├── variance_gjr_garch.c # GJR-GARCH variance recursion (raw residuals)
 │   │   ├── likelihood_*.c       # Distribution log-likelihoods
 │   │   ├── likelihood_gjr_garch.c # GJR-GARCH NLL + grad + Hessian
-│   │   ├── arma_garch.c         # ARMA-GARCH NLL + gradients (Normal/t/Skew-t)
+│   │   ├── arma_garch.c         # ARMA-GARCH NLL + derivatives (Normal/t/Skew-t)
 │   │   ├── errors_garch.c       # OPG and Hessian computation
 │   │   ├── errors_gjr_garch.c   # GJR-GARCH OPG and Hessian
 │   │   └── log_wrappers.c       # Fused log-space NLL+gradient wrappers
@@ -769,13 +769,17 @@ from volkit.result import EstimationResult
 - ✅ Fused log-space C wrappers (`log_wrappers.c`) for GARCH/GJR-GARCH + Normal/Student-t
 - ✅ ARMA-GARCH C pack/jacobian in `transforms_logspace.c` (6 pack + 6 jacobian = 12 functions)
 - ✅ Fused log-space C wrappers for ARMA-GARCH (3 NLL + 2 gradient functions)
+- ✅ Exact observed C Hessians for ARMA-GARCH + Normal/Student-t with promoted analytical log-Hessians
+- ✅ Exact observed C gradients/Hessians for ARMA-GARCH + Skew-t with promoted analytical log-Hessians
+- ✅ Exact observed C gradients/Hessians for GARCH + Skew-t with promoted analytical log-Hessians
+- ✅ Exact observed C gradients/Hessians for GJR-GARCH + Skew-t with promoted analytical log-Hessians
 - ✅ ARMA-GARCH kernel files updated to use fused functions
 
 ### Immediate Goals
 
-1. Add GJR-GARCH + Skew-t C NLL/gradient functions
-2. Add GARCH + Skew-t pq gradient C function
-3. Log-space (unconstrained) optimization option (partially implemented)
+1. Add fused log-space C gradient wrappers for GARCH/GJR-GARCH + Skew-t
+2. Add fused log-space C gradient wrappers for ARMA-GARCH + Skew-t
+3. Continue tightening unconstrained/log-mode defaults where benchmarks justify promotion
 
 ### Fused Log-Space Wrappers
 
@@ -794,15 +798,17 @@ Fused C functions that perform the full unconstrained optimization pipeline in a
 - `_log_garch_ll_pq_studentt` / `_log_garch_ll_grad_pq_studentt` (takes resid2)
 - `_log_gjr_garch_ll_pq_normal` / `_log_gjr_garch_ll_grad_pq_normal` (takes raw resid)
 - `_log_gjr_garch_ll_pq_studentt` / `_log_gjr_garch_ll_grad_pq_studentt` (takes raw resid)
+- `_log_arma_nll_pq_normal` / `_log_arma_nll_grad_pq_normal` (takes y, resid, e0)
 - `_log_arma_garch_nll_pq_normal` / `_log_arma_garch_nll_grad_pq_normal` (takes y, resid, sigma2, e0, h0)
 - `_log_arma_garch_nll_pq_studentt` / `_log_arma_garch_nll_grad_pq_studentt` (takes y, resid, sigma2, e0, h0)
 - `_log_arma_garch_nll_pq_skewt` (NLL only, no C gradient for Skew-t)
 
 Each dispatches to specialized `_11` kernels when applicable (all orders == 1).
-ARMA-GARCH gradient functions only work for (1,1,1,1); Python uses numerical z-space gradient for other orders.
+ARMA-GARCH Normal, Student-t, and Skew-t theta-space derivative functions now work for all supported orders; the fused wrappers still dispatch to the specialized `_11` kernels when all orders equal 1 where those fused paths exist.
 
-**Not yet available** (missing C building blocks):
-- GARCH/GJR-GARCH + Skew-t (missing pq gradient or NLL C functions)
+**Not yet available** (missing fused C building blocks):
+- GARCH/GJR-GARCH + Skew-t fused log-space gradient wrappers
+- ARMA-GARCH + Skew-t fused log-space gradient wrappers
 
 **Python kernel pattern** (after fused wrappers):
 ```python

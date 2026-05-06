@@ -23,7 +23,6 @@
  */
 
 #include <stddef.h>
-#include <math.h>
 #include "volkit_core.h"
 
 /* Maximum parameter count for stack allocation.
@@ -219,11 +218,51 @@ void log_gjr_garch_ll_grad_pq_studentt(const double *z,
 
 
 /* ═══════════════════════════════════════════════════════════════════════════
+ * ARMA(p,q) + Normal    (takes y, resid, e0)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+__attribute__((visibility("default"), hot))
+double log_arma_nll_pq_normal(const double *z,
+                              const double *y,
+                              double       *resid,
+                              const double *e0,
+                              size_t n,
+                              size_t p_ar,
+                              size_t q_ma)
+{
+    double theta[MAX_LOG_K];
+    pack_arma_normal_pq(z, theta, p_ar, q_ma);
+    return arma_nll_pq_normal(theta, y, resid, (double *)e0, n, p_ar, q_ma);
+}
+
+__attribute__((visibility("default"), hot))
+void log_arma_nll_grad_pq_normal(const double *z,
+                                 const double *y,
+                                 double       *resid,
+                                 const double *e0,
+                                 double       *grad_z,
+                                 size_t n,
+                                 size_t p_ar,
+                                 size_t q_ma)
+{
+    const size_t K = 1 + p_ar + q_ma;
+    double theta[MAX_LOG_K];
+    double grad_theta[MAX_LOG_K];
+    double J[MAX_LOG_KK];
+
+    pack_arma_normal_pq(z, theta, p_ar, q_ma);
+    arma_nll_grad_pq_normal(theta, y, resid, (double *)e0, grad_theta, n, p_ar, q_ma);
+    jacobian_arma_normal_pq(theta, J, p_ar, q_ma);
+    transform_grad_pq(grad_theta, J, grad_z, K);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
  * ARMA-GARCH(p,q) + Normal    (takes y, resid, sigma2, e0, h0)
  *
  * NLL: works for all (p_ar, q_ma, P, Q), dispatching to _11 when all == 1
- * Gradient: only works when all orders == 1 (analytical gradient exists
- *           only for _11). Python handles pq via numerical z-space gradient.
+ * Gradient: works for all orders, dispatching to the specialized _11 kernel
+ *           when all orders equal 1.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 __attribute__((visibility("default"), hot))
@@ -261,16 +300,22 @@ void log_arma_garch_nll_grad_pq_normal(const double *z,
                                         size_t p_ar, size_t q_ma,
                                         size_t P, size_t Q)
 {
-    /* Only works for (1,1,1,1) — analytical gradient exists only for _11.
-     * Python must check and use numerical gradient for other orders. */
     const size_t K = 1 + p_ar + q_ma + 1 + P + Q;  /* Normal: no extra params */
     double theta[MAX_LOG_K];
     double grad_theta[MAX_LOG_K];
     double J[MAX_LOG_KK];
 
-    pack_arma_garch_normal_11(z, theta);
-    arma_garch_nll_grad_11_normal(theta, y, resid, sigma2, grad_theta, h0[0], n);
-    jacobian_arma_garch_normal_11(theta, J);
+    if (p_ar == 1 && q_ma == 1 && P == 1 && Q == 1) {
+        pack_arma_garch_normal_11(z, theta);
+        arma_garch_nll_grad_11_normal(theta, y, resid, sigma2, grad_theta, h0[0], n);
+        jacobian_arma_garch_normal_11(theta, J);
+    } else {
+        pack_arma_garch_normal_pq(z, theta, p_ar, q_ma, P, Q);
+        arma_garch_nll_grad_pq_normal(theta, y, resid, sigma2,
+                                      (double *)e0, (double *)h0,
+                                      grad_theta, n, p_ar, q_ma, P, Q);
+        jacobian_arma_garch_normal_pq(theta, J, p_ar, q_ma, P, Q);
+    }
     transform_grad_pq(grad_theta, J, grad_z, K);
 }
 
@@ -314,15 +359,22 @@ void log_arma_garch_nll_grad_pq_studentt(const double *z,
                                            size_t p_ar, size_t q_ma,
                                            size_t P, size_t Q)
 {
-    /* Only works for (1,1,1,1) — analytical gradient exists only for _11. */
     const size_t K = 1 + p_ar + q_ma + 1 + P + Q + 1;  /* +1 for nu */
     double theta[MAX_LOG_K];
     double grad_theta[MAX_LOG_K];
     double J[MAX_LOG_KK];
 
-    pack_arma_garch_studentt_11(z, theta);
-    arma_garch_nll_grad_11_studentt(theta, y, resid, sigma2, grad_theta, h0[0], n);
-    jacobian_arma_garch_studentt_11(theta, J);
+    if (p_ar == 1 && q_ma == 1 && P == 1 && Q == 1) {
+        pack_arma_garch_studentt_11(z, theta);
+        arma_garch_nll_grad_11_studentt(theta, y, resid, sigma2, grad_theta, h0[0], n);
+        jacobian_arma_garch_studentt_11(theta, J);
+    } else {
+        pack_arma_garch_studentt_pq(z, theta, p_ar, q_ma, P, Q);
+        arma_garch_nll_grad_pq_studentt(theta, y, resid, sigma2,
+                                        (double *)e0, (double *)h0,
+                                        grad_theta, n, p_ar, q_ma, P, Q);
+        jacobian_arma_garch_studentt_pq(theta, J, p_ar, q_ma, P, Q);
+    }
     transform_grad_pq(grad_theta, J, grad_z, K);
 }
 

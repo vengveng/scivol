@@ -22,9 +22,11 @@ from ..spec.composite import CompositeSpec
 from ..result import EstimationResult
 from .routine import Routine
 from .transforms import (
+    compute_se_via_logspace,
     pack_gjr_garch_studentt,
     unpack_gjr_garch_studentt,
     jacobian_gjr_garch_studentt,
+    log_hessian_gjr_garch,
 )
 
 _CACHE: Dict[Tuple[int, int], Routine] = {}
@@ -166,9 +168,6 @@ def _build(p: int, q: int) -> Routine:
             t_elapsed = time.perf_counter() - t_start
             _compute_gjr_variance(res.x, resid_c, sigma2, p, q)
 
-            # SE via log-space
-            from .transforms import compute_se_via_logspace
-
             def nll_theta(theta: NDArray[np.float64]) -> float:
                 return call_c_obj(theta)
 
@@ -190,9 +189,7 @@ def _build(p: int, q: int) -> Routine:
 
         else:
             # LOG MODE: Fused C-accelerated unconstrained optimization
-            from .transforms import (
-                pack_gjr_garch_studentt_c, compute_se_via_logspace,
-            )
+            from .transforms import pack_gjr_garch_studentt_c
 
             p_scaler = 2
 
@@ -215,17 +212,17 @@ def _build(p: int, q: int) -> Routine:
                 )
                 return _grad_z_buf.copy() * p_scaler
 
+            def analytical_hess_z(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                pack_gjr_garch_studentt_c(z, _theta_buf, p, q)
+                theta_local = _theta_buf.copy()
+                call_c_jac(theta_local)
+                grad_theta = grad_vec.copy()
+                call_c_hess(theta_local)
+                hess_theta = hess_mat.copy()
+                return log_hessian_gjr_garch(theta_local, grad_theta, hess_theta, p, q, dist="studentt")
+
             def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                eps = 1e-5
-                H = np.zeros((K, K), dtype=np.float64)
-                for i in range(K):
-                    for j in range(K):
-                        z_pp = z.copy(); z_pp[i] += eps; z_pp[j] += eps
-                        z_pm = z.copy(); z_pm[i] += eps; z_pm[j] -= eps
-                        z_mp = z.copy(); z_mp[i] -= eps; z_mp[j] += eps
-                        z_mm = z.copy(); z_mm[i] -= eps; z_mm[j] -= eps
-                        H[i, j] = (obj_log(z_pp) - obj_log(z_pm) - obj_log(z_mp) + obj_log(z_mm)) / (4 * eps * eps)
-                return H
+                return analytical_hess_z(z) * p_scaler
 
             theta0 = np.concatenate((vol.default_start(resid), dens.default_start(resid)))
             z0 = unpack_gjr_garch_studentt(theta0, p, q)
@@ -276,6 +273,7 @@ def _build(p: int, q: int) -> Routine:
                 unpack_fn=lambda th: unpack_gjr_garch_studentt(th, p, q),
                 jacobian_fn=lambda th: jacobian_gjr_garch_studentt(th, p, q),
                 pack_fn=lambda z: pack_gjr_garch_studentt(z, p, q),
+                hess_z_fn=analytical_hess_z,
             )
 
             return EstimationResult(

@@ -177,17 +177,28 @@ double arma_nll_grad_11_normal(
 /* ========================================================================== */
 
 /*
- * Hessian derivation for concentrated likelihood:
- * 
- * ∂²NLL/∂θ_i∂θ_j = ∂/∂θ_j [ (1/σ̂²) * Σ ε_t * ∂ε_t/∂θ_i ]
- * 
- * Using product rule and chain rule, this involves:
- *   - Second-order sensitivities ∂²ε_t/∂θ_i∂θ_j
- *   - Products of first-order sensitivities
- *   - Variance sensitivity ∂σ̂²/∂θ_j
- * 
- * For simplicity, we use the expected Hessian (Fisher Information) approximation:
- *   H_ij ≈ (1/σ̂²) * Σ (∂ε_t/∂θ_i) * (∂ε_t/∂θ_j)
+ * Exact observed Hessian for concentrated likelihood:
+ *
+ * Let Q = Σ ε_t² over the effective sample and S_i = Σ ε_t ∂ε_t/∂θ_i.
+ * Since the per-observation concentrated objective is
+ *
+ *   nll = 0.5 * (log(Q / n_eff) + 1),
+ *
+ * the gradient is
+ *
+ *   g_i = S_i / Q.
+ *
+ * The exact observed Hessian is therefore
+ *
+ *   H_ij = (Σ ∂ε_t/∂θ_i ∂ε_t/∂θ_j + Σ ε_t ∂²ε_t/∂θ_i∂θ_j) / Q
+ *          - 2 S_i S_j / Q².
+ *
+ * For ARMA(1,1), the second-order residual recursion is
+ *
+ *   ∂²ε_t/∂θ_i∂θ_j
+ *     = -θ ∂²ε_{t-1}/∂θ_i∂θ_j
+ *       - 1{i=θ} ∂ε_{t-1}/∂θ_j
+ *       - 1{j=θ} ∂ε_{t-1}/∂θ_i.
  */
 __attribute__((visibility("default"), hot))
 void arma_hess_11_normal(
@@ -215,16 +226,22 @@ void arma_hess_11_normal(
     
     size_t n_eff = n - 1;
     
-    /* Sensitivity arrays */
-    double de_prev[3] = {0};
-    double de_curr[3] = {0};
+    /* First- and second-order sensitivities */
+    double de_prev[3] = {0.0, 0.0, 0.0};
+    double de_curr[3] = {0.0, 0.0, 0.0};
+    double d2_prev[9];
+    dzeros(d2_prev, 9);
     
     /* Initialize t=0 */
     resid[0] = 0.0;
     
     /* Accumulators */
     double sum_e2 = 0.0;
-    double sum_de_de[9] = {0};  /* Σ ∂ε_t/∂θ_i * ∂ε_t/∂θ_j */
+    double sum_e_de[3] = {0.0, 0.0, 0.0};
+    double sum_de_de[9];
+    double sum_e_d2[9];
+    dzeros(sum_de_de, 9);
+    dzeros(sum_e_d2, 9);
     
     /* Forward recursion t=1,...,n-1 */
     for (size_t t = 1; t < n; t++) {
@@ -240,11 +257,27 @@ void arma_hess_11_normal(
         de_curr[0] = -1.0 - theta * de_prev[0];
         de_curr[1] = -y_prev - theta * de_prev[1];
         de_curr[2] = -e_prev - theta * de_prev[2];
+
+        /* Second-order residual sensitivities */
+        double d2_curr[9];
+        for (size_t i = 0; i < K; ++i) {
+            for (size_t j = 0; j < K; ++j) {
+                double value = -theta * d2_prev[i * K + j];
+                if (i == 2) value -= de_prev[j];
+                if (j == 2) value -= de_prev[i];
+                d2_curr[i * K + j] = value;
+            }
+        }
         
-        /* Accumulate outer product of sensitivities */
+        for (size_t i = 0; i < K; ++i) {
+            sum_e_de[i] += e_t * de_curr[i];
+        }
+
         for (size_t i = 0; i < K; i++) {
             for (size_t j = 0; j < K; j++) {
-                sum_de_de[i * K + j] += de_curr[i] * de_curr[j];
+                const size_t idx = i * K + j;
+                sum_de_de[idx] += de_curr[i] * de_curr[j];
+                sum_e_d2[idx] += e_t * d2_curr[idx];
             }
         }
         
@@ -252,17 +285,24 @@ void arma_hess_11_normal(
         for (size_t k = 0; k < K; k++) {
             de_prev[k] = de_curr[k];
         }
+        memcpy(d2_prev, d2_curr, sizeof(d2_prev));
     }
     
     /* Concentrated variance */
     double sigma2 = sum_e2 / (double)n_eff;
     if (sigma2 < 1e-20) sigma2 = 1e-20;
-    
-    /* Hessian (expected): H_ij = (1/σ̂²) * Σ (∂ε_t/∂θ_i) * (∂ε_t/∂θ_j) */
-    /* Scale to per-observation */
-    double inv_sigma2 = 1.0 / sigma2;
-    for (size_t i = 0; i < K * K; i++) {
-        hess[i] = inv_sigma2 * sum_de_de[i] / (double)n_eff;
+
+    {
+        const double Q = sigma2 * (double)n_eff;
+        const double inv_Q = 1.0 / Q;
+        const double inv_Q2 = inv_Q * inv_Q;
+        for (size_t i = 0; i < K; ++i) {
+            for (size_t j = 0; j < K; ++j) {
+                const size_t idx = i * K + j;
+                hess[idx] = (sum_de_de[idx] + sum_e_d2[idx]) * inv_Q
+                          - 2.0 * sum_e_de[i] * sum_e_de[j] * inv_Q2;
+            }
+        }
     }
 }
 
@@ -465,7 +505,7 @@ double arma_nll_grad_pq_normal(
 }
 
 /* ========================================================================== */
-/* ARMA(p,q) + Normal: Hessian (expected, concentrated likelihood)            */
+/* ARMA(p,q) + Normal: Hessian (exact observed, concentrated likelihood)      */
 /* ========================================================================== */
 
 __attribute__((visibility("default"), hot))
@@ -515,8 +555,13 @@ void arma_hess_pq_normal(
         resid[t] = (t < q_ma) ? e0[t] : 0.0;
     }
     
+    double d2_history[32][16][16];
+    dzeros((double *)d2_history, 32 * 16 * 16);
+
     double sum_e2 = 0.0;
-    double sum_de_de[256] = {0};  /* K * K, max 16x16 */
+    double sum_e_de[16] = {0};    /* Σ ε_t * ∂ε_t/∂θ_k */
+    double sum_de_de[256] = {0};  /* Σ ∂ε_t/∂θ_i * ∂ε_t/∂θ_j */
+    double sum_e_d2[256] = {0};   /* Σ ε_t * ∂²ε_t/∂θ_i∂θ_j */
     size_t n_eff = 0;
     
     /* Forward recursion from t=max_lag */
@@ -555,10 +600,33 @@ void arma_hess_pq_normal(
             }
         }
         
-        /* Accumulate outer product */
+        /* Compute second-order sensitivities */
+        double d2_curr[16][16];
+        dzeros((double *)d2_curr, 16 * 16);
+        for (size_t l = 0; l < q_ma; ++l) {
+            const double theta_l = params[1 + p_ar + l];
+            const size_t theta_idx = 1 + p_ar + l;
+            for (size_t i = 0; i < K; ++i) {
+                for (size_t j = 0; j < K; ++j) {
+                    d2_curr[i][j] -= theta_l * d2_history[l][i][j];
+                }
+            }
+            for (size_t j = 0; j < K; ++j) {
+                d2_curr[theta_idx][j] -= de_history[l][j];
+                d2_curr[j][theta_idx] -= de_history[l][j];
+            }
+        }
+
+        for (size_t k = 0; k < K; ++k) {
+            sum_e_de[k] += e_t * de_curr[k];
+        }
+
+        /* Accumulate observed-Hessian building blocks */
         for (size_t i = 0; i < K; i++) {
             for (size_t j = 0; j < K; j++) {
-                sum_de_de[i * K + j] += de_curr[i] * de_curr[j];
+                const size_t idx = i * K + j;
+                sum_de_de[idx] += de_curr[i] * de_curr[j];
+                sum_e_d2[idx] += e_t * d2_curr[i][j];
             }
         }
         
@@ -567,9 +635,19 @@ void arma_hess_pq_normal(
             for (size_t k = 0; k < K; k++) {
                 de_history[lag][k] = de_history[lag - 1][k];
             }
+            for (size_t i = 0; i < K; ++i) {
+                for (size_t j = 0; j < K; ++j) {
+                    d2_history[lag][i][j] = d2_history[lag - 1][i][j];
+                }
+            }
         }
         for (size_t k = 0; k < K; k++) {
             de_history[0][k] = de_curr[k];
+        }
+        for (size_t i = 0; i < K; ++i) {
+            for (size_t j = 0; j < K; ++j) {
+                d2_history[0][i][j] = d2_curr[i][j];
+            }
         }
         
         n_eff++;
@@ -581,9 +659,16 @@ void arma_hess_pq_normal(
     double sigma2 = sum_e2 / (double)n_eff;
     if (sigma2 < 1e-20) sigma2 = 1e-20;
     
-    /* Expected Hessian */
-    double inv_sigma2 = 1.0 / sigma2;
-    for (size_t i = 0; i < K * K; i++) {
-        hess[i] = inv_sigma2 * sum_de_de[i] / (double)n_eff;
+    {
+        const double Q = sigma2 * (double)n_eff;
+        const double inv_Q = 1.0 / Q;
+        const double inv_Q2 = inv_Q * inv_Q;
+        for (size_t i = 0; i < K; ++i) {
+            for (size_t j = 0; j < K; ++j) {
+                const size_t idx = i * K + j;
+                hess[idx] = (sum_de_de[idx] + sum_e_d2[idx]) * inv_Q
+                          - 2.0 * sum_e_de[i] * sum_e_de[j] * inv_Q2;
+            }
+        }
     }
 }

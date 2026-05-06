@@ -2,7 +2,8 @@
 """
 ARMA(p,q) + GARCH(P,Q) + StudentT kernel.
 
-Currently implements specialized ARMA(1,1)+GARCH(1,1) using C extensions.
+Uses C extensions for all supported orders, with specialized `_11` dispatch
+for the common ARMA(1,1)+GARCH(1,1) case.
 """
 from __future__ import annotations
 import re
@@ -18,6 +19,13 @@ from ..components.density import StudentT
 from ..spec.composite import CompositeSpec
 from ..result import EstimationResult
 from .routine import Routine
+from .transforms import (
+    compute_se_via_logspace,
+    jacobian_arma_garch_studentt,
+    log_hessian_arma_garch_studentt,
+    pack_arma_garch_studentt,
+    unpack_arma_garch_studentt,
+)
 
 _CACHE: Dict[Tuple[int, int, int, int], Routine] = {}
 
@@ -40,6 +48,7 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
     n_vol = 1 + P_arch + Q_garch
     n_dist = 1  # nu
     n_params = n_mean + n_vol + n_dist
+    max_lag = max(p_ar, q_ma, P_arch, Q_garch, 1)
     
     use_specialized = (p_ar == 1 and q_ma == 1 and P_arch == 1 and Q_garch == 1)
     
@@ -60,8 +69,8 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
         sigma2_ptr = _as_cptr(sigma2)
         
         # Pre-allocate for general case
-        e0 = np.zeros(max(q_ma, 1), dtype=np.float64)
-        h0_arr = np.full(max(Q_garch, 1), h0, dtype=np.float64)
+        e0 = np.zeros(max_lag, dtype=np.float64)
+        h0_arr = np.full(max_lag, h0, dtype=np.float64)
         e0_ptr = _as_cptr(e0)
         h0_ptr = _as_cptr(h0_arr)
         
@@ -71,6 +80,9 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
         
         # Build objective function
         if use_specialized:
+            hess_mat = np.zeros((n_params, n_params), dtype=np.float64)
+            hess_ptr = _as_cptr(hess_mat)
+
             def call_nll(params: NDArray[np.float64]) -> float:
                 return _core._arma_garch_nll_11_studentt(
                     _as_cptr(params), y_ptr, resid_ptr, sigma2_ptr, h0, n
@@ -81,13 +93,34 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
                     _as_cptr(params), y_ptr, resid_ptr, sigma2_ptr, grad_ptr, h0, n
                 )
                 return grad_vec.copy()
+
+            def call_hess(params: NDArray[np.float64]) -> NDArray[np.float64]:
+                _core._arma_garch_hess_11_studentt(
+                    _as_cptr(params), y_ptr, resid_ptr, sigma2_ptr, hess_ptr, h0, n
+                )
+                return hess_mat.copy()
         else:
+            hess_mat = np.zeros((n_params, n_params), dtype=np.float64)
+            hess_ptr = _as_cptr(hess_mat)
+
             def call_nll(params: NDArray[np.float64]) -> float:
                 return _core._arma_garch_nll_pq_studentt(
                     _as_cptr(params), y_ptr, resid_ptr, sigma2_ptr,
                     e0_ptr, h0_ptr, n, p_ar, q_ma, P_arch, Q_garch
                 )
-            call_grad = None
+            def call_grad(params: NDArray[np.float64]) -> NDArray[np.float64]:
+                _core._arma_garch_nll_grad_pq_studentt(
+                    _as_cptr(params), y_ptr, resid_ptr, sigma2_ptr,
+                    e0_ptr, h0_ptr, grad_ptr, n, p_ar, q_ma, P_arch, Q_garch
+                )
+                return grad_vec.copy()
+
+            def call_hess(params: NDArray[np.float64]) -> NDArray[np.float64]:
+                _core._arma_garch_hess_pq_studentt(
+                    _as_cptr(params), y_ptr, resid_ptr, sigma2_ptr,
+                    e0_ptr, h0_ptr, hess_ptr, n, p_ar, q_ma, P_arch, Q_garch
+                )
+                return hess_mat.copy()
         
         # Default start
         start = np.concatenate([
@@ -139,8 +172,6 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
             # =========================================================
             # LOG MODE: Fused C log-space functions
             # =========================================================
-            from .transforms import unpack_arma_garch_studentt, pack_arma_garch_studentt
-            
             K = n_params
             p_scaler = 2
             _grad_z_buf = np.zeros(K, dtype=np.float64)
@@ -152,34 +183,23 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
                     e0_ptr, h0_ptr, n, p_ar, q_ma, P_arch, Q_garch
                 ) * p_scaler
             
-            if use_specialized:
-                def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                    _core._log_arma_garch_nll_grad_pq_studentt(
-                        _as_cptr(z), y_ptr, resid_ptr, sigma2_ptr,
-                        e0_ptr, h0_ptr, _grad_z_ptr, n, p_ar, q_ma, P_arch, Q_garch
-                    )
-                    return _grad_z_buf * p_scaler
-            else:
-                def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                    eps = 1e-7
-                    grad = np.zeros(K, dtype=np.float64)
-                    f0 = obj_log(z)
-                    for i in range(K):
-                        z_p = z.copy(); z_p[i] += eps
-                        grad[i] = (obj_log(z_p) - f0) / eps
-                    return grad
+            def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                _core._log_arma_garch_nll_grad_pq_studentt(
+                    _as_cptr(z), y_ptr, resid_ptr, sigma2_ptr,
+                    e0_ptr, h0_ptr, _grad_z_ptr, n, p_ar, q_ma, P_arch, Q_garch
+                )
+                return _grad_z_buf * p_scaler
             
+            def analytical_hess_z(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                theta_local = pack_arma_garch_studentt(z, p_ar, q_ma, P_arch, Q_garch)
+                grad_theta = call_grad(theta_local) * p_scaler
+                hess_theta = call_hess(theta_local) * p_scaler
+                return log_hessian_arma_garch_studentt(
+                    theta_local, grad_theta, hess_theta, p_ar, q_ma, P_arch, Q_garch
+                )
+
             def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                eps = 1e-5
-                H = np.zeros((K, K), dtype=np.float64)
-                for i in range(K):
-                    for j in range(K):
-                        z_pp = z.copy(); z_pp[i] += eps; z_pp[j] += eps
-                        z_pm = z.copy(); z_pm[i] += eps; z_pm[j] -= eps
-                        z_mp = z.copy(); z_mp[i] -= eps; z_mp[j] += eps
-                        z_mm = z.copy(); z_mm[i] -= eps; z_mm[j] -= eps
-                        H[i, j] = (obj_log(z_pp) - obj_log(z_pm) - obj_log(z_mp) + obj_log(z_mm)) / (4 * eps * eps)
-                return H
+                return analytical_hess_z(z)
             
             z0 = unpack_arma_garch_studentt(start, p_ar, q_ma, P_arch, Q_garch)
             
@@ -201,10 +221,26 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
                 raise ValueError(f"Unknown solver: {solver}")
             
             theta_hat = pack_arma_garch_studentt(res.x, p_ar, q_ma, P_arch, Q_garch)
+            res.x = theta_hat
             nll_final = res.fun / p_scaler
         
         t_elapsed = time.perf_counter() - t_start
         _ = call_nll(theta_hat)
+
+        hessian = None
+        cov_matrix = None
+        if log_mode:
+            def nll_theta(theta: NDArray[np.float64]) -> float:
+                return call_nll(theta)
+
+            hessian, cov_matrix = compute_se_via_logspace(
+                theta_hat=theta_hat,
+                nll_theta=nll_theta,
+                unpack_fn=lambda th: unpack_arma_garch_studentt(th, p_ar, q_ma, P_arch, Q_garch),
+                jacobian_fn=lambda th: jacobian_arma_garch_studentt(th, p_ar, q_ma, P_arch, Q_garch),
+                pack_fn=lambda z: pack_arma_garch_studentt(z, p_ar, q_ma, P_arch, Q_garch),
+                hess_z_fn=analytical_hess_z,
+            )
         
         class ScaledResult:
             def __init__(self, x, fun, success, nit, message):
@@ -223,6 +259,8 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
             optimization_result=scaled_res,
             data=y,
             sigma2=sigma2.copy(),
+            hessian=hessian,
+            cov_matrix=cov_matrix,
             time_elapsed=t_elapsed,
         )
     

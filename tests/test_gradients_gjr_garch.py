@@ -150,7 +150,7 @@ class TestGJRGARCHpqAD:
         np.testing.assert_allclose(hess_c, hess_ref, rtol=1e-6, atol=1e-6)
 
     @pytest.mark.parametrize("p,q", [(1, 1), (2, 1), (1, 2), (2, 2)])
-    def test_studentt_gradient_and_garch_hessian_block_match_ad(self, resid: NDArray[np.float64], p: int, q: int) -> None:
+    def test_studentt_gradient_and_hessian_match_ad(self, resid: NDArray[np.float64], p: int, q: int) -> None:
         k_garch = 1 + 2 * p + q
         params = np.zeros(k_garch + 1, dtype=np.float64)
         params[0] = 1e-4
@@ -160,9 +160,8 @@ class TestGJRGARCHpqAD:
         params[k_garch] = 8.0
         grad_c, hess_c = _c_gjr_grad_hess(params, resid, p, q, "studentt")
         _, grad_ref, hess_ref = gjr_garch_value_grad_hess(params, resid, p, q, dist="studentt")
-        np.testing.assert_allclose(grad_c[:k_garch], grad_ref[:k_garch], rtol=1e-6, atol=1e-8)
-        np.testing.assert_allclose(grad_c[k_garch], grad_ref[k_garch], rtol=5e-2, atol=0.1)
-        np.testing.assert_allclose(hess_c[:k_garch, :k_garch], hess_ref[:k_garch, :k_garch], rtol=1e-5, atol=1e-5)
+        np.testing.assert_allclose(grad_c, grad_ref, rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(hess_c, hess_ref, rtol=1e-6, atol=1e-6)
 
 
 class TestGJRGARCHpqConsistency:

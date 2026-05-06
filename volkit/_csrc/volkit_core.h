@@ -64,6 +64,28 @@ double garch_ll_grad_11_skewt(
     double*       grad,      /* output: gradient [5] */
     size_t n);
 
+void garch_ll_grad_pq_skewt(const double *params,
+                            const double *residuals,
+                            double *sigma2,
+                            double *grad,
+                            size_t n,
+                            size_t p,
+                            size_t q);
+
+void garch_ll_hess_11_skewt(const double *params,
+                            const double *residuals,
+                            double *sigma2,
+                            double *hess,
+                            size_t n);
+
+void garch_ll_hess_pq_skewt(const double *params,
+                            const double *residuals,
+                            double *sigma2,
+                            double *hess,
+                            size_t n,
+                            size_t p,
+                            size_t q);
+
 double normal_ll(const double* sigma2, 
                  const double* residuals2, 
                  size_t n);
@@ -271,6 +293,21 @@ void gjr_garch_ll_hess_pq_studentt(const double *params, const double *residuals
                                    double *sigma2, double *hess,
                                    size_t n, size_t p, size_t q);
 
+/* GJR-GARCH | Skew-t */
+void gjr_garch_ll_grad_11_skewt(const double *params, const double *residuals,
+                                double *sigma2, double *grad, size_t n);
+
+void gjr_garch_ll_hess_11_skewt(const double *params, const double *residuals,
+                                double *sigma2, double *hess, size_t n);
+
+void gjr_garch_ll_grad_pq_skewt(const double *params, const double *residuals,
+                                double *sigma2, double *grad,
+                                size_t n, size_t p, size_t q);
+
+void gjr_garch_ll_hess_pq_skewt(const double *params, const double *residuals,
+                                double *sigma2, double *hess,
+                                size_t n, size_t p, size_t q);
+
 /* GJR-GARCH OPG and Hessian (Normal, for sandwich SE) */
 void gjr_garch_opg_hess_11(const double *params, const double *residuals,
                            const double *sigma2, double *OPG, double *HESS,
@@ -348,6 +385,15 @@ double arma_garch_nll_grad_11_normal(
     double        h0,
     size_t        n);
 
+void arma_garch_hess_11_normal(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *hess,
+    double        h0,
+    size_t        n);
+
 double arma_garch_nll_11_studentt(
     const double *params,    /* [c, phi, theta, omega, alpha, beta, nu] */
     const double *y,
@@ -365,11 +411,38 @@ double arma_garch_nll_grad_11_studentt(
     double        h0,
     size_t        n);
 
+void arma_garch_hess_11_studentt(
+    const double *params,    /* [c, phi, theta, omega, alpha, beta, nu] */
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *hess,      /* output: Hessian (7x7 row-major) */
+    double        h0,
+    size_t        n);
+
 double arma_garch_nll_11_skewt(
     const double *params,    /* [c, phi, theta, omega, alpha, beta, nu, lam] */
     const double *y,
     double       *resid,
     double       *sigma2,
+    double        h0,
+    size_t        n);
+
+double arma_garch_nll_grad_11_skewt(
+    const double *params,    /* [c, phi, theta, omega, alpha, beta, nu, lam] */
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *grad,      /* output: gradient (8 elements) */
+    double        h0,
+    size_t        n);
+
+void arma_garch_hess_11_skewt(
+    const double *params,    /* [c, phi, theta, omega, alpha, beta, nu, lam] */
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *hess,      /* output: Hessian (8x8 row-major) */
     double        h0,
     size_t        n);
 
@@ -381,6 +454,34 @@ double arma_garch_nll_pq_normal(
     double       *sigma2,
     double       *e0,
     double       *h0,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma,
+    size_t        P_arch,
+    size_t        Q_garch);
+
+double arma_garch_nll_grad_pq_normal(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *e0,
+    double       *h0,
+    double       *grad,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma,
+    size_t        P_arch,
+    size_t        Q_garch);
+
+void arma_garch_hess_pq_normal(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *e0,
+    double       *h0,
+    double       *hess,
     size_t        n,
     size_t        p_ar,
     size_t        q_ma,
@@ -400,6 +501,34 @@ double arma_garch_nll_pq_studentt(
     size_t        P_arch,
     size_t        Q_garch);
 
+double arma_garch_nll_grad_pq_studentt(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *e0,
+    double       *h0,
+    double       *grad,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma,
+    size_t        P_arch,
+    size_t        Q_garch);
+
+void arma_garch_hess_pq_studentt(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *e0,
+    double       *h0,
+    double       *hess,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma,
+    size_t        P_arch,
+    size_t        Q_garch);
+
 double arma_garch_nll_pq_skewt(
     const double *params,
     const double *y,
@@ -407,6 +536,34 @@ double arma_garch_nll_pq_skewt(
     double       *sigma2,
     double       *e0,
     double       *h0,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma,
+    size_t        P_arch,
+    size_t        Q_garch);
+
+double arma_garch_nll_grad_pq_skewt(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *e0,
+    double       *h0,
+    double       *grad,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma,
+    size_t        P_arch,
+    size_t        Q_garch);
+
+void arma_garch_hess_pq_skewt(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *e0,
+    double       *h0,
+    double       *hess,
     size_t        n,
     size_t        p_ar,
     size_t        q_ma,
@@ -467,6 +624,10 @@ void arma_hess_pq_normal(
     size_t        n,
     size_t        p_ar,
     size_t        q_ma);
+
+/* ARMA log-space transforms */
+void pack_arma_normal_pq(const double *z, double *theta, size_t p_ar, size_t q_ma);
+void jacobian_arma_normal_pq(const double *theta, double *J, size_t p_ar, size_t q_ma);
 
 /* ======================== Fused Log-space Wrappers ========================= */
 /*
@@ -531,6 +692,15 @@ void jacobian_arma_garch_skewt_pq(const double *theta, double *J,
                                     size_t p_ar, size_t q_ma, size_t P, size_t Q);
 
 /* ARMA-GARCH fused log-space NLL wrappers (all distributions, all orders) */
+double log_arma_nll_pq_normal(const double *z, const double *y,
+                              double *resid, const double *e0,
+                              size_t n, size_t p_ar, size_t q_ma);
+
+void log_arma_nll_grad_pq_normal(const double *z, const double *y,
+                                 double *resid, const double *e0, double *grad_z,
+                                 size_t n, size_t p_ar, size_t q_ma);
+
+/* ARMA-GARCH fused log-space NLL wrappers (all distributions, all orders) */
 double log_arma_garch_nll_pq_normal(const double *z, const double *y,
                                      double *resid, double *sigma2,
                                      const double *e0, const double *h0,
@@ -549,7 +719,7 @@ double log_arma_garch_nll_pq_skewt(const double *z, const double *y,
                                     size_t n, size_t p_ar, size_t q_ma,
                                     size_t P, size_t Q);
 
-/* ARMA-GARCH fused log-space gradient wrappers (Normal, StudentT; 11 only) */
+/* ARMA-GARCH fused log-space gradient wrappers (Normal, StudentT; all orders) */
 void log_arma_garch_nll_grad_pq_normal(const double *z, const double *y,
                                         double *resid, double *sigma2,
                                         const double *e0, const double *h0,

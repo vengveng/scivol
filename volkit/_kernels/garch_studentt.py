@@ -21,7 +21,13 @@ from ..components.density import StudentT
 from ..spec.composite import CompositeSpec
 from ..result import EstimationResult
 from .routine import Routine
-from .transforms import unpack_garch_studentt, jacobian_garch_studentt
+from .transforms import (
+    compute_se_via_logspace,
+    jacobian_garch_studentt,
+    log_hessian_garch,
+    pack_garch_studentt,
+    unpack_garch_studentt,
+)
 
 # ------------------------------------------------------------------ #
 # cache (p,q) → Routine
@@ -192,14 +198,6 @@ def _build(p: int, q: int) -> Routine:
             # Compute final sigma2 for storage
             _compute_garch_variance(res.x, resid2, sigma2, p, q)
             
-            # Compute SEs via log-space numerical Hessian (robust to boundary issues)
-            from .transforms import (
-                compute_se_via_logspace, 
-                unpack_garch_studentt, 
-                jacobian_garch_studentt,
-                pack_garch_studentt,
-            )
-            
             def nll_theta(theta: NDArray[np.float64]) -> float:
                 return call_c_obj(theta)
             
@@ -223,11 +221,7 @@ def _build(p: int, q: int) -> Routine:
             # =========================================================
             # LOG MODE: Fused C-accelerated unconstrained optimization
             # =========================================================
-            from .transforms import (
-                pack_garch_studentt_c,
-                unpack_garch_studentt, jacobian_garch_studentt, pack_garch_studentt,
-                compute_se_via_logspace,
-            )
+            from .transforms import pack_garch_studentt_c
             
             K = vol.n_params + dens.n_params  # Total parameters
             p_scaler = 2  # Scale factor for numerical stability
@@ -261,21 +255,17 @@ def _build(p: int, q: int) -> Routine:
                 )
                 return _grad_z_buf.copy() * p_scaler
             
+            def analytical_hess_z(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                pack_garch_studentt_c(z, _theta_buf, p, q)
+                theta_local = _theta_buf.copy()
+                call_c_jac(theta_local)
+                grad_theta = grad_vec.copy()
+                call_c_hess(theta_local)
+                hess_theta = hess_mat.copy()
+                return log_hessian_garch(theta_local, grad_theta, hess_theta, p, q, dist="studentt")
+
             def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                """Numerical Hessian in z-space."""
-                eps = 1e-5
-                H = np.zeros((K, K), dtype=np.float64)
-                
-                for i in range(K):
-                    for j in range(K):
-                        z_pp = z.copy(); z_pp[i] += eps; z_pp[j] += eps
-                        z_pm = z.copy(); z_pm[i] += eps; z_pm[j] -= eps
-                        z_mp = z.copy(); z_mp[i] -= eps; z_mp[j] += eps
-                        z_mm = z.copy(); z_mm[i] -= eps; z_mm[j] -= eps
-                        
-                        H[i, j] = (obj_log(z_pp) - obj_log(z_pm) - obj_log(z_mp) + obj_log(z_mm)) / (4 * eps * eps)
-                
-                return H
+                return analytical_hess_z(z) * p_scaler
             
             # Initial values in theta-space, then transform to z-space
             theta0 = np.concatenate((vol.default_start(resid), dens.default_start(resid)))
@@ -336,9 +326,6 @@ def _build(p: int, q: int) -> Routine:
             # Compute final sigma2
             _compute_garch_variance(theta_hat, resid2, sigma2, p, q)
             
-            # Compute SEs via log-space numerical Hessian (robust to boundary issues)
-            # Imports already at top of log_mode section
-            
             def nll_theta(theta: NDArray[np.float64]) -> float:
                 return call_c_obj(theta)
             
@@ -348,6 +335,7 @@ def _build(p: int, q: int) -> Routine:
                 unpack_fn=lambda th: unpack_garch_studentt(th, p, q),
                 jacobian_fn=lambda th: jacobian_garch_studentt(th, p, q),
                 pack_fn=lambda z: pack_garch_studentt(z, p, q),
+                hess_z_fn=analytical_hess_z,
             )
             
             return EstimationResult(

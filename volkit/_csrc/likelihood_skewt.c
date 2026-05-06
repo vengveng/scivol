@@ -141,8 +141,7 @@ double skewt_nll(
 // Computes NLL and gradient for GARCH(1,1) with Hansen Skew-t errors.
 // Parameters: theta = [omega, alpha, beta, nu, lam]
 //
-// Legacy checks used finite differences in verify_skewt_gradient.py.
-// This kernel should be re-enabled only after AD-oracle validation.
+// Validated against the internal AD oracle for the GARCH(1,1)+SkewT objective.
 
 __attribute__((visibility("default"), hot, flatten))
 double garch_ll_grad_11_skewt(
@@ -180,7 +179,7 @@ double garch_ll_grad_11_skewt(
     const double db_dlam = (3.0 * lam - a * da_dlam) / b;
     
     // Base constant for NLL
-    const double base_const = log(b) + c_log;
+    const double log_b = log(b);
     const double half_nup1 = 0.5 * (nu + 1.0);
     
     // Initial variance = mean(y^2)
@@ -192,9 +191,10 @@ double garch_ll_grad_11_skewt(
     if (h0 < H_FLOOR) h0 = H_FLOOR;
     
     // Initialize accumulation
-    double nll = 0.0;
+    double nll = -(double)n * c_log - log_b;
     double grad_omega = 0.0, grad_alpha = 0.0, grad_beta = 0.0;
-    double grad_nu = 0.0, grad_lam = 0.0;
+    double grad_nu = -(double)n * dclog_dnu - db_dnu / b;
+    double grad_lam = -db_dlam / b;
     
     // Variance and sensitivity states
     double h_prev = h0;
@@ -202,6 +202,33 @@ double garch_ll_grad_11_skewt(
     double dh_dalpha_prev = 0.0;
     double dh_dbeta_prev = 0.0;
     
+    // t=0 contribution: h0 is fixed, so only nu/lambda contribute to the gradient.
+    {
+        const double e = y[0];
+        const double h = h0;
+        const double sqrth = sqrt(h);
+        const double z = e / sqrth;
+        const double u = b * z + a;
+        const double sign_u = (u >= 0.0) ? 1.0 : -1.0;
+        const double s = 1.0 - sign_u * lam;
+        const double z_adj = u / s;
+        const double D = nu_m2 + z_adj * z_adj;
+
+        nll += 0.5 * log(h) + half_nup1 * log(D / nu_m2);
+
+        const double du_dnu = db_dnu * z + da_dnu;
+        const double dz_adj_dnu = du_dnu / s;
+        const double dD_dnu = 1.0 + 2.0 * z_adj * dz_adj_dnu;
+        grad_nu += 0.5 * log(D / nu_m2)
+                 + half_nup1 * (dD_dnu / D - 1.0 / nu_m2);
+
+        const double du_dlam = db_dlam * z + da_dlam;
+        const double ds_dlam = -sign_u;
+        const double dz_adj_dlam = (du_dlam * s - u * ds_dlam) / (s * s);
+        const double dD_dlam = 2.0 * z_adj * dz_adj_dlam;
+        grad_lam += half_nup1 * dD_dlam / D;
+    }
+
     // Main loop (start from t=1)
     for (size_t t = 1; t < n; ++t) {
         const double y_prev = y[t - 1];
@@ -224,12 +251,12 @@ double garch_ll_grad_11_skewt(
         // Hansen transformation
         const double u = b * z + a;
         const double sign_u = (u >= 0.0) ? 1.0 : -1.0;
-        const double s = 1.0 + sign_u * lam;
+        const double s = 1.0 - sign_u * lam;
         const double z_adj = u / s;
         const double D = nu_m2 + z_adj * z_adj;
         
         // NLL contribution
-        nll += 0.5 * log(h) + half_nup1 * log(D / nu_m2) - base_const;
+        nll += 0.5 * log(h) + half_nup1 * log(D / nu_m2);
         
         // ==============================
         // Gradient w.r.t. h (for GARCH params)
@@ -253,20 +280,19 @@ double garch_ll_grad_11_skewt(
         const double dz_adj_dnu = du_dnu / s;
         const double dD_dnu = 1.0 + 2.0 * z_adj * dz_adj_dnu;
         
-        const double dnll_dnu = -db_dnu / b - dclog_dnu 
-                               + 0.5 * log(D / nu_m2)
-                               + half_nup1 * (dD_dnu / D - 1.0 / nu_m2);
+        const double dnll_dnu = 0.5 * log(D / nu_m2)
+                              + half_nup1 * (dD_dnu / D - 1.0 / nu_m2);
         grad_nu += dnll_dnu;
         
         // ==============================
         // Gradient w.r.t. lam
         // ==============================
         const double du_dlam = db_dlam * z + da_dlam;
-        const double ds_dlam = sign_u;
+        const double ds_dlam = -sign_u;
         const double dz_adj_dlam = (du_dlam * s - u * ds_dlam) / (s * s);
         const double dD_dlam = 2.0 * z_adj * dz_adj_dlam;
         
-        const double dnll_dlam = -db_dlam / b + half_nup1 * dD_dlam / D;
+        const double dnll_dlam = half_nup1 * dD_dlam / D;
         grad_lam += dnll_dlam;
         
         // Update states for next iteration

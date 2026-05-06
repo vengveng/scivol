@@ -18,6 +18,13 @@ from ..components.density import Normal
 from ..spec.composite import CompositeSpec
 from ..result import EstimationResult
 from .routine import Routine
+from .transforms import (
+    compute_se_via_logspace,
+    jacobian_arma_normal,
+    log_hessian_arma_normal,
+    pack_arma_normal,
+    unpack_arma_normal,
+)
 
 _CACHE: Dict[Tuple[int, int], Routine] = {}
 
@@ -143,73 +150,33 @@ def _build(p: int, q: int) -> Routine:
             
         else:
             # =========================================================
-            # LOG MODE: Unconstrained optimization via tanh transform
+            # LOG MODE: Fused C objective/gradient
             # =========================================================
-            # c is unbounded, phi and theta use 0.99*tanh(z)
-            
-            def pack(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                """Transform unconstrained z to constrained theta."""
-                theta = np.empty(n_params, dtype=np.float64)
-                theta[0] = z[0]  # c unchanged
-                # phi: 0.99 * tanh(z)
-                for i in range(p):
-                    theta[1 + i] = 0.99 * np.tanh(z[1 + i])
-                # theta: 0.99 * tanh(z)
-                for j in range(q):
-                    theta[1 + p + j] = 0.99 * np.tanh(z[1 + p + j])
-                return theta
-            
-            def unpack(theta: NDArray[np.float64]) -> NDArray[np.float64]:
-                """Transform constrained theta to unconstrained z."""
-                z = np.empty(n_params, dtype=np.float64)
-                z[0] = theta[0]  # c unchanged
-                for i in range(p):
-                    z[1 + i] = np.arctanh(np.clip(theta[1 + i] / 0.99, -0.999, 0.999))
-                for j in range(q):
-                    z[1 + p + j] = np.arctanh(np.clip(theta[1 + p + j] / 0.99, -0.999, 0.999))
-                return z
-            
-            def jacobian(theta: NDArray[np.float64]) -> NDArray[np.float64]:
-                """Jacobian J = ∂θ/∂z (diagonal for this transformation)."""
-                J = np.eye(n_params, dtype=np.float64)
-                # c: dc/dz = 1 (already set)
-                # phi: dφ/dz = 0.99 * (1 - tanh²(z)) = 0.99 * (1 - (φ/0.99)²)
-                for i in range(p):
-                    phi_i = theta[1 + i]
-                    J[1 + i, 1 + i] = 0.99 * (1.0 - (phi_i / 0.99) ** 2)
-                # theta: same as phi
-                for j in range(q):
-                    theta_j = theta[1 + p + j]
-                    J[1 + p + j, 1 + p + j] = 0.99 * (1.0 - (theta_j / 0.99) ** 2)
-                return J
-            
             p_scaler = 2  # Scale for numerical stability
+            grad_z = np.zeros(n_params, dtype=np.float64)
+            grad_z_ptr = _as_cptr(grad_z)
             
             def obj_log(z: NDArray[np.float64]) -> float:
-                theta = pack(z)
-                return call_nll(theta) * p_scaler
+                return _core._log_arma_nll_pq_normal(
+                    _as_cptr(z), y_ptr, resid_ptr, e0_ptr, n, p, q
+                ) * p_scaler
             
             def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                theta = pack(z)
-                grad_theta = call_grad(theta) * p_scaler
-                J = jacobian(theta)
-                return J.T @ grad_theta
+                _core._log_arma_nll_grad_pq_normal(
+                    _as_cptr(z), y_ptr, resid_ptr, e0_ptr, grad_z_ptr, n, p, q
+                )
+                return grad_z * p_scaler
             
+            def analytical_hess_z(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                theta_local = pack_arma_normal(z, p, q)
+                grad_theta = call_grad(theta_local) * p_scaler
+                hess_theta = call_hess(theta_local) * p_scaler
+                return log_hessian_arma_normal(theta_local, grad_theta, hess_theta, p, q)
+
             def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                # Numerical Hessian for simplicity
-                eps = 1e-5
-                K = n_params
-                H = np.zeros((K, K), dtype=np.float64)
-                for i in range(K):
-                    for j in range(K):
-                        z_pp = z.copy(); z_pp[i] += eps; z_pp[j] += eps
-                        z_pm = z.copy(); z_pm[i] += eps; z_pm[j] -= eps
-                        z_mp = z.copy(); z_mp[i] -= eps; z_mp[j] += eps
-                        z_mm = z.copy(); z_mm[i] -= eps; z_mm[j] -= eps
-                        H[i, j] = (obj_log(z_pp) - obj_log(z_pm) - obj_log(z_mp) + obj_log(z_mm)) / (4 * eps * eps)
-                return H
+                return analytical_hess_z(z)
             
-            z0 = unpack(start)
+            z0 = unpack_arma_normal(start, p, q)
             
             if solver.lower() == "nelder-mead":
                 res = minimize(obj_log, z0, method="Nelder-Mead", tol=1e-12,
@@ -221,16 +188,17 @@ def _build(p: int, q: int) -> Routine:
                               options={"disp": verbose, "ftol": 1e-16, "maxiter": 5000})
                 res.fun *= n
             elif solver.lower() in ["trust", "trust-constr", "trust-exact"]:
-                # Note: trust-exact fails for ARMA due to ill-conditioned Hessian
-                # Fall back to BFGS which handles this better
-                res = minimize(lambda z: obj_log(z) / n, z0, method="BFGS",
+                res = minimize(lambda z: obj_log(z) / n, z0, method="trust-exact",
                               jac=lambda z: jac_log(z) / n,
-                              options={"disp": verbose, "maxiter": 5000, "gtol": 1e-10})
+                              hess=lambda z: hess_log(z) / n,
+                              tol=1e-12,
+                              options={"disp": verbose, "maxiter": 5000})
                 res.fun *= n
             else:
                 raise ValueError(f"Unknown solver: {solver}")
             
-            theta_hat = pack(res.x)
+            theta_hat = pack_arma_normal(res.x, p, q)
+            res.x = theta_hat
             nll_final = res.fun / p_scaler
         
         t_elapsed = time.perf_counter() - t_start
@@ -256,12 +224,29 @@ def _build(p: int, q: int) -> Routine:
         
         scaled_res = ScaledResult(res, nll_final)
         
+        hessian = None
+        cov_matrix = None
+        if log_mode:
+            def nll_theta(theta: NDArray[np.float64]) -> float:
+                return call_nll(theta)
+
+            hessian, cov_matrix = compute_se_via_logspace(
+                theta_hat=theta_hat,
+                nll_theta=nll_theta,
+                unpack_fn=lambda th: unpack_arma_normal(th, p, q),
+                jacobian_fn=lambda th: jacobian_arma_normal(th, p, q),
+                pack_fn=lambda z: pack_arma_normal(z, p, q),
+                hess_z_fn=analytical_hess_z,
+            )
+
         result = EstimationResult(
             spec=spec,
             optimization_result=scaled_res,
             data=y,
             sigma2=np.full(n, sigma2_hat, dtype=np.float64),  # Constant variance
             time_elapsed=t_elapsed,
+            hessian=hessian,
+            cov_matrix=cov_matrix,
         )
         
         # Store residuals

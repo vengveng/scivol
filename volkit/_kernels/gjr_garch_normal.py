@@ -158,7 +158,7 @@ def _build(p: int, q: int) -> Routine:
             return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
 
         else:
-            from .transforms import pack_gjr_garch_c, unpack_gjr_garch
+            from .transforms import log_hessian_gjr_garch, pack_gjr_garch_c, unpack_gjr_garch
 
             p_scaler = 2
 
@@ -182,16 +182,13 @@ def _build(p: int, q: int) -> Routine:
                 return _grad_z_buf.copy() * p_scaler
 
             def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                eps = 1e-5
-                H = np.zeros((K, K), dtype=np.float64)
-                for i in range(K):
-                    for j in range(K):
-                        z_pp = z.copy(); z_pp[i] += eps; z_pp[j] += eps
-                        z_pm = z.copy(); z_pm[i] += eps; z_pm[j] -= eps
-                        z_mp = z.copy(); z_mp[i] -= eps; z_mp[j] += eps
-                        z_mm = z.copy(); z_mm[i] -= eps; z_mm[j] -= eps
-                        H[i, j] = (obj_log(z_pp) - obj_log(z_pm) - obj_log(z_mp) + obj_log(z_mm)) / (4 * eps * eps)
-                return H
+                pack_gjr_garch_c(z, _theta_buf, p, q)
+                theta_local = _theta_buf.copy()
+                call_c_jac(theta_local)
+                grad_theta = grad_vec.copy() * p_scaler
+                call_c_hess(theta_local)
+                hess_theta = hess_mat.copy() * p_scaler
+                return log_hessian_gjr_garch(theta_local, grad_theta, hess_theta, p, q, dist="normal")
 
             theta0 = np.concatenate((vol.default_start(resid), dens.default_start(resid)))
             z0 = unpack_gjr_garch(theta0, p, q)
