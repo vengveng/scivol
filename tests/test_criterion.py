@@ -15,8 +15,8 @@ import warnings
 import numpy as np
 import pytest
 
-from volkit import GARCH, GJRGARCH, AutoVol, AutoDensity, Normal, StudentT
-from volkit._autoselect import (
+from scivol import GARCH, GJRGARCH, AutoVol, AutoDensity, Normal, StudentT
+from scivol._autoselect import (
     ModelCandidate,
     make_default_criterion,
     _score_candidate,

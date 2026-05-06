@@ -5,7 +5,7 @@ Run with: pytest tests/test_parallel_auto.py --run-slow
 """
 import pytest
 import numpy as np
-from volkit import GARCH, Normal, AutoDensity
+from scivol import GARCH, Normal, AutoDensity
 
 # Mark all tests in this module as slow
 pytestmark = pytest.mark.slow

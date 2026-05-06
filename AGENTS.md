@@ -1,11 +1,11 @@
-# volkit Library Guide for AI Agents
+# scivol Library Guide for AI Agents
 
 **Last Updated:** 2026-05-05 
-**Purpose:** Essential architectural rules, patterns, and constraints for developing the volkit time series volatility modeling library.
+**Purpose:** Essential architectural rules, patterns, and constraints for developing the scivol time series volatility modeling library.
 
 **Reference implementations:** `localdev/arma_garch_estimator.py` contains verified Python+Numba implementations with analytical gradients/Hessians for ARMA-GARCH models (Normal, Student-t, Skew-t). `localdev/gjr_garch_estimator.py` contains the GJR-GARCH reference implementation. Use as ground truth when porting to C.
 
-**Derivative validation:** Use AD-based development oracles as the primary validation path. Prefer `volkit._devtools.ad_oracle` and the shipped AD-backed tests over finite differences. Keep finite differences only as a coarse backup smoke test when an AD oracle is not yet available.
+**Derivative validation:** Use AD-based development oracles as the primary validation path. Prefer `scivol._devtools.ad_oracle` and the shipped AD-backed tests over finite differences. Keep finite differences only as a coarse backup smoke test when an AD oracle is not yet available.
 
 **Benchmarking:** `benchmark_optimizers.py` tests all optimizer configurations on real data. Run periodically to validate/update default settings.
 
@@ -35,7 +35,7 @@ The user interface is based on **component composition** with a universal `.fit(
 
 ```python
 # Components represent model parts
-from volkit import GARCH, GJRGARCH, ARMA, Normal, StudentT
+from scivol import GARCH, GJRGARCH, ARMA, Normal, StudentT
 
 # Simple models
 spec = GARCH(1, 1)                           # Auto-adds Normal() density
@@ -62,7 +62,7 @@ print(result.std_errors_robust)
 QMLE provides robust standard errors that are valid even when the distributional assumption is wrong. It is invoked via the `method` parameter on `spec.fit()`:
 
 ```python
-from volkit import GARCH, GJRGARCH, Normal, StudentT, SkewT
+from scivol import GARCH, GJRGARCH, Normal, StudentT, SkewT
 
 # Normal: robust SEs for all GARCH parameters
 spec = GARCH(1, 1) + Normal()
@@ -93,7 +93,7 @@ The sandwich covariance is: `V_robust = H^{-1} @ OPG @ H^{-1}` where H is the He
 
 #### Component System
 
-**Roles** (`volkit/roles.py`):
+**Roles** (`scivol/roles.py`):
 - `MEAN`: Mean equation components (e.g., ARMA)
 - `VOLATILITY`: Volatility components (e.g., GARCH, GJRGARCH)
 - `DENSITY`: Conditional distributions (e.g., Normal, StudentT, SkewT)
@@ -215,7 +215,7 @@ Examples:
 
 #### Type Stubs
 
-All C functions must have type stubs in `volkit/_core.pyi`:
+All C functions must have type stubs in `scivol/_core.pyi`:
 
 ```python
 # Type alias for pointer-as-int
@@ -258,7 +258,7 @@ extra-compile-args = [
 
 #### Shared Math Functions
 
-Generic math functions go in `volkit/_csrc/math_and_helpers.h`:
+Generic math functions go in `scivol/_csrc/math_and_helpers.h`:
 
 ```c
 // Already provided:
@@ -365,7 +365,7 @@ np.testing.assert_allclose(hess_analytical, hess_reference, rtol=1e-5, atol=1e-6
 ```
 
 Preferred development oracles:
-- Scalar recursive models (`GARCH`, `GJR-GARCH`): AD oracle from `volkit._devtools.ad_oracle`
+- Scalar recursive models (`GARCH`, `GJR-GARCH`): AD oracle from `scivol._devtools.ad_oracle`
 - Matrix-heavy models (`DCC`): JAX-based AD reference objective
 - Log-space / transformed objectives: validate the full optimized object `L(theta(z))`, not only the inner constrained objective
 
@@ -374,6 +374,37 @@ Finite differences are still acceptable as a weak smoke test or temporary fallba
 **Test both**:
 - Correctness: Does it match the AD oracle?
 - Boundary cases: Does it handle constraints and transforms properly?
+
+### Independent Public Solution Paths
+
+When scivol exposes multiple **public** fitting paths for the same statistical model
+(for example constrained `theta` mode vs unconstrained `z` mode, or alternative
+solvers that users may compare on unstable problems), those paths must remain
+**genuinely independent** in production behavior.
+
+This is a library philosophy rule, not just a testing preference:
+
+- Users may rely on multiple paths as a credibility check when estimation is
+  numerically unstable.
+- Therefore, parity between public paths is evidence only if each path actually
+  optimized its own stated formulation.
+- Do **not** force agreement by routing distinct public modes through the same
+  hidden optimizer/objective and then reporting the result as if it came from
+  each separate path.
+- Do **not** fit multiple public modes internally, pick the best outcome, and
+  present that as the result of each mode. That destroys the user's ability to
+  cross-check instability.
+- Shared infrastructure is still encouraged where it preserves semantics:
+  identical data preparation, transform algebra, matched-point diagnostics,
+  chain-rule checks, reusable buffers, and localdev/debug tooling are all fine.
+- If a stabilization idea is desirable across modes (for example multistart),
+  implement it **symmetrically inside each mode's own formulation**, or expose it
+  explicitly as a separate API feature. Do not sneak it in by collapsing modes.
+- When investigating discrepancies, prefer invariant checks at matched points:
+  same constrained `theta`, same mapped starts, same value/gradient/Hessian after
+  transformation. Do not replace that investigation with black-box output forcing.
+- Keep kernel-debugging and tracing machinery internal-only unless a user-facing
+  debugging API is explicitly designed and documented.
 
 ### Model Reference (Keep Evergreen)
 
@@ -386,7 +417,7 @@ Finite differences are still acceptable as a weak smoke test or temporary fallba
 
 ### Master DGP Test File (Keep Evergreen)
 
-**`tests/test_dgp_estimation.py`** is the canonical test file for volkit estimation accuracy.
+**`tests/test_dgp_estimation.py`** is the canonical test file for scivol estimation accuracy.
 
 **Keep this file updated** when adding new models or distributions:
 1. Add a `simulate_*` DGP function for the new model
@@ -395,7 +426,7 @@ Finite differences are still acceptable as a weak smoke test or temporary fallba
 
 **Test approach:**
 - Generate 5000 observations from known true parameters
-- Estimate the model using volkit
+- Estimate the model using scivol
 - Verify optimization converges
 - Check parameter recovery within tolerance
 
@@ -407,7 +438,7 @@ Finite differences are still acceptable as a weak smoke test or temporary fallba
 
 ```python
 import pytest
-from volkit import GARCH, Normal
+from scivol import GARCH, Normal
 
 @pytest.fixture
 def sample_data():
@@ -468,7 +499,7 @@ The internal kernel/routine organization is being refined. Current architecture 
 
 #### Current: Registry-Based Kernels
 
-**Location**: `volkit/_kernels/`
+**Location**: `scivol/_kernels/`
 
 **Pattern**:
 1. UID format: `"Component1(p,q)+Component2(r,s)+Density"`
@@ -477,20 +508,20 @@ The internal kernel/routine organization is being refined. Current architecture 
 4. `Routine` object encapsulates fit logic
 
 **Files involved**:
-- `volkit/_kernels/__init__.py` - Registry and dispatcher
-- `volkit/_kernels/routine.py` - `Routine` dataclass
-- `volkit/_kernels/garch_normal.py` - GARCH+Normal implementations
-- `volkit/_kernels/garch_studentt.py` - GARCH+StudentT implementations
+- `scivol/_kernels/__init__.py` - Registry and dispatcher
+- `scivol/_kernels/routine.py` - `Routine` dataclass
+- `scivol/_kernels/garch_normal.py` - GARCH+Normal implementations
+- `scivol/_kernels/garch_studentt.py` - GARCH+StudentT implementations
 
 ### What's Stable
 
 **C extensions are the single source of truth for computations.**
 
 Never duplicate computational logic in Python. If you need a new calculation:
-1. Implement in C (`volkit/_csrc/`)
-2. Add declaration to `volkit/_csrc/volkit_core.h`
-3. Wrap in `volkit/_core.c` with METH_FASTCALL
-4. Add type stub to `volkit/_core.pyi`
+1. Implement in C (`scivol/_csrc/`)
+2. Add declaration to `scivol/_csrc/scivol_core.h`
+3. Wrap in `scivol/_core.c` with METH_FASTCALL
+4. Add type stub to `scivol/_core.pyi`
 5. Call from Python via pointer passing
 
 ---
@@ -597,33 +628,33 @@ requires = ["setuptools>=69", "wheel", "numpy>=1.22"]
 build-backend = "setuptools.build_meta"
 
 [[tool.setuptools.ext-modules]]
-name = "volkit._core"
+name = "scivol._core"
 sources = [
- "volkit/_core.c",
- "volkit/_csrc/variance_garch.c",
- "volkit/_csrc/variance_gjr_garch.c",
- "volkit/_csrc/likelihood_garch.c",
- "volkit/_csrc/likelihood_gjr_garch.c",
- "volkit/_csrc/likelihood_normal.c",
- "volkit/_csrc/likelihood_studentt.c",
- "volkit/_csrc/errors_garch.c",
- "volkit/_csrc/errors_gjr_garch.c",
+ "scivol/_core.c",
+ "scivol/_csrc/variance_garch.c",
+ "scivol/_csrc/variance_gjr_garch.c",
+ "scivol/_csrc/likelihood_garch.c",
+ "scivol/_csrc/likelihood_gjr_garch.c",
+ "scivol/_csrc/likelihood_normal.c",
+ "scivol/_csrc/likelihood_studentt.c",
+ "scivol/_csrc/errors_garch.c",
+ "scivol/_csrc/errors_gjr_garch.c",
 ]
-include-dirs = ["volkit/_csrc"]
+include-dirs = ["scivol/_csrc"]
 ```
 
 **Required files**:
 - `MANIFEST.in`: Includes C headers in source distribution
 - `pyproject.toml`: Build configuration
-- `volkit/__init__.py`: Package entry point
-- `volkit/_core.pyi`: Type stubs for C extension
+- `scivol/__init__.py`: Package entry point
+- `scivol/_core.pyi`: Type stubs for C extension
 
 ### Verify Build
 
 ```python
 # Should load without errors
-import volkit._core
-print(volkit._core.__file__)  # Shows .so location
+import scivol._core
+print(scivol._core.__file__)  # Shows .so location
 
 # Test a C function
 import numpy as np
@@ -631,7 +662,7 @@ theta = np.array([1e-6, 0.05, 0.9], dtype=np.float64)
 resid2 = np.random.randn(100)**2
 sigma2 = np.empty(100, dtype=np.float64)
 
-from volkit import _core
+from scivol import _core
 _core._garch_variance_11(
     theta.ctypes.data,
     resid2.ctypes.data, 
@@ -650,7 +681,7 @@ print(sigma2[:5])  # Should contain positive variances
 **Create and fit a model**:
 
 ```python
-from volkit import GARCH, GJRGARCH, StudentT
+from scivol import GARCH, GJRGARCH, StudentT
 import numpy as np
 
 # Generate sample data
@@ -672,30 +703,30 @@ print(f"AIC: {result.aic}, BIC: {result.bic}")
 
 **Add a new component**:
 
-1. Create `volkit/components/my_component.py`
+1. Create `scivol/components/my_component.py`
 2. Inherit from `Component`, set `role`
 3. Implement all abstract methods
-4. Add to `volkit/components/__init__.py`
+4. Add to `scivol/components/__init__.py`
 5. Add C implementations if needed
 6. Write tests in `tests/`
 
 **Add a new C function**:
 
-1. Implement in `volkit/_csrc/my_function.c`
-2. Declare in `volkit/_csrc/volkit_core.h`
-3. Wrap in `volkit/_core.c` with proper pointer handling
-4. Add type stub to `volkit/_core.pyi`
+1. Implement in `scivol/_csrc/my_function.c`
+2. Declare in `scivol/_csrc/scivol_core.h`
+3. Wrap in `scivol/_core.c` with proper pointer handling
+4. Add type stub to `scivol/_core.pyi`
 5. Validate with an AD oracle
 
 ### Directory Structure
 
 ```
-volkit_cursor/                   # Repository root
-├── volkit/                      # Core package (ships)
+scivol_cursor/                   # Repository root
+├── scivol/                      # Core package (ships)
 │   ├── _core.c                  # C extension wrapper (Python-C interface)
 │   ├── _core.pyi                # Type stubs for C functions
 │   ├── _csrc/                   # C implementation
-│   │   ├── volkit_core.h        # Public C API declarations
+│   │   ├── scivol_core.h        # Public C API declarations
 │   │   ├── math_and_helpers.h   # Shared math (lgamma, digamma, constants)
 │   │   ├── variance_garch.c     # GARCH variance recursion
 │   │   ├── variance_gjr_garch.c # GJR-GARCH variance recursion (raw residuals)
@@ -737,13 +768,13 @@ volkit_cursor/                   # Repository root
 
 ```python
 # Public API
-from volkit import GARCH, GJRGARCH, ARMA, Normal, StudentT, SkewT, CompositeSpec, Role
+from scivol import GARCH, GJRGARCH, ARMA, Normal, StudentT, SkewT, CompositeSpec, Role
 
 # Internal (for development)
-from volkit._core import _garch_variance_11, _gjr_garch_variance_11, _garch_ll_pq_normal
-from volkit._kernels import get_routine
-from volkit.components.base import Component
-from volkit.result import EstimationResult
+from scivol._core import _garch_variance_11, _gjr_garch_variance_11, _garch_ll_pq_normal
+from scivol._kernels import get_routine
+from scivol.components.base import Component
+from scivol.result import EstimationResult
 ```
 
 ---
@@ -784,7 +815,7 @@ from volkit.result import EstimationResult
 
 ### Fused Log-Space Wrappers
 
-**Location**: `volkit/_csrc/log_wrappers.c`
+**Location**: `scivol/_csrc/log_wrappers.c`
 
 Fused C functions that perform the full unconstrained optimization pipeline in a single C call:
 1. `pack(z -> theta)` - unconstrained to constrained parameters
@@ -831,7 +862,7 @@ New model families will follow the component pattern:
 
 ```python
 # Example: EGARCH (exponential GARCH)
-from volkit import EGARCH, StudentT
+from scivol import EGARCH, StudentT
 
 spec = EGARCH(1, 1) + StudentT()
 result = spec.fit(returns)
@@ -950,9 +981,9 @@ Before implementing:
 **End of Guide**
 
 For questions or clarifications about this guide, check:
-- Implementation examples in `volkit/components/` and `volkit/_kernels/`
+- Implementation examples in `scivol/components/` and `scivol/_kernels/`
 - Reference implementations in `localdev/arma_garch_estimator.py`
 - Test patterns in `tests/`
-- C interface in `volkit/_core.c` and `volkit/_core.pyi`
+- C interface in `scivol/_core.c` and `scivol/_core.pyi`
 
 **New development work** (scripts, experiments, analysis) should go in `localdev/`.

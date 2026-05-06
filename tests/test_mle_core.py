@@ -13,9 +13,9 @@ from typing import Dict
 import numpy as np
 import pytest
 
-from volkit import ARMA, GARCH
-from volkit._validation import validate_data
-from volkit._kernels.routine import Routine
+from scivol import ARMA, GARCH
+from scivol._validation import validate_data
+from scivol._kernels.routine import Routine
 
 
 # ------------------------------------------------------------------ #
@@ -39,7 +39,7 @@ def _make_dummy(uid: str, calls: Dict[str, dict]) -> Routine:
 def dummy_routines(monkeypatch):
     calls: Dict[str, dict] = {}
 
-    import volkit._kernels as _k
+    import scivol._kernels as _k
     monkeypatch.setitem(
         _k._ROUTINES, "GARCH(1,1)+Normal",
         _make_dummy("GARCH(1,1)+Normal", calls),

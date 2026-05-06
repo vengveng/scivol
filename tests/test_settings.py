@@ -1,5 +1,5 @@
 """
-Tests for volkit._settings  (ParamNames / Settings) and
+Tests for scivol._settings  (ParamNames / Settings) and
 display-name integration in EstimationResult.
 """
 
@@ -11,8 +11,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-import volkit
-from volkit._settings import ParamNames, Settings, settings
+import scivol
+from scivol._settings import ParamNames, Settings, settings
 
 
 # ------------------------------------------------------------------ #
@@ -132,11 +132,11 @@ class TestSettingsSingleton:
         settings.names.reset()
 
     def test_singleton_accessible(self):
-        assert volkit.settings is settings
+        assert scivol.settings is settings
 
     def test_set_and_read_back(self):
-        volkit.settings.names.gamma = "zeta"
-        assert volkit.settings.names.resolve("gamma[1]") == "zeta[1]"
+        scivol.settings.names.gamma = "zeta"
+        assert scivol.settings.names.resolve("gamma[1]") == "zeta[1]"
 
     def test_repr(self):
         assert "Settings" in repr(settings)
@@ -148,8 +148,8 @@ class TestSettingsSingleton:
 
 def _make_garch_result(gamma: bool = False):
     """Build a minimal EstimationResult with fake fitted params."""
-    from volkit import GARCH, GJRGARCH, Normal
-    from volkit.result import EstimationResult
+    from scivol import GARCH, GJRGARCH, Normal
+    from scivol.result import EstimationResult
 
     if gamma:
         vol = GJRGARCH(1, 1)
@@ -276,7 +276,7 @@ class TestGARCHParamsGamma:
     """GARCHParams with gamma field behaves correctly."""
 
     def test_no_gamma(self):
-        from volkit.result import GARCHParams
+        from scivol.result import GARCHParams
         gp = GARCHParams(omega=1e-5, alpha=np.array([0.05]), beta=np.array([0.90]))
         assert gp.gamma is None
         assert gp.persistence == pytest.approx(0.95)
@@ -284,7 +284,7 @@ class TestGARCHParamsGamma:
         np.testing.assert_array_equal(arr, [1e-5, 0.05, 0.90])
 
     def test_with_gamma(self):
-        from volkit.result import GARCHParams
+        from scivol.result import GARCHParams
         gp = GARCHParams(
             omega=1e-5,
             alpha=np.array([0.05]),

@@ -1,25 +1,23 @@
-# volkit
+# scivol
 
 Volatility modeling in Python. GARCH-family models with C extensions for speed.
 
 ## Install
 
 ```bash
-# Requires a C compiler
-pip install -e .
-
-# Development install: includes JAX-backed validation tools
-pip install -e .[dev]
-
-# Or:
-make dev
+# Install the published distribution from PyPI.
+# The distribution name may differ from the Python import name `scivol`
+# if the canonical PyPI name is unavailable.
+pip install scivol
 ```
+
+Install with `pip install scivol`, then import it as `scivol`.
 
 ## Quick start
 
 ```python
 import numpy as np
-from volkit import GARCH, Normal, StudentT
+from scivol import GARCH, Normal, StudentT
 
 np.random.seed(42)
 returns = np.random.randn(1000) * 0.01
@@ -83,10 +81,10 @@ Half-life (periods):      106.3
 
 ## Model specification
 
-Build models by combining components with `+`. volkit orders them automatically: MEAN, then VOLATILITY, then DENSITY.
+Build models by combining components with `+`. scivol orders them automatically: MEAN, then VOLATILITY, then DENSITY.
 
 ```python
-from volkit import GARCH, GJRGARCH, ARMA, DCC, Normal, StudentT, SkewT
+from scivol import GARCH, GJRGARCH, ARMA, DCC, Normal, StudentT, SkewT
 
 spec = GARCH(1, 1)                          # Normal density by default
 spec = GARCH(1, 1) + StudentT()             # Explicit density
@@ -156,7 +154,7 @@ Dynamic Conditional Correlation for multivariate return series.
 2. Fit Gaussian DCC dynamics to the resulting standardised residuals.
 
 ```python
-from volkit import DCC, GARCH, StudentT
+from scivol import DCC, GARCH, StudentT
 
 dcc = DCC(1, 1)
 result = dcc.fit(returns_df, univariate_spec=GARCH(1, 1) + StudentT())
@@ -219,10 +217,10 @@ Solvers:
 
 | Parameter | Constraint | Transform |
 |-----------|------------|-----------|
-| ω | ω > 0 | exp(z) |
+| ω | ω > 0 | softplus(z) |
 | α, β | > 0, sum < 1 | softmax |
 | γ (GJR) | γ > 0 | 4-class softmax |
-| ν | ν > 2 | 2 + exp(z) |
+| ν | ν > 2 | 2 + softplus(z) |
 | λ | −1 < λ < 1 | tanh(z) |
 
 This guarantees stationarity by construction and avoids boundary problems during optimization.
@@ -270,7 +268,7 @@ spec = GJRGARCH(p=1, q='auto') + StudentT()              # fix p, search q
 `AutoVol` searches across both GARCH and GJRGARCH families:
 
 ```python
-from volkit import AutoVol
+from scivol import AutoVol
 
 spec = AutoVol() + Normal()
 result = spec.fit(returns)
@@ -283,7 +281,7 @@ spec = AutoVol(candidates=['GJRGARCH'], max_p=2, max_q=2) + StudentT()
 `AutoDensity` searches across Normal, StudentT, and SkewT:
 
 ```python
-from volkit import AutoDensity
+from scivol import AutoDensity
 
 spec = GARCH(1, 1) + AutoDensity()
 spec = GARCH(1, 1) + AutoDensity(candidates=['Normal', 'StudentT'])
@@ -294,7 +292,7 @@ spec = GARCH(1, 1) + AutoDensity(candidates=['Normal', 'StudentT'])
 Combine them to search volatility model, order, and distribution at once:
 
 ```python
-from volkit import AutoVol, AutoDensity
+from scivol import AutoVol, AutoDensity
 
 spec = AutoVol() + AutoDensity()
 result = spec.fit(returns, verbose_selection=True)
@@ -405,7 +403,7 @@ for c in result._selection_candidates[:5]:
     print(f"{c.spec}: AIC={c.aic:.2f}, Score={c.score:.2f}")
 ```
 
-QMLE with AutoDensity is redundant (QMLE always uses Normal likelihood). volkit warns and fits Normal only.
+QMLE with AutoDensity is redundant (QMLE always uses Normal likelihood). scivol warns and fits Normal only.
 
 ---
 
@@ -472,11 +470,11 @@ result.to_dict()              # for programmatic use
 Override how parameter names appear in summaries, print output, and `to_dict()` keys:
 
 ```python
-import volkit
+import scivol
 
-volkit.settings.names.gamma = "leverage"
-volkit.settings.names.nu = "df"
-volkit.settings.names.alpha = "a"
+scivol.settings.names.gamma = "leverage"
+scivol.settings.names.nu = "df"
+scivol.settings.names.alpha = "a"
 
 # Now result.summary() shows "leverage[1]" instead of "gamma[1]"
 # and result.to_dict() uses "leverage" as a key
@@ -487,7 +485,7 @@ Overrides apply to indexed variants too: renaming `alpha` to `a` turns `alpha[1]
 Reset with:
 
 ```python
-volkit.settings.names.reset()
+scivol.settings.names.reset()
 ```
 
 Available names: `omega`, `alpha`, `gamma`, `beta`, `nu`, `lambda`, `const`, `ar`, `ma`.
@@ -554,7 +552,7 @@ Analytical gradients and Hessians are verified in the internal development test 
 ### Exports
 
 ```python
-from volkit import (
+from scivol import (
     GARCH, GJRGARCH, ARMA, DCC,
     Normal, StudentT, SkewT,
     AutoDensity, AutoVol,
@@ -661,7 +659,7 @@ result.summary()
 
 ```python
 import numpy as np
-from volkit import GARCH, Normal
+from scivol import GARCH, Normal
 
 returns = np.random.randn(1000) * 0.01
 
@@ -676,7 +674,7 @@ result.summary()
 ### Compare MLE and sandwich standard errors
 
 ```python
-from volkit import GARCH, Normal
+from scivol import GARCH, Normal
 
 spec = GARCH(1, 1) + Normal()
 result = spec.fit(returns, method='qmle')
@@ -690,7 +688,7 @@ for i, name in enumerate(['omega', 'alpha', 'beta']):
 ### GJR-GARCH leverage effect
 
 ```python
-from volkit import GJRGARCH, StudentT
+from scivol import GJRGARCH, StudentT
 
 spec = GJRGARCH(1, 1) + StudentT()
 result = spec.fit(returns)
@@ -709,7 +707,7 @@ if gp.gamma[0] > 0:
 ### Full automatic search
 
 ```python
-from volkit import AutoVol, AutoDensity
+from scivol import AutoVol, AutoDensity
 
 spec = AutoVol() + AutoDensity()
 result = spec.fit(returns, verbose_selection=True)
@@ -723,7 +721,7 @@ result.selection_summary()
 ```python
 import numpy as np
 import pandas as pd
-from volkit import DCC, GARCH, Normal
+from scivol import DCC, GARCH, Normal
 
 rng = np.random.default_rng(42)
 returns = rng.standard_normal(1000) * 0.01
@@ -746,7 +744,7 @@ print(result.unconditional_corr)
 ### One-step-ahead variance forecast
 
 ```python
-from volkit import GARCH, GJRGARCH, Normal
+from scivol import GARCH, GJRGARCH, Normal
 import numpy as np
 
 # GARCH(1,1)

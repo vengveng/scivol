@@ -1,12 +1,12 @@
 """
-Master DGP-Based Estimation Tests for volkit
+Master DGP-Based Estimation Tests for scivol
 =============================================
 
-This file tests volkit estimation by generating synthetic data from known
+This file tests scivol estimation by generating synthetic data from known
 Data Generating Processes (DGPs) and verifying that estimation recovers
 the true parameters.
 
-**KEEP THIS FILE EVERGREEN** - Update when new models are added to volkit.
+**KEEP THIS FILE EVERGREEN** - Update when new models are added to scivol.
 
 Test Coverage:
 - GARCH(1,1) + Normal
@@ -17,7 +17,7 @@ Test Coverage:
 
 Each test:
 1. Generates 5000 observations from known true parameters
-2. Estimates the model using volkit
+2. Estimates the model using scivol
 3. Verifies convergence (optimization success)
 4. Checks parameter recovery (within tolerance)
 """
@@ -470,7 +470,7 @@ class TestGARCHNormal:
     
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
         """Test that estimation runs and produces valid output."""
-        from volkit import GARCH, Normal
+        from scivol import GARCH, Normal
         
         spec = GARCH(1, 1) + Normal()
         result = spec.fit(data)
@@ -483,7 +483,7 @@ class TestGARCHNormal:
     
     def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
         """Test that estimated parameters are close to true values."""
-        from volkit import GARCH, Normal
+        from scivol import GARCH, Normal
         
         spec = GARCH(1, 1) + Normal()
         result = spec.fit(data)
@@ -526,7 +526,7 @@ class TestGARCHStudentT:
     
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
         """Test that estimation runs and produces valid output."""
-        from volkit import GARCH, StudentT
+        from scivol import GARCH, StudentT
         
         spec = GARCH(1, 1) + StudentT()
         result = spec.fit(data)
@@ -538,7 +538,7 @@ class TestGARCHStudentT:
     
     def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
         """Test that estimated parameters are close to true values."""
-        from volkit import GARCH, StudentT
+        from scivol import GARCH, StudentT
         
         spec = GARCH(1, 1) + StudentT()
         result = spec.fit(data)
@@ -577,7 +577,7 @@ class TestGARCHSkewT:
     
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
         """Test that estimation runs and produces valid output."""
-        from volkit import GARCH, SkewT
+        from scivol import GARCH, SkewT
         
         spec = GARCH(1, 1) + SkewT()
         result = spec.fit(data)
@@ -589,7 +589,7 @@ class TestGARCHSkewT:
     
     def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
         """Test that estimated parameters are close to true values."""
-        from volkit import GARCH, SkewT
+        from scivol import GARCH, SkewT
         
         spec = GARCH(1, 1) + SkewT()
         result = spec.fit(data)
@@ -637,7 +637,7 @@ class TestGARCHHigherOrder:
     
     def test_garch_21_runs(self, data_21: NDArray[np.float64]) -> None:
         """Test GARCH(2,1) runs and produces valid output."""
-        from volkit import GARCH, Normal
+        from scivol import GARCH, Normal
         
         spec = GARCH(2, 1) + Normal()
         result = spec.fit(data_21)
@@ -649,7 +649,7 @@ class TestGARCHHigherOrder:
     
     def test_garch_22_runs(self, data_22: NDArray[np.float64]) -> None:
         """Test GARCH(2,2) runs and produces valid output."""
-        from volkit import GARCH, Normal
+        from scivol import GARCH, Normal
         
         spec = GARCH(2, 2) + Normal()
         result = spec.fit(data_22)
@@ -678,7 +678,7 @@ class TestARMAGARCHNormal:
     
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
         """Test that estimation runs and produces valid output."""
-        from volkit import ARMA, GARCH, Normal
+        from scivol import ARMA, GARCH, Normal
         
         spec = ARMA(1, 1) + GARCH(1, 1) + Normal()
         result = spec.fit(data)
@@ -690,7 +690,7 @@ class TestARMAGARCHNormal:
     
     def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
         """Test that estimated parameters are close to true values."""
-        from volkit import ARMA, GARCH, Normal
+        from scivol import ARMA, GARCH, Normal
         
         spec = ARMA(1, 1) + GARCH(1, 1) + Normal()
         result = spec.fit(data)
@@ -743,7 +743,7 @@ class TestARMAGARCHStudentT:
     
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
         """Test that estimation runs and produces valid output."""
-        from volkit import ARMA, GARCH, StudentT
+        from scivol import ARMA, GARCH, StudentT
         
         spec = ARMA(1, 1) + GARCH(1, 1) + StudentT()
         result = spec.fit(data)
@@ -795,7 +795,7 @@ class TestARMAGARCHSkewT:
     
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
         """Test that estimation runs and produces valid output."""
-        from volkit import ARMA, GARCH, SkewT
+        from scivol import ARMA, GARCH, SkewT
         
         spec = ARMA(1, 1) + GARCH(1, 1) + SkewT()
         result = spec.fit(data)
@@ -823,7 +823,7 @@ class TestARMANormal:
     
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
         """Test that estimation runs and produces valid output."""
-        from volkit import ARMA, Normal
+        from scivol import ARMA, Normal
         
         spec = ARMA(1, 1) + Normal()
         result = spec.fit(data)
@@ -835,7 +835,7 @@ class TestARMANormal:
     
     def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
         """Test that estimated parameters are close to true values."""
-        from volkit import ARMA, Normal
+        from scivol import ARMA, Normal
         
         spec = ARMA(1, 1) + Normal()
         result = spec.fit(data)
@@ -870,7 +870,7 @@ class TestGJRGARCHNormal:
         )
     
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
-        from volkit import GJRGARCH, Normal
+        from scivol import GJRGARCH, Normal
         
         spec = GJRGARCH(1, 1) + Normal()
         result = spec.fit(data)
@@ -881,7 +881,7 @@ class TestGJRGARCHNormal:
         assert result.log_likelihood > 0
     
     def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
-        from volkit import GJRGARCH, Normal
+        from scivol import GJRGARCH, Normal
         
         spec = GJRGARCH(1, 1) + Normal()
         result = spec.fit(data)
@@ -922,7 +922,7 @@ class TestGJRGARCHStudentT:
         )
     
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
-        from volkit import GJRGARCH, StudentT
+        from scivol import GJRGARCH, StudentT
         
         spec = GJRGARCH(1, 1) + StudentT()
         result = spec.fit(data)
@@ -933,7 +933,7 @@ class TestGJRGARCHStudentT:
         assert result.log_likelihood > 0
     
     def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
-        from volkit import GJRGARCH, StudentT
+        from scivol import GJRGARCH, StudentT
         
         spec = GJRGARCH(1, 1) + StudentT()
         result = spec.fit(data)
@@ -971,7 +971,7 @@ class TestGJRGARCHSkewT:
         )
     
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
-        from volkit import GJRGARCH, SkewT
+        from scivol import GJRGARCH, SkewT
         
         spec = GJRGARCH(1, 1) + SkewT()
         result = spec.fit(data)
@@ -982,7 +982,7 @@ class TestGJRGARCHSkewT:
         assert result.log_likelihood > 0
     
     def test_parameter_recovery(self, data: NDArray[np.float64]) -> None:
-        from volkit import GJRGARCH, SkewT
+        from scivol import GJRGARCH, SkewT
         
         spec = GJRGARCH(1, 1) + SkewT()
         result = spec.fit(data)
@@ -1024,7 +1024,7 @@ class TestSmokeAll:
         self, small_data: NDArray[np.float64], p: int, q: int
     ) -> None:
         """Test various GARCH orders with Normal."""
-        from volkit import GARCH, Normal
+        from scivol import GARCH, Normal
         
         spec = GARCH(p, q) + Normal()
         result = spec.fit(small_data)
@@ -1033,7 +1033,7 @@ class TestSmokeAll:
     
     def test_garch_studentt_runs(self, small_data: NDArray[np.float64]) -> None:
         """Test GARCH + StudentT runs."""
-        from volkit import GARCH, StudentT
+        from scivol import GARCH, StudentT
         
         spec = GARCH(1, 1) + StudentT()
         result = spec.fit(small_data)
@@ -1041,7 +1041,7 @@ class TestSmokeAll:
     
     def test_garch_skewt_runs(self, small_data: NDArray[np.float64]) -> None:
         """Test GARCH + SkewT runs."""
-        from volkit import GARCH, SkewT
+        from scivol import GARCH, SkewT
         
         spec = GARCH(1, 1) + SkewT()
         result = spec.fit(small_data)
@@ -1049,7 +1049,7 @@ class TestSmokeAll:
     
     def test_gjr_garch_normal_runs(self, small_data: NDArray[np.float64]) -> None:
         """Test GJR-GARCH + Normal runs."""
-        from volkit import GJRGARCH, Normal
+        from scivol import GJRGARCH, Normal
         
         spec = GJRGARCH(1, 1) + Normal()
         result = spec.fit(small_data)
@@ -1057,7 +1057,7 @@ class TestSmokeAll:
     
     def test_gjr_garch_studentt_runs(self, small_data: NDArray[np.float64]) -> None:
         """Test GJR-GARCH + StudentT runs."""
-        from volkit import GJRGARCH, StudentT
+        from scivol import GJRGARCH, StudentT
         
         spec = GJRGARCH(1, 1) + StudentT()
         result = spec.fit(small_data)
@@ -1065,7 +1065,7 @@ class TestSmokeAll:
     
     def test_gjr_garch_skewt_runs(self, small_data: NDArray[np.float64]) -> None:
         """Test GJR-GARCH + SkewT runs."""
-        from volkit import GJRGARCH, SkewT
+        from scivol import GJRGARCH, SkewT
         
         spec = GJRGARCH(1, 1) + SkewT()
         result = spec.fit(small_data)
@@ -1166,7 +1166,7 @@ class TestDCCGARCH:
 
     @pytest.fixture(scope="class")
     def dcc_result(self, dcc_returns):
-        from volkit import DCC, GARCH, Normal
+        from scivol import DCC, GARCH, Normal
         dcc = DCC(1, 1)
         return dcc.fit(dcc_returns, univariate_spec=GARCH(1, 1) + Normal())
 

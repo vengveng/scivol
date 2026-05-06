@@ -6,7 +6,7 @@ Tests for boundary conditions, invalid inputs, and numerical stability.
 import pytest
 import numpy as np
 
-from volkit import GARCH, ARMA, Normal, StudentT, SkewT
+from scivol import GARCH, ARMA, Normal, StudentT, SkewT
 
 
 # =============================================================================

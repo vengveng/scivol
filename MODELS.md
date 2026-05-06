@@ -1,4 +1,4 @@
-# volkit — Available Models
+# scivol — Available Models
 
 **Last Updated:** 2026-05-06
 
@@ -88,7 +88,7 @@ Internal derivative validation is AD-oracle-based. The `FD` entries below descri
 **Notes:**
 - DCC uses a two-step workflow: univariate volatility models first, then Gaussian correlation dynamics on standardised residuals.
 - The result API exposes `Rt`, `corr(i, j)`, and `unconditional_corr`. The pseudo-correlation path `Qt` is internal.
-- Internal development validation is handled against the shipped AD oracle in `volkit._devtools.ad_oracle`.
+- Internal development validation is handled against the shipped AD oracle in `scivol._devtools.ad_oracle`.
 
 ---
 

@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 # import objects from your package
-from volkit import (
+from scivol import (
     ARMA,
     GARCH,
     Normal,

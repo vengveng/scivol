@@ -17,8 +17,8 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-import volkit._core as _c
-from volkit._devtools.ad_oracle import _jax_modules, gjr_garch_value_grad_hess
+import scivol._core as _c
+from scivol._devtools.ad_oracle import _jax_modules, gjr_garch_value_grad_hess
 
 
 if importlib.util.find_spec("jax") is None:
@@ -242,7 +242,7 @@ class TestGJRGARCHOPG:
 
 class TestGJRGARCHLogTransforms:
     def test_pack_unpack_roundtrip(self) -> None:
-        from volkit._kernels.transforms import pack_gjr_garch, unpack_gjr_garch
+        from scivol._kernels.transforms import pack_gjr_garch, unpack_gjr_garch
 
         theta = np.array([1e-6, 0.05, 0.04, 0.90], dtype=np.float64)
         z = unpack_gjr_garch(theta, 1, 1)
@@ -250,7 +250,7 @@ class TestGJRGARCHLogTransforms:
         np.testing.assert_allclose(theta, theta_recovered, rtol=1e-10)
 
     def test_pack_c_matches_python(self) -> None:
-        from volkit._kernels.transforms import pack_gjr_garch, unpack_gjr_garch
+        from scivol._kernels.transforms import pack_gjr_garch, unpack_gjr_garch
 
         theta_orig = np.array([1e-6, 0.05, 0.04, 0.90], dtype=np.float64)
         z = unpack_gjr_garch(theta_orig, 1, 1)
@@ -260,7 +260,7 @@ class TestGJRGARCHLogTransforms:
         np.testing.assert_allclose(theta_py, theta_c, rtol=1e-12)
 
     def test_jacobian_c_matches_python(self) -> None:
-        from volkit._kernels.transforms import jacobian_gjr_garch
+        from scivol._kernels.transforms import jacobian_gjr_garch
 
         theta = np.array([1e-6, 0.05, 0.04, 0.90], dtype=np.float64)
         j_py = jacobian_gjr_garch(theta, 1, 1)
@@ -285,7 +285,7 @@ class TestGJRGARCHLogTransforms:
         np.testing.assert_allclose(j_c.reshape(4, 4), j_ad, rtol=1e-8, atol=1e-10)
 
     def test_stationarity_constraint(self) -> None:
-        from volkit._kernels.transforms import pack_gjr_garch
+        from scivol._kernels.transforms import pack_gjr_garch
 
         rng = np.random.default_rng(42)
         for _ in range(100):
@@ -297,7 +297,7 @@ class TestGJRGARCHLogTransforms:
             assert theta[1:].sum() < 1.0
 
     def test_studentt_pack_unpack(self) -> None:
-        from volkit._kernels.transforms import pack_gjr_garch_studentt, unpack_gjr_garch_studentt
+        from scivol._kernels.transforms import pack_gjr_garch_studentt, unpack_gjr_garch_studentt
 
         theta = np.array([1e-6, 0.05, 0.04, 0.90, 8.0], dtype=np.float64)
         z = unpack_gjr_garch_studentt(theta, 1, 1)
@@ -305,7 +305,7 @@ class TestGJRGARCHLogTransforms:
         np.testing.assert_allclose(theta, theta_recovered, rtol=1e-8)
 
     def test_skewt_pack_unpack(self) -> None:
-        from volkit._kernels.transforms import pack_gjr_garch_skewt, unpack_gjr_garch_skewt
+        from scivol._kernels.transforms import pack_gjr_garch_skewt, unpack_gjr_garch_skewt
 
         theta = np.array([1e-6, 0.05, 0.04, 0.90, 8.0, -0.15], dtype=np.float64)
         z = unpack_gjr_garch_skewt(theta, 1, 1)

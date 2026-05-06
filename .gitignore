@@ -8,7 +8,7 @@ localdev/
 localdev_*
 python/
 *.ipynb
-volkit.egg-info/
+scivol.egg-info/
 dist/
 build/
 examples/

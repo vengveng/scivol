@@ -3,15 +3,41 @@ requires = ["setuptools>=69", "wheel", "numpy>=1.22"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name            = "volkit"
-version         = "0.1.0"
-description     = "GARCH helpers in C"
+name            = "scivol"
+dynamic         = ["version"]
+description     = "Volatility modeling in Python with fast GARCH-family C extensions."
+readme          = "README.md"
+license         = { file = "LICENSE" }
+authors         = [{ name = "Ivan Khalin" }]
 requires-python = ">=3.9"
 dependencies    = [
     "numpy>=1.22",
     "scipy>=1.7",
     "joblib>=1.2",
 ]
+keywords = ["volatility", "garch", "gjr-garch", "econometrics", "time-series", "finance"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: C",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Office/Business :: Financial",
+]
+
+[project.urls]
+Homepage = "https://github.com/vengveng/scivol"
+Repository = "https://github.com/vengveng/scivol"
+Issues = "https://github.com/vengveng/scivol/issues"
 
 [project.optional-dependencies]
 progress = ["tqdm>=4.0"]
@@ -19,32 +45,37 @@ dev = ["jax", "tqdm>=4.0"]
 
 [tool.setuptools]
 packages = [
-  "volkit",
-  "volkit._devtools",
-  "volkit.components",
-  "volkit.spec",
-  "volkit.estimators",
-  "volkit._kernels",
+  "scivol",
+  "scivol.components",
+  "scivol.spec",
+  "scivol.estimators",
+  "scivol._kernels",
 ]
 
+[tool.setuptools.package-data]
+scivol = ["_core.pyi", "py.typed"]
+
+[tool.setuptools.dynamic]
+version = { attr = "scivol._version.__version__" }
+
 [[tool.setuptools.ext-modules]]
-name = "volkit._core"
+name = "scivol._core"
 sources = [
-  "volkit/_core.c",
-  "volkit/_csrc/variance_garch.c",
-  "volkit/_csrc/likelihood_garch.c",
-  "volkit/_csrc/likelihood_normal.c",
-  "volkit/_csrc/likelihood_studentt.c",
-  "volkit/_csrc/likelihood_skewt.c",
-  "volkit/_csrc/errors_garch.c",
-  "volkit/_csrc/transforms_logspace.c",
-  "volkit/_csrc/arma_garch.c",
-  "volkit/_csrc/arma.c",
-  "volkit/_csrc/variance_gjr_garch.c",
-  "volkit/_csrc/likelihood_gjr_garch.c",
-  "volkit/_csrc/errors_gjr_garch.c",
-  "volkit/_csrc/log_wrappers.c",
-  "volkit/_csrc/dcc_gaussian.c",
+  "scivol/_core.c",
+  "scivol/_csrc/variance_garch.c",
+  "scivol/_csrc/likelihood_garch.c",
+  "scivol/_csrc/likelihood_normal.c",
+  "scivol/_csrc/likelihood_studentt.c",
+  "scivol/_csrc/likelihood_skewt.c",
+  "scivol/_csrc/errors_garch.c",
+  "scivol/_csrc/transforms_logspace.c",
+  "scivol/_csrc/arma_garch.c",
+  "scivol/_csrc/arma.c",
+  "scivol/_csrc/variance_gjr_garch.c",
+  "scivol/_csrc/likelihood_gjr_garch.c",
+  "scivol/_csrc/errors_gjr_garch.c",
+  "scivol/_csrc/log_wrappers.c",
+  "scivol/_csrc/dcc_gaussian.c",
 ]
-include-dirs       = ["volkit/_csrc"]
+include-dirs       = ["scivol/_csrc"]
 extra-compile-args = ["-O3", "-ffast-math", "-march=native", "-ffp-contract=fast", "-funroll-loops"]

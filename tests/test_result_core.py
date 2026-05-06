@@ -1,5 +1,5 @@
 """
-Tests for volkit.result.EstimationResult
+Tests for scivol.result.EstimationResult
 
 These checks are *pure-Python* - they do **not** rely on the C kernels
 or SciPy.  They only assume that:
@@ -16,8 +16,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from volkit import ARMA, GARCH, StudentT, Role, CompositeSpec
-from volkit.result import EstimationResult
+from scivol import ARMA, GARCH, StudentT, Role, CompositeSpec
+from scivol.result import EstimationResult
 
 
 # ------------------------------------------------------------------ #
@@ -214,7 +214,7 @@ def test_forecast_returns_dict():
 def test_forecast_convergence():
     """Long-horizon forecast should converge to unconditional variance."""
     # Use simulated GARCH data for proper convergence test
-    from volkit import GARCH, Normal
+    from scivol import GARCH, Normal
     
     rng = np.random.default_rng(42)
     n = 500

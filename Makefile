@@ -1,7 +1,7 @@
 b:
 	rm -rf build/ dist/
 	python -m build -w
-	python -m pip install --force-reinstall dist/volkit-*.whl
+	python -m pip install --force-reinstall dist/scivol-*.whl
 
 dev:
 	rm -rf build/ dist/

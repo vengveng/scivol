@@ -1,1 +1,11 @@
-include volkit/_csrc/*.h
+include scivol/_csrc/*.h
+include LICENSE
+include README.md
+include scivol/_core.pyi
+include scivol/py.typed
+exclude benchmark_optimizers.py
+exclude next_steps.md
+exclude prerelease.md
+prune localdev
+prune tests
+prune scivol/_devtools

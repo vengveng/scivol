@@ -1,5 +1,5 @@
 """
-pytest configuration and shared fixtures for volkit tests.
+pytest configuration and shared fixtures for scivol tests.
 """
 import pytest
 

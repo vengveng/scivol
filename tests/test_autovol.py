@@ -12,7 +12,7 @@ All tests use small data and restricted search grids so they complete quickly
 """
 import pytest
 import numpy as np
-from volkit import (
+from scivol import (
     GARCH,
     GJRGARCH,
     AutoVol,
@@ -149,7 +149,7 @@ class TestAutoVolComposition:
     def test_autovol_has_auto_flag(self):
         spec = AutoVol() + Normal()
         # _has_auto_components should detect AutoVol
-        from volkit._mixins import FitsMixin
+        from scivol._mixins import FitsMixin
         # CompositeSpec inherits FitsMixin
         assert spec._has_auto_components()
 

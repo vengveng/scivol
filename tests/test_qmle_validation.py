@@ -16,7 +16,7 @@ import pytest
 import numpy as np
 from numpy.testing import assert_allclose, assert_array_less
 
-from volkit import GARCH, Normal, StudentT, SkewT
+from scivol import GARCH, Normal, StudentT, SkewT
 
 
 # =============================================================================

@@ -16,7 +16,7 @@ try:
 except ImportError:
     HAS_PANDAS = False
 
-from volkit import GARCH, Normal, StudentT, AutoDensity
+from scivol import GARCH, Normal, StudentT, AutoDensity
 
 
 @pytest.mark.skipif(not HAS_PANDAS, reason="pandas not installed")

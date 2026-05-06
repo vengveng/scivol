@@ -1,16 +1,16 @@
 """
-Optimizer Benchmark for volkit Models
+Optimizer Benchmark for scivol Models
 =====================================
 
 Comprehensive benchmark of optimization methods for GARCH and ARMA-GARCH models
-using real financial data. Results guide default parameter settings in volkit.
+using real financial data. Results guide default parameter settings in scivol.
 
 This script:
 1. Tests all optimizer/mode combinations on multiple asset classes
 2. Tracks: convergence, speed, parameter stability, log-likelihood
 3. Produces summary statistics for setting defaults
 
-Models tested (all via volkit C extensions):
+Models tested (all via scivol C extensions):
 - GARCH(1,1) + Normal/Student-t/Skew-t
 - GJR-GARCH(1,1) + Normal/Student-t/Skew-t
 - ARMA(1,1)-GARCH(1,1) + Normal/Student-t/Skew-t
@@ -29,8 +29,8 @@ from typing import Dict, List, Optional, Any, Tuple, Literal
 from joblib import Parallel, delayed
 import multiprocessing
 
-# volkit library (all models via C extensions)
-from volkit import ARMA, GARCH, GJRGARCH, Normal, StudentT, SkewT
+# scivol library (all models via C extensions)
+from scivol import ARMA, GARCH, GJRGARCH, Normal, StudentT, SkewT
 
 # Suppress convergence warnings during benchmark
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -97,7 +97,7 @@ DATA_RENAME = {
 ASSETS = ["stock", "gbond", "cbond", "resec", "commo", "usdfx"]
 
 # =====================
-# GARCH-only configs (volkit)
+# GARCH-only configs (scivol)
 # =====================
 GARCH_DIST_SPECS = {
     "normal": Normal(),
@@ -115,7 +115,7 @@ GARCH_OPTIMIZER_CONFIGS = [
 ]
 
 # =====================
-# ARMA-GARCH configs (volkit)
+# ARMA-GARCH configs (scivol)
 # =====================
 # Mapping for ARMA-GARCH density components
 ARMA_GARCH_DIST_SPECS = {
@@ -134,7 +134,7 @@ ARMA_GARCH_OPTIMIZER_CONFIGS = [
 ]
 
 # =====================
-# Pure ARMA configs (volkit)
+# Pure ARMA configs (scivol)
 # =====================
 # ARMA uses Normal only (constant variance via concentrated likelihood)
 ARMA_DIST_SPECS = {
@@ -151,7 +151,7 @@ ARMA_OPTIMIZER_CONFIGS = [
 ]
 
 # =====================
-# GJR-GARCH configs (volkit)
+# GJR-GARCH configs (scivol)
 # =====================
 GJR_GARCH_DIST_SPECS = {
     "normal": Normal(),
@@ -252,7 +252,7 @@ def load_data() -> Tuple[Dict[str, pd.Series], Dict[str, pd.Series]]:
 
 
 # =============================================================================
-# GARCH BENCHMARK (volkit)
+# GARCH BENCHMARK (scivol)
 # =============================================================================
 
 def run_garch_benchmark(
@@ -261,13 +261,13 @@ def run_garch_benchmark(
     dist_name: str,
     config: Dict[str, Any],
 ) -> Optional[BenchmarkResult]:
-    """Run single GARCH benchmark using volkit."""
+    """Run single GARCH benchmark using scivol."""
     try:
         # Build model spec
         dist_component = GARCH_DIST_SPECS[dist_name]
         spec = GARCH(1, 1) + dist_component
         
-        # Fit using volkit
+        # Fit using scivol
         result = spec.fit(
             resid,
             solver=config["solver"],
@@ -324,7 +324,7 @@ def run_garch_benchmark(
 
 
 # =============================================================================
-# ARMA(1,1)-GARCH(1,1) BENCHMARK (volkit)
+# ARMA(1,1)-GARCH(1,1) BENCHMARK (scivol)
 # =============================================================================
 
 def run_arma_garch_benchmark(
@@ -333,13 +333,13 @@ def run_arma_garch_benchmark(
     dist_name: str,
     config: Dict[str, Any],
 ) -> Optional[BenchmarkResult]:
-    """Run single ARMA(1,1)-GARCH(1,1) benchmark using volkit."""
+    """Run single ARMA(1,1)-GARCH(1,1) benchmark using scivol."""
     try:
-        # Build model spec using volkit components
+        # Build model spec using scivol components
         dist_component = ARMA_GARCH_DIST_SPECS[dist_name]
         spec = ARMA(1, 1) + GARCH(1, 1) + dist_component
         
-        # Fit using volkit
+        # Fit using scivol
         result = spec.fit(
             y,
             solver=config["solver"],
@@ -412,13 +412,13 @@ def run_arma_benchmark(
     dist_name: str,
     config: Dict[str, Any],
 ) -> Optional[BenchmarkResult]:
-    """Run single ARMA(1,1) benchmark using volkit (constant variance)."""
+    """Run single ARMA(1,1) benchmark using scivol (constant variance)."""
     try:
-        # Build model spec using volkit components
+        # Build model spec using scivol components
         dist_component = ARMA_DIST_SPECS[dist_name]
         spec = ARMA(1, 1) + dist_component
         
-        # Fit using volkit
+        # Fit using scivol
         result = spec.fit(
             y,
             solver=config["solver"],
@@ -474,7 +474,7 @@ def run_arma_benchmark(
 
 
 # =============================================================================
-# GJR-GARCH(1,1) BENCHMARK (volkit)
+# GJR-GARCH(1,1) BENCHMARK (scivol)
 # =============================================================================
 
 def run_gjr_garch_benchmark(
@@ -483,7 +483,7 @@ def run_gjr_garch_benchmark(
     dist_name: str,
     config: Dict[str, Any],
 ) -> Optional[BenchmarkResult]:
-    """Run single GJR-GARCH(1,1) benchmark using volkit."""
+    """Run single GJR-GARCH(1,1) benchmark using scivol."""
     try:
         dist_component = GJR_GARCH_DIST_SPECS[dist_name]
         spec = GJRGARCH(1, 1) + dist_component
@@ -593,7 +593,7 @@ def run_full_benchmark(
     task_types = []
     
     # =====================
-    # 1. GARCH(1,1) Models (volkit)
+    # 1. GARCH(1,1) Models (scivol)
     # =====================
     for asset in ASSETS:
         if asset not in ar1_residuals:
@@ -606,7 +606,7 @@ def run_full_benchmark(
                 task_types.append("GARCH")
     
     # =====================
-    # 2. ARMA(1,1)-GARCH(1,1) Models (volkit)
+    # 2. ARMA(1,1)-GARCH(1,1) Models (scivol)
     # =====================
     for asset in ASSETS:
         if asset not in log_returns:
@@ -619,7 +619,7 @@ def run_full_benchmark(
                 task_types.append("ARMA-GARCH")
     
     # =====================
-    # 3. GJR-GARCH(1,1) Models (volkit)
+    # 3. GJR-GARCH(1,1) Models (scivol)
     # =====================
     for asset in ASSETS:
         if asset not in ar1_residuals:
@@ -632,7 +632,7 @@ def run_full_benchmark(
                 task_types.append("GJR-GARCH")
     
     # =====================
-    # 4. Pure ARMA(1,1) Models (volkit, constant variance)
+    # 4. Pure ARMA(1,1) Models (scivol, constant variance)
     # =====================
     for asset in ASSETS:
         if asset not in log_returns:
@@ -782,7 +782,7 @@ def print_summary(df: pd.DataFrame):
 
 def verify_all_models() -> Dict[str, bool]:
     """
-    Quick smoke test that all model types run and converge with volkit API.
+    Quick smoke test that all model types run and converge with scivol API.
     
     Returns dict mapping model name -> converged
     """
@@ -850,8 +850,8 @@ def main():
     """Run complete benchmark."""
     
     print("=" * 80)
-    print("VOLKIT OPTIMIZER BENCHMARK")
-    print("All models use C extensions via volkit")
+    print("SCIVOL OPTIMIZER BENCHMARK")
+    print("All models use C extensions via scivol")
     print("Models: GARCH(1,1), GJR-GARCH(1,1), ARMA(1,1)-GARCH(1,1)")
     print("=" * 80)
     print()

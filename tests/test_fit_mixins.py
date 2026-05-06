@@ -10,8 +10,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from volkit import GARCH, ARMA, Role, CompositeSpec
-from volkit._kernels.routine import Routine
+from scivol import GARCH, ARMA, Role, CompositeSpec
+from scivol._kernels.routine import Routine
 
 
 class DummyResult:  # simple stand-in for EstimationResult
@@ -39,7 +39,7 @@ def monkeypatched_routine(monkeypatch):
         calls["kw"] = kw
         return DummyResult("GARCH(1,1)+Normal", len(y), kw)
 
-    import volkit._kernels as _k
+    import scivol._kernels as _k
     dummy = Routine(uid="GARCH(1,1)+Normal", n_params=3, fit=fake_fit)
     monkeypatch.setitem(_k._ROUTINES, "GARCH(1,1)+Normal", dummy)
 
@@ -118,7 +118,7 @@ def test_fit_qmle_dispatch(monkeypatch, sample_data):
         calls["kw"] = kw
         return DummyResult(spec, len(data), kw)
 
-    monkeypatch.setattr("volkit._qmle.fit_qmle", fake_fit_qmle)
+    monkeypatch.setattr("scivol._qmle.fit_qmle", fake_fit_qmle)
 
     model = GARCH(1, 1)
     res = model.fit(sample_data, method="qmle", solver="slsqp")

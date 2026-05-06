@@ -9,7 +9,7 @@ try:
 except ImportError:
     HAS_PANDAS = False
 
-from volkit import GARCH, Normal, StudentT
+from scivol import GARCH, Normal, StudentT
 
 
 @pytest.mark.skipif(not HAS_PANDAS, reason="pandas not installed")

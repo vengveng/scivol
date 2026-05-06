@@ -18,9 +18,9 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from volkit import DCC
-from volkit._devtools.ad_oracle import dcc_value_grad_hess
-from volkit._dcc_kernels import (
+from scivol import DCC
+from scivol._devtools.ad_oracle import dcc_value_grad_hess
+from scivol._dcc_kernels import (
     dcc_nll, dcc_nll_grad, dcc_nll_grad_hess, compute_qbar,
 )
 
@@ -134,7 +134,7 @@ class TestNLLConsistency:
         # _11 call
         nll_11 = dcc_nll(theta, eps, Qbar, 1, 1)
         # force _pq path by passing through the pq interface
-        from volkit import _core
+        from scivol import _core
         eps_c = np.ascontiguousarray(eps, dtype=np.float64)
         Qbar_c = np.ascontiguousarray(Qbar.ravel(), dtype=np.float64)
         theta_c = np.ascontiguousarray(theta, dtype=np.float64)
