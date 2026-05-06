@@ -58,24 +58,7 @@ scivol = ["_core.pyi", "py.typed"]
 [tool.setuptools.dynamic]
 version = { attr = "scivol._version.__version__" }
 
-[[tool.setuptools.ext-modules]]
-name = "scivol._core"
-sources = [
-  "scivol/_core.c",
-  "scivol/_csrc/variance_garch.c",
-  "scivol/_csrc/likelihood_garch.c",
-  "scivol/_csrc/likelihood_normal.c",
-  "scivol/_csrc/likelihood_studentt.c",
-  "scivol/_csrc/likelihood_skewt.c",
-  "scivol/_csrc/errors_garch.c",
-  "scivol/_csrc/transforms_logspace.c",
-  "scivol/_csrc/arma_garch.c",
-  "scivol/_csrc/arma.c",
-  "scivol/_csrc/variance_gjr_garch.c",
-  "scivol/_csrc/likelihood_gjr_garch.c",
-  "scivol/_csrc/errors_gjr_garch.c",
-  "scivol/_csrc/log_wrappers.c",
-  "scivol/_csrc/dcc_gaussian.c",
-]
-include-dirs       = ["scivol/_csrc"]
-extra-compile-args = ["-O3", "-ffast-math", "-march=native", "-ffp-contract=fast", "-funroll-loops"]
+[tool.cibuildwheel]
+build = "cp39-* cp310-* cp311-* cp312-*"
+skip = "*-win32 *-manylinux_i686 *-musllinux_i686"
+test-command = 'python -c "import numpy as np; import scivol; import scivol._core; from scivol import GARCH, GJRGARCH, Normal, StudentT; data = np.random.default_rng(0).standard_normal(500).astype(np.float64) * 0.01; r1 = (GARCH(1, 1) + Normal()).fit(data, solver=\"slsqp\", verbose=False, n_jobs=1); assert r1.converged; r2 = (GJRGARCH(1, 1) + StudentT()).fit(data, solver=\"slsqp\", log_mode=True, verbose=False, n_jobs=1); assert r2.params is not None; assert np.all(np.isfinite(r2.params))"'

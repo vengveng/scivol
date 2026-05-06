@@ -5,13 +5,12 @@ Volatility modeling in Python. GARCH-family models with C extensions for speed.
 ## Install
 
 ```bash
-# Install the published distribution from PyPI.
-# The distribution name may differ from the Python import name `scivol`
-# if the canonical PyPI name is unavailable.
 pip install scivol
 ```
 
-Install with `pip install scivol`, then import it as `scivol`.
+Prebuilt wheels are the default installation path on supported platforms.
+If no compatible wheel is available, `pip` falls back to building from the
+source distribution, which requires a working C toolchain.
 
 ## Quick start
 
