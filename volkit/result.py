@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Protocol, runtime_checkable, TYPE_CHECKING, Union
 import warnings
@@ -254,6 +255,13 @@ class EstimationResult:
 
         # Components were mutated in-place during fitting
         self._component_map: Dict[Role, Component] = {c.role: c for c in spec.components}
+        self._component_param_snapshots: Dict[Role, Dict[str, Any]] = {}
+        self._component_signatures: Dict[Role, str] = {}
+        for component in spec.components:
+            self._component_signatures[component.role] = component.signature
+            fitted_params = getattr(component, "fitted_params", None)
+            if fitted_params:
+                self._component_param_snapshots[component.role] = deepcopy(fitted_params)
 
     # Scalars
     # --------------------------------------------------------------------- #
@@ -353,11 +361,10 @@ class EstimationResult:
     @property
     def garch_params(self) -> Optional[GARCHParams]:
         """Get GARCH/GJR-GARCH parameters as structured object."""
-        vol = self.vol
-        if vol is None or not hasattr(vol, 'fitted_params') or not vol.fitted_params:
+        fp = self._component_param_snapshots.get(Role.VOLATILITY)
+        if not fp:
             return None
-        
-        fp = vol.fitted_params
+
         omega = fp.get('omega', 0.0)
         alpha = np.array(fp.get('alpha', []), dtype=np.float64)
         beta = np.array(fp.get('beta', []), dtype=np.float64)
@@ -371,11 +378,10 @@ class EstimationResult:
     @property
     def arma_params(self) -> Optional[ARMAParams]:
         """Get ARMA parameters as structured object."""
-        mean_comp = self.mean
-        if mean_comp is None or not hasattr(mean_comp, 'fitted_params') or not mean_comp.fitted_params:
+        fp = self._component_param_snapshots.get(Role.MEAN)
+        if not fp:
             return None
-        
-        fp = mean_comp.fitted_params
+
         # Handle both naming conventions: c/phi/theta and const/ar/ma
         c = fp.get('c', fp.get('const', 0.0))
         phi = np.array(fp.get('phi', fp.get('ar', [])), dtype=np.float64)
@@ -386,11 +392,10 @@ class EstimationResult:
     @property
     def dist_params(self) -> DistributionParams:
         """Get distribution parameters as structured object."""
-        dens = self.density
-        if dens is None or not hasattr(dens, 'fitted_params') or not dens.fitted_params:
+        fp = self._component_param_snapshots.get(Role.DENSITY)
+        if not fp:
             return DistributionParams()
-        
-        fp = dens.fitted_params
+
         nu = fp.get('nu', fp.get('df'))  # Handle both 'nu' and 'df' keys
         lam = fp.get('lam')
         
@@ -858,9 +863,9 @@ class EstimationResult:
             }
         
         # Add component parameters (legacy)
-        for component in self.spec.components:
-            if hasattr(component, 'fitted_params') and component.fitted_params:
-                result_dict['parameters'][component.signature] = component.fitted_params
+        for role, fitted_params in self._component_param_snapshots.items():
+            signature = self._component_signatures.get(role, role.name)
+            result_dict['parameters'][signature] = deepcopy(fitted_params)
         
         # Add standard errors
         if self.std_errors is not None:

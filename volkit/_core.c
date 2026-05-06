@@ -1711,6 +1711,39 @@ py_log_garch_ll_grad_pq_studentt(PyObject *self, PyObject *const *args, Py_ssize
     Py_RETURN_NONE;
 }
 
+/* GARCH + Skew-t | NLL */
+static PyObject *
+py_log_garch_ll_pq_skewt(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 6) { BAD_ARITY("log_garch_ll_pq_skewt", 6, nargs); return NULL; }
+    const double *z    = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *resid = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *sigma2 = (double *)    PyLong_AsVoidPtr(args[2]);
+    size_t n = PyLong_AsSize_t(args[3]);
+    size_t p = PyLong_AsSize_t(args[4]);
+    size_t q = PyLong_AsSize_t(args[5]);
+    if (PyErr_Occurred()) return NULL;
+    double nll = log_garch_ll_pq_skewt(z, resid, sigma2, n, p, q);
+    return PyFloat_FromDouble(nll);
+}
+
+/* GARCH + Skew-t | Gradient */
+static PyObject *
+py_log_garch_ll_grad_pq_skewt(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 7) { BAD_ARITY("log_garch_ll_grad_pq_skewt", 7, nargs); return NULL; }
+    const double *z    = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *resid = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *sigma2 = (double *)    PyLong_AsVoidPtr(args[2]);
+    double       *grad_z = (double *)    PyLong_AsVoidPtr(args[3]);
+    size_t n = PyLong_AsSize_t(args[4]);
+    size_t p = PyLong_AsSize_t(args[5]);
+    size_t q = PyLong_AsSize_t(args[6]);
+    if (PyErr_Occurred()) return NULL;
+    log_garch_ll_grad_pq_skewt(z, resid, sigma2, grad_z, n, p, q);
+    Py_RETURN_NONE;
+}
+
 /* GJR-GARCH + Normal | NLL */
 static PyObject *
 py_log_gjr_garch_ll_pq_normal(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
@@ -1774,6 +1807,39 @@ py_log_gjr_garch_ll_grad_pq_studentt(PyObject *self, PyObject *const *args, Py_s
     size_t q = PyLong_AsSize_t(args[6]);
     if (PyErr_Occurred()) return NULL;
     log_gjr_garch_ll_grad_pq_studentt(z, resid, sigma2, grad_z, n, p, q);
+    Py_RETURN_NONE;
+}
+
+/* GJR-GARCH + Skew-t | NLL */
+static PyObject *
+py_log_gjr_garch_ll_pq_skewt(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 6) { BAD_ARITY("log_gjr_garch_ll_pq_skewt", 6, nargs); return NULL; }
+    const double *z    = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *resid = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *sigma2 = (double *)    PyLong_AsVoidPtr(args[2]);
+    size_t n = PyLong_AsSize_t(args[3]);
+    size_t p = PyLong_AsSize_t(args[4]);
+    size_t q = PyLong_AsSize_t(args[5]);
+    if (PyErr_Occurred()) return NULL;
+    double nll = log_gjr_garch_ll_pq_skewt(z, resid, sigma2, n, p, q);
+    return PyFloat_FromDouble(nll);
+}
+
+/* GJR-GARCH + Skew-t | Gradient */
+static PyObject *
+py_log_gjr_garch_ll_grad_pq_skewt(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 7) { BAD_ARITY("log_gjr_garch_ll_grad_pq_skewt", 7, nargs); return NULL; }
+    const double *z    = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *resid = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *sigma2 = (double *)    PyLong_AsVoidPtr(args[2]);
+    double       *grad_z = (double *)    PyLong_AsVoidPtr(args[3]);
+    size_t n = PyLong_AsSize_t(args[4]);
+    size_t p = PyLong_AsSize_t(args[5]);
+    size_t q = PyLong_AsSize_t(args[6]);
+    if (PyErr_Occurred()) return NULL;
+    log_gjr_garch_ll_grad_pq_skewt(z, resid, sigma2, grad_z, n, p, q);
     Py_RETURN_NONE;
 }
 
@@ -1932,6 +1998,29 @@ py_log_arma_garch_nll_pq_skewt(PyObject *self, PyObject *const *args, Py_ssize_t
     double nll = log_arma_garch_nll_pq_skewt(z, y, resid, sigma2, e0, h0,
                                               n, p_ar, q_ma, P, Q);
     return PyFloat_FromDouble(nll);
+}
+
+/* ARMA-GARCH + Skew-t | Gradient */
+static PyObject *
+py_log_arma_garch_nll_grad_pq_skewt(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 12) { BAD_ARITY("log_arma_garch_nll_grad_pq_skewt", 12, nargs); return NULL; }
+    const double *z      = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y      = (const double *)PyLong_AsVoidPtr(args[1]);
+    double       *resid  = (double *)      PyLong_AsVoidPtr(args[2]);
+    double       *sigma2 = (double *)      PyLong_AsVoidPtr(args[3]);
+    const double *e0     = (const double *)PyLong_AsVoidPtr(args[4]);
+    const double *h0     = (const double *)PyLong_AsVoidPtr(args[5]);
+    double       *grad_z = (double *)      PyLong_AsVoidPtr(args[6]);
+    size_t n      = PyLong_AsSize_t(args[7]);
+    size_t p_ar   = PyLong_AsSize_t(args[8]);
+    size_t q_ma   = PyLong_AsSize_t(args[9]);
+    size_t P      = PyLong_AsSize_t(args[10]);
+    size_t Q      = PyLong_AsSize_t(args[11]);
+    if (PyErr_Occurred()) return NULL;
+    log_arma_garch_nll_grad_pq_skewt(z, y, resid, sigma2, e0, h0, grad_z,
+                                      n, p_ar, q_ma, P, Q);
+    Py_RETURN_NONE;
 }
 
 
@@ -2309,6 +2398,10 @@ static PyMethodDef Methods[] = {
                                           METH_FASTCALL, "Log-space GARCH(p,q) + Student-t NLL"},
     {"_log_garch_ll_grad_pq_studentt",   (PyCFunction)py_log_garch_ll_grad_pq_studentt,
                                           METH_FASTCALL, "Log-space GARCH(p,q) + Student-t gradient"},
+    {"_log_garch_ll_pq_skewt",           (PyCFunction)py_log_garch_ll_pq_skewt,
+                                          METH_FASTCALL, "Log-space GARCH(p,q) + Skew-t NLL"},
+    {"_log_garch_ll_grad_pq_skewt",      (PyCFunction)py_log_garch_ll_grad_pq_skewt,
+                                          METH_FASTCALL, "Log-space GARCH(p,q) + Skew-t gradient"},
     {"_log_gjr_garch_ll_pq_normal",      (PyCFunction)py_log_gjr_garch_ll_pq_normal,
                                           METH_FASTCALL, "Log-space GJR-GARCH(p,q) + Normal NLL"},
     {"_log_gjr_garch_ll_grad_pq_normal", (PyCFunction)py_log_gjr_garch_ll_grad_pq_normal,
@@ -2317,6 +2410,10 @@ static PyMethodDef Methods[] = {
                                           METH_FASTCALL, "Log-space GJR-GARCH(p,q) + Student-t NLL"},
     {"_log_gjr_garch_ll_grad_pq_studentt",(PyCFunction)py_log_gjr_garch_ll_grad_pq_studentt,
                                           METH_FASTCALL, "Log-space GJR-GARCH(p,q) + Student-t gradient"},
+    {"_log_gjr_garch_ll_pq_skewt",       (PyCFunction)py_log_gjr_garch_ll_pq_skewt,
+                                          METH_FASTCALL, "Log-space GJR-GARCH(p,q) + Skew-t NLL"},
+    {"_log_gjr_garch_ll_grad_pq_skewt",  (PyCFunction)py_log_gjr_garch_ll_grad_pq_skewt,
+                                          METH_FASTCALL, "Log-space GJR-GARCH(p,q) + Skew-t gradient"},
     {"_log_arma_nll_pq_normal",          (PyCFunction)py_log_arma_nll_pq_normal,
                                           METH_FASTCALL, "Log-space ARMA(p,q) + Normal NLL"},
     {"_log_arma_nll_grad_pq_normal",     (PyCFunction)py_log_arma_nll_grad_pq_normal,
@@ -2333,6 +2430,8 @@ static PyMethodDef Methods[] = {
                                            METH_FASTCALL, "Log-space ARMA-GARCH + Student-t gradient"},
     {"_log_arma_garch_nll_pq_skewt",     (PyCFunction)py_log_arma_garch_nll_pq_skewt,
                                            METH_FASTCALL, "Log-space ARMA-GARCH + Skew-t NLL"},
+    {"_log_arma_garch_nll_grad_pq_skewt",(PyCFunction)py_log_arma_garch_nll_grad_pq_skewt,
+                                           METH_FASTCALL, "Log-space ARMA-GARCH + Skew-t gradient"},
 
     // DCC Gaussian
     {"_dcc_nll_11_gaussian",          (PyCFunction)py_dcc_nll_11_gaussian,

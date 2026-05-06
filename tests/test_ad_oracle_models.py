@@ -707,11 +707,31 @@ class TestARMAGARCHOracle:
 
     def test_arma_garch_pq_skewt_log_gradient_matches_chain_rule(self, arma_garch_series: np.ndarray) -> None:
         params = np.array([0.0, 0.15, -0.10, 2e-6, 0.04, 0.02, 0.70, 0.20, 8.5, -0.2], dtype=np.float64)
+        resid = np.zeros_like(arma_garch_series)
+        sigma2 = np.zeros_like(arma_garch_series)
+        e0 = np.zeros(2, dtype=np.float64)
+        h0 = np.full(2, np.mean(arma_garch_series ** 2), dtype=np.float64)
+        grad_z = np.zeros_like(params)
         z = unpack_arma_garch_skewt(params, 1, 1, 2, 2)
         _, grad_theta, _ = arma_garch_value_grad_hess(params, arma_garch_series, 1, 1, 2, 2, "skewt")
         grad_z_ref = jacobian_arma_garch_skewt(params, 1, 1, 2, 2).T @ grad_theta
         _, grad_z_ad, _ = arma_garch_logspace_value_grad_hess(z, arma_garch_series, 1, 1, 2, 2, "skewt")
+        _core._log_arma_garch_nll_grad_pq_skewt(
+            _as_cptr(z),
+            _as_cptr(arma_garch_series),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            _as_cptr(e0),
+            _as_cptr(h0),
+            _as_cptr(grad_z),
+            arma_garch_series.size,
+            1,
+            1,
+            2,
+            2,
+        )
 
+        np.testing.assert_allclose(grad_z, grad_z_ref, rtol=1e-5, atol=1e-7)
         np.testing.assert_allclose(grad_z_ref, grad_z_ad, rtol=1e-5, atol=1e-7)
 
     def test_arma_garch_pq_skewt_log_hessian_matches_ad(self, arma_garch_series: np.ndarray) -> None:
@@ -801,6 +821,17 @@ class TestARMAGARCHOracle:
         assert np.all(np.isfinite(result.params))
         assert result.log_likelihood > 0
 
+    def test_generic_arma_garch_skewt_fit_runs_in_log_mode(self, arma_garch_series: np.ndarray) -> None:
+        from volkit import ARMA, GARCH, SkewT
+
+        spec = ARMA(1, 1) + GARCH(2, 2) + SkewT()
+        result = spec.fit(arma_garch_series, solver="slsqp", log_mode=True)
+
+        assert result.params is not None
+        assert len(result.params) == 10
+        assert np.all(np.isfinite(result.params))
+        assert result.log_likelihood > 0
+
     def test_generic_arma_garch_skewt_fit_runs_in_log_mode_with_trust(self, arma_garch_series: np.ndarray) -> None:
         from volkit import ARMA, GARCH, SkewT
 
@@ -853,6 +884,34 @@ class TestLogspaceHessianOracle:
         _, _, hess_ad = garch_value_grad_hess(params, resid2, 2, 2, "studentt")
 
         np.testing.assert_allclose(hess_c, hess_ad, rtol=1e-6, atol=1e-6)
+
+    def test_garch22_variance_recursion_matches_manual(self, arma_garch_series: np.ndarray) -> None:
+        resid2 = arma_garch_series * arma_garch_series
+        params = np.array([2e-6, 0.05, 0.03, 0.70, 0.15], dtype=np.float64)
+        sigma2_c = np.zeros_like(resid2)
+        sigma2_c[0] = np.mean(resid2)
+        sigma2_py = np.zeros_like(resid2)
+        sigma2_py[0] = np.mean(resid2)
+
+        _core._garch_variance_pq(
+            _as_cptr(params),
+            _as_cptr(resid2),
+            _as_cptr(sigma2_c),
+            resid2.size,
+            2,
+            2,
+        )
+
+        for t in range(1, resid2.size):
+            sigma2_py[t] = (
+                params[0]
+                + params[1] * resid2[t - 1]
+                + (params[2] * resid2[t - 2] if t >= 2 else 0.0)
+                + params[3] * sigma2_py[t - 1]
+                + (params[4] * sigma2_py[t - 2] if t >= 2 else 0.0)
+            )
+
+        np.testing.assert_allclose(sigma2_c, sigma2_py, rtol=1e-12, atol=1e-12)
 
     def test_garch22_normal_log_hessian_matches_ad(self, arma_garch_series: np.ndarray) -> None:
         resid = arma_garch_series
@@ -964,6 +1023,37 @@ class TestLogspaceHessianOracle:
         hess_z = log_hessian_garch(params, grad_theta, hess_theta, 2, 2, dist="skewt")
 
         np.testing.assert_allclose(hess_z, hess_ad, rtol=1e-5, atol=1e-6)
+
+    def test_garch22_skewt_fused_log_gradient_matches_ad(self, arma_garch_series: np.ndarray) -> None:
+        resid = arma_garch_series
+        resid2 = resid * resid
+        params = np.array([2e-6, 0.05, 0.03, 0.70, 0.15, 8.5, -0.2], dtype=np.float64)
+        z = unpack_garch_skewt(params, 2, 2)
+        sigma2 = np.zeros_like(resid2)
+        sigma2[0] = np.mean(resid2)
+        grad_z = np.zeros_like(z)
+
+        value_c = _core._log_garch_ll_pq_skewt(
+            _as_cptr(z),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            resid.size,
+            2,
+            2,
+        )
+        _core._log_garch_ll_grad_pq_skewt(
+            _as_cptr(z),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            _as_cptr(grad_z),
+            resid.size,
+            2,
+            2,
+        )
+        value_ad, grad_ad, _ = garch_logspace_value_grad_hess(z, resid2, 2, 2, "skewt", resid=resid)
+
+        np.testing.assert_allclose(value_c, value_ad, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(grad_z, grad_ad, rtol=1e-5, atol=1e-6)
 
     def test_gjr22_normal_log_hessian_matches_ad(self, arma_garch_series: np.ndarray) -> None:
         resid = arma_garch_series
@@ -1136,6 +1226,36 @@ class TestLogspaceHessianOracle:
         hess_z = log_hessian_gjr_garch(params, grad_theta, hess_theta, 2, 2, dist="skewt")
 
         np.testing.assert_allclose(hess_z, hess_ad, rtol=1e-5, atol=1e-6)
+
+    def test_gjr22_skewt_fused_log_gradient_matches_ad(self, arma_garch_series: np.ndarray) -> None:
+        resid = arma_garch_series
+        params = np.array([2e-6, 0.04, 0.02, 0.03, 0.01, 0.70, 0.10, 8.5, -0.2], dtype=np.float64)
+        z = unpack_gjr_garch_skewt(params, 2, 2)
+        sigma2 = np.zeros_like(resid)
+        sigma2[0] = np.mean(resid * resid)
+        grad_z = np.zeros_like(z)
+
+        value_c = _core._log_gjr_garch_ll_pq_skewt(
+            _as_cptr(z),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            resid.size,
+            2,
+            2,
+        )
+        _core._log_gjr_garch_ll_grad_pq_skewt(
+            _as_cptr(z),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            _as_cptr(grad_z),
+            resid.size,
+            2,
+            2,
+        )
+        value_ad, grad_ad, _ = gjr_garch_logspace_value_grad_hess(z, resid, 2, 2, "skewt")
+
+        np.testing.assert_allclose(value_c, value_ad, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(grad_z, grad_ad, rtol=1e-5, atol=1e-6)
 
     def test_gjr22_skewt_fit_runs_in_log_mode_with_trust(self, arma_garch_series: np.ndarray) -> None:
         resid = arma_garch_series

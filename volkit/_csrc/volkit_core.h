@@ -64,6 +64,13 @@ double garch_ll_grad_11_skewt(
     double*       grad,      /* output: gradient [5] */
     size_t n);
 
+double garch_ll_pq_skewt(const double *params,
+                         const double *residuals,
+                         double *sigma2,
+                         size_t n,
+                         size_t p,
+                         size_t q);
+
 void garch_ll_grad_pq_skewt(const double *params,
                             const double *residuals,
                             double *sigma2,
@@ -652,6 +659,14 @@ void   log_garch_ll_grad_pq_studentt(const double *z, const double *resid2,
                                      double *sigma2, double *grad_z,
                                      size_t n, size_t p, size_t q);
 
+/* GARCH(p,q) + Skew-t   (residuals = raw ε) */
+double log_garch_ll_pq_skewt(const double *z, const double *residuals,
+                             double *sigma2, size_t n, size_t p, size_t q);
+
+void   log_garch_ll_grad_pq_skewt(const double *z, const double *residuals,
+                                  double *sigma2, double *grad_z,
+                                  size_t n, size_t p, size_t q);
+
 /* GJR-GARCH(p,q) + Normal   (residuals = raw ε) */
 double log_gjr_garch_ll_pq_normal(const double *z, const double *residuals,
                                   double *sigma2, size_t n, size_t p, size_t q);
@@ -667,6 +682,14 @@ double log_gjr_garch_ll_pq_studentt(const double *z, const double *residuals,
 void   log_gjr_garch_ll_grad_pq_studentt(const double *z, const double *residuals,
                                          double *sigma2, double *grad_z,
                                          size_t n, size_t p, size_t q);
+
+/* GJR-GARCH(p,q) + Skew-t   (residuals = raw ε) */
+double log_gjr_garch_ll_pq_skewt(const double *z, const double *residuals,
+                                 double *sigma2, size_t n, size_t p, size_t q);
+
+void   log_gjr_garch_ll_grad_pq_skewt(const double *z, const double *residuals,
+                                      double *sigma2, double *grad_z,
+                                      size_t n, size_t p, size_t q);
 
 /* ARMA-GARCH log-space transforms */
 void pack_arma_garch_normal_11(const double *z, double *theta);
@@ -719,7 +742,7 @@ double log_arma_garch_nll_pq_skewt(const double *z, const double *y,
                                     size_t n, size_t p_ar, size_t q_ma,
                                     size_t P, size_t Q);
 
-/* ARMA-GARCH fused log-space gradient wrappers (Normal, StudentT; all orders) */
+/* ARMA-GARCH fused log-space gradient wrappers (all distributions; all orders) */
 void log_arma_garch_nll_grad_pq_normal(const double *z, const double *y,
                                         double *resid, double *sigma2,
                                         const double *e0, const double *h0,
@@ -733,6 +756,13 @@ void log_arma_garch_nll_grad_pq_studentt(const double *z, const double *y,
                                            double *grad_z,
                                            size_t n, size_t p_ar, size_t q_ma,
                                            size_t P, size_t Q);
+
+void log_arma_garch_nll_grad_pq_skewt(const double *z, const double *y,
+                                       double *resid, double *sigma2,
+                                       const double *e0, const double *h0,
+                                       double *grad_z,
+                                       size_t n, size_t p_ar, size_t q_ma,
+                                       size_t P, size_t Q);
 
 /* ======================== DCC Gaussian Functions ============================ */
 

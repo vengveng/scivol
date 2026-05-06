@@ -129,6 +129,42 @@ def test_to_dict_structure():
         assert d["parameters"][comp.signature] == comp.fitted_params
 
 
+def test_component_params_are_snapshotted():
+    data = np.ones(50)
+    spec = _build_fitted_spec()
+    opt = DummyOpt(x=np.arange(spec.total_params), fun=10.0)
+    res = EstimationResult(spec, opt, data)
+
+    gp_before = res.garch_params
+    ap_before = res.arma_params
+    dp_before = res.dist_params
+    assert gp_before is not None
+    assert ap_before is not None
+
+    # Simulate later routine reuse mutating the original component instances.
+    assert res.vol is not None
+    assert res.mean is not None
+    assert res.density is not None
+    res.vol.unpack(np.array([0.02, 0.15, 0.70]))
+    res.mean.unpack(np.array([0.10, -0.30, 0.40]))
+    res.density.unpack(np.array([12.0]))
+
+    gp_after = res.garch_params
+    ap_after = res.arma_params
+    dp_after = res.dist_params
+    assert gp_after is not None
+    assert ap_after is not None
+
+    np.testing.assert_allclose(gp_after.to_array(), gp_before.to_array())
+    np.testing.assert_allclose(ap_after.to_array(), ap_before.to_array())
+    assert dp_after.nu == dp_before.nu
+
+    d = res.to_dict()
+    assert d["parameters"]["ARMA(1,1)"]["const"] == pytest.approx(0.05)
+    assert d["parameters"]["GARCH(1,1)"]["omega"] == pytest.approx(0.01)
+    assert d["dist_params"]["nu"] == pytest.approx(8.0)
+
+
 # ------------------------------------------------------------------ #
 # 3. summary() produces human-readable text
 # ------------------------------------------------------------------ #

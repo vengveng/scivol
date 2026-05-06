@@ -14,9 +14,10 @@ void garch_variance_pq(const double* __restrict parameters,
                        size_t p,
                        size_t q) {
 
+    const double omega = parameters[0];
     size_t max_lag = (p > q) ? p : q;
     for (size_t i = 1; i < max_lag; ++i) {
-        // sigma2[i] = parameters[0];
+        sigma2[i] = omega;
         for (size_t j = 1; j <= p; ++j) {
             if (i >= j) {
                 sigma2[i] += parameters[j] * residuals2[i - j];
@@ -31,7 +32,7 @@ void garch_variance_pq(const double* __restrict parameters,
     }
 
     for (size_t i = max_lag; i < n; ++i) {
-        // sigma2[i] = parameters[0];
+        sigma2[i] = omega;
         for (size_t j = 1; j <= p; ++j) {
             sigma2[i] += parameters[j] * residuals2[i - j];
         }

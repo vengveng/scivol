@@ -18,8 +18,8 @@
  * for maximum performance on the common case.
  *
  * Models supported:
- *   - GARCH(p,q)     + Normal, Student-t       (takes resid2)
- *   - GJR-GARCH(p,q) + Normal, Student-t       (takes raw residuals)
+ *   - GARCH(p,q)     + Normal, Student-t, Skew-t       (Skew-t takes raw residuals)
+ *   - GJR-GARCH(p,q) + Normal, Student-t, Skew-t       (takes raw residuals)
  */
 
 #include <stddef.h>
@@ -126,6 +126,51 @@ void log_garch_ll_grad_pq_studentt(const double *z,
 
 
 /* ═══════════════════════════════════════════════════════════════════════════
+ * GARCH(p,q) + Skew-t    (takes raw residuals)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+__attribute__((visibility("default"), hot))
+double log_garch_ll_pq_skewt(const double *z,
+                             const double *residuals,
+                             double       *sigma2,
+                             size_t n, size_t p, size_t q)
+{
+    double theta[MAX_LOG_K];
+    if (p == 1 && q == 1) {
+        pack_garch_skewt_11(z, theta);
+    } else {
+        pack_garch_skewt_pq(z, theta, p, q);
+    }
+    return garch_ll_pq_skewt(theta, residuals, sigma2, n, p, q);
+}
+
+__attribute__((visibility("default"), hot))
+void log_garch_ll_grad_pq_skewt(const double *z,
+                                const double *residuals,
+                                double       *sigma2,
+                                double       *grad_z,
+                                size_t n, size_t p, size_t q)
+{
+    const size_t K = 3 + p + q;  /* +2 for (nu, lam) */
+    double theta[MAX_LOG_K];
+    double grad_theta[MAX_LOG_K];
+    double J[MAX_LOG_KK];
+
+    if (p == 1 && q == 1) {
+        pack_garch_skewt_11(z, theta);
+        garch_ll_grad_11_skewt(theta, residuals, grad_theta, n);
+        jacobian_garch_skewt_11(theta, J);
+        transform_grad_11_skewt(grad_theta, J, grad_z);
+    } else {
+        pack_garch_skewt_pq(z, theta, p, q);
+        garch_ll_grad_pq_skewt(theta, residuals, sigma2, grad_theta, n, p, q);
+        jacobian_garch_skewt_pq(theta, J, p, q);
+        transform_grad_pq(grad_theta, J, grad_z, K);
+    }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
  * GJR-GARCH(p,q) + Normal    (takes raw residuals)
  * ═══════════════════════════════════════════════════════════════════════════ */
 
@@ -212,6 +257,53 @@ void log_gjr_garch_ll_grad_pq_studentt(const double *z,
         pack_gjr_garch_studentt_pq(z, theta, p, q);
         gjr_garch_ll_grad_pq_studentt(theta, residuals, sigma2, grad_theta, n, p, q);
         jacobian_gjr_garch_studentt_pq(theta, J, p, q);
+        transform_grad_pq(grad_theta, J, grad_z, K);
+    }
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * GJR-GARCH(p,q) + Skew-t    (takes raw residuals)
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+__attribute__((visibility("default"), hot))
+double log_gjr_garch_ll_pq_skewt(const double *z,
+                                 const double *residuals,
+                                 double       *sigma2,
+                                 size_t n, size_t p, size_t q)
+{
+    double theta[MAX_LOG_K];
+    if (p == 1 && q == 1) {
+        pack_gjr_garch_skewt_11(z, theta);
+        gjr_garch_variance_11(theta, residuals, sigma2, n);
+    } else {
+        pack_gjr_garch_skewt_pq(z, theta, p, q);
+        gjr_garch_variance_pq(theta, residuals, sigma2, n, p, q);
+    }
+    return skewt_nll(residuals, sigma2, n, theta[1 + 2 * p + q], theta[2 + 2 * p + q]);
+}
+
+__attribute__((visibility("default"), hot))
+void log_gjr_garch_ll_grad_pq_skewt(const double *z,
+                                    const double *residuals,
+                                    double       *sigma2,
+                                    double       *grad_z,
+                                    size_t n, size_t p, size_t q)
+{
+    const size_t K = 3 + 2 * p + q;  /* +2 for (nu, lam) */
+    double theta[MAX_LOG_K];
+    double grad_theta[MAX_LOG_K];
+    double J[MAX_LOG_KK];
+
+    if (p == 1 && q == 1) {
+        pack_gjr_garch_skewt_11(z, theta);
+        gjr_garch_ll_grad_11_skewt(theta, residuals, sigma2, grad_theta, n);
+        jacobian_gjr_garch_skewt_11(theta, J);
+        transform_grad_gjr_11_skewt(grad_theta, J, grad_z);
+    } else {
+        pack_gjr_garch_skewt_pq(z, theta, p, q);
+        gjr_garch_ll_grad_pq_skewt(theta, residuals, sigma2, grad_theta, n, p, q);
+        jacobian_gjr_garch_skewt_pq(theta, J, p, q);
         transform_grad_pq(grad_theta, J, grad_z, K);
     }
 }
@@ -381,8 +473,6 @@ void log_arma_garch_nll_grad_pq_studentt(const double *z,
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * ARMA-GARCH(p,q) + Skew-t    (takes y, resid, sigma2, e0, h0)
- *
- * NLL only — no analytical gradient exists for Skew-t at all.
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 __attribute__((visibility("default"), hot))
@@ -406,4 +496,35 @@ double log_arma_garch_nll_pq_skewt(const double *z,
                                         (double *)e0, (double *)h0,
                                         n, p_ar, q_ma, P, Q);
     }
+}
+
+__attribute__((visibility("default"), hot))
+void log_arma_garch_nll_grad_pq_skewt(const double *z,
+                                       const double *y,
+                                       double       *resid,
+                                       double       *sigma2,
+                                       const double *e0,
+                                       const double *h0,
+                                       double       *grad_z,
+                                       size_t n,
+                                       size_t p_ar, size_t q_ma,
+                                       size_t P, size_t Q)
+{
+    const size_t K = 1 + p_ar + q_ma + 1 + P + Q + 2;  /* +2 for (nu, lam) */
+    double theta[MAX_LOG_K];
+    double grad_theta[MAX_LOG_K];
+    double J[MAX_LOG_KK];
+
+    if (p_ar == 1 && q_ma == 1 && P == 1 && Q == 1) {
+        pack_arma_garch_skewt_11(z, theta);
+        arma_garch_nll_grad_11_skewt(theta, y, resid, sigma2, grad_theta, h0[0], n);
+        jacobian_arma_garch_skewt_11(theta, J);
+    } else {
+        pack_arma_garch_skewt_pq(z, theta, p_ar, q_ma, P, Q);
+        arma_garch_nll_grad_pq_skewt(theta, y, resid, sigma2,
+                                      (double *)e0, (double *)h0,
+                                      grad_theta, n, p_ar, q_ma, P, Q);
+        jacobian_arma_garch_skewt_pq(theta, J, p_ar, q_ma, P, Q);
+    }
+    transform_grad_pq(grad_theta, J, grad_z, K);
 }

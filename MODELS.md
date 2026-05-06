@@ -23,13 +23,13 @@ Internal derivative validation is AD-oracle-based. The `FD` entries below descri
 |---|---|---|---|---|---|---|---|
 | **Normal** | C | C | C | C-fused | C-fused | Py+C | Yes |
 | **Student-t** | C | C | C | C-fused | C-fused | Py+C | Yes |
-| **Skew-t** | C | C | C | Py+C | Py+C | Py+C | Yes |
+| **Skew-t** | C | C | C | C-fused | C-fused | Py+C | Yes |
 
 **Notes:**
 - GARCH+Normal now has analytical log-Hessian coverage for trust-family log-mode optimization via C theta-space Hessians plus the exact transform chain rule.
 - GARCH+Student-t now has analytical runtime log-Hessian coverage via exact-enough theta-space Hessians plus the exact transform chain rule.
 - GARCH+Skew-t now has analytical gradient and Hessian coverage for all `(p,q)` orders in both constrained and log modes.
-- Skew-t log mode remains `Py+C` rather than fused because the unconstrained path still packs in Python before calling the C theta-space kernels.
+- GARCH+Skew-t now uses fused C log-space NLL and gradient wrappers for all `(p,q)` orders, while the runtime log-Hessian still uses the exact analytical `Py+C` transform of the theta-space Hessian.
 
 ---
 
@@ -39,14 +39,14 @@ Internal derivative validation is AD-oracle-based. The `FD` entries below descri
 |---|---|---|---|---|---|---|---|
 | **Normal** | C | C | C | C-fused | C-fused | Py+C | Yes |
 | **Student-t** | C | C | C | C-fused | C-fused | Py+C | Yes |
-| **Skew-t** | C | C | C | Py+C | Py+C | Py+C | Yes |
+| **Skew-t** | C | C | C | C-fused | C-fused | Py+C | Yes |
 
 **Notes:**
 - GJR-GARCH takes raw residuals (not squared) because the asymmetric indicator I(ε<0) needs the sign.
 - GJR-GARCH+Normal now has analytical log-Hessian coverage for trust-family log-mode optimization via C theta-space Hessians plus the exact transform chain rule.
 - GJR-GARCH+Student-t now has analytical runtime log-Hessian coverage via exact-enough theta-space Hessians plus the exact transform chain rule.
 - GJR-GARCH+Skew-t now has analytical gradient and Hessian coverage for all `(p,q)` orders in both constrained and log modes.
-- GJR-GARCH+Skew-t log mode remains `Py+C` rather than fused because the unconstrained path still packs in Python before calling the C theta-space kernels.
+- GJR-GARCH+Skew-t now uses fused C log-space NLL and gradient wrappers for all `(p,q)` orders, while the runtime log-Hessian still uses the exact analytical `Py+C` transform of the theta-space Hessian.
 - Stationarity constraint: α + 0.5γ + β < 1 (symmetric distributions) or α + γ·P(z<0) + β < 1 (asymmetric).
 
 ---
@@ -57,12 +57,12 @@ Internal derivative validation is AD-oracle-based. The `FD` entries below descri
 |---|---|---|---|---|---|---|---|
 | **Normal** | C | C | C | C-fused | C-fused | Py+C | Yes |
 | **Student-t** | C | C | C | C-fused | C-fused | Py+C | Yes |
-| **Skew-t** | C | C | C | C-fused | Py+C | Py+C | Yes |
+| **Skew-t** | C | C | C | C-fused | C-fused | Py+C | Yes |
 
 **Notes:**
 - ARMA-GARCH+Normal, ARMA-GARCH+Student-t, and ARMA-GARCH+Skew-t now have analytical gradient and Hessian coverage for all supported orders.
-- Fused log-space NLL functions work for all orders, dispatching to specialized `_11` C kernels when all orders equal 1.
-- ARMA-GARCH+Skew-t log mode uses a fused C NLL with analytical `Py+C` gradient/Hessian transforms because the fused skew-t gradient wrapper is not yet available.
+- Fused log-space NLL/gradient functions work for all orders, dispatching to specialized `_11` C kernels when all orders equal 1.
+- ARMA-GARCH+Skew-t log mode now uses fused C NLL/gradient wrappers for all supported orders, while the runtime log-Hessian remains the exact analytical `Py+C` transform of the theta-space Hessian.
 
 ---
 
@@ -116,13 +116,13 @@ Internal derivative validation is AD-oracle-based. The `FD` entries below descri
 |---|---|---|---|
 | GARCH + Normal | C-fused, all (p,q) | C-fused, all (p,q) | Py+C (all (p,q)) |
 | GARCH + Student-t | C-fused, all (p,q) | C-fused, all (p,q) | Py+C (all (p,q)) |
-| GARCH + Skew-t | Py+C | Py+C (all (p,q)) | Py+C (all (p,q)) |
+| GARCH + Skew-t | C-fused, all (p,q) | C-fused, all (p,q) | Py+C (all (p,q)) |
 | GJR-GARCH + Normal | C-fused, all (p,q) | C-fused, all (p,q) | Py+C (all (p,q)) |
 | GJR-GARCH + Student-t | C-fused, all (p,q) | C-fused, all (p,q) | Py+C (all (p,q)) |
-| GJR-GARCH + Skew-t | Py+C | Py+C (all (p,q)) | Py+C (all (p,q)) |
+| GJR-GARCH + Skew-t | C-fused, all (p,q) | C-fused, all (p,q) | Py+C (all (p,q)) |
 | ARMA-GARCH + Normal | C-fused, all orders | C-fused, all orders | Py+C (all orders) |
 | ARMA-GARCH + Student-t | C-fused, all orders | C-fused, all orders | Py+C (all orders) |
-| ARMA-GARCH + Skew-t | C-fused, all orders | Py+C (all orders) | Py+C (all orders) |
+| ARMA-GARCH + Skew-t | C-fused, all orders | C-fused, all orders | Py+C (all orders) |
 | ARMA + Normal | C-fused, all (p,q) | C-fused, all (p,q) | Py+C (all (p,q)) |
 
 ### Development Validation Coverage
@@ -141,5 +141,4 @@ Finite differences remain backup-only for internal development, and primarily ma
 
 ### Gaps (Missing Analytical Implementations)
 
-1. **Fused skew-t log wrappers**: `GARCH+SkewT` and `GJR-GARCH+SkewT` now have exact analytical runtime derivatives, but their log-mode path is still `Py+C` rather than a single fused C wrapper.
-2. **Fused ARMA-GARCH skew-t derivatives**: `ARMA-GARCH+SkewT` already has analytical runtime gradients/Hessians, but the fused log-space wrapper is still NLL-only; gradient and Hessian promotion there still relies on Python-side transforms plus the C theta-space kernels.
+1. **Fused ARMA-GARCH skew-t derivatives**: `ARMA-GARCH+SkewT` already has analytical runtime gradients/Hessians, but the fused log-space wrapper is still NLL-only; gradient and Hessian promotion there still relies on Python-side transforms plus the C theta-space kernels.

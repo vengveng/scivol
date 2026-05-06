@@ -75,6 +75,8 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
         h0_ptr = _as_cptr(h0_arr)
         grad_vec = np.zeros(n_params, dtype=np.float64)
         grad_ptr = _as_cptr(grad_vec)
+        grad_z_vec = np.zeros(n_params, dtype=np.float64)
+        grad_z_ptr = _as_cptr(grad_z_vec)
         hess_mat = np.zeros((n_params, n_params), dtype=np.float64)
         hess_ptr = _as_cptr(hess_mat)
         
@@ -167,7 +169,6 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
             # =========================================================
             # LOG MODE: Fused C log-space NLL + analytical z-grad/Hess
             # =========================================================
-            K = n_params
             p_scaler = 2
             
             def obj_log(z: NDArray[np.float64]) -> float:
@@ -177,9 +178,11 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
                 ) * p_scaler
             
             def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                theta_local = pack_arma_garch_skewt(z, p_ar, q_ma, P_arch, Q_garch)
-                grad_theta = call_grad(theta_local) * p_scaler
-                return jacobian_arma_garch_skewt(theta_local, p_ar, q_ma, P_arch, Q_garch).T @ grad_theta
+                _core._log_arma_garch_nll_grad_pq_skewt(
+                    _as_cptr(z), y_ptr, resid_ptr, sigma2_ptr,
+                    e0_ptr, h0_ptr, grad_z_ptr, n, p_ar, q_ma, P_arch, Q_garch
+                )
+                return grad_z_vec.copy() * p_scaler
             
             def analytical_hess_z(z: NDArray[np.float64]) -> NDArray[np.float64]:
                 theta_local = pack_arma_garch_skewt(z, p_ar, q_ma, P_arch, Q_garch)
@@ -189,9 +192,6 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
                     theta_local, grad_theta, hess_theta, p_ar, q_ma, P_arch, Q_garch
                 )
 
-            def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                return analytical_hess_z(z)
-            
             z0 = unpack_arma_garch_skewt(start, p_ar, q_ma, P_arch, Q_garch)
             
             if solver.lower() == "nelder-mead":
@@ -205,7 +205,7 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
                 res.fun *= n
             elif solver.lower() in ["trust", "trust-constr", "trust-exact"]:
                 res = minimize(lambda z: obj_log(z) / n, z0, method="trust-exact",
-                              jac=lambda z: jac_log(z) / n, hess=lambda z: hess_log(z) / n,
+                              jac=lambda z: jac_log(z) / n, hess=lambda z: analytical_hess_z(z) / n,
                               tol=1e-12, options={"disp": verbose, "maxiter": 5000})
                 res.fun *= n
             else:

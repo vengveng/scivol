@@ -6,6 +6,12 @@
 #include <float.h>
 #include "math_and_helpers.h"
 
+double skewt_nll(const double* resid,
+                 const double* sigma2,
+                 const size_t n,
+                 const double nu,
+                 const double lam);
+
 // ----------------------
 // --- Local Helpers ---
 // ----------------------
@@ -1205,6 +1211,34 @@ void garch_ll_hess_pq_studentt(const double * __restrict params,
 // ----------------------
 // --- GARCH | Skew-t ---
 // ----------------------
+
+__attribute__((visibility("default"), hot, flatten))
+double garch_ll_pq_skewt(
+    const double * __restrict params,
+    const double * __restrict residuals,
+    double       * __restrict sigma2,
+    size_t n,
+    size_t p,
+    size_t q)
+{
+    const double omega = params[0];
+    const double *alpha = params + 1;
+    const double *beta = params + 1 + p;
+
+    for (size_t t = 1; t < n; ++t) {
+        double h_t = omega;
+        for (size_t j = 1; j <= p && t >= j; ++j) {
+            const double e_lag = residuals[t - j];
+            h_t += alpha[j - 1] * e_lag * e_lag;
+        }
+        for (size_t k = 1; k <= q && t >= k; ++k) {
+            h_t += beta[k - 1] * sigma2[t - k];
+        }
+        sigma2[t] = h_t;
+    }
+
+    return skewt_nll(residuals, sigma2, n, params[1 + p + q], params[2 + p + q]);
+}
 
 __attribute__((visibility("default"), hot, flatten))
 void garch_ll_grad_pq_skewt(

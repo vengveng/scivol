@@ -1106,6 +1106,25 @@ def _log_garch_ll_grad_pq_studentt(
     """Log-space GARCH(p,q) + Student-t gradient. Fused pack → grad → J^T transform."""
     ...
 
+def _log_garch_ll_pq_skewt(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size, p: _Size, q: _Size,
+) -> float:
+    """Log-space GARCH(p,q) + Skew-t NLL. Fused pack → NLL."""
+    ...
+
+def _log_garch_ll_grad_pq_skewt(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size, p: _Size, q: _Size,
+) -> None:
+    """Log-space GARCH(p,q) + Skew-t gradient. Fused pack → grad → J^T transform."""
+    ...
+
 def _log_gjr_garch_ll_pq_normal(
     z_ptr: _IntPtr,
     resid_ptr: _IntPtr,
@@ -1142,6 +1161,25 @@ def _log_gjr_garch_ll_grad_pq_studentt(
     n: _Size, p: _Size, q: _Size,
 ) -> None:
     """Log-space GJR-GARCH(p,q) + Student-t gradient. Fused pack → grad → J^T transform."""
+    ...
+
+def _log_gjr_garch_ll_pq_skewt(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size, p: _Size, q: _Size,
+) -> float:
+    """Log-space GJR-GARCH(p,q) + Skew-t NLL. Fused pack → NLL."""
+    ...
+
+def _log_gjr_garch_ll_grad_pq_skewt(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size, p: _Size, q: _Size,
+) -> None:
+    """Log-space GJR-GARCH(p,q) + Skew-t gradient. Fused pack → grad → J^T transform."""
     ...
 
 def _log_arma_nll_pq_normal(
@@ -1246,6 +1284,21 @@ def _log_arma_garch_nll_pq_skewt(
     P_arch: _Size, Q_garch: _Size,
 ) -> float:
     """Log-space ARMA-GARCH + Skew-t NLL. Fused pack → NLL."""
+    ...
+
+def _log_arma_garch_nll_grad_pq_skewt(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_garch: _Size,
+) -> None:
+    """Log-space ARMA-GARCH + Skew-t gradient."""
     ...
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -26,6 +26,7 @@ from .transforms import (
     pack_garch_skewt, unpack_garch_skewt, jacobian_garch_skewt,
     compute_se_via_logspace,
     log_hessian_garch,
+    pack_garch_skewt_c,
 )
 
 # ------------------------------------------------------------------ #
@@ -258,45 +259,53 @@ def _build(p: int, q: int) -> Routine:
             # =========================================================
             # LOG MODE: Unconstrained optimization with C-accelerated transforms
             # =========================================================
-            from .transforms import pack_garch_skewt_c
-            
             p_scaler = 2  # Scale factor for numerical stability
             
             # Pre-allocate buffer for C transforms
             _theta_buf = np.empty(K, dtype=np.float64)
             
-            def pack(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                """C-accelerated transform z -> theta."""
+            def theta_from_z(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                """C-accelerated transform z -> theta, returned as an owned array."""
                 pack_garch_skewt_c(z, _theta_buf, p, q)
-                return _theta_buf
-            
-            def unpack(theta: NDArray[np.float64]) -> NDArray[np.float64]:
-                """Transform constrained theta to unconstrained z."""
-                return unpack_garch_skewt(theta, p, q)
+                return _theta_buf.copy()
             
             def obj_log(z: NDArray[np.float64]) -> float:
-                """Objective function in z-space (C-accelerated)."""
-                pack_garch_skewt_c(z, _theta_buf, p, q)
-                return objective(_theta_buf) * n * p_scaler  # Unscale then rescale
+                """Objective function in z-space via fused C wrapper."""
+                return _core._log_garch_ll_pq_skewt(
+                    _as_cptr(z),
+                    _as_cptr(resid),
+                    _as_cptr(sigma2),
+                    n,
+                    p,
+                    q,
+                ) * p_scaler
             
             def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                """Gradient in z-space: ∇_z = Jᵀ ∇_θ."""
-                pack_garch_skewt_c(z, _theta_buf, p, q)
-                grad_theta = gradient(_theta_buf) * n * p_scaler
-                J = jacobian_garch_skewt(_theta_buf, p, q)
-                return J.T @ grad_theta
+                """Gradient in z-space via fused C wrapper."""
+                _core._log_garch_ll_grad_pq_skewt(
+                    _as_cptr(z),
+                    _as_cptr(resid),
+                    _as_cptr(sigma2),
+                    grad_ptr,
+                    n,
+                    p,
+                    q,
+                )
+                return grad_vec.copy() * p_scaler
             
-            def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                """Analytical Hessian in z-space."""
-                pack_garch_skewt_c(z, _theta_buf, p, q)
-                theta_local = _theta_buf.copy()
+            def analytical_hess_z(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                theta_local = theta_from_z(z)
                 grad_theta = gradient(theta_local) * n
                 hess_theta = hessian(theta_local) * n
-                return log_hessian_garch(theta_local, grad_theta, hess_theta, p, q, dist="skewt") * p_scaler
+                return log_hessian_garch(theta_local, grad_theta, hess_theta, p, q, dist="skewt")
+
+            def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                """Analytical Hessian in z-space."""
+                return analytical_hess_z(z) * p_scaler
             
             # Initial values in theta-space, then transform to z-space
             theta0 = np.concatenate((vol.default_start(resid), dens.default_start(resid)))
-            z0 = unpack(theta0)
+            z0 = unpack_garch_skewt(theta0, p, q)
             
             if solver.lower() == "nelder-mead":
                 # Scale fatol by objective scaling factor (n * p_scaler) for proper convergence
@@ -342,7 +351,7 @@ def _build(p: int, q: int) -> Routine:
                 raise ValueError(f"Unknown solver '{solver}'")
             
             # Transform back to theta-space
-            theta_hat = pack(res.x)
+            theta_hat = theta_from_z(res.x)
             res.x = theta_hat
             res.fun = res.fun / p_scaler  # Unscale
             
@@ -354,13 +363,6 @@ def _build(p: int, q: int) -> Routine:
             # Compute final sigma2
             _garch_variance(theta_hat[:n_garch], resid2, sigma2, p, q)
             
-            def analytical_hess_z(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                pack_garch_skewt_c(z, _theta_buf, p, q)
-                theta_local = _theta_buf.copy()
-                grad_theta = gradient(theta_local) * n
-                hess_theta = hessian(theta_local) * n
-                return log_hessian_garch(theta_local, grad_theta, hess_theta, p, q, dist="skewt")
-
             def nll_theta_fn(theta: NDArray[np.float64]) -> float:
                 return objective(theta) * n  # objective returns NLL/n
             

@@ -25,6 +25,7 @@ from .transforms import (
     pack_gjr_garch_skewt, unpack_gjr_garch_skewt, jacobian_gjr_garch_skewt,
     compute_se_via_logspace,
     log_hessian_gjr_garch,
+    pack_gjr_garch_skewt_c,
 )
 
 _CACHE: Dict[Tuple[int, int], Routine] = {}
@@ -203,27 +204,43 @@ def _build(p: int, q: int) -> Routine:
             )
 
         else:
-            from .transforms import pack_gjr_garch_skewt_c
-
             p_scaler = 2
             _theta_buf = np.empty(K, dtype=np.float64)
 
-            def obj_log(z: NDArray[np.float64]) -> float:
+            def theta_from_z(z: NDArray[np.float64]) -> NDArray[np.float64]:
                 pack_gjr_garch_skewt_c(z, _theta_buf, p, q)
-                return objective(_theta_buf) * n * p_scaler
+                return _theta_buf.copy()
+
+            def obj_log(z: NDArray[np.float64]) -> float:
+                return _core._log_gjr_garch_ll_pq_skewt(
+                    _as_cptr(z),
+                    _as_cptr(resid_c),
+                    _as_cptr(sigma2),
+                    n,
+                    p,
+                    q,
+                ) * p_scaler
 
             def jac_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                pack_gjr_garch_skewt_c(z, _theta_buf, p, q)
-                grad_theta = gradient(_theta_buf) * n * p_scaler
-                J = jacobian_gjr_garch_skewt(_theta_buf, p, q)
-                return J.T @ grad_theta
+                _core._log_gjr_garch_ll_grad_pq_skewt(
+                    _as_cptr(z),
+                    _as_cptr(resid_c),
+                    _as_cptr(sigma2),
+                    grad_ptr,
+                    n,
+                    p,
+                    q,
+                )
+                return grad_vec.copy() * p_scaler
 
-            def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                pack_gjr_garch_skewt_c(z, _theta_buf, p, q)
-                theta_local = _theta_buf.copy()
+            def analytical_hess_z(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                theta_local = theta_from_z(z)
                 grad_theta = gradient(theta_local) * n
                 hess_theta = hessian(theta_local) * n
-                return log_hessian_gjr_garch(theta_local, grad_theta, hess_theta, p, q, dist="skewt") * p_scaler
+                return log_hessian_gjr_garch(theta_local, grad_theta, hess_theta, p, q, dist="skewt")
+
+            def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                return analytical_hess_z(z) * p_scaler
 
             theta0 = np.concatenate((vol.default_start(resid), dens.default_start(resid)))
             z0 = unpack_gjr_garch_skewt(theta0, p, q)
@@ -254,8 +271,7 @@ def _build(p: int, q: int) -> Routine:
             else:
                 raise ValueError(f"Unknown solver '{solver}'")
 
-            theta_hat = pack_gjr_garch_skewt_c(res.x, _theta_buf, p, q) or _theta_buf.copy()
-            theta_hat = _theta_buf.copy()
+            theta_hat = theta_from_z(res.x)
             res.x = theta_hat
             res.fun = res.fun / p_scaler
 
@@ -267,13 +283,6 @@ def _build(p: int, q: int) -> Routine:
 
             def nll_theta_fn(theta: NDArray[np.float64]) -> float:
                 return objective(theta) * n
-
-            def analytical_hess_z(z: NDArray[np.float64]) -> NDArray[np.float64]:
-                pack_gjr_garch_skewt_c(z, _theta_buf, p, q)
-                theta_local = _theta_buf.copy()
-                grad_theta = gradient(theta_local) * n
-                hess_theta = hessian(theta_local) * n
-                return log_hessian_gjr_garch(theta_local, grad_theta, hess_theta, p, q, dist="skewt")
 
             H_theta, cov_matrix = compute_se_via_logspace(
                 theta_hat=theta_hat,
