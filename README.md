@@ -1,6 +1,23 @@
 # scivol
 
-Volatility modeling in Python. GARCH-family models with C extensions for speed.
+Fast, accurate volatility models for time series in Python.
+
+scivol is a Python library for likelihood-based volatility modeling with
+GARCH-family models. It provides composable model specifications such as
+`GARCH(1, 1) + StudentT()` and `ARMA(1, 1) + GARCH(1, 1) + SkewT()`. scivol
+uses analytical gradients and Hessians for maximum speed and accuracy, and
+verifies those derivatives against automatic differentiation. It also provides MLE and 
+QMLE estimation, diagnostic tests and automatic model selection.
+
+## Supported models
+
+- Univariate volatility models: `GARCH(p, q)`, `GJRGARCH(p, q)`
+- Conditional densities: `Normal()`, `StudentT()`, `SkewT()`
+- Mean model: `ARMA(p, q)` (standalone with Normal errors)
+- Composite univariate specifications: volatility-only models and
+  `ARMA(p, q) + GARCH(P, Q)` with any supported density
+- Multivariate correlation model: `DCC(1, 1)` with Gaussian correlation dynamics
+- Automatic model selection helpers: `AutoVol()` and `AutoDensity()`
 
 ## Install
 
@@ -66,7 +83,7 @@ beta[1]            0.9412      0.0092    102.30    <0.001
 
                           Model Diagnostics                           
 ──────────────────────────────────────────────────────────────────────
-Persistence (α + β):      0.993500
+Persistence (alpha + beta): 0.993500
 Stationary:               Yes
 Unconditional Variance:   1.900000e-04
 Half-life (periods):      106.3
@@ -121,32 +138,32 @@ spec = normal >> garch     # __rlshift__
 
 Conditional variance:
 
-```
-σ²_t = ω + Σᵢ αᵢ·ε²_{t-i} + Σⱼ βⱼ·σ²_{t-j}
-```
+$$
+\sigma_t^2 = \omega + \sum_i \alpha_i \varepsilon_{t-i}^2 + \sum_j \beta_j \sigma_{t-j}^2
+$$
 
-Stationary when Σα + Σβ < 1.
+Stationary when $\sum \alpha + \sum \beta < 1$.
 
 ```python
 spec = GARCH(1, 1)  # most common
 spec = GARCH(2, 1)
 ```
 
-Parameters: `omega` (ω > 0), `alpha[1:p]` (ARCH terms), `beta[1:q]` (GARCH terms).
+Parameters: `omega` ($\omega > 0$), `alpha[1:p]` (ARCH terms), `beta[1:q]` (GARCH terms).
 
 ### GJRGARCH(p, q)
 
 Adds a leverage term so that negative shocks raise volatility more than positive shocks of the same size:
 
-```
-σ²_t = ω + Σᵢ (αᵢ + γᵢ·I(ε_{t-i}<0))·ε²_{t-i} + Σⱼ βⱼ·σ²_{t-j}
-```
+$$
+\sigma_t^2 = \omega + \sum_i \left(\alpha_i + \gamma_i I(\varepsilon_{t-i} < 0)\right)\varepsilon_{t-i}^2 + \sum_j \beta_j \sigma_{t-j}^2
+$$
 
-A negative shock contributes (α + γ)·ε² to the next period's variance; a positive shock contributes α·ε².
+A negative shock contributes $(\alpha + \gamma)\varepsilon^2$ to the next period's variance; a positive shock contributes $\alpha \varepsilon^2$.
 
 Stationarity:
-- Symmetric densities (Normal, Student-t): α + 0.5·γ + β < 1
-- Asymmetric densities (Skew-t): α + γ·P(z < 0) + β < 1
+- Symmetric densities (Normal, Student-t): $\alpha + 0.5\gamma + \beta < 1$
+- Asymmetric densities (Skew-t): $\alpha + \gamma P(z < 0) + \beta < 1$
 
 ```python
 spec = GJRGARCH(1, 1) + StudentT()
@@ -176,9 +193,12 @@ Result access focuses on the economically useful correlation objects:
 
 ### ARMA(p, q)
 
-Conditional mean. Currently limited to ARMA(1,1).
+Conditional mean. Standalone `ARMA(p, q)` is supported with Normal errors,
+and `ARMA(p, q) + GARCH(P, Q)` is supported for composite mean-volatility
+models.
 
 ```python
+spec = ARMA(2, 1)                 # standalone ARMA with Normal errors
 spec = ARMA(1, 1) + GARCH(1, 1)
 ```
 
@@ -188,11 +208,11 @@ Gaussian density. No extra parameters. Default when none is specified.
 
 ### StudentT()
 
-Heavier tails than Normal. One extra parameter: `nu` (ν > 2). Lower ν means fatter tails; as ν grows, the distribution approaches Normal.
+Heavier tails than Normal. One extra parameter: `nu` ($\nu > 2$). Lower $\nu$ means fatter tails; as $\nu$ grows, the distribution approaches Normal.
 
 ### SkewT()
 
-Hansen's skewed Student-t. Two extra parameters: `nu` (ν > 2) and `lambda` (−1 < λ < 1). λ = 0 gives a symmetric Student-t; λ < 0 shifts weight to the left tail.
+Hansen's skewed Student-t. Two extra parameters: `nu` ($\nu > 2$) and `lambda` ($-1 < \lambda < 1$). $\lambda = 0$ gives a symmetric Student-t; $\lambda < 0$ shifts weight to the left tail.
 
 ---
 
@@ -226,11 +246,11 @@ Solvers:
 
 | Parameter | Constraint | Transform |
 |-----------|------------|-----------|
-| ω | ω > 0 | softplus(z) |
-| α, β | > 0, sum < 1 | softmax |
-| γ (GJR) | γ > 0 | 4-class softmax |
-| ν | ν > 2 | 2 + softplus(z) |
-| λ | −1 < λ < 1 | tanh(z) |
+| $\omega$ | $\omega > 0$ | `softplus(z)` |
+| $\alpha, \beta$ | $> 0$, sum $< 1$ | `softmax` |
+| $\gamma$ (GJR) | $\gamma > 0$ | `4-class softmax` |
+| $\nu$ | $\nu > 2$ | `2 + softplus(z)` |
+| $\lambda$ | $-1 < \lambda < 1$ | `tanh(z)` |
 
 This guarantees stationarity by construction and avoids boundary problems during optimization.
 
@@ -314,9 +334,9 @@ result.selection_summary()
 
 The default score is:
 
-```
-Score = AIC + diagnostic_weight × n_failed_tests
-```
+$$
+\mathrm{Score} = \mathrm{AIC} + \mathrm{diagnostic\_weight} \times n_{\mathrm{failed\_tests}}
+$$
 
 where `n_failed_tests` counts failures of the DGT and Ljung-Box tests. Default `diagnostic_weight` is 50.
 
@@ -430,7 +450,7 @@ gp.omega                 # constant
 gp.alpha                 # ARCH coefficients (array)
 gp.gamma                 # leverage coefficients (GJR-GARCH only)
 gp.beta                  # GARCH coefficients (array)
-gp.persistence           # α+β (GARCH) or α+0.5γ+β (GJR-GARCH)
+gp.persistence           # alpha+beta (GARCH) or alpha+0.5*gamma+beta (GJR-GARCH)
 
 dp = result.dist_params
 dp.nu                    # degrees of freedom (StudentT, SkewT)
@@ -449,9 +469,9 @@ result.hqic
 ### Conditional variances and residuals
 
 ```python
-result.sigma2        # σ²_t
-result.volatility    # σ_t
-result.std_resid     # ε_t / σ_t
+result.sigma2        # sigma^2_t
+result.volatility    # sigma_t
+result.std_resid     # epsilon_t / sigma_t
 ```
 
 ### Standard errors
@@ -609,7 +629,7 @@ gjr = GJRGARCH(auto=True)
 
 gjr.n_params              # 1 + 2p + q
 gjr.fitted_params         # includes 'gamma'
-gjr.persistence()         # α + 0.5·γ + β
+gjr.persistence()         # alpha + 0.5*gamma + beta
 gjr.persistence(p_neg=0.6)
 ```
 
@@ -762,7 +782,7 @@ result = spec.fit(returns)
 
 gp = result.garch_params
 h_next = gp.omega + gp.alpha[0] * returns[-1]**2 + gp.beta[0] * result.sigma2[-1]
-print(f"GARCH forecast σ: {np.sqrt(h_next):.6f}")
+print(f"GARCH forecast sigma: {np.sqrt(h_next):.6f}")
 
 # GJR-GARCH(1,1)
 spec_gjr = GJRGARCH(1, 1) + Normal()
@@ -774,15 +794,5 @@ h_next = (gp.omega
     + gp.alpha[0] * returns[-1]**2
     + gp.gamma[0] * indicator * returns[-1]**2
     + gp.beta[0] * result_gjr.sigma2[-1])
-print(f"GJR forecast σ:   {np.sqrt(h_next):.6f}")
+print(f"GJR forecast sigma:   {np.sqrt(h_next):.6f}")
 ```
-
----
-
-## License
-
-[Add license information]
-
-## Citation
-
-[Add citation information]
