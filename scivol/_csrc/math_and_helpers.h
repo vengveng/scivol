@@ -5,6 +5,19 @@
 #include <stddef.h>
 #include <math.h>
 
+#if defined(_MSC_VER)
+#  ifndef __attribute__
+#    define __attribute__(x)
+#  endif
+#  ifndef restrict
+#    define restrict __restrict
+#  endif
+#endif
+
+#ifndef M_PI
+#  define M_PI 3.14159265358979323846
+#endif
+
 #if defined(__GNUC__) || defined(__clang__)
 #  define VLK_FORCE_INLINE static inline __attribute__((always_inline))
 #else

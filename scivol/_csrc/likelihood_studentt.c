@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <math.h>
+#include "math_and_helpers.h"
 
 /* ============================================================================
  * Student-t Log-Likelihood

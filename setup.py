@@ -10,10 +10,16 @@ def _compile_args() -> list[str]:
     if sys.platform.startswith("win"):
         return ["/O2", "/fp:fast"]
 
-    args = ["-O3", "-ffast-math", "-ffp-contract=fast", "-funroll-loops"]
-    if os.environ.get("SCIVOL_PORTABLE_BUILD") != "1":
-        args.append("-march=native")
-    return args
+    if os.environ.get("SCIVOL_PORTABLE_BUILD") == "1":
+        return ["-O3"]
+
+    return ["-O3", "-ffast-math", "-ffp-contract=fast", "-funroll-loops", "-march=native"]
+
+
+def _libraries() -> list[str]:
+    if sys.platform.startswith("win"):
+        return []
+    return ["m"]
 
 
 ext_modules = [
@@ -38,6 +44,7 @@ ext_modules = [
         ],
         include_dirs=["scivol/_csrc"],
         extra_compile_args=_compile_args(),
+        libraries=_libraries(),
     )
 ]
 

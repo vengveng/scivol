@@ -1,6 +1,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <math.h>
+#include "math_and_helpers.h"
 
 __attribute__((visibility("default"), hot, flatten))
 double normal_ll(const double* __restrict sigma2, 

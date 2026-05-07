@@ -3,6 +3,13 @@
 #define SCIVOL_CORE_H
 
 #include <stddef.h>   /* size_t */
+
+#if defined(_MSC_VER)
+#  ifndef __attribute__
+#    define __attribute__(x)
+#  endif
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

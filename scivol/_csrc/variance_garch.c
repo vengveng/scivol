@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <math.h>
+#include "math_and_helpers.h"
 
 // gcc -O3 -ffast-math -o lib/scivol_core.so core/scivol_core.c -shared -fPIC -lm
 

@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#include "math_and_helpers.h"
 
 /* ========================================================================== */
 /* GJR-GARCH(1,1) OPG and FULL Analytical Hessian (optimized, Normal)         */
