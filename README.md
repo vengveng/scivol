@@ -11,6 +11,7 @@ pip install scivol
 Prebuilt wheels are the default installation path on supported platforms.
 If no compatible wheel is available, `pip` falls back to building from the
 source distribution, which requires a working C toolchain.
+`tqdm` ships as a normal dependency, so progress bars are available out of the box.
 
 ## Quick start
 
@@ -24,6 +25,15 @@ returns = np.random.randn(1000) * 0.01
 spec = GARCH(1, 1) + Normal()
 result = spec.fit(returns)
 result.summary()
+```
+
+For workflows that iterate over many fits, progress bars are enabled by default.
+You can disable them globally:
+
+```python
+import scivol
+
+scivol.settings.show_progress = False
 ```
 
 Output:

@@ -127,9 +127,11 @@ class TestSettingsSingleton:
 
     def setup_method(self):
         settings.names.reset()
+        settings.show_progress = True
 
     def teardown_method(self):
         settings.names.reset()
+        settings.show_progress = True
 
     def test_singleton_accessible(self):
         assert scivol.settings is settings
@@ -137,6 +139,13 @@ class TestSettingsSingleton:
     def test_set_and_read_back(self):
         scivol.settings.names.gamma = "zeta"
         assert scivol.settings.names.resolve("gamma[1]") == "zeta[1]"
+
+    def test_show_progress_defaults_to_true(self):
+        assert scivol.settings.show_progress is True
+
+    def test_show_progress_can_be_disabled(self):
+        scivol.settings.show_progress = False
+        assert scivol.settings.show_progress is False
 
     def test_repr(self):
         assert "Settings" in repr(settings)

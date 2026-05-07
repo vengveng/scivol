@@ -2,36 +2,15 @@
 """
 Progress bar utilities for scivol.
 
-Provides a thin wrapper around tqdm that gracefully falls back to a no-op
-iterator when tqdm is not installed.  Also provides a context manager for
-integrating tqdm with joblib parallel execution.
+Provides a thin wrapper around tqdm plus a context manager for integrating
+tqdm with joblib parallel execution.
 """
 from __future__ import annotations
 
 import contextlib
-import warnings
 from typing import Any, Iterator, Optional
 
-try:
-    from tqdm.auto import tqdm as _tqdm
-
-    HAS_TQDM = True
-except ImportError:  # pragma: no cover
-    HAS_TQDM = False
-    _tqdm = None  # type: ignore[assignment]
-
-_WARNED_ONCE = False
-
-
-def _warn_no_tqdm() -> None:
-    """Emit a one-time warning when tqdm is requested but not installed."""
-    global _WARNED_ONCE
-    if not _WARNED_ONCE:
-        warnings.warn(
-            "Install tqdm for progress bars: pip install tqdm",
-            stacklevel=3,
-        )
-        _WARNED_ONCE = True
+from tqdm.auto import tqdm as _tqdm
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +26,7 @@ def get_progress_bar(
     disable: bool = False,
 ) -> Any:
     """
-    Wrap *iterable* in a tqdm progress bar if available.
+    Wrap *iterable* in a tqdm progress bar.
 
     Parameters
     ----------
@@ -63,16 +42,12 @@ def get_progress_bar(
     Returns
     -------
     iterable
-        Either a ``tqdm`` wrapper or the original iterable.
+        Either a ``tqdm`` wrapper or the original iterable when disabled.
     """
     if disable:
         return iterable
 
-    if HAS_TQDM:
-        return _tqdm(iterable, total=total, desc=desc)
-
-    _warn_no_tqdm()
-    return iterable
+    return _tqdm(iterable, total=total, desc=desc)
 
 
 @contextlib.contextmanager
@@ -90,16 +65,13 @@ def tqdm_joblib(
         with tqdm_joblib(total=100, desc="Fitting"):
             results = Parallel(n_jobs=4)(delayed(fn)(x) for x in tasks)
 
-    When *disable* is True or tqdm is not installed the context manager
-    is a no-op.
+    When *disable* is True the context manager is a no-op.
     """
-    if disable or not HAS_TQDM:
-        if not disable and not HAS_TQDM:
-            _warn_no_tqdm()
+    if disable:
         yield
         return
 
-    import joblib.parallel
+    import joblib.parallel  # pyright: ignore[reportMissingImports]
 
     pbar = _tqdm(total=total, desc=desc)
 

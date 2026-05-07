@@ -14,6 +14,7 @@ dependencies    = [
     "numpy>=1.22",
     "scipy>=1.7",
     "joblib>=1.2",
+    "tqdm>=4.0",
 ]
 keywords = ["volatility", "garch", "gjr-garch", "econometrics", "time-series", "finance"]
 classifiers = [
@@ -39,8 +40,7 @@ Repository = "https://github.com/vengveng/scivol"
 Issues = "https://github.com/vengveng/scivol/issues"
 
 [project.optional-dependencies]
-progress = ["tqdm>=4.0"]
-dev = ["jax", "tqdm>=4.0"]
+dev = ["jax"]
 
 [tool.setuptools]
 packages = [
