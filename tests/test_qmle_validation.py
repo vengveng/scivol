@@ -16,7 +16,7 @@ import pytest
 import numpy as np
 from numpy.testing import assert_allclose, assert_array_less
 
-from scivol import GARCH, Normal, StudentT, SkewT
+from scivol import ARMA, EGARCH, GARCH, GJRGARCH, Normal, StudentT, SkewT
 
 
 # =============================================================================
@@ -56,6 +56,50 @@ def generate_garch_studentt_data(n: int, omega: float, alpha: float, beta: float
         z = rng.standard_t(df=nu) * scale  # standardized to unit variance
         y[t] = np.sqrt(sigma2[t]) * z
     
+    return y
+
+
+def generate_arma_garch_data(
+    n: int,
+    c: float,
+    phi: np.ndarray,
+    theta: np.ndarray,
+    omega: float,
+    alpha: np.ndarray,
+    beta: np.ndarray,
+    seed: int = 42,
+) -> np.ndarray:
+    """Generate ARMA(p,q)-GARCH(P,Q) data with Normal innovations."""
+    rng = np.random.default_rng(seed)
+
+    p_ar = len(phi)
+    q_ma = len(theta)
+    P_arch = len(alpha)
+    Q_garch = len(beta)
+    max_lag = max(p_ar, q_ma, P_arch, Q_garch, 1)
+
+    y = np.zeros(n)
+    resid = np.zeros(n)
+    sigma2 = np.zeros(n)
+    sigma2[:max_lag] = omega / (1.0 - np.sum(alpha) - np.sum(beta))
+
+    for t in range(max_lag, n):
+        mu_t = c
+        for i in range(p_ar):
+            mu_t += phi[i] * y[t - 1 - i]
+        for j in range(q_ma):
+            mu_t += theta[j] * resid[t - 1 - j]
+
+        h_t = omega
+        for i in range(P_arch):
+            h_t += alpha[i] * resid[t - 1 - i] ** 2
+        for j in range(Q_garch):
+            h_t += beta[j] * sigma2[t - 1 - j]
+
+        sigma2[t] = h_t
+        resid[t] = np.sqrt(max(h_t, 1e-12)) * rng.standard_normal()
+        y[t] = mu_t + resid[t]
+
     return y
 
 
@@ -289,3 +333,61 @@ class TestQMLENumericalStability:
         
         assert result.std_errors_robust is not None
         assert np.all(np.isfinite(result.std_errors_robust))
+
+
+class TestARMAGARCHQMLE:
+    """Generic-order ARMA-GARCH QMLE regression checks."""
+
+    @pytest.fixture
+    def arma_garch_data(self):
+        return generate_arma_garch_data(
+            1800,
+            c=0.01,
+            phi=np.array([0.25, -0.10]),
+            theta=np.array([0.20]),
+            omega=1e-6,
+            alpha=np.array([0.08]),
+            beta=np.array([0.55, 0.25]),
+            seed=999,
+        )
+
+    def test_generic_order_qmle_returns_robust_se(self, arma_garch_data):
+        spec = ARMA(2, 1) + GARCH(1, 2) + Normal()
+        result = spec.fit(arma_garch_data, method="qmle", solver="slsqp", verbose=False)
+
+        assert result.method == "QMLE"
+        assert result.std_errors_robust is not None
+        assert len(result.std_errors_robust) == 8
+        assert np.all(np.isfinite(result.std_errors_robust))
+        assert np.all(result.std_errors_robust > 0)
+
+    def test_generic_order_studentt_qmle_two_step(self, arma_garch_data):
+        spec = ARMA(2, 1) + GARCH(1, 2) + StudentT()
+        result = spec.fit(arma_garch_data, method="qmle", solver="slsqp", verbose=False)
+
+        assert result.std_errors_robust is not None
+        assert len(result.std_errors_robust) == 9
+        assert np.all(np.isfinite(result.std_errors_robust))
+
+
+class TestDefaultOptimizationPathVisibility:
+    """Kernel defaults should match benchmark policy and be visible in fit_info."""
+
+    def test_default_log_mode_policy_is_exposed(self):
+        data = generate_garch_data(600, omega=1e-6, alpha=0.08, beta=0.88, seed=2024)
+
+        cases = [
+            ((GARCH(1, 1) + SkewT()).fit(data, solver="slsqp", verbose=False), True),
+            ((GJRGARCH(1, 1) + Normal()).fit(data, solver="slsqp", verbose=False), True),
+            ((GJRGARCH(1, 1) + StudentT()).fit(data, solver="slsqp", verbose=False), False),
+            ((EGARCH(1, 1) + Normal()).fit(data, solver="slsqp", verbose=False), False),
+            ((EGARCH(2, 1) + Normal()).fit(data, solver="slsqp", verbose=False), False),
+            ((ARMA(1, 1) + Normal()).fit(data, solver="slsqp", verbose=False), False),
+        ]
+
+        for result, expected_log_mode in cases:
+            assert result.fit_info.log_mode is expected_log_mode
+            assert result.fit_info.used_default_log_mode is True
+            assert result.fit_info.optimization_space == (
+                "z-space" if expected_log_mode else "theta-space"
+            )

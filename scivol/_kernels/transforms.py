@@ -22,6 +22,8 @@ from scipy.special import logsumexp
 
 from .. import _core
 
+GED_NU_MIN = 1.01
+
 
 def _as_cptr(arr: NDArray[np.float64]) -> int:
     """Convert NumPy array to C pointer (as integer address)."""
@@ -197,6 +199,25 @@ def jacobian_studentt(nu: float) -> float:
 
 
 # =============================================================================
+# GED PARAMETER TRANSFORMS
+# =============================================================================
+
+def pack_ged(z_nu: float) -> float:
+    """Transform unconstrained z_nu to constrained nu > 1.01 using softplus."""
+    return GED_NU_MIN + softplus(z_nu)
+
+
+def unpack_ged(nu: float) -> float:
+    """Transform constrained nu to unconstrained z_nu."""
+    return softplus_inv(nu - GED_NU_MIN)
+
+
+def jacobian_ged(nu: float) -> float:
+    """Compute ∂nu/∂z_nu for the GED shape parameter."""
+    return _softplus_derivative_from_positive(nu - GED_NU_MIN)
+
+
+# =============================================================================
 # SKEW-T PARAMETER TRANSFORMS
 # =============================================================================
 
@@ -275,6 +296,42 @@ def jacobian_garch_studentt(theta: NDArray[np.float64], p: int, q: int) -> NDArr
     # nu
     J[n_garch, n_garch] = jacobian_studentt(theta[n_garch])
     
+    return J
+
+
+def pack_garch_ged(z: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """
+    Transform unconstrained z to constrained theta for GARCH + GED.
+
+    z = [z_omega, z_alpha..., z_beta..., z_nu]
+    theta = [omega, alpha..., beta..., nu]
+    """
+    n_garch = 1 + p + q
+
+    theta_garch = pack_garch(z[:n_garch], p, q)
+    nu = pack_ged(z[n_garch])
+
+    return np.concatenate([theta_garch, [nu]])
+
+
+def unpack_garch_ged(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Transform constrained theta to unconstrained z for GARCH + GED."""
+    n_garch = 1 + p + q
+
+    z_garch = unpack_garch(theta[:n_garch], p, q)
+    z_nu = unpack_ged(theta[n_garch])
+
+    return np.concatenate([z_garch, [z_nu]])
+
+
+def jacobian_garch_ged(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Compute full Jacobian for GARCH + GED."""
+    n_garch = 1 + p + q
+    K = n_garch + 1
+
+    J = np.zeros((K, K), dtype=np.float64)
+    J[:n_garch, :n_garch] = jacobian_garch(theta[:n_garch], p, q)
+    J[n_garch, n_garch] = jacobian_ged(theta[n_garch])
     return J
 
 
@@ -453,6 +510,57 @@ def log_hessian_arma_normal(
     return transform_hessian(hess_theta, grad_theta, J, second)
 
 
+def pack_arma_ged(z: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained θ for ARMA(p,q)+GED."""
+    theta_base = pack_arma_normal(z[:1 + p + q], p, q)
+    sigma2 = softplus(z[1 + p + q])
+    nu = pack_ged(z[2 + p + q])
+    return np.concatenate([theta_base, [sigma2, nu]])
+
+
+def unpack_arma_ged(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Transform constrained θ to unconstrained z for ARMA(p,q)+GED."""
+    z_base = unpack_arma_normal(theta[:1 + p + q], p, q)
+    z_sigma2 = softplus_inv(theta[1 + p + q])
+    z_nu = unpack_ged(theta[2 + p + q])
+    return np.concatenate([z_base, [z_sigma2, z_nu]])
+
+
+def jacobian_arma_ged(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Compute Jacobian J = ∂θ/∂z for ARMA(p,q)+GED."""
+    K_base = 1 + p + q
+    K = K_base + 2
+    J = np.zeros((K, K), dtype=np.float64)
+    J[:K_base, :K_base] = jacobian_arma_normal(theta[:K_base], p, q)
+    J[K_base, K_base] = _softplus_derivative_from_positive(theta[K_base])
+    J[K_base + 1, K_base + 1] = jacobian_ged(theta[K_base + 1])
+    return J
+
+
+def second_derivatives_arma_ged(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Second-derivative tensor for the ARMA(p,q)+GED log transform."""
+    K_base = 1 + p + q
+    K = K_base + 2
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+    tensor[:K_base, :K_base, :K_base] = second_derivatives_arma_normal(theta[:K_base], p, q)
+    tensor[K_base, K_base, K_base] = _softplus_second_derivative_from_positive(theta[K_base])
+    tensor[K_base + 1, K_base + 1, K_base + 1] = _softplus_second_derivative_from_positive(theta[K_base + 1] - GED_NU_MIN)
+    return tensor
+
+
+def log_hessian_arma_ged(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p: int,
+    q: int,
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for ARMA(p,q)+GED."""
+    J = jacobian_arma_ged(theta, p, q)
+    second = second_derivatives_arma_ged(theta, p, q)
+    return transform_hessian(hess_theta, grad_theta, J, second)
+
+
 def second_derivatives_arma_garch_normal(
     theta: NDArray[np.float64],
     p_ar: int,
@@ -526,6 +634,112 @@ def log_hessian_arma_garch_studentt(
     return transform_hessian(hess_theta, grad_theta, J, second)
 
 
+def second_derivatives_arma_garch_ged(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Second-derivative tensor for ARMA(p,q)+GARCH(P,Q)+GED log transforms."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + P_arch + Q_garch
+    K = n_mean + n_vol + 1
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+    tensor[:n_mean + n_vol, :n_mean + n_vol, :n_mean + n_vol] = second_derivatives_arma_garch_normal(
+        theta[:n_mean + n_vol], p_ar, q_ma, P_arch, Q_garch
+    )
+    tensor[K - 1, K - 1, K - 1] = _softplus_second_derivative_from_positive(theta[K - 1] - GED_NU_MIN)
+    return tensor
+
+
+def log_hessian_arma_garch_ged(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for ARMA(p,q)+GARCH(P,Q)+GED."""
+    J = jacobian_arma_garch_ged(theta, p_ar, q_ma, P_arch, Q_garch)
+    second = second_derivatives_arma_garch_ged(theta, p_ar, q_ma, P_arch, Q_garch)
+    return transform_hessian(hess_theta, grad_theta, J, second)
+
+
+def second_derivatives_arma_egarch_normal(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Second-derivative tensor for ARMA(p,q)+EGARCH(P,Q)+Normal log transforms."""
+    n_mean = 1 + p_ar + q_ma
+    K = n_mean + 1 + 2 * P_arch + Q_egarch
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+
+    for idx in range(1, n_mean):
+        tensor[idx, idx, idx] = _tanh_scaled_second_derivative(theta[idx])
+
+    tensor[n_mean:, n_mean:, n_mean:] = second_derivatives_egarch(
+        theta[n_mean:], P_arch, Q_egarch, dist="normal"
+    )
+    return tensor
+
+
+def log_hessian_arma_egarch_normal(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for ARMA(p,q)+EGARCH(P,Q)+Normal."""
+    J = jacobian_arma_egarch_normal(theta, p_ar, q_ma, P_arch, Q_egarch)
+    second = second_derivatives_arma_egarch_normal(theta, p_ar, q_ma, P_arch, Q_egarch)
+    return transform_hessian(hess_theta, grad_theta, J, second)
+
+
+def second_derivatives_arma_egarch_studentt(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Second-derivative tensor for ARMA(p,q)+EGARCH(P,Q)+Student-t log transforms."""
+    n_mean = 1 + p_ar + q_ma
+    K = n_mean + 1 + 2 * P_arch + Q_egarch + 1
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+
+    for idx in range(1, n_mean):
+        tensor[idx, idx, idx] = _tanh_scaled_second_derivative(theta[idx])
+
+    tensor[n_mean:, n_mean:, n_mean:] = second_derivatives_egarch(
+        theta[n_mean:], P_arch, Q_egarch, dist="studentt"
+    )
+    return tensor
+
+
+def log_hessian_arma_egarch_studentt(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for ARMA(p,q)+EGARCH(P,Q)+Student-t."""
+    J = jacobian_arma_egarch_studentt(theta, p_ar, q_ma, P_arch, Q_egarch)
+    second = second_derivatives_arma_egarch_studentt(theta, p_ar, q_ma, P_arch, Q_egarch)
+    return transform_hessian(hess_theta, grad_theta, J, second)
+
+
 def second_derivatives_arma_garch_skewt(
     theta: NDArray[np.float64],
     p_ar: int,
@@ -569,7 +783,7 @@ def second_derivatives_garch(
     dist: str = "normal",
 ) -> NDArray[np.float64]:
     """Second-derivative tensor for GARCH(p,q) log transforms."""
-    K = 1 + p + q + (1 if dist == "studentt" else 2 if dist == "skewt" else 0)
+    K = 1 + p + q + (1 if dist in {"studentt", "ged"} else 2 if dist == "skewt" else 0)
     tensor = np.zeros((K, K, K), dtype=np.float64)
     tensor[0, 0, 0] = _softplus_second_derivative_from_positive(theta[0])
 
@@ -579,6 +793,8 @@ def second_derivatives_garch(
 
     if dist == "studentt":
         tensor[K - 1, K - 1, K - 1] = _softplus_second_derivative(theta[K - 1])
+    elif dist == "ged":
+        tensor[K - 1, K - 1, K - 1] = _softplus_second_derivative_from_positive(theta[K - 1] - GED_NU_MIN)
     elif dist == "skewt":
         tensor[K - 2, K - 2, K - 2] = _softplus_second_derivative(theta[K - 2])
         tensor[K - 1, K - 1, K - 1] = _tanh_second_derivative(theta[K - 1])
@@ -599,6 +815,8 @@ def log_hessian_garch(
         J = jacobian_garch(theta, p, q)
     elif dist == "studentt":
         J = jacobian_garch_studentt(theta, p, q)
+    elif dist == "ged":
+        J = jacobian_garch_ged(theta, p, q)
     elif dist == "skewt":
         J = jacobian_garch_skewt(theta, p, q)
     else:
@@ -615,7 +833,7 @@ def second_derivatives_gjr_garch(
 ) -> NDArray[np.float64]:
     """Second-derivative tensor for GJR-GARCH(p,q) log transforms."""
     m = 2 * p + q
-    K = 1 + m + (1 if dist == "studentt" else 2 if dist == "skewt" else 0)
+    K = 1 + m + (1 if dist in {"studentt", "ged"} else 2 if dist == "skewt" else 0)
     tensor = np.zeros((K, K, K), dtype=np.float64)
     tensor[0, 0, 0] = _softplus_second_derivative_from_positive(theta[0])
 
@@ -624,6 +842,8 @@ def second_derivatives_gjr_garch(
 
     if dist == "studentt":
         tensor[K - 1, K - 1, K - 1] = _softplus_second_derivative(theta[K - 1])
+    elif dist == "ged":
+        tensor[K - 1, K - 1, K - 1] = _softplus_second_derivative_from_positive(theta[K - 1] - GED_NU_MIN)
     elif dist == "skewt":
         tensor[K - 2, K - 2, K - 2] = _softplus_second_derivative(theta[K - 2])
         tensor[K - 1, K - 1, K - 1] = _tanh_second_derivative(theta[K - 1])
@@ -644,6 +864,8 @@ def log_hessian_gjr_garch(
         J = jacobian_gjr_garch(theta, p, q)
     elif dist == "studentt":
         J = jacobian_gjr_garch_studentt(theta, p, q)
+    elif dist == "ged":
+        J = jacobian_gjr_garch_ged(theta, p, q)
     elif dist == "skewt":
         J = jacobian_gjr_garch_skewt(theta, p, q)
     else:
@@ -779,6 +1001,18 @@ def pack_garch_studentt_c(z: NDArray[np.float64], theta_out: NDArray[np.float64]
         _core._pack_garch_studentt_pq(_as_cptr(z), _as_cptr(theta_out), p, q)
 
 
+def pack_garch_ged_c(z: NDArray[np.float64], theta_out: NDArray[np.float64], p: int, q: int) -> None:
+    """
+    C-accelerated pack_garch_ged (modifies theta_out in-place).
+
+    theta_out must be pre-allocated with shape (2 + p + q,).
+    """
+    if p == 1 and q == 1:
+        _core._pack_garch_ged_11(_as_cptr(z), _as_cptr(theta_out))
+    else:
+        _core._pack_garch_ged_pq(_as_cptr(z), _as_cptr(theta_out), p, q)
+
+
 def pack_garch_skewt_c(z: NDArray[np.float64], theta_out: NDArray[np.float64], p: int, q: int) -> None:
     """
     C-accelerated pack_garch_skewt (modifies theta_out in-place).
@@ -813,6 +1047,18 @@ def jacobian_garch_studentt_c(theta: NDArray[np.float64], J_out: NDArray[np.floa
         _core._jacobian_garch_studentt_11(_as_cptr(theta), _as_cptr(J_out))
     else:
         _core._jacobian_garch_studentt_pq(_as_cptr(theta), _as_cptr(J_out), p, q)
+
+
+def jacobian_garch_ged_c(theta: NDArray[np.float64], J_out: NDArray[np.float64], p: int, q: int) -> None:
+    """
+    C-accelerated jacobian_garch_ged (modifies J_out in-place).
+
+    J_out must be pre-allocated with shape (K, K) where K = 2 + p + q.
+    """
+    if p == 1 and q == 1:
+        _core._jacobian_garch_ged_11(_as_cptr(theta), _as_cptr(J_out))
+    else:
+        _core._jacobian_garch_ged_pq(_as_cptr(theta), _as_cptr(J_out), p, q)
 
 
 def jacobian_garch_skewt_c(theta: NDArray[np.float64], J_out: NDArray[np.float64], p: int, q: int) -> None:
@@ -943,6 +1189,32 @@ def jacobian_gjr_garch_studentt(theta: NDArray[np.float64], p: int, q: int) -> N
     return J
 
 
+def pack_gjr_garch_ged(z: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained theta for GJR-GARCH + GED."""
+    n_gjr = 1 + 2 * p + q
+    theta_gjr = pack_gjr_garch(z[:n_gjr], p, q)
+    nu = pack_ged(z[n_gjr])
+    return np.concatenate([theta_gjr, [nu]])
+
+
+def unpack_gjr_garch_ged(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Transform constrained theta to unconstrained z for GJR-GARCH + GED."""
+    n_gjr = 1 + 2 * p + q
+    z_gjr = unpack_gjr_garch(theta[:n_gjr], p, q)
+    z_nu = unpack_ged(theta[n_gjr])
+    return np.concatenate([z_gjr, [z_nu]])
+
+
+def jacobian_gjr_garch_ged(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Compute full Jacobian for GJR-GARCH + GED."""
+    n_gjr = 1 + 2 * p + q
+    K = n_gjr + 1
+    J = np.zeros((K, K), dtype=np.float64)
+    J[:n_gjr, :n_gjr] = jacobian_gjr_garch(theta[:n_gjr], p, q)
+    J[n_gjr, n_gjr] = jacobian_ged(theta[n_gjr])
+    return J
+
+
 def pack_gjr_garch_skewt(z: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
     """Transform unconstrained z to constrained θ for GJR-GARCH + SkewT."""
     n_gjr = 1 + 2 * p + q
@@ -1042,6 +1314,216 @@ def transform_grad_gjr_c(
             raise ValueError(f"Unknown distribution: {dist}")
     else:
         _core._transform_grad_pq(_as_cptr(grad_theta), _as_cptr(J), _as_cptr(grad_z_out), K)
+
+
+# =============================================================================
+# EGARCH(1,1) PARAMETER TRANSFORMS
+# =============================================================================
+
+def pack_egarch(z: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained theta for EGARCH(p,q)."""
+    z = np.asarray(z, dtype=np.float64)
+    K = 1 + 2 * p + q
+    theta = np.empty(K, dtype=np.float64)
+    theta[0] = z[0]
+    theta[1 : 1 + p] = z[1 : 1 + p]
+    theta[1 + p : 1 + 2 * p] = z[1 + p : 1 + 2 * p]
+    theta[1 + 2 * p :] = np.tanh(z[1 + 2 * p : K])
+    return theta
+
+
+def unpack_egarch(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Transform constrained theta to unconstrained z for EGARCH(p,q)."""
+    theta = np.asarray(theta, dtype=np.float64)
+    K = 1 + 2 * p + q
+    z = np.empty(K, dtype=np.float64)
+    z[0] = theta[0]
+    z[1 : 1 + p] = theta[1 : 1 + p]
+    z[1 + p : 1 + 2 * p] = theta[1 + p : 1 + 2 * p]
+    z[1 + 2 * p :] = np.arctanh(np.clip(theta[1 + 2 * p : K], -0.999999, 0.999999))
+    return z
+
+
+def jacobian_egarch(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    """Compute the Jacobian for EGARCH(p,q)."""
+    theta = np.asarray(theta, dtype=np.float64)
+    K = 1 + 2 * p + q
+    J = np.zeros((K, K), dtype=np.float64)
+    J[0, 0] = 1.0
+    for i in range(p):
+        J[1 + i, 1 + i] = 1.0
+        J[1 + p + i, 1 + p + i] = 1.0
+    beta_base = 1 + 2 * p
+    for j in range(q):
+        idx = beta_base + j
+        J[idx, idx] = 1.0 - float(theta[idx]) * float(theta[idx])
+    return J
+
+
+def pack_egarch_studentt(z: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    K_vol = 1 + 2 * p + q
+    theta_egarch = pack_egarch(z[:K_vol], p, q)
+    nu = pack_studentt(z[K_vol])
+    return np.concatenate([theta_egarch, [nu]])
+
+
+def unpack_egarch_studentt(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    K_vol = 1 + 2 * p + q
+    z_egarch = unpack_egarch(theta[:K_vol], p, q)
+    return np.concatenate([z_egarch, [unpack_studentt(theta[K_vol])]])
+
+
+def jacobian_egarch_studentt(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    K_vol = 1 + 2 * p + q
+    J = np.zeros((K_vol + 1, K_vol + 1), dtype=np.float64)
+    J[:K_vol, :K_vol] = jacobian_egarch(theta[:K_vol], p, q)
+    J[K_vol, K_vol] = jacobian_studentt(theta[K_vol])
+    return J
+
+
+def pack_egarch_ged(z: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    K_vol = 1 + 2 * p + q
+    theta_egarch = pack_egarch(z[:K_vol], p, q)
+    nu = pack_ged(z[K_vol])
+    return np.concatenate([theta_egarch, [nu]])
+
+
+def unpack_egarch_ged(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    K_vol = 1 + 2 * p + q
+    z_egarch = unpack_egarch(theta[:K_vol], p, q)
+    return np.concatenate([z_egarch, [unpack_ged(theta[K_vol])]])
+
+
+def jacobian_egarch_ged(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    K_vol = 1 + 2 * p + q
+    J = np.zeros((K_vol + 1, K_vol + 1), dtype=np.float64)
+    J[:K_vol, :K_vol] = jacobian_egarch(theta[:K_vol], p, q)
+    J[K_vol, K_vol] = jacobian_ged(theta[K_vol])
+    return J
+
+
+def pack_egarch_skewt(z: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    K_vol = 1 + 2 * p + q
+    theta_egarch = pack_egarch(z[:K_vol], p, q)
+    nu, lam = pack_skewt(z[K_vol], z[K_vol + 1])
+    return np.concatenate([theta_egarch, [nu, lam]])
+
+
+def unpack_egarch_skewt(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    K_vol = 1 + 2 * p + q
+    z_egarch = unpack_egarch(theta[:K_vol], p, q)
+    z_nu, z_lam = unpack_skewt(theta[K_vol], theta[K_vol + 1])
+    return np.concatenate([z_egarch, [z_nu, z_lam]])
+
+
+def jacobian_egarch_skewt(theta: NDArray[np.float64], p: int, q: int) -> NDArray[np.float64]:
+    K_vol = 1 + 2 * p + q
+    J = np.zeros((K_vol + 2, K_vol + 2), dtype=np.float64)
+    J[:K_vol, :K_vol] = jacobian_egarch(theta[:K_vol], p, q)
+    J[K_vol:, K_vol:] = jacobian_skewt(theta[K_vol], theta[K_vol + 1])
+    return J
+
+
+def second_derivatives_egarch(
+    theta: NDArray[np.float64],
+    p: int,
+    q: int,
+    dist: str = "normal",
+) -> NDArray[np.float64]:
+    """Second-derivative tensor for EGARCH log transforms."""
+    K = 1 + 2 * p + q + (1 if dist in {"studentt", "ged"} else 2 if dist == "skewt" else 0)
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+    beta_base = 1 + 2 * p
+    for j in range(q):
+        idx = beta_base + j
+        tensor[idx, idx, idx] = _tanh_second_derivative(theta[idx])
+    if dist == "studentt":
+        tensor[K - 1, K - 1, K - 1] = _softplus_second_derivative(theta[K - 1])
+    elif dist == "ged":
+        tensor[K - 1, K - 1, K - 1] = _softplus_second_derivative_from_positive(theta[K - 1] - GED_NU_MIN)
+    elif dist == "skewt":
+        tensor[K - 2, K - 2, K - 2] = _softplus_second_derivative(theta[K - 2])
+        tensor[K - 1, K - 1, K - 1] = _tanh_second_derivative(theta[K - 1])
+    return tensor
+
+
+def log_hessian_egarch(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p: int,
+    q: int,
+    dist: str = "normal",
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for EGARCH transforms."""
+    if dist == "normal":
+        J = jacobian_egarch(theta, p, q)
+    elif dist == "studentt":
+        J = jacobian_egarch_studentt(theta, p, q)
+    elif dist == "ged":
+        J = jacobian_egarch_ged(theta, p, q)
+    elif dist == "skewt":
+        J = jacobian_egarch_skewt(theta, p, q)
+    else:
+        raise ValueError(f"Unknown distribution: {dist}")
+    second = second_derivatives_egarch(theta, p, q, dist)
+    return transform_hessian(hess_theta, grad_theta, J, second)
+
+
+def pack_egarch_c(z: NDArray[np.float64], theta_out: NDArray[np.float64], p: int, q: int) -> None:
+    if (p, q) == (1, 1):
+        _core._pack_egarch_11(_as_cptr(z), _as_cptr(theta_out))
+        return
+    _core._pack_egarch_pq(_as_cptr(z), _as_cptr(theta_out), p, q)
+
+
+def pack_egarch_studentt_c(z: NDArray[np.float64], theta_out: NDArray[np.float64], p: int, q: int) -> None:
+    if (p, q) == (1, 1):
+        _core._pack_egarch_studentt_11(_as_cptr(z), _as_cptr(theta_out))
+        return
+    _core._pack_egarch_studentt_pq(_as_cptr(z), _as_cptr(theta_out), p, q)
+
+
+def pack_egarch_ged_c(z: NDArray[np.float64], theta_out: NDArray[np.float64], p: int, q: int) -> None:
+    if (p, q) == (1, 1):
+        _core._pack_egarch_ged_11(_as_cptr(z), _as_cptr(theta_out))
+        return
+    _core._pack_egarch_ged_pq(_as_cptr(z), _as_cptr(theta_out), p, q)
+
+
+def pack_egarch_skewt_c(z: NDArray[np.float64], theta_out: NDArray[np.float64], p: int, q: int) -> None:
+    if (p, q) == (1, 1):
+        _core._pack_egarch_skewt_11(_as_cptr(z), _as_cptr(theta_out))
+        return
+    _core._pack_egarch_skewt_pq(_as_cptr(z), _as_cptr(theta_out), p, q)
+
+
+def jacobian_egarch_c(theta: NDArray[np.float64], J_out: NDArray[np.float64], p: int, q: int) -> None:
+    if (p, q) == (1, 1):
+        _core._jacobian_egarch_11(_as_cptr(theta), _as_cptr(J_out))
+        return
+    _core._jacobian_egarch_pq(_as_cptr(theta), _as_cptr(J_out), p, q)
+
+
+def jacobian_egarch_studentt_c(theta: NDArray[np.float64], J_out: NDArray[np.float64], p: int, q: int) -> None:
+    if (p, q) == (1, 1):
+        _core._jacobian_egarch_studentt_11(_as_cptr(theta), _as_cptr(J_out))
+        return
+    _core._jacobian_egarch_studentt_pq(_as_cptr(theta), _as_cptr(J_out), p, q)
+
+
+def jacobian_egarch_ged_c(theta: NDArray[np.float64], J_out: NDArray[np.float64], p: int, q: int) -> None:
+    if (p, q) == (1, 1):
+        _core._jacobian_egarch_ged_11(_as_cptr(theta), _as_cptr(J_out))
+        return
+    _core._jacobian_egarch_ged_pq(_as_cptr(theta), _as_cptr(J_out), p, q)
+
+
+def jacobian_egarch_skewt_c(theta: NDArray[np.float64], J_out: NDArray[np.float64], p: int, q: int) -> None:
+    if (p, q) == (1, 1):
+        _core._jacobian_egarch_skewt_11(_as_cptr(theta), _as_cptr(J_out))
+        return
+    _core._jacobian_egarch_skewt_pq(_as_cptr(theta), _as_cptr(J_out), p, q)
 
 
 # =============================================================================
@@ -1201,6 +1683,345 @@ def jacobian_arma_garch_studentt(
     return J
 
 
+def pack_arma_garch_ged(
+    z: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained θ for ARMA+GARCH+GED."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + P_arch + Q_garch
+    theta_base = pack_arma_garch_normal(z[:n_mean + n_vol], p_ar, q_ma, P_arch, Q_garch)
+    nu = pack_ged(z[n_mean + n_vol])
+    return np.concatenate([theta_base, [nu]])
+
+
+def unpack_arma_garch_ged(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Transform constrained θ to unconstrained z for ARMA+GARCH+GED."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + P_arch + Q_garch
+    z_base = unpack_arma_garch_normal(theta[:n_mean + n_vol], p_ar, q_ma, P_arch, Q_garch)
+    z_nu = unpack_ged(theta[n_mean + n_vol])
+    return np.concatenate([z_base, [z_nu]])
+
+
+def jacobian_arma_garch_ged(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Compute Jacobian for ARMA+GARCH+GED."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + P_arch + Q_garch
+    K = n_mean + n_vol + 1
+    J = np.zeros((K, K), dtype=np.float64)
+    J[:n_mean + n_vol, :n_mean + n_vol] = jacobian_arma_garch_normal(
+        theta[:n_mean + n_vol], p_ar, q_ma, P_arch, Q_garch
+    )
+    J[K - 1, K - 1] = jacobian_ged(theta[n_mean + n_vol])
+    return J
+
+
+def pack_arma_egarch_normal(
+    z: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained θ for ARMA+EGARCH+Normal."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + 2 * P_arch + Q_egarch
+
+    theta = np.empty(n_mean + n_vol, dtype=np.float64)
+    theta[0] = z[0]
+    if p_ar > 0:
+        theta[1:1 + p_ar] = 0.99 * np.tanh(z[1:1 + p_ar])
+    if q_ma > 0:
+        theta[1 + p_ar:n_mean] = 0.99 * np.tanh(z[1 + p_ar:n_mean])
+
+    z_egarch = z[n_mean:n_mean + n_vol]
+    theta[n_mean:n_mean + n_vol] = pack_egarch(z_egarch, P_arch, Q_egarch)
+    return theta
+
+
+def unpack_arma_egarch_normal(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Transform constrained θ to unconstrained z for ARMA+EGARCH+Normal."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + 2 * P_arch + Q_egarch
+
+    z = np.empty(n_mean + n_vol, dtype=np.float64)
+    z[0] = theta[0]
+    if p_ar > 0:
+        z[1:1 + p_ar] = np.arctanh(np.clip(theta[1:1 + p_ar] / 0.99, -0.999, 0.999))
+    if q_ma > 0:
+        z[1 + p_ar:n_mean] = np.arctanh(np.clip(theta[1 + p_ar:n_mean] / 0.99, -0.999, 0.999))
+
+    z[n_mean:n_mean + n_vol] = unpack_egarch(theta[n_mean:n_mean + n_vol], P_arch, Q_egarch)
+    return z
+
+
+def jacobian_arma_egarch_normal(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Compute Jacobian J = ∂θ/∂z for ARMA+EGARCH+Normal."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + 2 * P_arch + Q_egarch
+    K = n_mean + n_vol
+
+    J = np.zeros((K, K), dtype=np.float64)
+    J[0, 0] = 1.0
+    for idx in range(1, n_mean):
+        ratio = theta[idx] / 0.99
+        J[idx, idx] = 0.99 * (1.0 - ratio * ratio)
+    J[n_mean:, n_mean:] = jacobian_egarch(theta[n_mean:n_mean + n_vol], P_arch, Q_egarch)
+    return J
+
+
+def pack_arma_egarch_studentt(
+    z: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained θ for ARMA+EGARCH+StudentT."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + 2 * P_arch + Q_egarch
+    theta_base = pack_arma_egarch_normal(z[:n_mean + n_vol], p_ar, q_ma, P_arch, Q_egarch)
+    nu = pack_studentt(z[n_mean + n_vol])
+    return np.concatenate([theta_base, [nu]])
+
+
+def unpack_arma_egarch_studentt(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Transform constrained θ to unconstrained z for ARMA+EGARCH+StudentT."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + 2 * P_arch + Q_egarch
+    z_base = unpack_arma_egarch_normal(theta[:n_mean + n_vol], p_ar, q_ma, P_arch, Q_egarch)
+    z_nu = unpack_studentt(theta[n_mean + n_vol])
+    return np.concatenate([z_base, [z_nu]])
+
+
+def jacobian_arma_egarch_studentt(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Compute Jacobian for ARMA+EGARCH+StudentT."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + 2 * P_arch + Q_egarch
+    K = n_mean + n_vol + 1
+
+    J = np.zeros((K, K), dtype=np.float64)
+    J[:n_mean + n_vol, :n_mean + n_vol] = jacobian_arma_egarch_normal(
+        theta[:n_mean + n_vol], p_ar, q_ma, P_arch, Q_egarch
+    )
+    J[K - 1, K - 1] = jacobian_studentt(theta[n_mean + n_vol])
+    return J
+
+
+def second_derivatives_arma_egarch_ged(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Second-derivative tensor for ARMA(p,q)+EGARCH(P,Q)+GED log transforms."""
+    n_mean = 1 + p_ar + q_ma
+    K = n_mean + 1 + 2 * P_arch + Q_egarch + 1
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+
+    for idx in range(1, n_mean):
+        tensor[idx, idx, idx] = _tanh_scaled_second_derivative(theta[idx])
+
+    tensor[n_mean:, n_mean:, n_mean:] = second_derivatives_egarch(
+        theta[n_mean:], P_arch, Q_egarch, dist="ged"
+    )
+    return tensor
+
+
+def log_hessian_arma_egarch_ged(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for ARMA(p,q)+EGARCH(P,Q)+GED."""
+    J = jacobian_arma_egarch_ged(theta, p_ar, q_ma, P_arch, Q_egarch)
+    second = second_derivatives_arma_egarch_ged(theta, p_ar, q_ma, P_arch, Q_egarch)
+    return transform_hessian(hess_theta, grad_theta, J, second)
+
+
+def pack_arma_egarch_ged(
+    z: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained θ for ARMA+EGARCH+GED."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + 2 * P_arch + Q_egarch
+    theta_base = pack_arma_egarch_normal(z[:n_mean + n_vol], p_ar, q_ma, P_arch, Q_egarch)
+    nu = pack_ged(z[n_mean + n_vol])
+    return np.concatenate([theta_base, [nu]])
+
+
+def unpack_arma_egarch_ged(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Transform constrained θ to unconstrained z for ARMA+EGARCH+GED."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + 2 * P_arch + Q_egarch
+    z_base = unpack_arma_egarch_normal(theta[:n_mean + n_vol], p_ar, q_ma, P_arch, Q_egarch)
+    z_nu = unpack_ged(theta[n_mean + n_vol])
+    return np.concatenate([z_base, [z_nu]])
+
+
+def jacobian_arma_egarch_ged(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Compute Jacobian for ARMA+EGARCH+GED."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + 2 * P_arch + Q_egarch
+    K = n_mean + n_vol + 1
+
+    J = np.zeros((K, K), dtype=np.float64)
+    J[:n_mean + n_vol, :n_mean + n_vol] = jacobian_arma_egarch_normal(
+        theta[:n_mean + n_vol], p_ar, q_ma, P_arch, Q_egarch
+    )
+    J[K - 1, K - 1] = jacobian_ged(theta[n_mean + n_vol])
+    return J
+
+
+def second_derivatives_arma_egarch_skewt(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Second-derivative tensor for ARMA(p,q)+EGARCH(P,Q)+SkewT log transforms."""
+    n_mean = 1 + p_ar + q_ma
+    K = n_mean + 1 + 2 * P_arch + Q_egarch + 2
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+
+    for idx in range(1, n_mean):
+        tensor[idx, idx, idx] = _tanh_scaled_second_derivative(theta[idx])
+
+    tensor[n_mean:, n_mean:, n_mean:] = second_derivatives_egarch(
+        theta[n_mean:], P_arch, Q_egarch, dist="skewt"
+    )
+    return tensor
+
+
+def log_hessian_arma_egarch_skewt(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for ARMA(p,q)+EGARCH(P,Q)+SkewT."""
+    J = jacobian_arma_egarch_skewt(theta, p_ar, q_ma, P_arch, Q_egarch)
+    second = second_derivatives_arma_egarch_skewt(theta, p_ar, q_ma, P_arch, Q_egarch)
+    return transform_hessian(hess_theta, grad_theta, J, second)
+
+
+def pack_arma_egarch_skewt(
+    z: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained θ for ARMA+EGARCH+SkewT."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + 2 * P_arch + Q_egarch
+    theta_base = pack_arma_egarch_normal(z[:n_mean + n_vol], p_ar, q_ma, P_arch, Q_egarch)
+    nu, lam = pack_skewt(z[n_mean + n_vol], z[n_mean + n_vol + 1])
+    return np.concatenate([theta_base, [nu, lam]])
+
+
+def unpack_arma_egarch_skewt(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Transform constrained θ to unconstrained z for ARMA+EGARCH+SkewT."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + 2 * P_arch + Q_egarch
+    z_base = unpack_arma_egarch_normal(theta[:n_mean + n_vol], p_ar, q_ma, P_arch, Q_egarch)
+    z_nu, z_lam = unpack_skewt(theta[n_mean + n_vol], theta[n_mean + n_vol + 1])
+    return np.concatenate([z_base, [z_nu, z_lam]])
+
+
+def jacobian_arma_egarch_skewt(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_egarch: int,
+) -> NDArray[np.float64]:
+    """Compute Jacobian for ARMA+EGARCH+SkewT."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + 2 * P_arch + Q_egarch
+    K = n_mean + n_vol + 2
+
+    J = np.zeros((K, K), dtype=np.float64)
+    J[:n_mean + n_vol, :n_mean + n_vol] = jacobian_arma_egarch_normal(
+        theta[:n_mean + n_vol], p_ar, q_ma, P_arch, Q_egarch
+    )
+    J[n_mean + n_vol:, n_mean + n_vol:] = jacobian_skewt(
+        theta[n_mean + n_vol], theta[n_mean + n_vol + 1]
+    )
+    return J
+
+
 def pack_arma_garch_skewt(
     z: NDArray[np.float64], 
     p_ar: int, 
@@ -1262,3 +2083,319 @@ def jacobian_arma_garch_skewt(
     J[n_mean+n_vol:, n_mean+n_vol:] = J_dist
     
     return J
+
+
+# =============================================================================
+# ARMA-GJR-GARCH PARAMETER TRANSFORMS
+# =============================================================================
+
+def pack_arma_gjr_garch_normal(
+    z: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained theta for ARMA+GJR-GARCH+Normal."""
+    n_mean = 1 + p_ar + q_ma
+    theta_mean = pack_arma_normal(z[:n_mean], p_ar, q_ma)
+    theta_vol = pack_gjr_garch(z[n_mean:], P_arch, Q_garch)
+    return np.concatenate([theta_mean, theta_vol])
+
+
+def unpack_arma_gjr_garch_normal(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Transform constrained theta to unconstrained z for ARMA+GJR-GARCH+Normal."""
+    n_mean = 1 + p_ar + q_ma
+    z_mean = unpack_arma_normal(theta[:n_mean], p_ar, q_ma)
+    z_vol = unpack_gjr_garch(theta[n_mean:], P_arch, Q_garch)
+    return np.concatenate([z_mean, z_vol])
+
+
+def jacobian_arma_gjr_garch_normal(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Compute Jacobian for ARMA+GJR-GARCH+Normal."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + 2 * P_arch + Q_garch
+    K = n_mean + n_vol
+    J = np.zeros((K, K), dtype=np.float64)
+    J[:n_mean, :n_mean] = jacobian_arma_normal(theta[:n_mean], p_ar, q_ma)
+    J[n_mean:, n_mean:] = jacobian_gjr_garch(theta[n_mean:], P_arch, Q_garch)
+    return J
+
+
+def pack_arma_gjr_garch_studentt(
+    z: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained theta for ARMA+GJR-GARCH+StudentT."""
+    n_mean = 1 + p_ar + q_ma
+    theta_mean = pack_arma_normal(z[:n_mean], p_ar, q_ma)
+    theta_vol = pack_gjr_garch_studentt(z[n_mean:], P_arch, Q_garch)
+    return np.concatenate([theta_mean, theta_vol])
+
+
+def unpack_arma_gjr_garch_studentt(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Transform constrained theta to unconstrained z for ARMA+GJR-GARCH+StudentT."""
+    n_mean = 1 + p_ar + q_ma
+    z_mean = unpack_arma_normal(theta[:n_mean], p_ar, q_ma)
+    z_vol = unpack_gjr_garch_studentt(theta[n_mean:], P_arch, Q_garch)
+    return np.concatenate([z_mean, z_vol])
+
+
+def jacobian_arma_gjr_garch_studentt(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Compute Jacobian for ARMA+GJR-GARCH+StudentT."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + 2 * P_arch + Q_garch + 1
+    K = n_mean + n_vol
+    J = np.zeros((K, K), dtype=np.float64)
+    J[:n_mean, :n_mean] = jacobian_arma_normal(theta[:n_mean], p_ar, q_ma)
+    J[n_mean:, n_mean:] = jacobian_gjr_garch_studentt(theta[n_mean:], P_arch, Q_garch)
+    return J
+
+
+def pack_arma_gjr_garch_ged(
+    z: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained theta for ARMA+GJR-GARCH+GED."""
+    n_mean = 1 + p_ar + q_ma
+    theta_mean = pack_arma_normal(z[:n_mean], p_ar, q_ma)
+    theta_vol = pack_gjr_garch_ged(z[n_mean:], P_arch, Q_garch)
+    return np.concatenate([theta_mean, theta_vol])
+
+
+def unpack_arma_gjr_garch_ged(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Transform constrained theta to unconstrained z for ARMA+GJR-GARCH+GED."""
+    n_mean = 1 + p_ar + q_ma
+    z_mean = unpack_arma_normal(theta[:n_mean], p_ar, q_ma)
+    z_vol = unpack_gjr_garch_ged(theta[n_mean:], P_arch, Q_garch)
+    return np.concatenate([z_mean, z_vol])
+
+
+def jacobian_arma_gjr_garch_ged(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Compute Jacobian for ARMA+GJR-GARCH+GED."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + 2 * P_arch + Q_garch + 1
+    K = n_mean + n_vol
+    J = np.zeros((K, K), dtype=np.float64)
+    J[:n_mean, :n_mean] = jacobian_arma_normal(theta[:n_mean], p_ar, q_ma)
+    J[n_mean:, n_mean:] = jacobian_gjr_garch_ged(theta[n_mean:], P_arch, Q_garch)
+    return J
+
+
+def pack_arma_gjr_garch_skewt(
+    z: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Transform unconstrained z to constrained theta for ARMA+GJR-GARCH+SkewT."""
+    n_mean = 1 + p_ar + q_ma
+    theta_mean = pack_arma_normal(z[:n_mean], p_ar, q_ma)
+    theta_vol = pack_gjr_garch_skewt(z[n_mean:], P_arch, Q_garch)
+    return np.concatenate([theta_mean, theta_vol])
+
+
+def unpack_arma_gjr_garch_skewt(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Transform constrained theta to unconstrained z for ARMA+GJR-GARCH+SkewT."""
+    n_mean = 1 + p_ar + q_ma
+    z_mean = unpack_arma_normal(theta[:n_mean], p_ar, q_ma)
+    z_vol = unpack_gjr_garch_skewt(theta[n_mean:], P_arch, Q_garch)
+    return np.concatenate([z_mean, z_vol])
+
+
+def jacobian_arma_gjr_garch_skewt(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Compute Jacobian for ARMA+GJR-GARCH+SkewT."""
+    n_mean = 1 + p_ar + q_ma
+    n_vol = 1 + 2 * P_arch + Q_garch + 2
+    K = n_mean + n_vol
+    J = np.zeros((K, K), dtype=np.float64)
+    J[:n_mean, :n_mean] = jacobian_arma_normal(theta[:n_mean], p_ar, q_ma)
+    J[n_mean:, n_mean:] = jacobian_gjr_garch_skewt(theta[n_mean:], P_arch, Q_garch)
+    return J
+
+
+def second_derivatives_arma_gjr_garch_normal(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Second-derivative tensor for ARMA+GJR-GARCH+Normal log transforms."""
+    n_mean = 1 + p_ar + q_ma
+    K = n_mean + 1 + 2 * P_arch + Q_garch
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+    tensor[:n_mean, :n_mean, :n_mean] = second_derivatives_arma_normal(theta[:n_mean], p_ar, q_ma)
+    tensor[n_mean:, n_mean:, n_mean:] = second_derivatives_gjr_garch(
+        theta[n_mean:], P_arch, Q_garch, dist="normal"
+    )
+    return tensor
+
+
+def log_hessian_arma_gjr_garch_normal(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for ARMA+GJR-GARCH+Normal."""
+    J = jacobian_arma_gjr_garch_normal(theta, p_ar, q_ma, P_arch, Q_garch)
+    second = second_derivatives_arma_gjr_garch_normal(theta, p_ar, q_ma, P_arch, Q_garch)
+    return transform_hessian(hess_theta, grad_theta, J, second)
+
+
+def second_derivatives_arma_gjr_garch_studentt(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Second-derivative tensor for ARMA+GJR-GARCH+StudentT log transforms."""
+    n_mean = 1 + p_ar + q_ma
+    K = n_mean + 1 + 2 * P_arch + Q_garch + 1
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+    tensor[:n_mean, :n_mean, :n_mean] = second_derivatives_arma_normal(theta[:n_mean], p_ar, q_ma)
+    tensor[n_mean:, n_mean:, n_mean:] = second_derivatives_gjr_garch(
+        theta[n_mean:], P_arch, Q_garch, dist="studentt"
+    )
+    return tensor
+
+
+def log_hessian_arma_gjr_garch_studentt(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for ARMA+GJR-GARCH+StudentT."""
+    J = jacobian_arma_gjr_garch_studentt(theta, p_ar, q_ma, P_arch, Q_garch)
+    second = second_derivatives_arma_gjr_garch_studentt(theta, p_ar, q_ma, P_arch, Q_garch)
+    return transform_hessian(hess_theta, grad_theta, J, second)
+
+
+def second_derivatives_arma_gjr_garch_ged(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Second-derivative tensor for ARMA+GJR-GARCH+GED log transforms."""
+    n_mean = 1 + p_ar + q_ma
+    K = n_mean + 1 + 2 * P_arch + Q_garch + 1
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+    tensor[:n_mean, :n_mean, :n_mean] = second_derivatives_arma_normal(theta[:n_mean], p_ar, q_ma)
+    tensor[n_mean:, n_mean:, n_mean:] = second_derivatives_gjr_garch(
+        theta[n_mean:], P_arch, Q_garch, dist="ged"
+    )
+    return tensor
+
+
+def log_hessian_arma_gjr_garch_ged(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for ARMA+GJR-GARCH+GED."""
+    J = jacobian_arma_gjr_garch_ged(theta, p_ar, q_ma, P_arch, Q_garch)
+    second = second_derivatives_arma_gjr_garch_ged(theta, p_ar, q_ma, P_arch, Q_garch)
+    return transform_hessian(hess_theta, grad_theta, J, second)
+
+
+def second_derivatives_arma_gjr_garch_skewt(
+    theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Second-derivative tensor for ARMA+GJR-GARCH+SkewT log transforms."""
+    n_mean = 1 + p_ar + q_ma
+    K = n_mean + 1 + 2 * P_arch + Q_garch + 2
+    tensor = np.zeros((K, K, K), dtype=np.float64)
+    tensor[:n_mean, :n_mean, :n_mean] = second_derivatives_arma_normal(theta[:n_mean], p_ar, q_ma)
+    tensor[n_mean:, n_mean:, n_mean:] = second_derivatives_gjr_garch(
+        theta[n_mean:], P_arch, Q_garch, dist="skewt"
+    )
+    return tensor
+
+
+def log_hessian_arma_gjr_garch_skewt(
+    theta: NDArray[np.float64],
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    P_arch: int,
+    Q_garch: int,
+) -> NDArray[np.float64]:
+    """Analytical z-space Hessian for ARMA+GJR-GARCH+SkewT."""
+    J = jacobian_arma_gjr_garch_skewt(theta, p_ar, q_ma, P_arch, Q_garch)
+    second = second_derivatives_arma_gjr_garch_skewt(theta, p_ar, q_ma, P_arch, Q_garch)
+    return transform_hessian(hess_theta, grad_theta, J, second)

@@ -222,7 +222,7 @@ def _numerical_hessian(
 
 
 # =====================================================================
-# ARMA-GARCH robust SE (analytical OPG + numerical Hessian)
+# ARMA-GARCH robust SE (generic C OPG + generic C Hessian)
 # =====================================================================
 
 def _compute_arma_garch_robust_se(
@@ -237,89 +237,52 @@ def _compute_arma_garch_robust_se(
     """
     Compute OPG and Hessian for ARMA-GARCH+Normal.
 
-    Only supports ARMA(1,1)-GARCH(1,1) currently.
     Returns (opg, hess) - both averaged (divided by n_eff).
     """
     n = len(y)
     n_mean = 1 + p_ar + q_ma
     n_vol = 1 + P_arch + Q_garch
     K = n_mean + n_vol
+    max_lag = max(p_ar, q_ma, P_arch, Q_garch, 1)
 
-    if not (p_ar == 1 and q_ma == 1 and P_arch == 1 and Q_garch == 1):
-        raise NotImplementedError("ARMA-GARCH QMLE only supports ARMA(1,1)-GARCH(1,1) currently")
-
-    c = params[0]
-    phi = params[1]
-    theta_ma = params[2]
-    omega = params[3]
-    alpha = params[4]
-    beta = params[5]
-
-    # Forward pass: residuals and variances
+    params_c = np.ascontiguousarray(params[:K], dtype=np.float64)
+    y_c = np.ascontiguousarray(y, dtype=np.float64)
     resid = np.zeros(n, dtype=np.float64)
     sigma2 = np.zeros(n, dtype=np.float64)
-    resid[0] = 0.0
-    sigma2[0] = h0
+    e0 = np.zeros(max_lag, dtype=np.float64)
+    h0_arr = np.full(max_lag, h0, dtype=np.float64)
+    opg = np.zeros((K, K), dtype=np.float64)
+    hess = np.zeros((K, K), dtype=np.float64)
 
-    for t in range(1, n):
-        resid[t] = y[t] - c - phi * y[t - 1] - theta_ma * resid[t - 1]
-        sigma2[t] = omega + alpha * resid[t - 1] ** 2 + beta * sigma2[t - 1]
-
-    # Per-observation gradients via sensitivity recursion
-    n_eff = n - 1
-    de_prev = np.zeros(3, dtype=np.float64)
-    dh_prev = np.zeros(6, dtype=np.float64)
-    OPG = np.zeros((K, K), dtype=np.float64)
-
-    for t in range(1, n):
-        e_prev = resid[t - 1]
-        e2_prev = e_prev ** 2
-        h_prev = sigma2[t - 1]
-        e_t = resid[t]
-        h_t = sigma2[t]
-
-        de_curr = np.zeros(3, dtype=np.float64)
-        de_curr[0] = -1.0 - theta_ma * de_prev[0]
-        de_curr[1] = -y[t - 1] - theta_ma * de_prev[1]
-        de_curr[2] = -e_prev - theta_ma * de_prev[2]
-
-        de2_prev = 2.0 * e_prev * de_prev
-
-        dh_curr = np.zeros(6, dtype=np.float64)
-        dh_curr[0] = alpha * de2_prev[0] + beta * dh_prev[0]
-        dh_curr[1] = alpha * de2_prev[1] + beta * dh_prev[1]
-        dh_curr[2] = alpha * de2_prev[2] + beta * dh_prev[2]
-        dh_curr[3] = 1.0 + beta * dh_prev[3]
-        dh_curr[4] = e2_prev + beta * dh_prev[4]
-        dh_curr[5] = h_prev + beta * dh_prev[5]
-
-        dnll_de = e_t / h_t
-        dnll_dh = 0.5 / h_t - 0.5 * e_t ** 2 / h_t ** 2
-
-        g_t = np.zeros(K, dtype=np.float64)
-        for k in range(3):
-            g_t[k] = dnll_de * de_curr[k] + dnll_dh * dh_curr[k]
-        for k in range(3):
-            g_t[3 + k] = dnll_dh * dh_curr[3 + k]
-
-        OPG += np.outer(g_t, g_t)
-        de_prev = de_curr
-        dh_prev = dh_curr
-
-    OPG /= n_eff
-
-    # Numerical Hessian
-    y_ptr = _as_cptr(y)
-
-    def nll_total(theta):
-        r = np.zeros(n, dtype=np.float64)
-        s = np.zeros(n, dtype=np.float64)
-        return _core._arma_garch_nll_11_normal(
-            _as_cptr(theta), y_ptr, _as_cptr(r), _as_cptr(s), h0, n
-        )
-
-    hess = _numerical_hessian(nll_total, params, eps=1e-5)
-    return OPG, hess
+    _core._arma_garch_opg_pq_normal(
+        _as_cptr(params_c),
+        _as_cptr(y_c),
+        _as_cptr(resid),
+        _as_cptr(sigma2),
+        _as_cptr(e0),
+        _as_cptr(h0_arr),
+        _as_cptr(opg),
+        n,
+        p_ar,
+        q_ma,
+        P_arch,
+        Q_garch,
+    )
+    _core._arma_garch_hess_pq_normal(
+        _as_cptr(params_c),
+        _as_cptr(y_c),
+        _as_cptr(resid),
+        _as_cptr(sigma2),
+        _as_cptr(e0),
+        _as_cptr(h0_arr),
+        _as_cptr(hess),
+        n,
+        p_ar,
+        q_ma,
+        P_arch,
+        Q_garch,
+    )
+    return opg, hess
 
 
 # =====================================================================
@@ -521,6 +484,12 @@ def fit_qmle(
 
     n_core = n_mean + n_vol
 
+    if has_arma and is_gjr:
+        raise NotImplementedError(
+            "QMLE for ARMA + GJR-GARCH is intentionally unshipped. "
+            "The linked MLE surface is available, but joint robust OPG/Hessian coverage is not."
+        )
+
     # ==================================================================
     # Step 1: Fit with Normal likelihood via the MLE kernel
     # ==================================================================
@@ -622,6 +591,7 @@ def fit_qmle(
             cov_matrix=cov_mle_core,
             opg=opg_core,
             cov_robust=cov_robust_core,
+            fit_info=fit_result.fit_info.to_dict(),
             method="QMLE",
         )
         _update_components(core_params)
@@ -689,6 +659,7 @@ def fit_qmle(
         cov_matrix=cov_full_mle,
         opg=opg_full,
         cov_robust=cov_full_robust,
+        fit_info=fit_result.fit_info.to_dict(),
         method="QMLE",
     )
 

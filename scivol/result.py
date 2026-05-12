@@ -7,7 +7,7 @@ import warnings
 import numpy as np
 from numpy.typing import NDArray
 from datetime import datetime
-from scipy.stats import norm, t as t_dist, chi2
+from scipy.stats import chi2, gennorm, norm, t as t_dist
 from scipy.special import gammaln
 
 from .roles import Role
@@ -57,9 +57,15 @@ def _hansen_skewt_cdf(z: np.ndarray, nu: float, lam: float) -> np.ndarray:
     y = np.where(bz_a < 0.0, bz_a / (1.0 + lam), bz_a / (1.0 - lam))
     return _std_t_cdf(y, nu)
 
+
+def _std_ged_cdf(x: np.ndarray, nu: float) -> np.ndarray:
+    scale = np.sqrt(np.exp(gammaln(1.0 / nu) - gammaln(3.0 / nu)))
+    return gennorm.cdf(x, beta=nu, scale=scale)
+
 if TYPE_CHECKING:
     from .components import Component
     from .spec import CompositeSpec
+    from ._evaluation import FilteredState, ForecastResult
 
 
 # =============================================================================
@@ -118,6 +124,38 @@ class GARCHParams:
             alpha=arr[1:1+p],
             beta=arr[1+p:1+p+q],
         )
+
+
+@dataclass
+class EGARCHParams:
+    """Container for EGARCH parameters on the log-variance scale."""
+
+    omega: float
+    alpha: NDArray[np.float64]
+    beta: NDArray[np.float64]
+    gamma: NDArray[np.float64]
+
+    @property
+    def persistence(self) -> float:
+        return float(np.sum(self.beta))
+
+    @property
+    def is_stationary(self) -> bool:
+        return abs(self.persistence) < 1.0
+
+    @property
+    def unconditional_log_variance(self) -> float:
+        if not self.is_stationary:
+            return np.inf
+        return self.omega / (1.0 - self.persistence)
+
+    @property
+    def unconditional_variance(self) -> float:
+        log_var = self.unconditional_log_variance
+        return np.inf if not np.isfinite(log_var) else float(np.exp(log_var))
+
+    def to_array(self) -> NDArray[np.float64]:
+        return np.concatenate([[self.omega], self.alpha, self.gamma, self.beta])
 
 
 @dataclass
@@ -193,6 +231,41 @@ class OptimizeResultLike(Protocol):
     message: str
 
 
+@dataclass
+class FitMetadata:
+    """User-visible metadata about the optimization path used for a fit."""
+    solver: Optional[str] = None
+    log_mode: Optional[bool] = None
+    optimization_space: Optional[str] = None
+    requested_solver: Optional[str] = None
+    requested_log_mode: Optional[bool] = None
+    used_default_solver: Optional[bool] = None
+    used_default_log_mode: Optional[bool] = None
+    requested_hold_back: Optional[int] = None
+    effective_hold_back: Optional[int] = None
+    original_n_obs: Optional[int] = None
+    effective_n_obs: Optional[int] = None
+    scale: Optional[float] = None
+    common_sample: Optional[bool] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "solver": self.solver,
+            "log_mode": self.log_mode,
+            "optimization_space": self.optimization_space,
+            "requested_solver": self.requested_solver,
+            "requested_log_mode": self.requested_log_mode,
+            "used_default_solver": self.used_default_solver,
+            "used_default_log_mode": self.used_default_log_mode,
+            "requested_hold_back": self.requested_hold_back,
+            "effective_hold_back": self.effective_hold_back,
+            "original_n_obs": self.original_n_obs,
+            "effective_n_obs": self.effective_n_obs,
+            "scale": self.scale,
+            "common_sample": self.common_sample,
+        }
+
+
 # =============================================================================
 # ESTIMATION RESULT
 # =============================================================================
@@ -222,9 +295,11 @@ class EstimationResult:
         cov_matrix: Optional[NDArray[np.float64]] = None,
         opg: Optional[NDArray[np.float64]] = None,
         cov_robust: Optional[NDArray[np.float64]] = None,
+        fit_info: Optional[Union[FitMetadata, Dict[str, Any]]] = None,
         method: str = "MLE",
         index: Optional[Any] = None,
         name: Optional[str] = None,
+        parameter_source: str = "estimated",
     ) -> None:
 
         self.spec: CompositeSpec = spec
@@ -234,12 +309,14 @@ class EstimationResult:
         
         # Estimation method
         self.method: str = method
+        self.parameter_source: str = parameter_source
         
         # Conditional variances
         self._sigma2: Optional[NDArray[np.float64]] = sigma2
         
         # Timing
         self.time_elapsed: Optional[float] = time_elapsed
+        self.fit_info: FitMetadata = self._coerce_fit_info(fit_info)
         
         # Covariance / standard errors
         self._hessian: Optional[NDArray[np.float64]] = hessian
@@ -252,6 +329,8 @@ class EstimationResult:
         # Pandas metadata (for preserving index/column names)
         self._index: Optional[Any] = index
         self._name: Optional[str] = name
+        self._filtered_state_cache: Optional["FilteredState"] = None
+        self._resolved_spec_cache: Optional[CompositeSpec] = None
 
         # Components were mutated in-place during fitting
         self._component_map: Dict[Role, Component] = {c.role: c for c in spec.components}
@@ -262,6 +341,15 @@ class EstimationResult:
             fitted_params = getattr(component, "fitted_params", None)
             if fitted_params:
                 self._component_param_snapshots[component.role] = deepcopy(fitted_params)
+
+    @staticmethod
+    def _coerce_fit_info(fit_info: Optional[Union[FitMetadata, Dict[str, Any]]]) -> FitMetadata:
+        """Normalize fit metadata into a typed container."""
+        if fit_info is None:
+            return FitMetadata()
+        if isinstance(fit_info, FitMetadata):
+            return fit_info
+        return FitMetadata(**fit_info)
 
     # Scalars
     # --------------------------------------------------------------------- #
@@ -343,6 +431,11 @@ class EstimationResult:
         return self._component_map.get(Role.VOLATILITY)
 
     @property
+    def volatility(self) -> Optional[Component]:
+        """Backward-compatible alias for the volatility component."""
+        return self.vol
+
+    @property
     def mean(self) -> Optional[Component]:
         return self._component_map.get(Role.MEAN)
 
@@ -359,11 +452,21 @@ class EstimationResult:
     # Structured parameter access (matching reference implementation)
     # --------------------------------------------------------------------- #
     @property
-    def garch_params(self) -> Optional[GARCHParams]:
-        """Get GARCH/GJR-GARCH parameters as structured object."""
+    def garch_params(self) -> Optional[Union[GARCHParams, EGARCHParams]]:
+        """Get volatility parameters as a structured object."""
         fp = self._component_param_snapshots.get(Role.VOLATILITY)
         if not fp:
             return None
+
+        from .components.vol import EGARCH
+
+        if isinstance(self.volatility, EGARCH):
+            return EGARCHParams(
+                omega=float(fp.get("omega", 0.0)),
+                alpha=np.array(fp.get("alpha", []), dtype=np.float64),
+                gamma=np.array(fp.get("gamma", []), dtype=np.float64),
+                beta=np.array(fp.get("beta", []), dtype=np.float64),
+            )
 
         omega = fp.get('omega', 0.0)
         alpha = np.array(fp.get('alpha', []), dtype=np.float64)
@@ -411,10 +514,40 @@ class EstimationResult:
         Returns pandas Series if input was pandas, otherwise numpy array.
         """
         if self._sigma2 is None:
+            try:
+                self._sigma2 = self._get_filtered_state().sigma2.copy()
+            except Exception:
+                return None
+        if self._sigma2 is None:
             return None
         if self._index is not None:
             return _to_pandas_series(self._sigma2, self._index, self._name, "sigma2")
         return self._sigma2
+
+    @property
+    def resid(self) -> Optional[Union[NDArray[np.float64], Any]]:
+        """Residual series implied by the stored parameters."""
+        resid = getattr(self, "_resid", None)
+        if resid is None:
+            try:
+                resid = self._get_filtered_state().residuals
+                self._resid = resid.copy()
+            except Exception:
+                return None
+        if self._index is not None:
+            return _to_pandas_series(resid, self._index, self._name, "resid")
+        return resid
+
+    @property
+    def conditional_mean(self) -> Optional[Union[NDArray[np.float64], Any]]:
+        """Filtered conditional mean series."""
+        try:
+            mean = self._get_filtered_state().mean
+        except Exception:
+            return None
+        if self._index is not None:
+            return _to_pandas_series(mean, self._index, self._name, "mean")
+        return mean
     
     @property
     def std_resid(self) -> Optional[Union[NDArray[np.float64], Any]]:
@@ -423,12 +556,15 @@ class EstimationResult:
         
         Returns pandas Series if input was pandas, otherwise numpy array.
         """
-        if self._sigma2 is None:
+        sigma2 = self.sigma2
+        resid = self.resid
+        if sigma2 is None or resid is None:
             return None
-        resid = self.data / np.sqrt(self._sigma2)
         if self._index is not None:
-            return _to_pandas_series(resid, self._index, self._name, "std_resid")
-        return resid
+            resid_arr = np.asarray(resid)
+            sigma2_arr = np.asarray(sigma2)
+            return _to_pandas_series(resid_arr / np.sqrt(sigma2_arr), self._index, self._name, "std_resid")
+        return np.asarray(resid) / np.sqrt(np.asarray(sigma2))
     
     @property
     def index(self) -> Optional[Any]:
@@ -446,9 +582,10 @@ class EstimationResult:
         self,
         horizon: int = 10,
         *,
+        x: Any = None,
         return_variance: bool = True,
         return_volatility: bool = True,
-    ) -> Dict[str, NDArray[np.float64]]:
+    ) -> "ForecastResult":
         """
         Forecast future conditional variances and volatilities.
         
@@ -471,10 +608,9 @@ class EstimationResult:
         
         Returns
         -------
-        dict
-            Dictionary with keys:
-            - 'variance': Array of forecasted variances σ²_{T+1}, ..., σ²_{T+h}
-            - 'volatility': Array of forecasted volatilities σ_{T+1}, ..., σ_{T+h}
+        ForecastResult
+            Forecast object exposing mean, variance, residual_variance,
+            sigma2, volatility, quantile(), and var().
         
         Raises
         ------
@@ -487,77 +623,40 @@ class EstimationResult:
         >>> fc = result.forecast(horizon=10)
         >>> print(fc['volatility'])  # 10-step ahead volatility forecast
         """
-        if horizon <= 0:
-            raise ValueError("horizon must be positive")
-        
-        gp = self.garch_params
-        if gp is None:
-            raise ValueError("Cannot forecast: no GARCH component found")
-        
-        if self._sigma2 is None:
-            raise ValueError("Cannot forecast: sigma2 not available")
-        
-        omega = gp.omega
-        alpha = gp.alpha  # Array of alpha coefficients
-        beta = gp.beta    # Array of beta coefficients
-        
-        p = len(alpha)  # Number of alpha (ARCH) terms
-        q = len(beta)   # Number of beta (GARCH) terms
-        
-        # Get last values needed for recursion
-        data = self.data
-        sigma2 = self._sigma2
-        n = len(sigma2)
-        
-        # For GARCH(p,q), we need the last max(p,q) values
-        max_lag = max(p, q)
-        
-        # Get squared residuals (eps² = data²) - we use raw data as residuals
-        # for pure GARCH models
-        eps2 = data ** 2
-        
-        # Initialize forecast array
-        sigma2_forecast = np.empty(horizon, dtype=np.float64)
-        
-        # Build history arrays (most recent first for easier indexing)
-        eps2_history = list(eps2[-(max_lag):])[::-1] if p > 0 else []
-        sigma2_history = list(sigma2[-(max_lag):])[::-1] if q > 0 else []
-        
-        for h in range(horizon):
-            # Compute sigma2_{T+h+1}
-            forecast = omega
-            
-            # Add ARCH terms: sum_i alpha_i * eps²_{T+h+1-i}
-            for i, a in enumerate(alpha):
-                if h == 0 and i < len(eps2_history):
-                    # Use historical eps²
-                    forecast += a * eps2_history[i]
-                else:
-                    # For h > 0, E[eps²_{T+h}] = E[σ²_{T+h}] = sigma2_forecast[h-1-i]
-                    idx = h - 1 - i
-                    if idx >= 0:
-                        forecast += a * sigma2_forecast[idx]
-                    elif len(eps2_history) > (i - h):
-                        forecast += a * eps2_history[i - h]
-            
-            # Add GARCH terms: sum_j beta_j * sigma²_{T+h+1-j}
-            for j, b in enumerate(beta):
-                if h - j - 1 >= 0:
-                    # Use previous forecast
-                    forecast += b * sigma2_forecast[h - j - 1]
-                elif j < len(sigma2_history):
-                    # Use historical sigma²
-                    forecast += b * sigma2_history[j]
-            
-            sigma2_forecast[h] = forecast
-        
-        result = {}
-        if return_variance:
-            result['variance'] = sigma2_forecast
-        if return_volatility:
-            result['volatility'] = np.sqrt(sigma2_forecast)
-        
-        return result
+        if not return_variance or not return_volatility:
+            warnings.warn(
+                "`return_variance` and `return_volatility` are deprecated; "
+                "forecast() now returns a forecast object with both series.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        from ._evaluation import forecast_from_state
+
+        spec = self._get_resolved_spec()
+        return forecast_from_state(spec, self._get_filtered_state(), horizon, x=x)
+
+    def _get_filtered_state(self) -> "FilteredState":
+        if self._filtered_state_cache is None:
+            from ._evaluation import filter_spec
+
+            self._filtered_state_cache = filter_spec(
+                self._get_resolved_spec(),
+                self.data,
+                self.params,
+                x=getattr(self, "_fit_x", None),
+            )
+        return self._filtered_state_cache
+
+    def _get_resolved_spec(self) -> CompositeSpec:
+        if self._resolved_spec_cache is None:
+            from ._evaluation import _clone_spec_with_params
+
+            self._resolved_spec_cache = _clone_spec_with_params(self.spec, self.params)
+        return self._resolved_spec_cache
+
+    def filter(self) -> "FilteredState":
+        """Return the filtered model state at the stored parameter values."""
+        return self._get_filtered_state()
     
     # Covariance and standard errors
     # --------------------------------------------------------------------- #
@@ -617,13 +716,29 @@ class EstimationResult:
         
         # Title
         print("═" * WIDTH)
-        print(f"{'GARCH Model Estimation Results':^{WIDTH}}")
+        title = "Fixed Parameter Results" if self.parameter_source == "supplied" else "Model Estimation Results"
+        print(f"{title:^{WIDTH}}")
         print("═" * WIDTH)
         
         # Model info
         model_str = str(self.spec) if self.spec else "Unknown Model"
         print(f"Model:       {model_str}")
         print(f"Method:      {self.method}")
+        print(f"Parameters:  {self.parameter_source}")
+        if self.fit_info.solver is not None:
+            solver_line = self.fit_info.solver
+            if self.fit_info.used_default_solver is True:
+                solver_line += " (default)"
+            elif self.fit_info.used_default_solver is False:
+                solver_line += " (explicit)"
+            print(f"Solver:      {solver_line}")
+        if self.fit_info.optimization_space is not None:
+            space_line = self.fit_info.optimization_space
+            if self.fit_info.used_default_log_mode is True:
+                space_line += " (default)"
+            elif self.fit_info.used_default_log_mode is False:
+                space_line += " (explicit)"
+            print(f"Path:        {space_line}")
         print(f"Date:        {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("─" * WIDTH)
         
@@ -633,6 +748,11 @@ class EstimationResult:
         print(f"{'No. Observations:':<20} {self.n_obs:<15} {'Converged:':<15} {conv_str}")
         print(f"{'No. Parameters:':<20} {len(self.params):<15} {'Iterations:':<15} {self.n_iter}")
         print(f"{'Time Elapsed:':<20} {time_str}")
+        hold_back_line = self._format_hold_back_summary()
+        if hold_back_line is not None:
+            print(f"{'Hold-back:':<20} {hold_back_line}")
+        if self.fit_info.scale is not None:
+            print(f"{'Scale:':<20} {self.fit_info.scale:g}")
         print("─" * WIDTH)
         
         # Model fit statistics
@@ -692,8 +812,34 @@ class EstimationResult:
         """Get parameter names from components, using display names from settings."""
         _r = settings.names.resolve
         names: List[str] = []
-        
-        # GARCH / GJR-GARCH parameters
+        mean_snapshot = self._component_param_snapshots.get(Role.MEAN, {})
+        if mean_snapshot:
+            mean_sig = self._component_signatures.get(Role.MEAN, "")
+            if mean_sig.startswith("ARMA("):
+                names.append(_r("const"))
+                for i, _ in enumerate(mean_snapshot.get("ar", []), 1):
+                    names.append(_r(f"phi[{i}]"))
+                for i, _ in enumerate(mean_snapshot.get("ma", []), 1):
+                    names.append(_r(f"theta[{i}]"))
+            elif mean_sig.startswith("ARX("):
+                mean_comp = self.mean
+                if getattr(mean_comp, "constant", True):
+                    names.append(_r("const"))
+                for i, _ in enumerate(mean_snapshot.get("ar", []), 1):
+                    names.append(_r(f"phi[{i}]"))
+                for i, _ in enumerate(mean_snapshot.get("exog", []), 1):
+                    names.append(f"x[{i}]")
+            elif mean_sig.startswith("HARX("):
+                mean_comp = self.mean
+                if getattr(mean_comp, "constant", True):
+                    names.append(_r("const"))
+                mean_comp = self.mean
+                horizons = getattr(mean_comp, "horizons", [])
+                for horizon in horizons:
+                    names.append(f"har[{horizon}]")
+                for i, _ in enumerate(mean_snapshot.get("exog", []), 1):
+                    names.append(f"x[{i}]")
+
         gp = self.garch_params
         if gp is not None:
             names.append(_r("omega"))
@@ -704,8 +850,10 @@ class EstimationResult:
                     names.append(_r(f"gamma[{i}]"))
             for i, _ in enumerate(gp.beta, 1):
                 names.append(_r(f"beta[{i}]"))
-        
-        # Distribution parameters
+
+        if gp is None and self.distribution == "GED" and len(self.params) == len(names) + 2:
+            names.append(_r("sigma2"))
+
         dp = self.dist_params
         if dp.nu is not None:
             names.append(_r("nu"))
@@ -717,6 +865,19 @@ class EstimationResult:
             names.append(f"param[{len(names)}]")
         
         return names
+
+    def _format_hold_back_summary(self) -> Optional[str]:
+        requested = self.fit_info.requested_hold_back
+        effective = self.fit_info.effective_hold_back
+        if requested is None and effective is None:
+            return None
+        if requested is None:
+            return str(effective)
+        if effective is None:
+            return str(requested)
+        if requested == effective:
+            return str(effective)
+        return f"requested {requested}, effective {effective}"
     
     def _format_value(self, val: float, width: int = 12) -> str:
         """Format a numeric value with appropriate precision."""
@@ -758,8 +919,24 @@ class EstimationResult:
         
         gp = self.garch_params
         if gp is not None:
+            if isinstance(gp, EGARCHParams):
+                persistence = gp.persistence
+                print(f"{'Persistence (beta):':<35} {persistence:.6f}")
+                if gp.is_stationary:
+                    print(f"{'Stationary:':<35} Yes")
+                    log_var = gp.unconditional_log_variance
+                    print(f"{'Unconditional Log Variance:':<35} {log_var:.6f}")
+                    uncond_var = gp.unconditional_variance
+                    print(f"{'Unconditional Variance:':<35} {uncond_var:.6e}")
+                    print(f"{'Unconditional Volatility:':<35} {np.sqrt(uncond_var):.6f}")
+                else:
+                    print(f"{'Stationary:':<35} No (non-stationary log-variance recursion)")
+                if 0.0 < abs(persistence) < 1.0:
+                    half_life = np.log(0.5) / np.log(abs(persistence))
+                    print(f"{'Half-life (periods):':<35} {half_life:.1f}")
+                return
+
             persistence = gp.persistence
-            # Build persistence label from display names
             a_name = _r("alpha")
             b_name = _r("beta")
             if gp.gamma is not None:
@@ -778,7 +955,6 @@ class EstimationResult:
             else:
                 print(f"{'Stationary:':<35} No (IGARCH or explosive)")
         
-        # Half-life of volatility shocks
         if gp is not None and gp.persistence < 1.0 and gp.persistence > 0:
             half_life = np.log(0.5) / np.log(gp.persistence)
             print(f"{'Half-life (periods):':<35} {half_life:.1f}")
@@ -792,10 +968,16 @@ class EstimationResult:
         
         gp = self.garch_params
         if gp is not None:
-            if gp.persistence >= 1.0:
-                warnings_list.append("IGARCH or explosive process detected")
-            elif gp.persistence > 0.99:
-                warnings_list.append("Near-IGARCH: persistence very close to 1")
+            if isinstance(gp, EGARCHParams):
+                if abs(gp.persistence) >= 1.0:
+                    warnings_list.append("Non-stationary EGARCH log-variance recursion detected")
+                elif abs(gp.persistence) > 0.99:
+                    warnings_list.append("Near-unit-root EGARCH persistence very close to 1")
+            else:
+                if gp.persistence >= 1.0:
+                    warnings_list.append("IGARCH or explosive process detected")
+                elif gp.persistence > 0.99:
+                    warnings_list.append("Near-IGARCH: persistence very close to 1")
         
         if self.std_errors is not None:
             if np.any(~np.isfinite(self.std_errors)):
@@ -828,6 +1010,7 @@ class EstimationResult:
         result_dict: Dict[str, Any] = {
             'model': str(self.spec),
             'method': self.method,
+            'parameter_source': self.parameter_source,
             'log_likelihood': self.log_likelihood,
             'aic': self.aic,
             'bic': self.bic,
@@ -837,6 +1020,7 @@ class EstimationResult:
             'converged': self.converged,
             'n_iter': self.n_iter,
             'time_elapsed': self.time_elapsed,
+            'fit_info': self.fit_info.to_dict(),
             'parameters': {},
         }
         
@@ -955,6 +1139,11 @@ class EstimationResult:
                 raise ValueError("Skew-t distribution requires nu and lam parameters")
             u = _hansen_skewt_cdf(z, dp.nu, dp.lam)
             dist_params_dict = {"nu": dp.nu, "lam": dp.lam}
+        elif dist_name == "GED":
+            if dp.nu is None:
+                raise ValueError("GED distribution requires nu parameter")
+            u = _std_ged_cdf(z, dp.nu)
+            dist_params_dict = {"nu": dp.nu, "lam": None}
         else:
             # Default to Normal
             u = norm.cdf(z)
@@ -1188,6 +1377,6 @@ class EstimationResult:
     def __repr__(self) -> str:
         """Concise representation of result"""
         status = "converged" if self.converged else "failed"
-        return (f"EstimationResult({self.spec}, "
+        return (f"{self.__class__.__name__}({self.spec}, "
                 f"LL={self.log_likelihood:.4f}, "
                 f"{status})")

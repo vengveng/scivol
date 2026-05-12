@@ -87,9 +87,17 @@ result = spec.fit(data, method='qmle')
 # GJR-GARCH also supported with QMLE
 spec = GJRGARCH(1, 1) + Normal()
 result = spec.fit(data, method='qmle')
+
+# Joint ARMA-GARCH also supported
+spec = ARMA(2, 1) + GARCH(1, 2) + Normal()
+result = spec.fit(data, method='qmle')
 ```
 
 The sandwich covariance is: `V_robust = H^{-1} @ OPG @ H^{-1}` where H is the Hessian and OPG is the outer product of gradients.
+
+#### Optimization Path Transparency
+
+Default `log_mode` is allowed to differ across model families and densities when benchmarks justify it, but the effective path must never be silent in user-visible outputs. Fits should expose the effective solver/path via `result.fit_info` so users can see whether a result came from theta-space or z-space optimization.
 
 #### Component System
 
@@ -874,6 +882,58 @@ Each model family will need:
 - Kernel routines for optimization
 - Comprehensive tests with derivative validation
 
+### New Model Checklist
+
+Before merging a new shipped model family or distribution, make sure all of the
+following are true:
+
+1. **Scope is explicit**
+   - Supported orders are defined
+   - Supported densities are defined
+   - Constrained/log-mode support is defined
+   - Stationarity, positivity, and transform rules are written down before coding
+
+2. **User-facing API fits the composition pattern**
+   - The model is represented as a component with the correct `Role`
+   - `.fit()` works through the standard composition pipeline
+   - The public API does not introduce one-off fitting interfaces unless truly necessary
+
+3. **Prototype exists in `localdev/` first**
+   - Start with a Python/Numba reference implementation
+   - Use it to debug recursion, transforms, and parameterization
+   - Keep exploratory scripts out of shipped package code
+
+4. **Derivatives are validated independently**
+   - Value, gradient, and Hessian are checked against an AD oracle
+   - Finite differences may be used only as a coarse backup smoke test
+   - Do not ship a derivative path that has not been independently validated
+
+5. **C remains the shipped source of truth**
+   - Performance-critical computations are implemented in C
+   - Python pre-allocates buffers and passes contiguous `float64` pointers
+   - New C symbols are declared in `scivol/_csrc/scivol_core.h`, wrapped in `scivol/_core.c`, and stubbed in `scivol/_core.pyi`
+
+6. **Both optimization formulations are treated deliberately**
+   - Theta-space and log-space behavior are both considered
+   - Public solution paths remain genuinely independent where they are meant to cross-check stability
+   - If one path is approximate or unsupported, document that explicitly
+
+7. **Coverage files are updated immediately**
+   - Update `MODELS.md`
+   - Update `tests/test_dgp_estimation.py`
+   - Update `benchmark_optimizers.py`
+   - Update `README.md` if user-facing support changed
+
+8. **Defaults are earned, not assumed**
+   - Benchmark solver/log-mode choices on real data
+   - Run DGP recovery tests
+   - Confirm that chosen defaults are correct, stable, and still fast
+
+9. **Add one model family at a time**
+   - Keep commits and validation isolated by model family/distribution
+   - Preserve a clear known-good baseline before starting the next model
+   - Do not batch unrelated model additions into one verification step
+
 ---
 
 ## Notes for AI Agents
@@ -933,39 +993,46 @@ Results saved to `localdev_benchmark_results/` with recommended defaults.
 - Verifies estimation recovers true parameters (within tolerance)
 - All model/distribution combinations must have tests
 
-**Current Recommended Defaults** (as of 2026-02-08):
+**Current Recommended Defaults** (as of 2026-05-08):
 
 **GARCH(1,1) Models:**
 
 | Distribution | Solver | Log Mode | Avg Time | Conv Rate |
 |--------------|--------|----------|----------|-----------|
-| Normal       | slsqp  | True     | 0.003s   | 100%      |
-| Student-t    | slsqp  | True     | 0.008s   | 100%      |
-| Skew-t       | slsqp  | False    | 0.033s   | 100%      |
+| Normal       | slsqp  | True     | 0.002s   | 100%      |
+| Student-t    | slsqp  | True     | 0.010s   | 100%      |
+| Skew-t       | slsqp  | True     | 0.016s   | 100%      |
 
 **GJR-GARCH(1,1) Models:**
 
 | Distribution | Solver | Log Mode | Avg Time | Conv Rate |
 |--------------|--------|----------|----------|-----------|
-| Normal       | slsqp  | False    | ~0.008s  | 100%      |
-| Student-t    | slsqp  | True     | ~0.010s  | 100%      |
-| Skew-t       | slsqp  | False    | ~0.030s  | 100%      |
+| Normal       | slsqp  | True     | 0.008s   | 100%      |
+| Student-t    | slsqp  | False    | 0.010s   | 100%      |
+| Skew-t       | slsqp  | False    | 0.028s   | 100%      |
 
 **ARMA(1,1)-GARCH(1,1) Models:**
 
 | Distribution | Solver | Log Mode | Avg Time | Conv Rate |
 |--------------|--------|----------|----------|-----------|
-| Normal       | slsqp  | False    | 0.005s   | 100%      |
-| Student-t    | slsqp  | False    | 0.055s   | 100%      |
-| Skew-t       | slsqp  | False    | 0.027s   | 100%      |
+| Normal       | slsqp  | False    | 0.007s   | 100%      |
+| Student-t    | slsqp  | False    | 0.012s   | 100%      |
+| Skew-t       | slsqp  | False    | 0.029s   | 100%      |
+
+**ARMA(1,1) Models:**
+
+| Distribution | Solver | Log Mode | Avg Time | Conv Rate |
+|--------------|--------|----------|----------|-----------|
+| Normal       | slsqp  | False    | 0.001s   | 100%      |
 
 Key findings:
 - `slsqp` is fastest AND most reliable across all distributions
 - `trust` solver has poor convergence (0-67%), avoid as default
 - `nelder-mead` is reliable but 5-10x slower than `slsqp`
-- Log-mode (unconstrained) works well for GARCH Normal/Student-t
-- Constrained mode better for Skew-t and all ARMA-GARCH models
-- GJR-GARCH follows similar patterns to GARCH for optimal settings
+- Standalone `GARCH` currently benchmarks best in log-mode across Normal, Student-t, and Skew-t
+- `GJR-GARCH` is density-dependent: Normal prefers log-mode, Student-t and Skew-t prefer theta-mode
+- `ARMA` and `ARMA-GARCH` currently benchmark best in theta-mode
+- Effective defaults should remain visible via `result.fit_info`, not silent
 
 ### Questions to Ask
 

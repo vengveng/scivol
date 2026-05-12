@@ -87,6 +87,84 @@ typedef struct {
     double ell_lam_lam;
 } garch_skewt_obs_derivs_t;
 
+typedef struct {
+    double log_scale;
+    double log_scale_nu;
+    double log_scale_nunu;
+    double nll_const;
+    double nll_const_nu;
+    double nll_const_nunu;
+} garch_ged_cache_t;
+
+typedef struct {
+    double ell_h;
+    double ell_hh;
+    double ell_nu;
+    double ell_h_nu;
+    double ell_nu_nu;
+} garch_ged_obs_derivs_t;
+
+VLK_INLINE int garch_ged_precompute(double nu, garch_ged_cache_t *cache)
+{
+    if (nu <= 1.01 || !isfinite(nu)) {
+        return 0;
+    }
+
+    const double inv_nu = 1.0 / nu;
+    const double inv_nu2 = inv_nu * inv_nu;
+    const double inv_nu3 = inv_nu2 * inv_nu;
+    const double inv_nu4 = inv_nu3 * inv_nu;
+    const double digamma_inv = digamma_approx(inv_nu);
+    const double digamma_3inv = digamma_approx(3.0 * inv_nu);
+    const double trigamma_inv = trigamma_approx(inv_nu);
+    const double trigamma_3inv = trigamma_approx(3.0 * inv_nu);
+
+    const double log_scale = 0.5 * (lgamma_approx(inv_nu) - lgamma_approx(3.0 * inv_nu));
+    const double log_scale_nu = 0.5 * (-digamma_inv + 3.0 * digamma_3inv) * inv_nu2;
+    const double log_scale_nunu = 0.5 * (
+        (trigamma_inv - 9.0 * trigamma_3inv) * inv_nu4
+        + 2.0 * (digamma_inv - 3.0 * digamma_3inv) * inv_nu3
+    );
+
+    cache->log_scale = log_scale;
+    cache->log_scale_nu = log_scale_nu;
+    cache->log_scale_nunu = log_scale_nunu;
+    cache->nll_const = -log(nu) + log(2.0) + log_scale + lgamma_approx(inv_nu);
+    cache->nll_const_nu = -inv_nu + log_scale_nu - digamma_inv * inv_nu2;
+    cache->nll_const_nunu = inv_nu2 + log_scale_nunu + trigamma_inv * inv_nu4 + 2.0 * digamma_inv * inv_nu3;
+    return 1;
+}
+
+VLK_INLINE int garch_ged_obs_derivs(
+    double resid2,
+    double h,
+    double nu,
+    const garch_ged_cache_t *cache,
+    garch_ged_obs_derivs_t *out
+)
+{
+    const double h_safe = h > H_FLOOR ? h : H_FLOOR;
+    const double log_h = log(h_safe);
+    const double log_abs_e = 0.5 * log(MAX(resid2, DBL_MIN));
+    const double log_ratio = log_abs_e - 0.5 * log_h - cache->log_scale;
+    const double A = exp(nu * log_ratio);
+    const double inv_h = 1.0 / h_safe;
+    const double inv_h2 = inv_h * inv_h;
+    const double S = log_ratio - nu * cache->log_scale_nu;
+    const double S_nu = -2.0 * cache->log_scale_nu - nu * cache->log_scale_nunu;
+
+    if (!isfinite(A) || !isfinite(S) || !isfinite(S_nu)) {
+        return 0;
+    }
+
+    out->ell_h = 0.5 * (1.0 - nu * A) * inv_h;
+    out->ell_hh = (-0.5 + 0.25 * nu * (nu + 2.0) * A) * inv_h2;
+    out->ell_nu = cache->nll_const_nu + A * S;
+    out->ell_h_nu = -0.5 * A * (1.0 + nu * S) * inv_h;
+    out->ell_nu_nu = cache->nll_const_nunu + A * (S * S + S_nu);
+    return 1;
+}
+
 VLK_INLINE int garch_skewt_precompute_full(double nu, double lam, garch_skewt_cache_t *cache)
 {
     const double nu_m1 = nu - 1.0;
@@ -221,6 +299,256 @@ VLK_INLINE int garch_skewt_obs_derivs(
     out->ell_nu_lam = 0.5 * R_lam * inv_R + q * (R_nu_lam * inv_R - R_nu * R_lam * inv_R2);
     out->ell_lam_lam = q * (R_lam_lam * inv_R - R_lam * R_lam * inv_R2);
     return 1;
+}
+
+// ----------------------
+// --- GARCH | GED ------
+// ----------------------
+
+__attribute__((visibility("default"), hot, flatten))
+double garch_ll_pq_ged(const double * __restrict params,
+                       const double * __restrict residuals2,
+                       double       * __restrict sigma2,
+                       size_t n,
+                       size_t p,
+                       size_t q)
+{
+    const double omega = params[0];
+    const double *alpha = params + 1;
+    const double *beta = params + 1 + p;
+    const double nu = params[1 + p + q];
+
+    garch_ged_cache_t cache;
+    if (!garch_ged_precompute(nu, &cache)) {
+        return 1e10;
+    }
+
+    double nll = ((double)n) * cache.nll_const;
+    {
+        const double h0 = sigma2[0] > H_FLOOR ? sigma2[0] : H_FLOOR;
+        const double log_abs_e = 0.5 * log(MAX(residuals2[0], DBL_MIN));
+        const double log_ratio = log_abs_e - 0.5 * log(h0) - cache.log_scale;
+        nll += 0.5 * log(h0) + exp(nu * log_ratio);
+    }
+
+    for (size_t t = 1; t < n; ++t) {
+        sigma2[t] = sigma2_pq(omega, alpha, beta, p, q, t, residuals2, sigma2);
+        const double h_t = sigma2[t] > H_FLOOR ? sigma2[t] : H_FLOOR;
+        const double log_abs_e = 0.5 * log(MAX(residuals2[t], DBL_MIN));
+        const double log_ratio = log_abs_e - 0.5 * log(h_t) - cache.log_scale;
+        nll += 0.5 * log(h_t) + exp(nu * log_ratio);
+    }
+
+    return nll;
+}
+
+__attribute__((visibility("default"), hot, flatten))
+double garch_ll_11_ged(const double * __restrict params,
+                       const double * __restrict residuals2,
+                       double       * __restrict sigma2,
+                       size_t n)
+{
+    return garch_ll_pq_ged(params, residuals2, sigma2, n, 1, 1);
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void garch_ll_grad_pq_ged(const double * __restrict params,
+                          const double * __restrict residuals2,
+                          double       * __restrict sigma2,
+                          double       * __restrict grad,
+                          size_t n,
+                          size_t p,
+                          size_t q)
+{
+    const size_t K = 1 + p + q + 1;
+    const double omega = params[0];
+    const double *alpha = params + 1;
+    const double *beta = params + 1 + p;
+    const double nu = params[K - 1];
+
+    garch_ged_cache_t cache;
+    if (!garch_ged_precompute(nu, &cache)) {
+        dzeros(grad, K);
+        return;
+    }
+
+    dzeros(grad, K);
+
+    const size_t ring = q + 1;
+    double *d_buf = (double *)calloc(ring * K, sizeof(double));
+    if (!d_buf) return;
+
+    {
+        garch_ged_obs_derivs_t obs;
+        if (!garch_ged_obs_derivs(residuals2[0], sigma2[0], nu, &cache, &obs)) {
+            free(d_buf);
+            dzeros(grad, K);
+            return;
+        }
+        grad[K - 1] += obs.ell_nu;
+    }
+
+    for (size_t t = 1; t < n; ++t) {
+        sigma2[t] = sigma2_pq(omega, alpha, beta, p, q, t, residuals2, sigma2);
+
+        double *D_t = d_buf + (t % ring) * K;
+        dzeros(D_t, K);
+        D_t[0] = 1.0;
+        for (size_t lag = 1; lag <= q && t >= lag; ++lag) {
+            const double *D_prev = d_buf + ((t - lag) % ring) * K;
+            const double beta_l = beta[lag - 1];
+            for (size_t i = 0; i < K; ++i) {
+                D_t[i] += beta_l * D_prev[i];
+            }
+        }
+        for (size_t j = 1; j <= p && t >= j; ++j) {
+            D_t[j] += residuals2[t - j];
+        }
+        for (size_t lag = 1; lag <= q && t >= lag; ++lag) {
+            D_t[p + lag] += sigma2[t - lag];
+        }
+
+        garch_ged_obs_derivs_t obs;
+        if (!garch_ged_obs_derivs(residuals2[t], sigma2[t], nu, &cache, &obs)) {
+            free(d_buf);
+            dzeros(grad, K);
+            return;
+        }
+
+        for (size_t i = 0; i < K - 1; ++i) {
+            grad[i] += obs.ell_h * D_t[i];
+        }
+        grad[K - 1] += obs.ell_nu;
+    }
+
+    free(d_buf);
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void garch_ll_grad_11_ged(const double * __restrict params,
+                          const double * __restrict residuals2,
+                          double       * __restrict sigma2,
+                          double       * __restrict grad,
+                          size_t n)
+{
+    garch_ll_grad_pq_ged(params, residuals2, sigma2, grad, n, 1, 1);
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void garch_ll_hess_pq_ged(const double * __restrict params,
+                          const double * __restrict residuals2,
+                          double       * __restrict sigma2,
+                          double       * __restrict hess,
+                          size_t n,
+                          size_t p,
+                          size_t q)
+{
+    const size_t K = 1 + p + q + 1;
+    const size_t beta_base = 1 + p;
+    const double omega = params[0];
+    const double *alpha = params + 1;
+    const double *beta = params + beta_base;
+    const double nu = params[K - 1];
+
+    garch_ged_cache_t cache;
+    if (!garch_ged_precompute(nu, &cache)) {
+        dzeros(hess, K * K);
+        return;
+    }
+
+    dzeros(hess, K * K);
+
+    const size_t ring = q + 1;
+    double *d_buf = (double *)calloc(ring * K, sizeof(double));
+    double *C_buf = (double *)calloc(ring * K * K, sizeof(double));
+    if (!d_buf || !C_buf) {
+        free(d_buf);
+        free(C_buf);
+        return;
+    }
+
+    {
+        garch_ged_obs_derivs_t obs;
+        if (!garch_ged_obs_derivs(residuals2[0], sigma2[0], nu, &cache, &obs)) {
+            free(d_buf);
+            free(C_buf);
+            dzeros(hess, K * K);
+            return;
+        }
+        hessian_accumulate(hess, K - 1, K - 1, K, obs.ell_nu_nu);
+    }
+
+    for (size_t t = 1; t < n; ++t) {
+        sigma2[t] = sigma2_pq(omega, alpha, beta, p, q, t, residuals2, sigma2);
+
+        double *D_t = d_buf + (t % ring) * K;
+        dzeros(D_t, K);
+        D_t[0] = 1.0;
+        for (size_t lag = 1; lag <= q && t >= lag; ++lag) {
+            const double *D_prev = d_buf + ((t - lag) % ring) * K;
+            const double beta_l = beta[lag - 1];
+            for (size_t i = 0; i < K; ++i) {
+                D_t[i] += beta_l * D_prev[i];
+            }
+        }
+        for (size_t j = 1; j <= p && t >= j; ++j) {
+            D_t[j] += residuals2[t - j];
+        }
+        for (size_t lag = 1; lag <= q && t >= lag; ++lag) {
+            D_t[p + lag] += sigma2[t - lag];
+        }
+
+        double *C_t = C_buf + (t % ring) * K * K;
+        dzeros(C_t, K * K);
+        for (size_t lag = 1; lag <= q && t >= lag; ++lag) {
+            const double beta_l = beta[lag - 1];
+            const double *C_prev = C_buf + ((t - lag) % ring) * K * K;
+            const double *D_prev = d_buf + ((t - lag) % ring) * K;
+
+            for (size_t idx = 0; idx < K * K; ++idx) {
+                C_t[idx] += beta_l * C_prev[idx];
+            }
+
+            {
+                const size_t b_idx = beta_base + lag - 1;
+                for (size_t j = 0; j < K; ++j) {
+                    const double d_val = D_prev[j];
+                    C_t[b_idx * K + j] += d_val;
+                    C_t[j * K + b_idx] += d_val;
+                }
+            }
+        }
+
+        garch_ged_obs_derivs_t obs;
+        if (!garch_ged_obs_derivs(residuals2[t], sigma2[t], nu, &cache, &obs)) {
+            free(d_buf);
+            free(C_buf);
+            dzeros(hess, K * K);
+            return;
+        }
+
+        for (size_t i = 0; i < K - 1; ++i) {
+            const double d_i = D_t[i];
+            for (size_t j = i; j < K - 1; ++j) {
+                hessian_accumulate(hess, i, j, K, obs.ell_hh * d_i * D_t[j] + obs.ell_h * C_t[i * K + j]);
+            }
+            hessian_accumulate(hess, i, K - 1, K, obs.ell_h_nu * d_i);
+        }
+        hessian_accumulate(hess, K - 1, K - 1, K, obs.ell_nu_nu);
+    }
+
+    free(d_buf);
+    free(C_buf);
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void garch_ll_hess_11_ged(const double * __restrict params,
+                          const double * __restrict residuals2,
+                          double       * __restrict sigma2,
+                          double       * __restrict hess,
+                          size_t n)
+{
+    garch_ll_hess_pq_ged(params, residuals2, sigma2, hess, n, 1, 1);
 }
 
 // ----------------------

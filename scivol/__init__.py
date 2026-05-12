@@ -9,24 +9,31 @@ except ModuleNotFoundError:
         "Build wheels or run `pip install .` with a C compiler."
     )
 
-from .components import ARMA, GARCH, GJRGARCH, Normal, StudentT, SkewT, AutoDensity, AutoVol, Component
+from .components import ARMA, ARX, AutoDensity, AutoVol, Component, EGARCH, GED, GARCH, GJRGARCH, HARX, Normal, StudentT, SkewT
 from .spec import CompositeSpec
 from .roles import Role
 from ._settings import settings
-from .dcc import DCC, DCCResult, DCCParams
+from .dcc import CCC, CCCParams, CCCResult, DCC, DCCResult, DCCParams
 # from ._kernels import get_routine
 
 __all__: list[str] = [
     "ARMA",
+    "ARX",
     "AutoDensity",
     "AutoVol",
     "Component",
     "CompositeSpec",
+    "CCC",
+    "CCCParams",
+    "CCCResult",
     "DCC",
     "DCCParams",
     "DCCResult",
+    "EGARCH",
+    "GED",
     "GARCH",
     "GJRGARCH",
+    "HARX",
     # "get_routine",
     "Normal",
     "Role",

@@ -144,14 +144,14 @@ def _score_candidate(
 
 def _get_vol_map() -> Dict[str, Any]:
     """Return mapping of volatility type names to classes."""
-    from .components.vol import GARCH, GJRGARCH
-    return {'GARCH': GARCH, 'GJRGARCH': GJRGARCH}
+    from .components.vol import EGARCH, GARCH, GJRGARCH
+    return {'GARCH': GARCH, 'GJRGARCH': GJRGARCH, 'EGARCH': EGARCH}
 
 
 def _get_density_map() -> Dict[str, Any]:
     """Return mapping of density names to classes."""
-    from .components.density import Normal, StudentT, SkewT
-    return {'Normal': Normal, 'StudentT': StudentT, 'SkewT': SkewT}
+    from .components.density import GED, Normal, StudentT, SkewT
+    return {'Normal': Normal, 'StudentT': StudentT, 'SkewT': SkewT, 'GED': GED}
 
 
 # =====================================================================
@@ -166,7 +166,7 @@ def select_best_model(
     criterion: Optional[CriterionFunc] = None,
     diagnostic_kwargs: Optional[Dict[str, Any]] = None,
     diagnostic_weight: float = 50.0,
-    verbose: bool = False,
+    selection_verbose: bool = False,
     show_progress: bool = False,
     n_jobs: Optional[int] = None,
     **fit_kwargs: Any,
@@ -194,7 +194,7 @@ def select_best_model(
     diagnostic_weight : float, default 50.0
         AIC penalty per failed diagnostic test (only used when
         *criterion* is ``None``).
-    verbose : bool, default False
+    selection_verbose : bool, default False
         Print detailed per-candidate results.
     show_progress : bool, default False
         Show a tqdm progress bar.
@@ -235,6 +235,16 @@ def select_best_model(
             UserWarning,
         )
         density_candidates = ['Normal']
+
+    requested_hold_back = int(fit_kwargs.get("hold_back", 0) or 0)
+    common_sample = fit_kwargs.get("common_sample", None)
+    if common_sample is not False and vol_candidates:
+        common_hold_back = max(max(p, q) for _, p, q in vol_candidates)
+        fit_kwargs["hold_back"] = max(requested_hold_back, common_hold_back)
+        fit_kwargs["common_sample"] = True
+    else:
+        fit_kwargs["hold_back"] = requested_hold_back
+        fit_kwargs["common_sample"] = False
     
     total = len(vol_candidates) * len(density_candidates)
     n_jobs_actual = n_jobs if n_jobs is not None else get_default_workers()
@@ -265,7 +275,7 @@ def select_best_model(
             criterion=criterion,
             diagnostic_kwargs=diagnostic_kwargs,
             n_jobs=n_jobs_actual,
-            verbose=verbose,
+            selection_verbose=selection_verbose,
             show_progress=show_progress,
             **fit_kwargs,
         )
@@ -275,7 +285,7 @@ def select_best_model(
 
     candidates: List[ModelCandidate] = []
     
-    if verbose:
+    if selection_verbose:
         print(f"Auto-selecting from {total} candidate models...")
     
     # Build flat task list for progress bar wrapping
@@ -301,7 +311,7 @@ def select_best_model(
         spec = vol_cls(p, q) + density_cls()
         candidate = ModelCandidate(spec=spec)
         
-        if verbose:
+        if selection_verbose:
             print(f"  [{idx + 1}/{total}] Fitting {spec}...", end=" ")
         
         start_time = time.perf_counter()
@@ -330,7 +340,7 @@ def select_best_model(
                     if lb['reject']
                 )
             
-            if verbose:
+            if selection_verbose:
                 print(f"AIC={candidate.aic:.2f}, Score={candidate.score:.2f}")
                 
         except Exception as e:
@@ -338,7 +348,7 @@ def select_best_model(
             candidate.score = np.inf
             candidate.error_message = str(e)
             
-            if verbose:
+            if selection_verbose:
                 print(f"FAILED: {e}")
         
         candidates.append(candidate)
@@ -359,7 +369,7 @@ def select_best_model(
             f"Errors: {[c.error_message for c in candidates if c.error_message]}"
         )
     
-    if verbose:
+    if selection_verbose:
         print(f"\nBest model: {best.spec} (Score={best.score:.2f})")
     
     return best.result, candidates

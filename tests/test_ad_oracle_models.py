@@ -9,6 +9,8 @@ import pytest
 
 from scivol import ARMA, GARCH, GJRGARCH, Normal, SkewT, StudentT, _core
 from scivol._devtools.ad_oracle import (
+    arma_gjr_garch_logspace_value_grad_hess,
+    arma_gjr_garch_value_grad_hess,
     arma_garch_logspace_value_grad_hess,
     arma_garch_value_grad_hess,
     arma_normal_logspace_value_grad_hess,
@@ -22,9 +24,15 @@ from scivol._kernels.transforms import (
     jacobian_garch,
     jacobian_gjr_garch,
     jacobian_arma_garch_normal,
+    jacobian_arma_gjr_garch_normal,
+    jacobian_arma_gjr_garch_skewt,
+    jacobian_arma_gjr_garch_studentt,
     jacobian_arma_garch_skewt,
     jacobian_arma_garch_studentt,
     log_hessian_arma_garch_normal,
+    log_hessian_arma_gjr_garch_normal,
+    log_hessian_arma_gjr_garch_skewt,
+    log_hessian_arma_gjr_garch_studentt,
     log_hessian_arma_garch_skewt,
     log_hessian_arma_garch_studentt,
     log_hessian_arma_normal,
@@ -36,6 +44,9 @@ from scivol._kernels.transforms import (
     second_derivatives_gjr_garch,
     unpack_arma_normal,
     unpack_arma_garch_normal,
+    unpack_arma_gjr_garch_normal,
+    unpack_arma_gjr_garch_skewt,
+    unpack_arma_gjr_garch_studentt,
     unpack_arma_garch_skewt,
     unpack_arma_garch_studentt,
     unpack_garch,
@@ -171,6 +182,23 @@ def arma_garch_series() -> np.ndarray:
     sigma2[0] = omega / (1.0 - alpha - beta)
     for t in range(1, len(y)):
         sigma2[t] = omega + alpha * eps[t - 1] ** 2 + beta * sigma2[t - 1]
+        eps[t] = np.sqrt(sigma2[t]) * rng.standard_normal()
+        y[t] = c + phi * y[t - 1] + theta * eps[t - 1] + eps[t]
+    return y
+
+
+@pytest.fixture(scope="module")
+def arma_gjr_garch_series() -> np.ndarray:
+    rng = np.random.default_rng(2029)
+    y = np.zeros(360, dtype=np.float64)
+    sigma2 = np.zeros_like(y)
+    eps = np.zeros_like(y)
+    c, phi, theta = 0.0, 0.18, -0.12
+    omega, alpha, gamma, beta = 2e-6, 0.04, 0.05, 0.88
+    sigma2[0] = omega / (1.0 - alpha - 0.5 * gamma - beta)
+    for t in range(1, len(y)):
+        ind = 1.0 if eps[t - 1] < 0.0 else 0.0
+        sigma2[t] = omega + alpha * eps[t - 1] ** 2 + gamma * ind * eps[t - 1] ** 2 + beta * sigma2[t - 1]
         eps[t] = np.sqrt(sigma2[t]) * rng.standard_normal()
         y[t] = c + phi * y[t - 1] + theta * eps[t - 1] + eps[t]
     return y
@@ -1067,6 +1095,241 @@ class TestARMAGARCHOracle:
 
         assert result.params is not None
         assert len(result.params) == 10
+        assert np.all(np.isfinite(result.params))
+        assert result.log_likelihood > 0
+
+
+class TestARMAGJRGARCHOracle:
+    _DIST_CASES = {
+        "normal": {
+            "params_11": np.array([0.0, 0.18, -0.12, 2e-6, 0.04, 0.05, 0.88], dtype=np.float64),
+            "params_pq": np.array([0.0, 0.12, -0.08, 2e-6, 0.04, 0.02, 0.03, 0.01, 0.65, 0.15], dtype=np.float64),
+            "unpack": unpack_arma_gjr_garch_normal,
+            "jacobian": jacobian_arma_gjr_garch_normal,
+            "log_hessian": log_hessian_arma_gjr_garch_normal,
+            "density_cls": Normal,
+        },
+        "studentt": {
+            "params_11": np.array([0.0, 0.18, -0.12, 2e-6, 0.04, 0.05, 0.88, 8.0], dtype=np.float64),
+            "params_pq": np.array([0.0, 0.12, -0.08, 2e-6, 0.04, 0.02, 0.03, 0.01, 0.65, 0.15, 8.5], dtype=np.float64),
+            "unpack": unpack_arma_gjr_garch_studentt,
+            "jacobian": jacobian_arma_gjr_garch_studentt,
+            "log_hessian": log_hessian_arma_gjr_garch_studentt,
+            "density_cls": StudentT,
+        },
+        "skewt": {
+            "params_11": np.array([0.0, 0.18, -0.12, 2e-6, 0.04, 0.05, 0.88, 8.0, -0.2], dtype=np.float64),
+            "params_pq": np.array([0.0, 0.12, -0.08, 2e-6, 0.04, 0.02, 0.03, 0.01, 0.65, 0.15, 8.5, -0.2], dtype=np.float64),
+            "unpack": unpack_arma_gjr_garch_skewt,
+            "jacobian": jacobian_arma_gjr_garch_skewt,
+            "log_hessian": log_hessian_arma_gjr_garch_skewt,
+            "density_cls": SkewT,
+        },
+    }
+
+    @pytest.mark.parametrize("dist", ["normal", "studentt", "skewt"])
+    def test_arma_gjr_garch11_matches_c_nll_grad_and_hessian(
+        self,
+        arma_gjr_garch_series: np.ndarray,
+        dist: str,
+    ) -> None:
+        params = self._DIST_CASES[dist]["params_11"]
+        resid = np.zeros_like(arma_gjr_garch_series)
+        sigma2 = np.zeros_like(arma_gjr_garch_series)
+        grad = np.zeros_like(params)
+        hess = np.zeros((params.size, params.size), dtype=np.float64)
+        h0 = float(np.mean(arma_gjr_garch_series ** 2))
+
+        value_ad, grad_ad, hess_ad = arma_gjr_garch_value_grad_hess(
+            params, arma_gjr_garch_series, 1, 1, 1, 1, dist
+        )
+        value_c = getattr(_core, f"_arma_gjr_garch_nll_11_{dist}")(
+            _as_cptr(params),
+            _as_cptr(arma_gjr_garch_series),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            h0,
+            arma_gjr_garch_series.size,
+        )
+        value_grad_c = getattr(_core, f"_arma_gjr_garch_nll_grad_11_{dist}")(
+            _as_cptr(params),
+            _as_cptr(arma_gjr_garch_series),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            _as_cptr(grad),
+            h0,
+            arma_gjr_garch_series.size,
+        )
+        getattr(_core, f"_arma_gjr_garch_hess_11_{dist}")(
+            _as_cptr(params),
+            _as_cptr(arma_gjr_garch_series),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            _as_cptr(hess),
+            h0,
+            arma_gjr_garch_series.size,
+        )
+
+        rtol = 1e-4 if dist == "skewt" else 1e-6
+        atol = 1e-6 if dist == "skewt" else 1e-8
+        np.testing.assert_allclose(value_c, value_ad, rtol=rtol, atol=1e-6)
+        np.testing.assert_allclose(value_grad_c, value_ad, rtol=rtol, atol=1e-6)
+        np.testing.assert_allclose(grad, grad_ad, rtol=rtol, atol=atol)
+        np.testing.assert_allclose(hess, hess_ad, rtol=rtol, atol=atol)
+
+    @pytest.mark.parametrize("dist", ["normal", "studentt", "skewt"])
+    def test_arma_gjr_garch_pq_matches_c_nll_grad_and_hessian(
+        self,
+        arma_gjr_garch_series: np.ndarray,
+        dist: str,
+    ) -> None:
+        params = self._DIST_CASES[dist]["params_pq"]
+        resid = np.zeros_like(arma_gjr_garch_series)
+        sigma2 = np.zeros_like(arma_gjr_garch_series)
+        e0 = np.zeros(2, dtype=np.float64)
+        h0 = np.full(2, np.mean(arma_gjr_garch_series ** 2), dtype=np.float64)
+        grad = np.zeros_like(params)
+        hess = np.zeros((params.size, params.size), dtype=np.float64)
+
+        value_ad, grad_ad, hess_ad = arma_gjr_garch_value_grad_hess(
+            params, arma_gjr_garch_series, 1, 1, 2, 2, dist
+        )
+        value_c = getattr(_core, f"_arma_gjr_garch_nll_pq_{dist}")(
+            _as_cptr(params),
+            _as_cptr(arma_gjr_garch_series),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            _as_cptr(e0),
+            _as_cptr(h0),
+            arma_gjr_garch_series.size,
+            1,
+            1,
+            2,
+            2,
+        )
+        value_grad_c = getattr(_core, f"_arma_gjr_garch_nll_grad_pq_{dist}")(
+            _as_cptr(params),
+            _as_cptr(arma_gjr_garch_series),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            _as_cptr(e0),
+            _as_cptr(h0),
+            _as_cptr(grad),
+            arma_gjr_garch_series.size,
+            1,
+            1,
+            2,
+            2,
+        )
+        getattr(_core, f"_arma_gjr_garch_hess_pq_{dist}")(
+            _as_cptr(params),
+            _as_cptr(arma_gjr_garch_series),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            _as_cptr(e0),
+            _as_cptr(h0),
+            _as_cptr(hess),
+            arma_gjr_garch_series.size,
+            1,
+            1,
+            2,
+            2,
+        )
+
+        rtol = 1e-4 if dist == "skewt" else 1e-6
+        atol = 1e-6 if dist == "skewt" else 1e-8
+        np.testing.assert_allclose(value_c, value_ad, rtol=rtol, atol=1e-6)
+        np.testing.assert_allclose(value_grad_c, value_ad, rtol=rtol, atol=1e-6)
+        np.testing.assert_allclose(grad, grad_ad, rtol=rtol, atol=atol)
+        np.testing.assert_allclose(hess, hess_ad, rtol=rtol, atol=atol)
+
+    @pytest.mark.parametrize("dist", ["normal", "studentt", "skewt"])
+    def test_arma_gjr_garch_pq_log_gradient_and_hessian_match_ad(
+        self,
+        arma_gjr_garch_series: np.ndarray,
+        dist: str,
+    ) -> None:
+        case = self._DIST_CASES[dist]
+        params = case["params_pq"]
+        resid = np.zeros_like(arma_gjr_garch_series)
+        sigma2 = np.zeros_like(arma_gjr_garch_series)
+        e0 = np.zeros(2, dtype=np.float64)
+        h0 = np.full(2, np.mean(arma_gjr_garch_series ** 2), dtype=np.float64)
+        grad_theta = np.zeros_like(params)
+        grad_z = np.zeros_like(params)
+        hess_theta = np.zeros((params.size, params.size), dtype=np.float64)
+        z = case["unpack"](params, 1, 1, 2, 2)
+
+        _, grad_z_ad, hess_z_ad = arma_gjr_garch_logspace_value_grad_hess(
+            z, arma_gjr_garch_series, 1, 1, 2, 2, dist
+        )
+        getattr(_core, f"_arma_gjr_garch_nll_grad_pq_{dist}")(
+            _as_cptr(params),
+            _as_cptr(arma_gjr_garch_series),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            _as_cptr(e0),
+            _as_cptr(h0),
+            _as_cptr(grad_theta),
+            arma_gjr_garch_series.size,
+            1,
+            1,
+            2,
+            2,
+        )
+        getattr(_core, f"_arma_gjr_garch_hess_pq_{dist}")(
+            _as_cptr(params),
+            _as_cptr(arma_gjr_garch_series),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            _as_cptr(e0),
+            _as_cptr(h0),
+            _as_cptr(hess_theta),
+            arma_gjr_garch_series.size,
+            1,
+            1,
+            2,
+            2,
+        )
+        getattr(_core, f"_log_arma_gjr_garch_nll_grad_pq_{dist}")(
+            _as_cptr(z),
+            _as_cptr(arma_gjr_garch_series),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            _as_cptr(e0),
+            _as_cptr(h0),
+            _as_cptr(grad_z),
+            arma_gjr_garch_series.size,
+            1,
+            1,
+            2,
+            2,
+        )
+        grad_z_ref = case["jacobian"](params, 1, 1, 2, 2).T @ grad_theta
+        hess_z = case["log_hessian"](params, grad_theta, hess_theta, 1, 1, 2, 2)
+
+        rtol = 1e-5 if dist == "skewt" else 1e-6
+        atol = 1e-7 if dist == "skewt" else 1e-8
+        np.testing.assert_allclose(grad_z, grad_z_ref, rtol=rtol, atol=atol)
+        np.testing.assert_allclose(grad_z, grad_z_ad, rtol=rtol, atol=atol)
+        np.testing.assert_allclose(hess_z, hess_z_ad, rtol=rtol, atol=atol)
+
+    @pytest.mark.parametrize(
+        ("dist", "expected_len"),
+        [("normal", 10), ("studentt", 11), ("skewt", 12)],
+    )
+    def test_generic_arma_gjr_garch_fit_runs_in_log_mode_with_trust(
+        self,
+        arma_gjr_garch_series: np.ndarray,
+        dist: str,
+        expected_len: int,
+    ) -> None:
+        density_cls = self._DIST_CASES[dist]["density_cls"]
+        spec = ARMA(1, 1) + GJRGARCH(2, 2) + density_cls()
+        result = spec.fit(arma_gjr_garch_series, solver="trust", log_mode=True, verbose=False)
+
+        assert result.params is not None
+        assert len(result.params) == expected_len
         assert np.all(np.isfinite(result.params))
         assert result.log_likelihood > 0
 

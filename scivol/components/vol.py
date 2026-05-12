@@ -160,6 +160,104 @@ class GJRGARCH(Component):
         return self.fitted_params['omega'] / (1 - self.persistence(p_neg))
 
 
+class EGARCH(Component):
+    """
+    EGARCH(p, q) volatility component.
+
+    The shipped recursion is:
+
+        log h_t = omega
+                + sum_i alpha_i * (|z_{t-i}| - E|z|)
+                + sum_i gamma_i * z_{t-i}
+                + sum_j beta_j  * log h_{t-j}
+
+    where z_t = epsilon_t / sqrt(h_t).
+    """
+    role = Role.VOLATILITY
+
+    def __init__(self, p: int = 1, q: int = 1):
+        if p <= 0 or q <= 0:
+            raise ValueError("EGARCH orders must be positive integers.")
+        self.p = int(p)
+        self.q = int(q)
+        self.fitted_params = None
+        self.fitted_values = None
+        self._data = None
+        self._is_auto = False
+
+    def get_candidates(self) -> List[Tuple[int, int]]:
+        return [(self.p, self.q)]
+
+    @property
+    def signature(self) -> str:
+        return f"EGARCH({self.p},{self.q})"
+
+    @property
+    def n_params(self) -> int:
+        return 1 + 2 * self.p + self.q
+
+    def default_start(self, data: np.ndarray) -> np.ndarray:
+        self._data = data
+        sample_var = max(float(np.var(data)), 1e-8)
+        beta_total = 0.90
+        alpha_total = 0.10
+        beta = np.full(self.q, beta_total / self.q, dtype=np.float64)
+        alpha = np.full(self.p, alpha_total / self.p, dtype=np.float64)
+        gamma = np.zeros(self.p, dtype=np.float64)
+        gamma[0] = -0.05
+        omega = (1.0 - float(beta.sum())) * np.log(sample_var)
+        return np.concatenate([[omega], alpha, gamma, beta]).astype(np.float64)
+
+    def bounds(self) -> List[Tuple[float, float]]:
+        return [(-20.0, 10.0)] + [(-5.0, 5.0)] * self.p + [(-5.0, 5.0)] * self.p + [(-0.999, 0.999)] * self.q
+
+    def pack(self, params_dict: dict) -> np.ndarray:
+        return np.array(
+            [params_dict["omega"]] + list(params_dict["alpha"]) + list(params_dict["gamma"]) + list(params_dict["beta"]),
+            dtype=np.float64,
+        )
+
+    def unpack(self, flat_params: np.ndarray) -> dict:
+        if len(flat_params) == 0:
+            self.fitted_params = {}
+            return {}
+
+        alpha = flat_params[1 : 1 + self.p]
+        gamma = flat_params[1 + self.p : 1 + 2 * self.p]
+        beta = flat_params[1 + 2 * self.p : 1 + 2 * self.p + self.q]
+        self.fitted_params = {
+            "omega": float(flat_params[0]),
+            "alpha": [float(x) for x in alpha],
+            "gamma": [float(x) for x in gamma],
+            "beta": [float(x) for x in beta],
+        }
+        return self.fitted_params
+
+    def persistence(self) -> float:
+        if self.fitted_params is None:
+            raise RuntimeError("Model not fitted yet.")
+        return float(sum(self.fitted_params["beta"]))
+
+    def is_stationary(self) -> bool:
+        return abs(self.persistence()) < 1.0 if self.fitted_params else False
+
+    def unconditional_log_variance(self) -> float:
+        if not self.is_stationary():
+            return np.inf
+        assert self.fitted_params is not None
+        return float(self.fitted_params["omega"]) / (1.0 - self.persistence())
+
+    def unconditional_variance(self) -> float:
+        """
+        Return the log-variance fixed point exponentiated.
+
+        For EGARCH this is the stationary point of ``log h_t`` rather than the
+        exact unconditional mean of ``h_t``.
+        """
+        log_var = self.unconditional_log_variance()
+        return np.inf if not np.isfinite(log_var) else float(np.exp(log_var))
+
+
 class GARCH(Component):
     """
     GARCH(p, q) volatility component.

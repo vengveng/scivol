@@ -1,7 +1,7 @@
 /* scivol/_csrc/arma.c
  * 
- * ARMA(p,q) with constant variance (Normal errors).
- * Uses concentrated likelihood: σ² = (1/n) Σ ε_t²
+ * ARMA(p,q) with constant variance.
+ * Uses concentrated likelihood for the shipped Normal and GED surfaces.
  * 
  * Includes:
  *   - Specialized ARMA(1,1) functions (optimized)
@@ -18,6 +18,84 @@
 #include <stddef.h>
 #include <string.h>
 #include "math_and_helpers.h"
+
+#define GED_ABS_EPS 1e-12
+
+typedef struct {
+    double nu;
+    double inv_nu;
+    double log_scale;
+    double dlog_scale;
+    double d2log_scale;
+    double log_const;
+    double dlog_const;
+    double d2log_const;
+} arma_ged_cache_t;
+
+double arma_nll_pq_ged(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *e0,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma);
+
+double arma_nll_grad_pq_ged(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *e0,
+    double       *grad,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma);
+
+void arma_hess_pq_ged(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *e0,
+    double       *hess,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma);
+
+static inline int arma_ged_precompute(double nu, arma_ged_cache_t *cache) {
+    if (nu <= GED_NU_MIN || !isfinite(nu)) {
+        return 0;
+    }
+
+    const double inv_nu = 1.0 / nu;
+    const double inv_nu2 = inv_nu * inv_nu;
+    const double inv_nu3 = inv_nu2 * inv_nu;
+    const double inv_nu4 = inv_nu2 * inv_nu2;
+    const double psi_1 = digamma_approx(inv_nu);
+    const double psi_3 = digamma_approx(3.0 * inv_nu);
+    const double tri_1 = trigamma_approx(inv_nu);
+    const double tri_3 = trigamma_approx(3.0 * inv_nu);
+    const double lgamma_1 = lgamma_approx(inv_nu);
+    const double lgamma_3 = lgamma_approx(3.0 * inv_nu);
+    const double log_scale = 0.5 * (lgamma_1 - lgamma_3);
+    const double dlog_scale = (3.0 * psi_3 - psi_1) * 0.5 * inv_nu2;
+    const double d2log_scale =
+        (tri_1 - 9.0 * tri_3) * 0.5 * inv_nu4
+        - (3.0 * psi_3 - psi_1) * inv_nu3;
+    const double log_const = log(nu) - log(2.0) - log_scale - lgamma_1;
+    const double dlog_const = inv_nu - dlog_scale + psi_1 * inv_nu2;
+    const double d2log_const =
+        -inv_nu2 - d2log_scale - tri_1 * inv_nu4 - 2.0 * psi_1 * inv_nu3;
+
+    cache->nu = nu;
+    cache->inv_nu = inv_nu;
+    cache->log_scale = log_scale;
+    cache->dlog_scale = dlog_scale;
+    cache->d2log_scale = d2log_scale;
+    cache->log_const = log_const;
+    cache->dlog_const = dlog_const;
+    cache->d2log_const = d2log_const;
+    return 1;
+}
 
 /* ========================================================================== */
 /* ARMA(1,1) + Normal: NLL only (concentrated likelihood)                     */
@@ -669,6 +747,444 @@ void arma_hess_pq_normal(
                 hess[idx] = (sum_de_de[idx] + sum_e_d2[idx]) * inv_Q
                           - 2.0 * sum_e_de[i] * sum_e_de[j] * inv_Q2;
             }
+        }
+    }
+}
+
+/* ========================================================================== */
+/* ARMA(1,1) + GED: wrappers around the generic explicit-variance kernel      */
+/* ========================================================================== */
+
+__attribute__((visibility("default"), hot))
+double arma_nll_11_ged(
+    const double *params,    /* [c, phi, theta, sigma2, nu] */
+    const double *y,
+    double       *resid,
+    size_t        n
+) {
+    double e0[1] = {0.0};
+    return arma_nll_pq_ged(params, y, resid, e0, n, 1, 1);
+}
+
+__attribute__((visibility("default"), hot))
+double arma_nll_grad_11_ged(
+    const double *params,    /* [c, phi, theta, sigma2, nu] */
+    const double *y,
+    double       *resid,
+    double       *grad,
+    size_t        n
+) {
+    double e0[1] = {0.0};
+    return arma_nll_grad_pq_ged(params, y, resid, e0, grad, n, 1, 1);
+}
+
+__attribute__((visibility("default"), hot))
+void arma_hess_11_ged(
+    const double *params,    /* [c, phi, theta, sigma2, nu] */
+    const double *y,
+    double       *resid,
+    double       *hess,
+    size_t        n
+) {
+    double e0[1] = {0.0};
+    arma_hess_pq_ged(params, y, resid, e0, hess, n, 1, 1);
+}
+
+/* ========================================================================== */
+/* ARMA(p,q) + GED: NLL only (explicit constant variance)                     */
+/* ========================================================================== */
+
+__attribute__((visibility("default"), hot))
+double arma_nll_pq_ged(
+    const double *params,    /* [c, phi_1..phi_p, theta_1..theta_q, sigma2, nu] */
+    const double *y,
+    double       *resid,
+    double       *e0,        /* initial residuals (q elements, typically zeros) */
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma
+) {
+    const size_t K_mean = 1 + p_ar + q_ma;
+    const double h = params[K_mean];
+    const double nu = params[K_mean + 1];
+    arma_ged_cache_t cache;
+
+    for (size_t i = 0; i < p_ar; ++i) {
+        if (fabs(params[1 + i]) >= 1.0) return 1e10;
+    }
+    for (size_t j = 0; j < q_ma; ++j) {
+        if (fabs(params[1 + p_ar + j]) >= 1.0) return 1e10;
+    }
+    if (h <= H_FLOOR || !isfinite(h)) {
+        return 1e10;
+    }
+    if (!arma_ged_precompute(nu, &cache)) {
+        return 1e10;
+    }
+
+    size_t max_lag = (p_ar > q_ma) ? p_ar : q_ma;
+    if (max_lag == 0) max_lag = 1;
+
+    for (size_t t = 0; t < max_lag && t < n; ++t) {
+        resid[t] = (t < q_ma) ? e0[t] : 0.0;
+    }
+
+    const double log_h = log(h);
+    double nll_sum = 0.0;
+    size_t n_eff = 0;
+
+    for (size_t t = max_lag; t < n; ++t) {
+        double e_t = y[t] - params[0];
+
+        for (size_t i = 0; i < p_ar; ++i) {
+            e_t -= params[1 + i] * y[t - 1 - i];
+        }
+        for (size_t j = 0; j < q_ma; ++j) {
+            e_t -= params[1 + p_ar + j] * resid[t - 1 - j];
+        }
+
+        resid[t] = e_t;
+
+        {
+            const double abs_e = fmax(fabs(e_t), 1e-300);
+            const double log_q = nu * (log(abs_e) - 0.5 * log_h - cache.log_scale);
+            const double q_t = exp(log_q);
+            if (!isfinite(q_t)) {
+                return 1e10;
+            }
+            nll_sum += -cache.log_const + 0.5 * log_h + q_t;
+        }
+        n_eff++;
+    }
+
+    if (n_eff == 0 || !isfinite(nll_sum)) {
+        return 1e10;
+    }
+    return nll_sum / (double)n_eff;
+}
+
+/* ========================================================================== */
+/* ARMA(p,q) + GED: NLL + Gradient (explicit constant variance)               */
+/* ========================================================================== */
+
+__attribute__((visibility("default"), hot))
+double arma_nll_grad_pq_ged(
+    const double *params,    /* [c, phi_1..phi_p, theta_1..theta_q, sigma2, nu] */
+    const double *y,
+    double       *resid,
+    double       *e0,
+    double       *grad,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma
+) {
+    const size_t K_mean = 1 + p_ar + q_ma;
+    const size_t K_full = K_mean + 2;
+    const size_t sigma_idx = K_mean;
+    const size_t nu_idx = K_mean + 1;
+    const double h = params[sigma_idx];
+    const double nu = params[nu_idx];
+    arma_ged_cache_t cache;
+
+    dzeros(grad, K_full);
+
+    for (size_t i = 0; i < p_ar; ++i) {
+        if (fabs(params[1 + i]) >= 1.0) return 1e10;
+    }
+    for (size_t j = 0; j < q_ma; ++j) {
+        if (fabs(params[1 + p_ar + j]) >= 1.0) return 1e10;
+    }
+    if (h <= H_FLOOR || !isfinite(h)) {
+        return 1e10;
+    }
+    if (!arma_ged_precompute(nu, &cache)) {
+        return 1e10;
+    }
+
+    size_t max_lag = (p_ar > q_ma) ? p_ar : q_ma;
+    if (max_lag == 0) max_lag = 1;
+
+    if (K_mean > 16 || max_lag > 32) {
+        return 1e10;
+    }
+
+    double de_history[32][16];
+    dzeros((double *)de_history, 32 * 16);
+
+    for (size_t t = 0; t < max_lag && t < n; ++t) {
+        resid[t] = (t < q_ma) ? e0[t] : 0.0;
+    }
+
+    const double log_h = log(h);
+    const double inv_h = 1.0 / h;
+    double nll_sum = 0.0;
+    size_t n_eff = 0;
+
+    for (size_t t = max_lag; t < n; ++t) {
+        double e_t = y[t] - params[0];
+
+        for (size_t i = 0; i < p_ar; ++i) {
+            e_t -= params[1 + i] * y[t - 1 - i];
+        }
+        for (size_t j = 0; j < q_ma; ++j) {
+            e_t -= params[1 + p_ar + j] * resid[t - 1 - j];
+        }
+
+        resid[t] = e_t;
+
+        double de_curr[16] = {0.0};
+        de_curr[0] = -1.0;
+        for (size_t j = 0; j < q_ma; ++j) {
+            de_curr[0] -= params[1 + p_ar + j] * de_history[j][0];
+        }
+        for (size_t i = 0; i < p_ar; ++i) {
+            const size_t idx = 1 + i;
+            de_curr[idx] = -y[t - 1 - i];
+            for (size_t j = 0; j < q_ma; ++j) {
+                de_curr[idx] -= params[1 + p_ar + j] * de_history[j][idx];
+            }
+        }
+        for (size_t j = 0; j < q_ma; ++j) {
+            const size_t idx = 1 + p_ar + j;
+            de_curr[idx] = -resid[t - 1 - j];
+            for (size_t l = 0; l < q_ma; ++l) {
+                de_curr[idx] -= params[1 + p_ar + l] * de_history[l][idx];
+            }
+        }
+
+        {
+            const double e_safe = (fabs(e_t) < GED_ABS_EPS)
+                ? ((e_t < 0.0) ? -GED_ABS_EPS : GED_ABS_EPS)
+                : e_t;
+            const double abs_e = fmax(fabs(e_t), 1e-300);
+            const double log_abs_e = log(abs_e);
+            const double log_u = log_abs_e - 0.5 * log_h - cache.log_scale;
+            const double q_t = exp(nu * log_u);
+            const double m_t = log_u - nu * cache.dlog_scale;
+            const double ell_e = q_t * nu / e_safe;
+            const double ell_h = 0.5 * inv_h - 0.5 * q_t * nu * inv_h;
+            const double ell_nu = -cache.dlog_const + q_t * m_t;
+
+            if (!isfinite(q_t) || !isfinite(ell_e) || !isfinite(ell_h) || !isfinite(ell_nu)) {
+                return 1e10;
+            }
+
+            nll_sum += -cache.log_const + 0.5 * log_h + q_t;
+            for (size_t k = 0; k < K_mean; ++k) {
+                grad[k] += ell_e * de_curr[k];
+            }
+            grad[sigma_idx] += ell_h;
+            grad[nu_idx] += ell_nu;
+        }
+
+        for (size_t lag = max_lag - 1; lag > 0; --lag) {
+            for (size_t k = 0; k < K_mean; ++k) {
+                de_history[lag][k] = de_history[lag - 1][k];
+            }
+        }
+        for (size_t k = 0; k < K_mean; ++k) {
+            de_history[0][k] = de_curr[k];
+        }
+
+        n_eff++;
+    }
+
+    if (n_eff == 0 || !isfinite(nll_sum)) {
+        dzeros(grad, K_full);
+        return 1e10;
+    }
+
+    {
+        const double scale = 1.0 / (double)n_eff;
+        for (size_t k = 0; k < K_full; ++k) {
+            grad[k] *= scale;
+        }
+        return nll_sum * scale;
+    }
+}
+
+/* ========================================================================== */
+/* ARMA(p,q) + GED: Hessian (explicit constant variance)                      */
+/* ========================================================================== */
+
+__attribute__((visibility("default"), hot))
+void arma_hess_pq_ged(
+    const double *params,    /* [c, phi_1..phi_p, theta_1..theta_q, sigma2, nu] */
+    const double *y,
+    double       *resid,
+    double       *e0,
+    double       *hess,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma
+) {
+    const size_t K_mean = 1 + p_ar + q_ma;
+    const size_t K_full = K_mean + 2;
+    const size_t sigma_idx = K_mean;
+    const size_t nu_idx = K_mean + 1;
+    const double h = params[sigma_idx];
+    const double nu = params[nu_idx];
+    arma_ged_cache_t cache;
+
+    dzeros(hess, K_full * K_full);
+
+    for (size_t i = 0; i < p_ar; ++i) {
+        if (fabs(params[1 + i]) >= 1.0) return;
+    }
+    for (size_t j = 0; j < q_ma; ++j) {
+        if (fabs(params[1 + p_ar + j]) >= 1.0) return;
+    }
+    if (h <= H_FLOOR || !isfinite(h)) {
+        return;
+    }
+    if (!arma_ged_precompute(nu, &cache)) {
+        return;
+    }
+
+    size_t max_lag = (p_ar > q_ma) ? p_ar : q_ma;
+    if (max_lag == 0) max_lag = 1;
+
+    if (K_mean > 16 || max_lag > 32) {
+        return;
+    }
+
+    double de_history[32][16];
+    double d2_history[32][16][16];
+    dzeros((double *)de_history, 32 * 16);
+    dzeros((double *)d2_history, 32 * 16 * 16);
+
+    for (size_t t = 0; t < max_lag && t < n; ++t) {
+        resid[t] = (t < q_ma) ? e0[t] : 0.0;
+    }
+
+    const double log_h = log(h);
+    const double inv_h = 1.0 / h;
+    const double inv_h2 = inv_h * inv_h;
+    const double m_prime = -2.0 * cache.dlog_scale - nu * cache.d2log_scale;
+    double nll_sum = 0.0;
+    size_t n_eff = 0;
+
+    for (size_t t = max_lag; t < n; ++t) {
+        double e_t = y[t] - params[0];
+
+        for (size_t i = 0; i < p_ar; ++i) {
+            e_t -= params[1 + i] * y[t - 1 - i];
+        }
+        for (size_t j = 0; j < q_ma; ++j) {
+            e_t -= params[1 + p_ar + j] * resid[t - 1 - j];
+        }
+
+        resid[t] = e_t;
+
+        double de_curr[16] = {0.0};
+        de_curr[0] = -1.0;
+        for (size_t j = 0; j < q_ma; ++j) {
+            de_curr[0] -= params[1 + p_ar + j] * de_history[j][0];
+        }
+        for (size_t i = 0; i < p_ar; ++i) {
+            const size_t idx = 1 + i;
+            de_curr[idx] = -y[t - 1 - i];
+            for (size_t j = 0; j < q_ma; ++j) {
+                de_curr[idx] -= params[1 + p_ar + j] * de_history[j][idx];
+            }
+        }
+        for (size_t j = 0; j < q_ma; ++j) {
+            const size_t idx = 1 + p_ar + j;
+            de_curr[idx] = -resid[t - 1 - j];
+            for (size_t l = 0; l < q_ma; ++l) {
+                de_curr[idx] -= params[1 + p_ar + l] * de_history[l][idx];
+            }
+        }
+
+        double d2_curr[16][16];
+        dzeros((double *)d2_curr, 16 * 16);
+        for (size_t l = 0; l < q_ma; ++l) {
+            const double theta_l = params[1 + p_ar + l];
+            const size_t theta_idx = 1 + p_ar + l;
+            for (size_t i = 0; i < K_mean; ++i) {
+                for (size_t j = 0; j < K_mean; ++j) {
+                    d2_curr[i][j] -= theta_l * d2_history[l][i][j];
+                }
+            }
+            for (size_t j = 0; j < K_mean; ++j) {
+                d2_curr[theta_idx][j] -= de_history[l][j];
+                d2_curr[j][theta_idx] -= de_history[l][j];
+            }
+        }
+
+        {
+            const double e_safe = (fabs(e_t) < GED_ABS_EPS)
+                ? ((e_t < 0.0) ? -GED_ABS_EPS : GED_ABS_EPS)
+                : e_t;
+            const double abs_e = fmax(fabs(e_t), 1e-300);
+            const double log_abs_e = log(abs_e);
+            const double log_u = log_abs_e - 0.5 * log_h - cache.log_scale;
+            const double q_t = exp(nu * log_u);
+            const double m_t = log_u - nu * cache.dlog_scale;
+            const double inv_e = 1.0 / e_safe;
+            const double inv_e2 = inv_e * inv_e;
+            const double ell_e = q_t * nu * inv_e;
+            const double ell_ee = q_t * nu * (nu - 1.0) * inv_e2;
+            const double ell_eh = -0.5 * q_t * nu * nu * inv_h * inv_e;
+            const double ell_enu = q_t * (1.0 + nu * m_t) * inv_e;
+            const double ell_hh = 0.25 * (-2.0 + q_t * nu * (nu + 2.0)) * inv_h2;
+            const double ell_hnu = -0.5 * q_t * (1.0 + nu * m_t) * inv_h;
+            const double ell_nunu = -cache.d2log_const + q_t * (m_t * m_t + m_prime);
+
+            if (!isfinite(q_t) || !isfinite(ell_ee) || !isfinite(ell_hh) || !isfinite(ell_nunu)) {
+                dzeros(hess, K_full * K_full);
+                return;
+            }
+
+            nll_sum += -cache.log_const + 0.5 * log_h + q_t;
+
+            for (size_t i = 0; i < K_mean; ++i) {
+                for (size_t j = 0; j < K_mean; ++j) {
+                    hess[i * K_full + j] += ell_ee * de_curr[i] * de_curr[j] + ell_e * d2_curr[i][j];
+                }
+                hess[i * K_full + sigma_idx] += ell_eh * de_curr[i];
+                hess[sigma_idx * K_full + i] += ell_eh * de_curr[i];
+                hess[i * K_full + nu_idx] += ell_enu * de_curr[i];
+                hess[nu_idx * K_full + i] += ell_enu * de_curr[i];
+            }
+
+            hess[sigma_idx * K_full + sigma_idx] += ell_hh;
+            hess[sigma_idx * K_full + nu_idx] += ell_hnu;
+            hess[nu_idx * K_full + sigma_idx] += ell_hnu;
+            hess[nu_idx * K_full + nu_idx] += ell_nunu;
+        }
+
+        for (size_t lag = max_lag - 1; lag > 0; --lag) {
+            for (size_t k = 0; k < K_mean; ++k) {
+                de_history[lag][k] = de_history[lag - 1][k];
+            }
+            for (size_t i = 0; i < K_mean; ++i) {
+                for (size_t j = 0; j < K_mean; ++j) {
+                    d2_history[lag][i][j] = d2_history[lag - 1][i][j];
+                }
+            }
+        }
+        for (size_t k = 0; k < K_mean; ++k) {
+            de_history[0][k] = de_curr[k];
+        }
+        for (size_t i = 0; i < K_mean; ++i) {
+            for (size_t j = 0; j < K_mean; ++j) {
+                d2_history[0][i][j] = d2_curr[i][j];
+            }
+        }
+
+        n_eff++;
+    }
+
+    if (n_eff == 0 || !isfinite(nll_sum)) {
+        dzeros(hess, K_full * K_full);
+        return;
+    }
+
+    {
+        const double scale = 1.0 / (double)n_eff;
+        for (size_t i = 0; i < K_full * K_full; ++i) {
+            hess[i] *= scale;
         }
     }
 }

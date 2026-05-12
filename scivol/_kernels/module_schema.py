@@ -117,7 +117,16 @@ def _build(p: int, q: int, r: int, s: int) -> Routine:
         mean.unpack(res.x[slice_map[mean]])
         vol.unpack (res.x[slice_map[vol]])
 
-        return EstimationResult(spec, res, y)
+        return EstimationResult(
+            spec,
+            res,
+            y,
+            fit_info={
+                "solver": "nelder-mead",
+                "log_mode": False,
+                "optimization_space": "theta-space",
+            },
+        )
 
     return Routine(
         uid=uid,

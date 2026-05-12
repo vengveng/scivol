@@ -72,6 +72,11 @@ def _build(p: int, q: int) -> Routine:
         from scipy.optimize import LinearConstraint
 
         t_start = time.perf_counter()
+        fit_info = {
+            "solver": solver.lower(),
+            "log_mode": bool(log_mode),
+            "optimization_space": "z-space" if log_mode else "theta-space",
+        }
         
         n = resid.size
         sigma2 = np.zeros(len(resid), dtype=np.float64)
@@ -173,7 +178,14 @@ def _build(p: int, q: int) -> Routine:
             # Compute final sigma2 for storage
             _compute_garch_variance(res.x, resid2, sigma2, p, q)
             
-            return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
+            return EstimationResult(
+                spec,
+                res,
+                resid,
+                sigma2=sigma2.copy(),
+                time_elapsed=t_elapsed,
+                fit_info=fit_info,
+            )
         
         else:
             from .transforms import log_hessian_garch, pack_garch_c, unpack_garch
@@ -278,7 +290,14 @@ def _build(p: int, q: int) -> Routine:
             # Compute final sigma2 for storage
             _compute_garch_variance(theta_hat, resid2, sigma2, p, q)
             
-            return EstimationResult(spec, res, resid, sigma2=sigma2.copy(), time_elapsed=t_elapsed)
+            return EstimationResult(
+                spec,
+                res,
+                resid,
+                sigma2=sigma2.copy(),
+                time_elapsed=t_elapsed,
+                fit_info=fit_info,
+            )
 
     return Routine(
         uid=uid,

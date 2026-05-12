@@ -75,6 +75,11 @@ def _build(p: int, q: int) -> Routine:
         from scipy.optimize import minimize, LinearConstraint
 
         t_start = time.perf_counter()
+        fit_info = {
+            "solver": solver.lower(),
+            "log_mode": bool(log_mode),
+            "optimization_space": "z-space" if log_mode else "theta-space",
+        }
 
         n = resid.size
         resid_c = np.ascontiguousarray(resid, dtype=np.float64)
@@ -201,6 +206,7 @@ def _build(p: int, q: int) -> Routine:
                 time_elapsed=t_elapsed,
                 hessian=H_theta,
                 cov_matrix=cov_matrix,
+                fit_info=fit_info,
             )
 
         else:
@@ -299,6 +305,7 @@ def _build(p: int, q: int) -> Routine:
                 time_elapsed=t_elapsed,
                 hessian=H_theta,
                 cov_matrix=cov_matrix,
+                fit_info=fit_info,
             )
 
     return Routine(

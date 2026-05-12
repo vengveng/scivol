@@ -266,6 +266,100 @@ static inline int skewt_obs_derivs(
     return 1;
 }
 
+typedef struct {
+    double nu;
+    double log_scale;
+    double dlog_scale;
+    double d2log_scale;
+    double log_const;
+    double dlog_const;
+    double d2log_const;
+} ged_cache_t;
+
+typedef struct {
+    double value;
+    double ell_e;
+    double ell_h;
+    double ell_nu;
+    double ell_ee;
+    double ell_eh;
+    double ell_hh;
+    double ell_e_nu;
+    double ell_h_nu;
+    double ell_nu_nu;
+} ged_obs_derivs_t;
+
+static inline int ged_precompute_full(double nu, ged_cache_t *cache) {
+    if (nu <= GED_NU_MIN || !isfinite(nu)) {
+        return 0;
+    }
+
+    const double inv_nu = 1.0 / nu;
+    const double inv_nu2 = inv_nu * inv_nu;
+    const double inv_nu3 = inv_nu2 * inv_nu;
+    const double inv_nu4 = inv_nu2 * inv_nu2;
+    const double psi_1 = digamma_approx(inv_nu);
+    const double psi_3 = digamma_approx(3.0 * inv_nu);
+    const double tri_1 = trigamma_approx(inv_nu);
+    const double tri_3 = trigamma_approx(3.0 * inv_nu);
+    const double lgamma_1 = lgamma_approx(inv_nu);
+    const double lgamma_3 = lgamma_approx(3.0 * inv_nu);
+
+    cache->nu = nu;
+    cache->log_scale = 0.5 * (lgamma_1 - lgamma_3);
+    cache->dlog_scale = (3.0 * psi_3 - psi_1) * 0.5 * inv_nu2;
+    cache->d2log_scale =
+        (tri_1 - 9.0 * tri_3) * 0.5 * inv_nu4
+        - (3.0 * psi_3 - psi_1) * inv_nu3;
+    cache->log_const = log(nu) - log(2.0) - cache->log_scale - lgamma_1;
+    cache->dlog_const = inv_nu - cache->dlog_scale + psi_1 * inv_nu2;
+    cache->d2log_const =
+        -inv_nu2 - cache->d2log_scale - tri_1 * inv_nu4 - 2.0 * psi_1 * inv_nu3;
+    return 1;
+}
+
+static inline int ged_obs_derivs(
+    double e,
+    double h,
+    double nu,
+    const ged_cache_t *cache,
+    ged_obs_derivs_t *out
+) {
+    if (h < H_FLOOR || !isfinite(h)) {
+        return 0;
+    }
+
+    const double abs_e = fmax(fabs(e), 1e-300);
+    const double e_safe = (fabs(e) < 1e-12) ? ((e < 0.0) ? -1e-12 : 1e-12) : e;
+    const double log_h = log(h);
+    const double log_abs_e = log(abs_e);
+    const double L = log_abs_e - 0.5 * log_h - cache->log_scale;
+    const double log_r = nu * L;
+    const double r = exp(log_r);
+    if (!isfinite(r)) {
+        return 0;
+    }
+
+    const double inv_h = 1.0 / h;
+    const double inv_h2 = inv_h * inv_h;
+    const double inv_e = 1.0 / e_safe;
+    const double inv_e2 = inv_e * inv_e;
+    const double m = L - nu * cache->dlog_scale;
+    const double m_prime = -2.0 * cache->dlog_scale - nu * cache->d2log_scale;
+
+    out->value = -cache->log_const + 0.5 * log_h + r;
+    out->ell_e = nu * r * inv_e;
+    out->ell_h = 0.5 * inv_h - 0.5 * nu * r * inv_h;
+    out->ell_nu = -cache->dlog_const + r * m;
+    out->ell_ee = nu * (nu - 1.0) * r * inv_e2;
+    out->ell_eh = -0.5 * nu * out->ell_e * inv_h;
+    out->ell_hh = -0.5 * inv_h2 + 0.25 * nu * (nu + 2.0) * r * inv_h2;
+    out->ell_e_nu = r * (1.0 + nu * m) * inv_e;
+    out->ell_h_nu = -0.5 * r * (1.0 + nu * m) * inv_h;
+    out->ell_nu_nu = -cache->d2log_const + r * (m * m + m_prime);
+    return 1;
+}
+
 static inline size_t arma_garch_max_lag(
     size_t p_ar,
     size_t q_ma,
@@ -1349,6 +1443,224 @@ double arma_garch_nll_grad_pq_normal(
     free(de_curr);
     free(dh_curr);
     return sum_nll;
+}
+
+/* ========================================================================== */
+/* General ARMA(p,q)-GARCH(P,Q) + Normal: OPG                                 */
+/* ========================================================================== */
+
+__attribute__((visibility("default"), hot))
+void arma_garch_opg_pq_normal(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *e0,
+    double       *h0,
+    double       *opg,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma,
+    size_t        P_arch,
+    size_t        Q_garch
+) {
+    const size_t max_lag = arma_garch_max_lag(p_ar, q_ma, P_arch, Q_garch);
+    size_t de_lags = q_ma > P_arch ? q_ma : P_arch;
+    size_t dh_lags = Q_garch > 0 ? Q_garch : 1;
+    const size_t K_mean = 1 + p_ar + q_ma;
+    const size_t omega_idx = K_mean;
+    const size_t alpha_idx = omega_idx + 1;
+    const size_t beta_idx = alpha_idx + P_arch;
+    const size_t K = beta_idx + Q_garch;
+
+    memset(opg, 0, K * K * sizeof(double));
+
+    if (de_lags == 0) de_lags = 1;
+    if (n <= max_lag) {
+        return;
+    }
+
+    const size_t n_eff = n - max_lag;
+
+    /* Unpack parameters */
+    size_t idx = 0;
+    const double c = params[idx++];
+    const double *phi = params + idx;
+    idx += p_ar;
+    const double *theta = params + idx;
+    idx += q_ma;
+    const double omega = params[idx++];
+    const double *alpha = params + idx;
+    idx += P_arch;
+    const double *beta = params + idx;
+
+    if (omega <= 0.0) {
+        return;
+    }
+
+    double alpha_sum = 0.0;
+    double beta_sum = 0.0;
+    for (size_t i = 0; i < P_arch; ++i) {
+        if (alpha[i] < 0.0) {
+            return;
+        }
+        alpha_sum += alpha[i];
+    }
+    for (size_t j = 0; j < Q_garch; ++j) {
+        if (beta[j] < 0.0) {
+            return;
+        }
+        beta_sum += beta[j];
+    }
+    if (alpha_sum + beta_sum >= 1.0) {
+        return;
+    }
+
+    for (size_t i = 0; i < max_lag; ++i) {
+        resid[i] = e0[i];
+        sigma2[i] = h0[i];
+        if (sigma2[i] < H_FLOOR || !isfinite(sigma2[i])) {
+            memset(opg, 0, K * K * sizeof(double));
+            return;
+        }
+    }
+
+    double *de_hist = (double *)calloc(de_lags * K, sizeof(double));
+    double *dh_hist = (double *)calloc(dh_lags * K, sizeof(double));
+    double *de_curr = (double *)calloc(K, sizeof(double));
+    double *dh_curr = (double *)calloc(K, sizeof(double));
+    double *score_t = (double *)calloc(K, sizeof(double));
+    if (de_hist == NULL || dh_hist == NULL || de_curr == NULL || dh_curr == NULL || score_t == NULL) {
+        free(de_hist);
+        free(dh_hist);
+        free(de_curr);
+        free(dh_curr);
+        free(score_t);
+        memset(opg, 0, K * K * sizeof(double));
+        return;
+    }
+
+    for (size_t t = max_lag; t < n; ++t) {
+        double mu_t = c;
+        for (size_t i = 0; i < p_ar; ++i) {
+            mu_t += phi[i] * y[t - 1 - i];
+        }
+        for (size_t j = 0; j < q_ma; ++j) {
+            mu_t += theta[j] * resid[t - 1 - j];
+        }
+        resid[t] = y[t] - mu_t;
+
+        memset(de_curr, 0, K * sizeof(double));
+
+        de_curr[0] = -1.0;
+        for (size_t j = 0; j < q_ma; ++j) {
+            de_curr[0] -= theta[j] * de_hist[j * K];
+        }
+
+        for (size_t i = 0; i < p_ar; ++i) {
+            const size_t param_idx = 1 + i;
+            de_curr[param_idx] = -y[t - 1 - i];
+            for (size_t j = 0; j < q_ma; ++j) {
+                de_curr[param_idx] -= theta[j] * de_hist[j * K + param_idx];
+            }
+        }
+
+        for (size_t j = 0; j < q_ma; ++j) {
+            const size_t param_idx = 1 + p_ar + j;
+            de_curr[param_idx] = -resid[t - 1 - j];
+            for (size_t l = 0; l < q_ma; ++l) {
+                de_curr[param_idx] -= theta[l] * de_hist[l * K + param_idx];
+            }
+        }
+
+        for (size_t k = omega_idx; k < K; ++k) {
+            for (size_t j = 0; j < q_ma; ++j) {
+                de_curr[k] -= theta[j] * de_hist[j * K + k];
+            }
+        }
+
+        double h_t = omega;
+        for (size_t i = 0; i < P_arch; ++i) {
+            const double e_lag = resid[t - 1 - i];
+            h_t += alpha[i] * e_lag * e_lag;
+        }
+        for (size_t j = 0; j < Q_garch; ++j) {
+            h_t += beta[j] * sigma2[t - 1 - j];
+        }
+        sigma2[t] = h_t;
+
+        if (h_t < H_FLOOR || !isfinite(h_t)) {
+            memset(opg, 0, K * K * sizeof(double));
+            free(de_hist);
+            free(dh_hist);
+            free(de_curr);
+            free(dh_curr);
+            free(score_t);
+            return;
+        }
+
+        memset(dh_curr, 0, K * sizeof(double));
+        for (size_t k = 0; k < K; ++k) {
+            double val = (k == omega_idx) ? 1.0 : 0.0;
+
+            for (size_t i = 0; i < P_arch; ++i) {
+                const double e_lag = resid[t - 1 - i];
+                val += alpha[i] * (2.0 * e_lag * de_hist[i * K + k]);
+                if (k == alpha_idx + i) {
+                    val += e_lag * e_lag;
+                }
+            }
+
+            for (size_t j = 0; j < Q_garch; ++j) {
+                val += beta[j] * dh_hist[j * K + k];
+                if (k == beta_idx + j) {
+                    val += sigma2[t - 1 - j];
+                }
+            }
+
+            dh_curr[k] = val;
+        }
+
+        {
+            const double e_t = resid[t];
+            const double ell_e = e_t / h_t;
+            const double ell_h = 0.5 * (1.0 / h_t - e_t * e_t / (h_t * h_t));
+
+            for (size_t k = 0; k < K; ++k) {
+                score_t[k] = ell_e * de_curr[k] + ell_h * dh_curr[k];
+            }
+        }
+
+        for (size_t i = 0; i < K; ++i) {
+            const double s_i = score_t[i];
+            for (size_t j = 0; j < K; ++j) {
+                opg[i * K + j] += s_i * score_t[j];
+            }
+        }
+
+        if (de_lags > 1) {
+            memmove(de_hist + K, de_hist, (de_lags - 1) * K * sizeof(double));
+        }
+        memcpy(de_hist, de_curr, K * sizeof(double));
+
+        if (dh_lags > 1) {
+            memmove(dh_hist + K, dh_hist, (dh_lags - 1) * K * sizeof(double));
+        }
+        memcpy(dh_hist, dh_curr, K * sizeof(double));
+    }
+
+    {
+        const double scale = 1.0 / (double)n_eff;
+        for (size_t idx_out = 0; idx_out < K * K; ++idx_out) {
+            opg[idx_out] *= scale;
+        }
+    }
+
+    free(de_hist);
+    free(dh_hist);
+    free(de_curr);
+    free(dh_curr);
+    free(score_t);
 }
 
 /* ========================================================================== */
@@ -2949,4 +3261,629 @@ void arma_garch_hess_11_skewt(
     double e0[1] = {0.0};
     double h0_arr[1] = {h0};
     arma_garch_hess_pq_skewt(params, y, resid, sigma2, e0, h0_arr, hess, n, 1, 1, 1, 1);
+}
+
+/* ========================================================================== */
+/* General ARMA(p,q)-GARCH(P,Q) + GED                                         */
+/* ========================================================================== */
+
+__attribute__((visibility("default"), hot))
+double arma_garch_nll_pq_ged(
+    const double *params,    /* [..., nu] */
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *e0,
+    double       *h0,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma,
+    size_t        P_arch,
+    size_t        Q_garch
+) {
+    const size_t max_lag = arma_garch_max_lag(p_ar, q_ma, P_arch, Q_garch);
+    const size_t K_base = 1 + p_ar + q_ma + 1 + P_arch + Q_garch;
+    const double nu = params[K_base];
+    ged_cache_t cache;
+
+    if (n <= max_lag || !ged_precompute_full(nu, &cache)) {
+        return 1e10;
+    }
+
+    size_t idx = 0;
+    const double c = params[idx++];
+    const double *phi = params + idx;
+    idx += p_ar;
+    const double *theta = params + idx;
+    idx += q_ma;
+    const double omega = params[idx++];
+    const double *alpha = params + idx;
+    idx += P_arch;
+    const double *beta = params + idx;
+
+    if (omega <= 0.0) return 1e10;
+
+    double alpha_sum = 0.0;
+    double beta_sum = 0.0;
+    for (size_t i = 0; i < P_arch; ++i) {
+        if (alpha[i] < 0.0) return 1e10;
+        alpha_sum += alpha[i];
+    }
+    for (size_t j = 0; j < Q_garch; ++j) {
+        if (beta[j] < 0.0) return 1e10;
+        beta_sum += beta[j];
+    }
+    if (alpha_sum + beta_sum >= 1.0) {
+        return 1e10;
+    }
+
+    for (size_t i = 0; i < max_lag; ++i) {
+        resid[i] = e0[i];
+        sigma2[i] = h0[i];
+        if (sigma2[i] < H_FLOOR || !isfinite(sigma2[i])) {
+            return 1e10;
+        }
+    }
+
+    double sum_nll = 0.0;
+    for (size_t t = max_lag; t < n; ++t) {
+        double mu_t = c;
+        for (size_t i = 0; i < p_ar; ++i) {
+            mu_t += phi[i] * y[t - 1 - i];
+        }
+        for (size_t j = 0; j < q_ma; ++j) {
+            mu_t += theta[j] * resid[t - 1 - j];
+        }
+        resid[t] = y[t] - mu_t;
+
+        double h_t = omega;
+        for (size_t i = 0; i < P_arch; ++i) {
+            const double e_lag = resid[t - 1 - i];
+            h_t += alpha[i] * e_lag * e_lag;
+        }
+        for (size_t j = 0; j < Q_garch; ++j) {
+            h_t += beta[j] * sigma2[t - 1 - j];
+        }
+        sigma2[t] = h_t;
+
+        ged_obs_derivs_t obs;
+        if (!ged_obs_derivs(resid[t], h_t, nu, &cache, &obs)) {
+            return 1e10;
+        }
+        sum_nll += obs.value;
+    }
+
+    return sum_nll / (double)(n - max_lag);
+}
+
+__attribute__((visibility("default"), hot))
+double arma_garch_nll_grad_pq_ged(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *e0,
+    double       *h0,
+    double       *grad,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma,
+    size_t        P_arch,
+    size_t        Q_garch
+) {
+    const size_t max_lag = arma_garch_max_lag(p_ar, q_ma, P_arch, Q_garch);
+    size_t de_lags = q_ma > P_arch ? q_ma : P_arch;
+    size_t dh_lags = Q_garch > 0 ? Q_garch : 1;
+    const size_t K_mean = 1 + p_ar + q_ma;
+    const size_t omega_idx = K_mean;
+    const size_t alpha_idx = omega_idx + 1;
+    const size_t beta_idx = alpha_idx + P_arch;
+    const size_t K_base = beta_idx + Q_garch;
+    const size_t nu_idx = K_base;
+    const size_t K = K_base + 1;
+    const double nu = params[K_base];
+    ged_cache_t cache;
+
+    if (de_lags == 0) de_lags = 1;
+    dzeros(grad, K);
+
+    if (n <= max_lag || !ged_precompute_full(nu, &cache)) {
+        return 1e10;
+    }
+
+    const size_t n_eff = n - max_lag;
+    size_t idx = 0;
+    const double c = params[idx++];
+    const double *phi = params + idx;
+    idx += p_ar;
+    const double *theta = params + idx;
+    idx += q_ma;
+    const double omega = params[idx++];
+    const double *alpha = params + idx;
+    idx += P_arch;
+    const double *beta = params + idx;
+
+    if (omega <= 0.0) {
+        return 1e10;
+    }
+
+    double alpha_sum = 0.0;
+    double beta_sum = 0.0;
+    for (size_t i = 0; i < P_arch; ++i) {
+        if (alpha[i] < 0.0) return 1e10;
+        alpha_sum += alpha[i];
+    }
+    for (size_t j = 0; j < Q_garch; ++j) {
+        if (beta[j] < 0.0) return 1e10;
+        beta_sum += beta[j];
+    }
+    if (alpha_sum + beta_sum >= 1.0) {
+        return 1e10;
+    }
+
+    for (size_t i = 0; i < max_lag; ++i) {
+        resid[i] = e0[i];
+        sigma2[i] = h0[i];
+        if (sigma2[i] < H_FLOOR || !isfinite(sigma2[i])) {
+            return 1e10;
+        }
+    }
+
+    double *de_hist = (double *)calloc(de_lags * K_base, sizeof(double));
+    double *dh_hist = (double *)calloc(dh_lags * K_base, sizeof(double));
+    double *de_curr = (double *)calloc(K_base, sizeof(double));
+    double *dh_curr = (double *)calloc(K_base, sizeof(double));
+    if (de_hist == NULL || dh_hist == NULL || de_curr == NULL || dh_curr == NULL) {
+        free(de_hist);
+        free(dh_hist);
+        free(de_curr);
+        free(dh_curr);
+        return 1e10;
+    }
+
+    double sum_nll = 0.0;
+    for (size_t t = max_lag; t < n; ++t) {
+        double mu_t = c;
+        for (size_t i = 0; i < p_ar; ++i) {
+            mu_t += phi[i] * y[t - 1 - i];
+        }
+        for (size_t j = 0; j < q_ma; ++j) {
+            mu_t += theta[j] * resid[t - 1 - j];
+        }
+        resid[t] = y[t] - mu_t;
+
+        dzeros(de_curr, K_base);
+        de_curr[0] = -1.0;
+        for (size_t j = 0; j < q_ma; ++j) {
+            de_curr[0] -= theta[j] * de_hist[j * K_base];
+        }
+        for (size_t i = 0; i < p_ar; ++i) {
+            const size_t param_idx = 1 + i;
+            de_curr[param_idx] = -y[t - 1 - i];
+            for (size_t j = 0; j < q_ma; ++j) {
+                de_curr[param_idx] -= theta[j] * de_hist[j * K_base + param_idx];
+            }
+        }
+        for (size_t j = 0; j < q_ma; ++j) {
+            const size_t param_idx = 1 + p_ar + j;
+            de_curr[param_idx] = -resid[t - 1 - j];
+            for (size_t l = 0; l < q_ma; ++l) {
+                de_curr[param_idx] -= theta[l] * de_hist[l * K_base + param_idx];
+            }
+        }
+        for (size_t k = omega_idx; k < K_base; ++k) {
+            for (size_t j = 0; j < q_ma; ++j) {
+                de_curr[k] -= theta[j] * de_hist[j * K_base + k];
+            }
+        }
+
+        double h_t = omega;
+        for (size_t i = 0; i < P_arch; ++i) {
+            const double e_lag = resid[t - 1 - i];
+            h_t += alpha[i] * e_lag * e_lag;
+        }
+        for (size_t j = 0; j < Q_garch; ++j) {
+            h_t += beta[j] * sigma2[t - 1 - j];
+        }
+        sigma2[t] = h_t;
+        if (h_t < H_FLOOR || !isfinite(h_t)) {
+            free(de_hist);
+            free(dh_hist);
+            free(de_curr);
+            free(dh_curr);
+            dzeros(grad, K);
+            return 1e10;
+        }
+
+        dzeros(dh_curr, K_base);
+        for (size_t k = 0; k < K_base; ++k) {
+            double val = (k == omega_idx) ? 1.0 : 0.0;
+            for (size_t i = 0; i < P_arch; ++i) {
+                const double e_lag = resid[t - 1 - i];
+                val += alpha[i] * (2.0 * e_lag * de_hist[i * K_base + k]);
+                if (k == alpha_idx + i) {
+                    val += e_lag * e_lag;
+                }
+            }
+            for (size_t j = 0; j < Q_garch; ++j) {
+                val += beta[j] * dh_hist[j * K_base + k];
+                if (k == beta_idx + j) {
+                    val += sigma2[t - 1 - j];
+                }
+            }
+            dh_curr[k] = val;
+        }
+
+        ged_obs_derivs_t obs;
+        if (!ged_obs_derivs(resid[t], h_t, nu, &cache, &obs)) {
+            free(de_hist);
+            free(dh_hist);
+            free(de_curr);
+            free(dh_curr);
+            dzeros(grad, K);
+            return 1e10;
+        }
+
+        for (size_t k = 0; k < K_base; ++k) {
+            grad[k] += obs.ell_e * de_curr[k] + obs.ell_h * dh_curr[k];
+        }
+        grad[nu_idx] += obs.ell_nu;
+        sum_nll += obs.value;
+
+        if (de_lags > 1) {
+            memmove(de_hist + K_base, de_hist, (de_lags - 1) * K_base * sizeof(double));
+        }
+        memcpy(de_hist, de_curr, K_base * sizeof(double));
+
+        if (dh_lags > 1) {
+            memmove(dh_hist + K_base, dh_hist, (dh_lags - 1) * K_base * sizeof(double));
+        }
+        memcpy(dh_hist, dh_curr, K_base * sizeof(double));
+    }
+
+    {
+        const double scale = 1.0 / (double)n_eff;
+        for (size_t k = 0; k < K; ++k) {
+            grad[k] *= scale;
+        }
+        sum_nll *= scale;
+    }
+
+    free(de_hist);
+    free(dh_hist);
+    free(de_curr);
+    free(dh_curr);
+    return sum_nll;
+}
+
+__attribute__((visibility("default"), hot))
+void arma_garch_hess_pq_ged(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *e0,
+    double       *h0,
+    double       *hess,
+    size_t        n,
+    size_t        p_ar,
+    size_t        q_ma,
+    size_t        P_arch,
+    size_t        Q_garch
+) {
+    const size_t max_lag = arma_garch_max_lag(p_ar, q_ma, P_arch, Q_garch);
+    size_t de_lags = q_ma > P_arch ? q_ma : P_arch;
+    size_t dh_lags = Q_garch > 0 ? Q_garch : 1;
+    const size_t K_mean = 1 + p_ar + q_ma;
+    const size_t omega_idx = K_mean;
+    const size_t alpha_idx = omega_idx + 1;
+    const size_t beta_idx = alpha_idx + P_arch;
+    const size_t K_base = beta_idx + Q_garch;
+    const size_t nu_idx = K_base;
+    const size_t K = K_base + 1;
+    const double nu = params[K_base];
+    ged_cache_t cache;
+
+    dzeros(hess, K * K);
+    if (de_lags == 0) de_lags = 1;
+    if (n <= max_lag || !ged_precompute_full(nu, &cache)) {
+        return;
+    }
+
+    const size_t n_eff = n - max_lag;
+    size_t idx = 0;
+    const double c = params[idx++];
+    const double *phi = params + idx;
+    idx += p_ar;
+    const double *theta = params + idx;
+    idx += q_ma;
+    const double omega = params[idx++];
+    const double *alpha = params + idx;
+    idx += P_arch;
+    const double *beta = params + idx;
+
+    if (omega <= 0.0) {
+        return;
+    }
+
+    double alpha_sum = 0.0;
+    double beta_sum = 0.0;
+    for (size_t i = 0; i < P_arch; ++i) {
+        if (alpha[i] < 0.0) return;
+        alpha_sum += alpha[i];
+    }
+    for (size_t j = 0; j < Q_garch; ++j) {
+        if (beta[j] < 0.0) return;
+        beta_sum += beta[j];
+    }
+    if (alpha_sum + beta_sum >= 1.0) {
+        return;
+    }
+
+    for (size_t i = 0; i < max_lag; ++i) {
+        resid[i] = e0[i];
+        sigma2[i] = h0[i];
+        if (sigma2[i] < H_FLOOR || !isfinite(sigma2[i])) {
+            dzeros(hess, K * K);
+            return;
+        }
+    }
+
+    double *de_hist = (double *)calloc(de_lags * K_base, sizeof(double));
+    double *dh_hist = (double *)calloc(dh_lags * K_base, sizeof(double));
+    double *d2e_hist = (double *)calloc(de_lags * K_base * K_base, sizeof(double));
+    double *d2h_hist = (double *)calloc(dh_lags * K_base * K_base, sizeof(double));
+    double *de_curr = (double *)calloc(K_base, sizeof(double));
+    double *dh_curr = (double *)calloc(K_base, sizeof(double));
+    double *d2e_curr = (double *)calloc(K_base * K_base, sizeof(double));
+    double *d2h_curr = (double *)calloc(K_base * K_base, sizeof(double));
+    if (de_hist == NULL || dh_hist == NULL || d2e_hist == NULL || d2h_hist == NULL ||
+        de_curr == NULL || dh_curr == NULL || d2e_curr == NULL || d2h_curr == NULL) {
+        free(de_hist);
+        free(dh_hist);
+        free(d2e_hist);
+        free(d2h_hist);
+        free(de_curr);
+        free(dh_curr);
+        free(d2e_curr);
+        free(d2h_curr);
+        return;
+    }
+
+    for (size_t t = max_lag; t < n; ++t) {
+        double mu_t = c;
+        for (size_t i = 0; i < p_ar; ++i) {
+            mu_t += phi[i] * y[t - 1 - i];
+        }
+        for (size_t j = 0; j < q_ma; ++j) {
+            mu_t += theta[j] * resid[t - 1 - j];
+        }
+        resid[t] = y[t] - mu_t;
+
+        dzeros(de_curr, K_base);
+        dzeros(dh_curr, K_base);
+        dzeros(d2e_curr, K_base * K_base);
+        dzeros(d2h_curr, K_base * K_base);
+
+        de_curr[0] = -1.0;
+        for (size_t j = 0; j < q_ma; ++j) {
+            de_curr[0] -= theta[j] * de_hist[j * K_base];
+        }
+        for (size_t i = 0; i < p_ar; ++i) {
+            const size_t param_idx = 1 + i;
+            de_curr[param_idx] = -y[t - 1 - i];
+            for (size_t j = 0; j < q_ma; ++j) {
+                de_curr[param_idx] -= theta[j] * de_hist[j * K_base + param_idx];
+            }
+        }
+        for (size_t j = 0; j < q_ma; ++j) {
+            const size_t param_idx = 1 + p_ar + j;
+            de_curr[param_idx] = -resid[t - 1 - j];
+            for (size_t l = 0; l < q_ma; ++l) {
+                de_curr[param_idx] -= theta[l] * de_hist[l * K_base + param_idx];
+            }
+        }
+        for (size_t k = omega_idx; k < K_base; ++k) {
+            for (size_t j = 0; j < q_ma; ++j) {
+                de_curr[k] -= theta[j] * de_hist[j * K_base + k];
+            }
+        }
+
+        for (size_t l = 0; l < q_ma; ++l) {
+            const double theta_l = theta[l];
+            const size_t theta_param_idx = 1 + p_ar + l;
+            const double *de_lag = de_hist + l * K_base;
+            const double *d2e_lag = d2e_hist + l * K_base * K_base;
+            for (size_t ij = 0; ij < K_base * K_base; ++ij) {
+                d2e_curr[ij] -= theta_l * d2e_lag[ij];
+            }
+            for (size_t j = 0; j < K_base; ++j) {
+                d2e_curr[theta_param_idx * K_base + j] -= de_lag[j];
+                d2e_curr[j * K_base + theta_param_idx] -= de_lag[j];
+            }
+        }
+
+        double h_t = omega;
+        for (size_t i = 0; i < P_arch; ++i) {
+            const double e_lag = resid[t - 1 - i];
+            h_t += alpha[i] * e_lag * e_lag;
+        }
+        for (size_t j = 0; j < Q_garch; ++j) {
+            h_t += beta[j] * sigma2[t - 1 - j];
+        }
+        sigma2[t] = h_t;
+        if (h_t < H_FLOOR || !isfinite(h_t)) {
+            dzeros(hess, K * K);
+            free(de_hist);
+            free(dh_hist);
+            free(d2e_hist);
+            free(d2h_hist);
+            free(de_curr);
+            free(dh_curr);
+            free(d2e_curr);
+            free(d2h_curr);
+            return;
+        }
+
+        for (size_t k = 0; k < K_base; ++k) {
+            double val = (k == omega_idx) ? 1.0 : 0.0;
+            for (size_t i = 0; i < P_arch; ++i) {
+                const double e_lag = resid[t - 1 - i];
+                val += alpha[i] * (2.0 * e_lag * de_hist[i * K_base + k]);
+                if (k == alpha_idx + i) {
+                    val += e_lag * e_lag;
+                }
+            }
+            for (size_t j = 0; j < Q_garch; ++j) {
+                val += beta[j] * dh_hist[j * K_base + k];
+                if (k == beta_idx + j) {
+                    val += sigma2[t - 1 - j];
+                }
+            }
+            dh_curr[k] = val;
+        }
+
+        for (size_t i = 0; i < P_arch; ++i) {
+            const double a_i = alpha[i];
+            const double *de_lag = de_hist + i * K_base;
+            const double *d2e_lag = d2e_hist + i * K_base * K_base;
+            const size_t alpha_param_idx = alpha_idx + i;
+            const double e_lag = resid[t - 1 - i];
+
+            for (size_t a = 0; a < K_base; ++a) {
+                for (size_t b = 0; b < K_base; ++b) {
+                    const size_t ij = a * K_base + b;
+                    d2h_curr[ij] += a_i * 2.0 * (de_lag[a] * de_lag[b] + e_lag * d2e_lag[ij]);
+                }
+            }
+            for (size_t j = 0; j < K_base; ++j) {
+                const double cross = 2.0 * e_lag * de_lag[j];
+                d2h_curr[alpha_param_idx * K_base + j] += cross;
+                d2h_curr[j * K_base + alpha_param_idx] += cross;
+            }
+        }
+
+        for (size_t j = 0; j < Q_garch; ++j) {
+            const double b_j = beta[j];
+            const double *dh_lag = dh_hist + j * K_base;
+            const double *d2h_lag = d2h_hist + j * K_base * K_base;
+            const size_t beta_param_idx = beta_idx + j;
+
+            for (size_t ij = 0; ij < K_base * K_base; ++ij) {
+                d2h_curr[ij] += b_j * d2h_lag[ij];
+            }
+            for (size_t k = 0; k < K_base; ++k) {
+                d2h_curr[beta_param_idx * K_base + k] += dh_lag[k];
+                d2h_curr[k * K_base + beta_param_idx] += dh_lag[k];
+            }
+        }
+
+        ged_obs_derivs_t obs;
+        if (!ged_obs_derivs(resid[t], h_t, nu, &cache, &obs)) {
+            dzeros(hess, K * K);
+            free(de_hist);
+            free(dh_hist);
+            free(d2e_hist);
+            free(d2h_hist);
+            free(de_curr);
+            free(dh_curr);
+            free(d2e_curr);
+            free(d2h_curr);
+            return;
+        }
+
+        for (size_t i = 0; i < K_base; ++i) {
+            for (size_t j = 0; j < K_base; ++j) {
+                const size_t idx_k = i * K + j;
+                const size_t idx_base = i * K_base + j;
+                hess[idx_k] += obs.ell_ee * de_curr[i] * de_curr[j]
+                             + obs.ell_hh * dh_curr[i] * dh_curr[j]
+                             + obs.ell_eh * (de_curr[i] * dh_curr[j] + dh_curr[i] * de_curr[j])
+                             + obs.ell_e * d2e_curr[idx_base]
+                             + obs.ell_h * d2h_curr[idx_base];
+            }
+            const double cross = obs.ell_e_nu * de_curr[i] + obs.ell_h_nu * dh_curr[i];
+            hess[i * K + nu_idx] += cross;
+            hess[nu_idx * K + i] += cross;
+        }
+        hess[nu_idx * K + nu_idx] += obs.ell_nu_nu;
+
+        if (de_lags > 1) {
+            memmove(de_hist + K_base, de_hist, (de_lags - 1) * K_base * sizeof(double));
+            memmove(d2e_hist + K_base * K_base, d2e_hist, (de_lags - 1) * K_base * K_base * sizeof(double));
+        }
+        memcpy(de_hist, de_curr, K_base * sizeof(double));
+        memcpy(d2e_hist, d2e_curr, K_base * K_base * sizeof(double));
+
+        if (dh_lags > 1) {
+            memmove(dh_hist + K_base, dh_hist, (dh_lags - 1) * K_base * sizeof(double));
+            memmove(d2h_hist + K_base * K_base, d2h_hist, (dh_lags - 1) * K_base * K_base * sizeof(double));
+        }
+        memcpy(dh_hist, dh_curr, K_base * sizeof(double));
+        memcpy(d2h_hist, d2h_curr, K_base * K_base * sizeof(double));
+    }
+
+    {
+        const double scale = 1.0 / (double)n_eff;
+        for (size_t ij = 0; ij < K * K; ++ij) {
+            hess[ij] *= scale;
+        }
+    }
+
+    free(de_hist);
+    free(dh_hist);
+    free(d2e_hist);
+    free(d2h_hist);
+    free(de_curr);
+    free(dh_curr);
+    free(d2e_curr);
+    free(d2h_curr);
+}
+
+/* ========================================================================== */
+/* ARMA(1,1)-GARCH(1,1) + GED wrappers                                         */
+/* ========================================================================== */
+
+__attribute__((visibility("default"), hot))
+double arma_garch_nll_11_ged(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double        h0,
+    size_t        n
+) {
+    double e0[1] = {0.0};
+    double h0_arr[1] = {h0};
+    return arma_garch_nll_pq_ged(params, y, resid, sigma2, e0, h0_arr, n, 1, 1, 1, 1);
+}
+
+__attribute__((visibility("default"), hot))
+double arma_garch_nll_grad_11_ged(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *grad,
+    double        h0,
+    size_t        n
+) {
+    double e0[1] = {0.0};
+    double h0_arr[1] = {h0};
+    return arma_garch_nll_grad_pq_ged(params, y, resid, sigma2, e0, h0_arr, grad, n, 1, 1, 1, 1);
+}
+
+__attribute__((visibility("default"), hot))
+void arma_garch_hess_11_ged(
+    const double *params,
+    const double *y,
+    double       *resid,
+    double       *sigma2,
+    double       *hess,
+    double        h0,
+    size_t        n
+) {
+    double e0[1] = {0.0};
+    double h0_arr[1] = {h0};
+    arma_garch_hess_pq_ged(params, y, resid, sigma2, e0, h0_arr, hess, n, 1, 1, 1, 1);
 }

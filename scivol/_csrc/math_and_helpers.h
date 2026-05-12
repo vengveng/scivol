@@ -87,4 +87,5 @@ VLK_FORCE_INLINE double lgamma_approx(double x)
 #define LOG_2PI   1.8378770664093453  /* log(2*pi) */
 #define H_FLOOR   1e-12
 #define NU_MIN    2.001
+#define GED_NU_MIN 1.01
 #define LAM_MAX   0.999

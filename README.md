@@ -11,11 +11,16 @@ QMLE estimation, diagnostic tests and automatic model selection.
 
 ## Supported models
 
-- Univariate volatility models: `GARCH(p, q)`, `GJRGARCH(p, q)`
-- Conditional densities: `Normal()`, `StudentT()`, `SkewT()`
-- Mean model: `ARMA(p, q)` (standalone with Normal errors)
+- Univariate volatility models: `GARCH(p, q)`, `GJRGARCH(p, q)`, `EGARCH(p, q)` (`Normal`, `StudentT`, `SkewT`, and `GED` surfaces)
+- Conditional densities: `Normal()`, `StudentT()`, `SkewT()`, `GED()`
+- Mean model: `ARMA(p, q)` (standalone with `Normal()` and `GED()`)
 - Composite univariate specifications: volatility-only models and
-  `ARMA(p, q) + GARCH(P, Q)` with any supported density
+  `ARMA(p, q) + GARCH(P, Q)` with any shipped linked density, plus
+  `ARMA(p, q) + EGARCH(P, Q)` for `Normal()`, `StudentT()`, `SkewT()`, and `GED()`
+- Exogenous-mean specifications: standalone `ARX/HARX` with `Normal()`,
+  `StudentT()`, `SkewT()`, and `GED()`, plus linked `ARX/HARX + GARCH(P, Q)`,
+  `ARX/HARX + GJRGARCH(P, Q)`, and `ARX/HARX + EGARCH(P, Q)` with the same
+  shipped densities
 - Multivariate correlation model: `DCC(1, 1)` with Gaussian correlation dynamics
 - Automatic model selection helpers: `AutoVol()` and `AutoDensity()`
 
@@ -110,12 +115,14 @@ Half-life (periods):      106.3
 Build models by combining components with `+`. scivol orders them automatically: MEAN, then VOLATILITY, then DENSITY.
 
 ```python
-from scivol import GARCH, GJRGARCH, ARMA, DCC, Normal, StudentT, SkewT
+from scivol import EGARCH, GARCH, GJRGARCH, ARMA, DCC, Normal, StudentT, SkewT
 
 spec = GARCH(1, 1)                          # Normal density by default
 spec = GARCH(1, 1) + StudentT()             # Explicit density
 spec = GJRGARCH(1, 1) + StudentT()          # Asymmetric volatility
+spec = EGARCH(2, 1) + Normal()              # Log-variance volatility model
 spec = ARMA(1, 1) + GARCH(1, 1) + SkewT()  # Mean + volatility + density
+spec = ARMA(1, 1) + EGARCH(2, 1) + Normal() # Linked mean + EGARCH volatility
 dcc = DCC(1, 1)                             # Dynamic correlations (multivariate)
 ```
 
@@ -169,6 +176,21 @@ Stationarity:
 spec = GJRGARCH(1, 1) + StudentT()
 ```
 
+### EGARCH(p, q)
+
+Log-variance volatility dynamics:
+
+$$
+\log h_t = \omega + \sum_{i=1}^{p}\alpha_i(|z_{t-i}| - \mathbb{E}|z|) + \sum_{i=1}^{p}\gamma_i z_{t-i} + \sum_{j=1}^{q}\beta_j \log h_{t-j}
+$$
+
+```python
+spec = EGARCH(1, 1) + Normal()
+spec = EGARCH(2, 1) + StudentT()
+```
+
+`EGARCH` is currently shipped for `Normal()`, `StudentT()`, `SkewT()`, and `GED()`.
+
 Parameters: `omega`, `alpha[1:p]`, `gamma[1:p]` (leverage), `beta[1:q]`.
 
 ### DCC(p, q)
@@ -193,13 +215,47 @@ Result access focuses on the economically useful correlation objects:
 
 ### ARMA(p, q)
 
-Conditional mean. Standalone `ARMA(p, q)` is supported with Normal errors,
-and `ARMA(p, q) + GARCH(P, Q)` is supported for composite mean-volatility
-models.
+Conditional mean. Standalone `ARMA(p, q)` is supported with `Normal()` and `GED()`.
+Linked composite mean-volatility fits currently ship for
+`ARMA(p, q) + GARCH(P, Q)` with `Normal()`, `StudentT()`, `SkewT()`, and `GED()`, and for
+`ARMA(p, q) + GJR-GARCH(P, Q)` with `Normal()`, `StudentT()`, `SkewT()`, and `GED()`, and for
+`ARMA(p, q) + EGARCH(P, Q)` with `Normal()`, `StudentT()`, `SkewT()`, and `GED()`.
 
 ```python
 spec = ARMA(2, 1)                 # standalone ARMA with Normal errors
 spec = ARMA(1, 1) + GARCH(1, 1)
+spec = ARMA(1, 1) + EGARCH(1, 1) + StudentT()
+```
+
+### ARX / HARX
+
+Array-based mean models with explicit regressors via `x=`.
+Standalone `ARX` and `HARX` now ship with public `fit()` under the default
+`Normal()` surface, and standalone `StudentT()`, `SkewT()`, and `GED()` fits
+now ship as well. Linked `ARX/HARX + GARCH(P, Q)`,
+`ARX/HARX + GJRGARCH(P, Q)`, and `ARX/HARX + EGARCH(P, Q)` fits ship for
+`Normal()`, `StudentT()`, `SkewT()`, and `GED()`.
+
+```python
+from scivol import ARX, HARX, EGARCH, GARCH, GED, StudentT
+
+spec = ARX(1)
+result = spec.fit(y, x=x)
+
+spec = HARX((1, 5))
+result = spec.fit(y, x=x)
+
+spec = ARX(1) + GARCH(1, 1) + StudentT()
+result = spec.fit(y, x=x)
+
+spec = HARX((1, 5)) + GARCH(1, 1) + GED()
+result = spec.fit(y, x=x)
+
+spec = ARX(1) + StudentT()
+result = spec.fit(y, x=x)
+
+spec = HARX((1, 5)) + EGARCH(1, 1) + GED()
+result = spec.fit(y, x=x)
 ```
 
 ### Normal()
@@ -254,6 +310,34 @@ Solvers:
 
 This guarantees stationarity by construction and avoids boundary problems during optimization.
 
+Default `log_mode` is benchmark-driven and may differ across model families and densities. If you do not pass `log_mode`, the effective path is exposed on the fitted result:
+
+```python
+result = spec.fit(data)
+result.fit_info.to_dict()
+# solver='slsqp', log_mode=True/False, optimization_space='z-space'/'theta-space'
+```
+
+Current default path policy:
+
+| Family | Default path |
+|--------|--------------|
+| `GARCH + Normal / StudentT / SkewT` | `z-space` |
+| `GJRGARCH + Normal` | `z-space` |
+| `GJRGARCH + StudentT / SkewT` | `theta-space` |
+| `EGARCH + Normal` | `theta-space` |
+| `EGARCH + StudentT` | `theta-space` |
+| `EGARCH + SkewT` | `theta-space` |
+| `EGARCH + GED` | `theta-space` |
+| `ARMA + Normal / GED` | `theta-space` |
+| `ARX/HARX + Normal / StudentT / SkewT / GED` | `theta-space` |
+| `ARMA + GARCH + Normal / StudentT / SkewT / GED` | `theta-space` |
+| `ARMA + EGARCH + Normal / StudentT / SkewT / GED` | `theta-space` |
+| `ARX/HARX + GARCH + Normal / StudentT / SkewT / GED` | `theta-space` |
+| `ARX/HARX + EGARCH + Normal / StudentT / SkewT / GED` | `theta-space` |
+
+For `EGARCH + Normal`, the current SLSQP policy is based on targeted checks of the shipped `EGARCH(1,1)` and `EGARCH(2,1)` surfaces. Those runs showed theta-space matching z-space on fit quality while usually converging in fewer iterations and less wall time.
+
 ### QMLE
 
 Quasi-maximum likelihood: fit under Normal likelihood, then compute sandwich standard errors valid under distributional misspecification. Pass `method='qmle'`:
@@ -266,13 +350,20 @@ result.std_errors        # MLE standard errors
 result.std_errors_robust # sandwich (robust) standard errors
 ```
 
-For Student-t or Skew-t, QMLE runs a two-step procedure: first it estimates GARCH parameters under Normal likelihood with sandwich errors, then it fixes those parameters and estimates the distribution parameters by MLE.
+This works for standalone `GARCH`, standalone `GJRGARCH`, and joint `ARMA + GARCH` specifications. For joint fits, the robust covariance is computed for the full mean-plus-volatility parameter vector under the Normal QMLE step.
+
+For Student-t or Skew-t, QMLE runs a two-step procedure: first it estimates the mean/volatility parameters under Normal likelihood with sandwich errors, then it fixes those parameters and estimates the distribution parameters by MLE.
 
 ```python
+from scivol import ARMA
+
 spec = GARCH(1, 1) + StudentT()
 result = spec.fit(data, method='qmle')
 
 spec = GJRGARCH(1, 1) + Normal()
+result = spec.fit(data, method='qmle')
+
+spec = ARMA(2, 1) + GARCH(1, 2) + Normal()
 result = spec.fit(data, method='qmle')
 ```
 
@@ -486,6 +577,7 @@ result.cov_robust        # H⁻¹ @ OPG @ H⁻¹
 ### Output
 
 ```python
+result.fit_info             # effective solver / theta-vs-z path
 result.summary()              # full table
 result.summary(robust=True)   # with sandwich SEs
 print(result)                 # compact
@@ -582,7 +674,7 @@ Analytical gradients and Hessians are verified in the internal development test 
 
 ```python
 from scivol import (
-    GARCH, GJRGARCH, ARMA, DCC,
+    EGARCH, GARCH, GJRGARCH, ARMA, DCC,
     Normal, StudentT, SkewT,
     AutoDensity, AutoVol,
     Component, CompositeSpec, Role,

@@ -29,14 +29,14 @@ def get_default_workers() -> int:
 
 def _get_vol_map() -> Dict[str, Any]:
     """Return mapping of volatility type names to classes."""
-    from .components.vol import GARCH, GJRGARCH
-    return {'GARCH': GARCH, 'GJRGARCH': GJRGARCH}
+    from .components.vol import EGARCH, GARCH, GJRGARCH
+    return {'GARCH': GARCH, 'GJRGARCH': GJRGARCH, 'EGARCH': EGARCH}
 
 
 def _get_density_map() -> Dict[str, Any]:
     """Return mapping of density names to classes."""
-    from .components.density import Normal, StudentT, SkewT
-    return {'Normal': Normal, 'StudentT': StudentT, 'SkewT': SkewT}
+    from .components.density import GED, Normal, StudentT, SkewT
+    return {'Normal': Normal, 'StudentT': StudentT, 'SkewT': SkewT, 'GED': GED}
 
 
 def _reconstruct_spec(params: Dict[str, Any]) -> Any:
@@ -168,6 +168,16 @@ def fit_multi_parallel(
     from ._progress import get_progress_bar, tqdm_joblib
 
     n_jobs = n_jobs if n_jobs is not None else get_default_workers()
+
+    requested_hold_back = int(fit_kwargs.get("hold_back", 0) or 0)
+    common_sample = fit_kwargs.get("common_sample", None)
+    if common_sample is not False and vol_candidates:
+        common_hold_back = max(max(p, q) for _, p, q in vol_candidates)
+        fit_kwargs["hold_back"] = max(requested_hold_back, common_hold_back)
+        fit_kwargs["common_sample"] = True
+    else:
+        fit_kwargs["hold_back"] = requested_hold_back
+        fit_kwargs["common_sample"] = False
     n_series = len(data_dict)
     
     if n_jobs == 1 or n_series == 1:
@@ -285,7 +295,7 @@ def select_best_parallel(
     criterion: Callable[..., float],
     diagnostic_kwargs: Optional[Dict[str, Any]] = None,
     n_jobs: Optional[int] = None,
-    verbose: bool = False,
+    selection_verbose: bool = False,
     show_progress: bool = False,
     **fit_kwargs: Any,
 ) -> Tuple[Any, List[Any]]:
@@ -306,7 +316,7 @@ def select_best_parallel(
         Keyword arguments for ``diagnostic_tests()``
     n_jobs : int, optional
         Number of workers
-    verbose : bool
+    selection_verbose : bool
         Print detailed per-candidate results
     show_progress : bool
         Show tqdm progress bar
@@ -331,7 +341,7 @@ def select_best_parallel(
     
     total = len(tasks)
     
-    if verbose:
+    if selection_verbose:
         print(f"Auto-selecting from {total} candidate models (parallel, {n_jobs} workers)...")
     
     # Sequential fallback: process spawn overhead (~1-2 s) exceeds the
@@ -342,7 +352,7 @@ def select_best_parallel(
         for i, (vol_type, p, q, d) in enumerate(
             get_progress_bar(tasks, total=total, desc="Auto-selecting", disable=not show_progress)
         ):
-            if verbose:
+            if selection_verbose:
                 print(f"  [{i+1}/{total}] Fitting {vol_type}({p},{q})+{d}...", end=" ")
             
             candidate = _fit_candidate_worker(
@@ -351,7 +361,7 @@ def select_best_parallel(
             )
             candidates.append(candidate)
             
-            if verbose:
+            if selection_verbose:
                 if candidate.score < float('inf'):
                     print(f"AIC={candidate.aic:.2f}, Score={candidate.score:.2f}")
                 else:
@@ -369,7 +379,7 @@ def select_best_parallel(
                 for vol_type, p, q, d in tasks
             )
         
-        if verbose:
+        if selection_verbose:
             for i, (candidate, (vol_type, p, q, d)) in enumerate(zip(candidates, tasks)):
                 if candidate.score < float('inf'):
                     print(f"  [{i+1}/{total}] {vol_type}({p},{q})+{d}: "
@@ -394,7 +404,7 @@ def select_best_parallel(
             f"Errors: {[c.error_message for c in candidates if c.error_message]}"
         )
     
-    if verbose:
+    if selection_verbose:
         print(f"\nBest model: {best.spec} (Score={best.score:.2f})")
     
     return best.result, candidates
@@ -498,7 +508,7 @@ def fit_multi_auto_parallel(
     criterion: Callable[..., float],
     diagnostic_kwargs: Optional[Dict[str, Any]] = None,
     n_jobs: Optional[int] = None,
-    verbose: bool = False,
+    selection_verbose: bool = False,
     show_progress: bool = False,
     **fit_kwargs: Any,
 ) -> Dict[str, Any]:
@@ -526,7 +536,7 @@ def fit_multi_auto_parallel(
         Keyword arguments for ``diagnostic_tests()``
     n_jobs : int, optional
         Number of workers
-    verbose : bool
+    selection_verbose : bool
         Print detailed per-candidate results
     show_progress : bool
         Show tqdm progress bar
@@ -541,6 +551,16 @@ def fit_multi_auto_parallel(
     from ._progress import tqdm_joblib
 
     n_jobs = n_jobs if n_jobs is not None else get_default_workers()
+
+    requested_hold_back = int(fit_kwargs.get("hold_back", 0) or 0)
+    common_sample = fit_kwargs.get("common_sample", None)
+    if common_sample is not False and vol_candidates:
+        common_hold_back = max(max(p, q) for _, p, q in vol_candidates)
+        fit_kwargs["hold_back"] = max(requested_hold_back, common_hold_back)
+        fit_kwargs["common_sample"] = True
+    else:
+        fit_kwargs["hold_back"] = requested_hold_back
+        fit_kwargs["common_sample"] = False
     
     # Build flattened task list: (series x candidates)
     tasks = [
@@ -554,7 +574,7 @@ def fit_multi_auto_parallel(
     n_series = len(data_dict)
     n_candidates_per = len(vol_candidates) * len(density_candidates)
     
-    if verbose:
+    if selection_verbose:
         print(f"Auto-selecting {n_series} series x {n_candidates_per} candidates = {total} fits "
               f"(parallel, {min(n_jobs, total)} workers)...")
     
@@ -576,7 +596,7 @@ def fit_multi_auto_parallel(
     for i, (series_name, candidate) in enumerate(parallel_results):
         series_candidates[series_name].append(candidate)
         
-        if verbose:
+        if selection_verbose:
             task = tasks[i]
             vol_type, p, q, d = task[1], task[2], task[3], task[4]
             if candidate.score < float('inf'):
@@ -608,7 +628,7 @@ def fit_multi_auto_parallel(
             best.result._selection_candidates = candidates
             results[series_name] = best.result
             
-            if verbose:
+            if selection_verbose:
                 print(f"\n  Best for {series_name}: {best.spec} (Score={best.score:.2f})")
         else:
             results[series_name] = {'error': 'All candidates failed'}

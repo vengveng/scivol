@@ -14,11 +14,12 @@ Tests for the DCC(p,q) Gaussian correlation model:
 from __future__ import annotations
 
 import importlib.util
+from dataclasses import replace
 import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from scivol import DCC
+from scivol import CCC, DCC, GARCH, Normal
 from scivol._devtools.ad_oracle import dcc_value_grad_hess
 from scivol._dcc_kernels import (
     dcc_nll, dcc_nll_grad, dcc_nll_grad_hess, compute_qbar,
@@ -119,6 +120,28 @@ def dcc_oracle_data():
     dgp = simulate_dcc_garch(T, garch_params, dcc_a, dcc_b, Qbar_true, seed=123)
     eps = dgp["eps"]
     return {"eps": eps, "Qbar": compute_qbar(eps)}
+
+
+@pytest.fixture(scope="module")
+def fitted_multivariate_results():
+    """Shared fitted CCC/DCC results with Normal marginals."""
+    T, N = 1200, 3
+    garch_params = [(1e-6, 0.05, 0.93), (2e-6, 0.08, 0.90), (1.5e-6, 0.06, 0.92)]
+    dcc_a = np.array([0.05])
+    dcc_b = np.array([0.93])
+    qbar_true = np.array([[1.0, 0.5, 0.3], [0.5, 1.0, 0.4], [0.3, 0.4, 1.0]])
+    dgp = simulate_dcc_garch(T, garch_params, dcc_a, dcc_b, qbar_true, seed=2024)
+    returns = dgp["returns"]
+    univariate_results = [(GARCH(1, 1) + Normal()).fit(returns[:, i]) for i in range(N)]
+
+    dcc_result = DCC(1, 1).fit(returns, univariate_results=univariate_results)
+    ccc_result = CCC().fit(returns, univariate_results=univariate_results)
+    return {
+        "returns": returns,
+        "univariate_results": univariate_results,
+        "dcc": dcc_result,
+        "ccc": ccc_result,
+    }
 
 
 # =============================================================================
@@ -249,14 +272,120 @@ class TestDCCFit:
         result = dcc.fit_from_residuals(eps)
         s = result.summary()
         assert "DCC(1,1)" in s
+        assert "Method: Gaussian correlation MLE" in s
+        assert "AIC:" in s
+        assert "BIC:" in s
         assert "a[1]" in s
         assert "b[1]" in s
+        assert "Marginals stored: No" in s
 
     def test_persistence(self, dcc_dgp_data):
         eps = dcc_dgp_data["eps"]
         dcc = DCC(1, 1)
         result = dcc.fit_from_residuals(eps)
         assert 0 < result.params.persistence < 1
+
+
+class TestMultivariateForecastAndSimulation:
+    def test_ccc_summary(self, dcc_dgp_data):
+        result = CCC().fit_from_residuals(dcc_dgp_data["eps"])
+        s = result.summary()
+        assert "CCC Estimation Results" in s
+        assert "Method: Closed-form constant correlation" in s
+        assert "AIC:" in s
+        assert "BIC:" in s
+        assert "Marginals stored: No" in s
+
+    def test_ccc_constant_path_from_residuals(self, dcc_dgp_data):
+        result = CCC().fit_from_residuals(dcc_dgp_data["eps"])
+        expected = _normalize_corr(result.Qbar)
+        np.testing.assert_allclose(result.params.corr, expected, rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(result.Rt, np.broadcast_to(expected, result.Rt.shape))
+        np.testing.assert_allclose(result.corr(0, 1), np.full(result.T, expected[0, 1]))
+
+    def test_dcc_forecast_reuses_marginal_forecasts(self, fitted_multivariate_results):
+        result = fitted_multivariate_results["dcc"]
+        forecast = result.forecast(horizon=5)
+
+        assert forecast.mean.shape == (5, 3)
+        assert forecast.variance.shape == (5, 3)
+        assert forecast.residual_variance.shape == (5, 3)
+        assert forecast.correlation.shape == (5, 3, 3)
+        assert forecast.residual_covariance.shape == (5, 3, 3)
+
+        for i, marginal in enumerate(result.univariate_results):
+            marginal_fc = marginal.forecast(5)
+            np.testing.assert_allclose(forecast.mean[:, i], marginal_fc.mean)
+            np.testing.assert_allclose(forecast.variance[:, i], marginal_fc.variance)
+            np.testing.assert_allclose(forecast.residual_variance[:, i], marginal_fc.residual_variance)
+
+        _ = result.Rt
+        q1 = (1.0 - np.sum(result.theta)) * result.Qbar
+        q1 = q1 + result.theta[0] * np.outer(result._eps[-1], result._eps[-1]) + result.theta[1] * result._Qt_cache[-1]
+        r1 = _normalize_corr(q1)
+        np.testing.assert_allclose(forecast.correlation[0], r1, rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(
+            forecast.residual_covariance[0],
+            np.outer(np.sqrt(forecast.residual_variance[0]), np.sqrt(forecast.residual_variance[0])) * forecast.correlation[0],
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
+    def test_ccc_forecast_and_simulate_keep_constant_correlation(self, fitted_multivariate_results):
+        result = fitted_multivariate_results["ccc"]
+        forecast = result.forecast(horizon=4)
+        sim = result.simulate(12, seed=123)
+
+        for h in range(4):
+            np.testing.assert_allclose(forecast.correlation[h], result.params.corr, rtol=1e-12, atol=1e-12)
+        for t in range(12):
+            np.testing.assert_allclose(sim.correlation[t], result.params.corr, rtol=1e-12, atol=1e-12)
+
+    def test_dcc_simulation_uses_one_step_correlation_forecast(self, fitted_multivariate_results):
+        result = fitted_multivariate_results["dcc"]
+        forecast = result.forecast(horizon=1)
+        sim = result.simulate(20, seed=321)
+
+        assert sim.data.shape == (20, 3)
+        assert sim.mean.shape == (20, 3)
+        assert sim.residuals.shape == (20, 3)
+        assert sim.sigma2.shape == (20, 3)
+        assert sim.innovations.shape == (20, 3)
+        assert sim.correlation.shape == (20, 3, 3)
+        assert sim.residual_covariance.shape == (20, 3, 3)
+
+        np.testing.assert_allclose(sim.correlation[0], forecast.correlation[0], rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(sim.data, sim.mean + sim.residuals, rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(
+            np.diagonal(sim.residual_covariance, axis1=1, axis2=2),
+            sim.sigma2,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
+    def test_forecast_and_simulate_require_stored_marginals(self, dcc_dgp_data):
+        dcc_result = DCC(1, 1).fit_from_residuals(dcc_dgp_data["eps"])
+        ccc_result = CCC().fit_from_residuals(dcc_dgp_data["eps"])
+
+        with pytest.raises(RuntimeError, match="stored univariate marginal fits"):
+            dcc_result.forecast(2)
+        with pytest.raises(RuntimeError, match="stored univariate marginal fits"):
+            dcc_result.simulate(5)
+        with pytest.raises(RuntimeError, match="stored univariate marginal fits"):
+            ccc_result.forecast(2)
+        with pytest.raises(RuntimeError, match="stored univariate marginal fits"):
+            ccc_result.simulate(5)
+
+    def test_simulate_rejects_non_normal_marginals(self, fitted_multivariate_results, monkeypatch):
+        result = fitted_multivariate_results["dcc"]
+        original_state = result.univariate_results[0].filter()
+
+        def fake_filter():
+            return replace(original_state, distribution="StudentT", nu=8.0)
+
+        monkeypatch.setattr(result.univariate_results[0], "filter", fake_filter)
+        with pytest.raises(NotImplementedError, match="requires Normal marginals"):
+            result.simulate(5, seed=7)
 
 
 # =============================================================================
@@ -272,3 +401,8 @@ class TestValidation:
         dcc = DCC(1, 1)
         with pytest.raises(ValueError):
             dcc.fit_from_residuals(np.zeros(100))
+
+
+def _normalize_corr(qmat: NDArray[np.float64]) -> NDArray[np.float64]:
+    diag = np.sqrt(np.maximum(np.diag(qmat), 1e-12))
+    return qmat / np.outer(diag, diag)

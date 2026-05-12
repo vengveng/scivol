@@ -81,6 +81,1072 @@ def _studentt_ll(
     """Compute Student-t log-likelihood given variances"""
     ...
 
+def _ged_ll(
+    resid_ptr: _IntPtr,   # Residuals (not squared)
+    sigma2_ptr: _IntPtr,  # Conditional variances
+    n: _Size,
+    nu: float,
+) -> float:
+    """Compute GED log-likelihood given residuals and variances."""
+    ...
+
+def _ged_nll(
+    resid_ptr: _IntPtr,   # Residuals (not squared)
+    sigma2_ptr: _IntPtr,  # Conditional variances
+    n: _Size,
+    nu: float,
+) -> float:
+    """Compute GED negative log-likelihood given residuals and variances."""
+    ...
+
+def _arx_mean_resid(
+    params_ptr: _IntPtr,   # [const?, phi_1..phi_p, beta_1..beta_k]
+    y_ptr: _IntPtr,
+    x_ptr: _IntPtr,        # Regressor matrix or null pointer
+    mean_ptr: _IntPtr,     # Output: conditional mean
+    resid_ptr: _IntPtr,    # Output: residuals
+    n: _Size,
+    lags: _Size,
+    k_exog: _Size,
+    include_const: int,
+) -> None:
+    """ARX mean recursion and residual computation."""
+    ...
+
+def _harx_mean_resid(
+    params_ptr: _IntPtr,    # [const?, har_1..har_m, beta_1..beta_k]
+    y_ptr: _IntPtr,
+    x_ptr: _IntPtr,         # Regressor matrix or null pointer
+    horizons_ptr: _IntPtr,  # Size_t horizon vector
+    mean_ptr: _IntPtr,      # Output: conditional mean
+    resid_ptr: _IntPtr,     # Output: residuals
+    n: _Size,
+    n_horizons: _Size,
+    k_exog: _Size,
+    include_const: int,
+) -> None:
+    """HARX mean recursion and residual computation."""
+    ...
+
+def _linear_mean_nll_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> float:
+    """Standalone linear-mean Normal negative log-likelihood."""
+    ...
+
+def _linear_mean_nll_grad_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Standalone linear-mean Normal gradient."""
+    ...
+
+def _linear_mean_hess_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Standalone linear-mean Normal Hessian."""
+    ...
+
+def _linear_mean_garch_nll_11_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> float:
+    """Linked linear-mean GARCH(1,1) Normal negative log-likelihood."""
+    ...
+
+def _linear_mean_garch_nll_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """Linked linear-mean GARCH(p,q) Normal negative log-likelihood."""
+    ...
+
+def _linear_mean_garch_nll_grad_11_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean GARCH(1,1) Normal analytical gradient."""
+    ...
+
+def _linear_mean_garch_nll_grad_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean GARCH(p,q) Normal analytical gradient."""
+    ...
+
+def _linear_mean_garch_hess_11_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean GARCH(1,1) Normal analytical Hessian."""
+    ...
+
+def _linear_mean_garch_hess_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean GARCH(p,q) Normal analytical Hessian."""
+    ...
+
+def _linear_mean_garch_nll_11_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> float:
+    """Linked linear-mean GARCH(1,1) Student-t negative log-likelihood."""
+    ...
+
+def _linear_mean_garch_nll_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """Linked linear-mean GARCH(p,q) Student-t negative log-likelihood."""
+    ...
+
+def _linear_mean_garch_nll_grad_11_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean GARCH(1,1) Student-t analytical gradient."""
+    ...
+
+def _linear_mean_garch_nll_grad_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean GARCH(p,q) Student-t analytical gradient."""
+    ...
+
+def _linear_mean_garch_hess_11_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean GARCH(1,1) Student-t analytical Hessian."""
+    ...
+
+def _linear_mean_garch_hess_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean GARCH(p,q) Student-t analytical Hessian."""
+    ...
+
+def _linear_mean_garch_nll_11_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> float:
+    """Linked linear-mean GARCH(1,1) Skew-t negative log-likelihood."""
+    ...
+
+def _linear_mean_garch_nll_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """Linked linear-mean GARCH(p,q) Skew-t negative log-likelihood."""
+    ...
+
+def _linear_mean_garch_nll_grad_11_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean GARCH(1,1) Skew-t analytical gradient."""
+    ...
+
+def _linear_mean_garch_nll_grad_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean GARCH(p,q) Skew-t analytical gradient."""
+    ...
+
+def _linear_mean_garch_hess_11_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean GARCH(1,1) Skew-t analytical Hessian."""
+    ...
+
+def _linear_mean_garch_hess_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean GARCH(p,q) Skew-t analytical Hessian."""
+    ...
+
+def _linear_mean_garch_nll_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> float:
+    """Linked linear-mean GARCH(1,1) GED negative log-likelihood."""
+    ...
+
+def _linear_mean_garch_nll_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """Linked linear-mean GARCH(p,q) GED negative log-likelihood."""
+    ...
+
+def _linear_mean_garch_nll_grad_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean GARCH(1,1) GED analytical gradient."""
+    ...
+
+def _linear_mean_garch_nll_grad_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean GARCH(p,q) GED analytical gradient."""
+    ...
+
+def _linear_mean_garch_hess_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean GARCH(1,1) GED analytical Hessian."""
+    ...
+
+def _linear_mean_garch_hess_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean GARCH(p,q) GED analytical Hessian."""
+    ...
+
+def _linear_mean_gjr_garch_nll_11_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> float:
+    """Linked linear-mean GJR-GARCH(1,1) Normal negative log-likelihood."""
+    ...
+
+def _linear_mean_gjr_garch_nll_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """Linked linear-mean GJR-GARCH(p,q) Normal negative log-likelihood."""
+    ...
+
+def _linear_mean_gjr_garch_nll_grad_11_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean GJR-GARCH(1,1) Normal analytical gradient."""
+    ...
+
+def _linear_mean_gjr_garch_nll_grad_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean GJR-GARCH(p,q) Normal analytical gradient."""
+    ...
+
+def _linear_mean_gjr_garch_hess_11_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean GJR-GARCH(1,1) Normal analytical Hessian."""
+    ...
+
+def _linear_mean_gjr_garch_hess_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean GJR-GARCH(p,q) Normal analytical Hessian."""
+    ...
+
+def _linear_mean_gjr_garch_nll_11_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> float:
+    """Linked linear-mean GJR-GARCH(1,1) Student-t negative log-likelihood."""
+    ...
+
+def _linear_mean_gjr_garch_nll_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """Linked linear-mean GJR-GARCH(p,q) Student-t negative log-likelihood."""
+    ...
+
+def _linear_mean_gjr_garch_nll_grad_11_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean GJR-GARCH(1,1) Student-t analytical gradient."""
+    ...
+
+def _linear_mean_gjr_garch_nll_grad_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean GJR-GARCH(p,q) Student-t analytical gradient."""
+    ...
+
+def _linear_mean_gjr_garch_hess_11_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean GJR-GARCH(1,1) Student-t analytical Hessian."""
+    ...
+
+def _linear_mean_gjr_garch_hess_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean GJR-GARCH(p,q) Student-t analytical Hessian."""
+    ...
+
+def _linear_mean_gjr_garch_nll_11_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> float:
+    """Linked linear-mean GJR-GARCH(1,1) Skew-t negative log-likelihood."""
+    ...
+
+def _linear_mean_gjr_garch_nll_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """Linked linear-mean GJR-GARCH(p,q) Skew-t negative log-likelihood."""
+    ...
+
+def _linear_mean_gjr_garch_nll_grad_11_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean GJR-GARCH(1,1) Skew-t analytical gradient."""
+    ...
+
+def _linear_mean_gjr_garch_nll_grad_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean GJR-GARCH(p,q) Skew-t analytical gradient."""
+    ...
+
+def _linear_mean_gjr_garch_hess_11_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean GJR-GARCH(1,1) Skew-t analytical Hessian."""
+    ...
+
+def _linear_mean_gjr_garch_hess_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean GJR-GARCH(p,q) Skew-t analytical Hessian."""
+    ...
+
+def _linear_mean_gjr_garch_nll_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> float:
+    """Linked linear-mean GJR-GARCH(1,1) GED negative log-likelihood."""
+    ...
+
+def _linear_mean_gjr_garch_nll_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """Linked linear-mean GJR-GARCH(p,q) GED negative log-likelihood."""
+    ...
+
+def _linear_mean_gjr_garch_nll_grad_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean GJR-GARCH(1,1) GED analytical gradient."""
+    ...
+
+def _linear_mean_gjr_garch_nll_grad_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean GJR-GARCH(p,q) GED analytical gradient."""
+    ...
+
+def _linear_mean_gjr_garch_hess_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean GJR-GARCH(1,1) GED analytical Hessian."""
+    ...
+
+def _linear_mean_gjr_garch_hess_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean GJR-GARCH(p,q) GED analytical Hessian."""
+    ...
+
+def _linear_mean_egarch_nll_11_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> float:
+    """Linked linear-mean EGARCH(1,1) Normal negative log-likelihood."""
+    ...
+
+def _linear_mean_egarch_nll_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """Linked linear-mean EGARCH(p,q) Normal negative log-likelihood."""
+    ...
+
+def _linear_mean_egarch_nll_grad_11_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean EGARCH(1,1) Normal analytical gradient."""
+    ...
+
+def _linear_mean_egarch_nll_grad_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean EGARCH(p,q) Normal analytical gradient."""
+    ...
+
+def _linear_mean_egarch_hess_11_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean EGARCH(1,1) Normal analytical Hessian."""
+    ...
+
+def _linear_mean_egarch_hess_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean EGARCH(p,q) Normal analytical Hessian."""
+    ...
+
+def _linear_mean_egarch_nll_11_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> float:
+    """Linked linear-mean EGARCH(1,1) Student-t negative log-likelihood."""
+    ...
+
+def _linear_mean_egarch_nll_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """Linked linear-mean EGARCH(p,q) Student-t negative log-likelihood."""
+    ...
+
+def _linear_mean_egarch_nll_grad_11_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean EGARCH(1,1) Student-t analytical gradient."""
+    ...
+
+def _linear_mean_egarch_nll_grad_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean EGARCH(p,q) Student-t analytical gradient."""
+    ...
+
+def _linear_mean_egarch_hess_11_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean EGARCH(1,1) Student-t analytical Hessian."""
+    ...
+
+def _linear_mean_egarch_hess_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean EGARCH(p,q) Student-t analytical Hessian."""
+    ...
+
+def _linear_mean_egarch_nll_11_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> float:
+    """Linked linear-mean EGARCH(1,1) Skew-t negative log-likelihood."""
+    ...
+
+def _linear_mean_egarch_nll_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """Linked linear-mean EGARCH(p,q) Skew-t negative log-likelihood."""
+    ...
+
+def _linear_mean_egarch_nll_grad_11_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean EGARCH(1,1) Skew-t analytical gradient."""
+    ...
+
+def _linear_mean_egarch_nll_grad_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean EGARCH(p,q) Skew-t analytical gradient."""
+    ...
+
+def _linear_mean_egarch_hess_11_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean EGARCH(1,1) Skew-t analytical Hessian."""
+    ...
+
+def _linear_mean_egarch_hess_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean EGARCH(p,q) Skew-t analytical Hessian."""
+    ...
+
+def _linear_mean_egarch_nll_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> float:
+    """Linked linear-mean EGARCH(1,1) GED negative log-likelihood."""
+    ...
+
+def _linear_mean_egarch_nll_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """Linked linear-mean EGARCH(p,q) GED negative log-likelihood."""
+    ...
+
+def _linear_mean_egarch_nll_grad_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean EGARCH(1,1) GED analytical gradient."""
+    ...
+
+def _linear_mean_egarch_nll_grad_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean EGARCH(p,q) GED analytical gradient."""
+    ...
+
+def _linear_mean_egarch_hess_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+) -> None:
+    """Linked linear-mean EGARCH(1,1) GED analytical Hessian."""
+    ...
+
+def _linear_mean_egarch_hess_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Linked linear-mean EGARCH(p,q) GED analytical Hessian."""
+    ...
+
 def _skewt_ll(
     resid_ptr: _IntPtr,   # Residuals (not squared)
     sigma2_ptr: _IntPtr,  # Conditional variances
@@ -356,6 +1422,58 @@ def _garch_ll_hess_pq_studentt(
     q: _Size,
 ) -> None: ...
 
+def _garch_ll_11_ged(
+    theta_ptr: _IntPtr,
+    eps2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+) -> float: ...
+
+def _garch_ll_pq_ged(
+    theta_ptr: _IntPtr,
+    eps2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> float: ...
+
+def _garch_ll_grad_11_ged(
+    theta_ptr: _IntPtr,
+    eps2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+) -> None: ...
+
+def _garch_ll_hess_11_ged(
+    theta_ptr: _IntPtr,
+    eps2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+) -> None: ...
+
+def _garch_ll_grad_pq_ged(
+    theta_ptr: _IntPtr,
+    eps2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None: ...
+
+def _garch_ll_hess_pq_ged(
+    theta_ptr: _IntPtr,
+    eps2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None: ...
+
 # ── Log-space transforms ───────────────────────────────────────────────────
 
 # GARCH(1,1) specialized versions
@@ -365,6 +1483,10 @@ def _pack_garch_11(z_ptr: _IntPtr, theta_ptr: _IntPtr) -> None:
 
 def _pack_garch_studentt_11(z_ptr: _IntPtr, theta_ptr: _IntPtr) -> None:
     """Transform z -> theta for GARCH(1,1)+StudentT. theta is modified in-place."""
+    ...
+
+def _pack_garch_ged_11(z_ptr: _IntPtr, theta_ptr: _IntPtr) -> None:
+    """Transform z -> theta for GARCH(1,1)+GED. theta is modified in-place."""
     ...
 
 def _pack_garch_skewt_11(z_ptr: _IntPtr, theta_ptr: _IntPtr) -> None:
@@ -377,6 +1499,10 @@ def _jacobian_garch_11(theta_ptr: _IntPtr, J_ptr: _IntPtr) -> None:
 
 def _jacobian_garch_studentt_11(theta_ptr: _IntPtr, J_ptr: _IntPtr) -> None:
     """Compute Jacobian J = d(theta)/d(z) for GARCH(1,1)+StudentT. J is 4x4, row-major."""
+    ...
+
+def _jacobian_garch_ged_11(theta_ptr: _IntPtr, J_ptr: _IntPtr) -> None:
+    """Compute Jacobian J = d(theta)/d(z) for GARCH(1,1)+GED. J is 4x4, row-major."""
     ...
 
 def _jacobian_garch_skewt_11(theta_ptr: _IntPtr, J_ptr: _IntPtr) -> None:
@@ -416,6 +1542,10 @@ def _pack_garch_studentt_pq(z_ptr: _IntPtr, theta_ptr: _IntPtr, p: _Size, q: _Si
     """Transform z -> theta for GARCH(p,q)+StudentT. theta is modified in-place."""
     ...
 
+def _pack_garch_ged_pq(z_ptr: _IntPtr, theta_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Transform z -> theta for GARCH(p,q)+GED. theta is modified in-place."""
+    ...
+
 def _pack_garch_skewt_pq(z_ptr: _IntPtr, theta_ptr: _IntPtr, p: _Size, q: _Size) -> None:
     """Transform z -> theta for GARCH(p,q)+SkewT. theta is modified in-place."""
     ...
@@ -426,6 +1556,10 @@ def _jacobian_garch_pq(theta_ptr: _IntPtr, J_ptr: _IntPtr, p: _Size, q: _Size) -
 
 def _jacobian_garch_studentt_pq(theta_ptr: _IntPtr, J_ptr: _IntPtr, p: _Size, q: _Size) -> None:
     """Compute Jacobian J = d(theta)/d(z) for GARCH(p,q)+StudentT. J is K*K, row-major."""
+    ...
+
+def _jacobian_garch_ged_pq(theta_ptr: _IntPtr, J_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Compute Jacobian J = d(theta)/d(z) for GARCH(p,q)+GED. J is K*K, row-major."""
     ...
 
 def _jacobian_garch_skewt_pq(theta_ptr: _IntPtr, J_ptr: _IntPtr, p: _Size, q: _Size) -> None:
@@ -664,6 +1798,348 @@ def _gjr_garch_opg_hess_pq(
     """GJR-GARCH(p,q) OPG and Hessian for robust standard errors."""
     ...
 
+# ── EGARCH(1,1) Functions ─────────────────────────────────────────────────
+
+def _egarch_variance_11(
+    params_ptr: _IntPtr,   # [omega, alpha, gamma, beta]
+    resid_ptr: _IntPtr,    # Raw residuals
+    sigma2_ptr: _IntPtr,   # Output: conditional variances
+    n: _Size,
+) -> None:
+    """EGARCH(1,1) variance recursion."""
+    ...
+
+def _egarch_variance_pq(
+    params_ptr: _IntPtr,   # [omega, alpha_1..p, gamma_1..p, beta_1..q]
+    resid_ptr: _IntPtr,    # Raw residuals
+    sigma2_ptr: _IntPtr,   # Output: conditional variances
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """EGARCH(p,q) variance recursion."""
+    ...
+
+def _egarch_ll_11_normal(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+) -> float:
+    """EGARCH(1,1) + Normal NLL."""
+    ...
+
+def _egarch_ll_pq_normal(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """EGARCH(p,q) + Normal NLL."""
+    ...
+
+def _egarch_ll_grad_11_normal(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+) -> None:
+    """EGARCH(1,1) + Normal gradient."""
+    ...
+
+def _egarch_ll_grad_pq_normal(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """EGARCH(p,q) + Normal gradient."""
+    ...
+
+def _egarch_ll_hess_11_normal(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+) -> None:
+    """EGARCH(1,1) + Normal Hessian."""
+    ...
+
+def _egarch_ll_hess_pq_normal(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """EGARCH(p,q) + Normal Hessian."""
+    ...
+
+def _egarch_ll_11_studentt(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+) -> float:
+    """EGARCH(1,1) + Student-t NLL."""
+    ...
+
+def _egarch_ll_pq_studentt(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """EGARCH(p,q) + Student-t NLL."""
+    ...
+
+def _egarch_ll_grad_11_studentt(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+) -> None:
+    """EGARCH(1,1) + Student-t gradient."""
+    ...
+
+def _egarch_ll_grad_pq_studentt(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """EGARCH(p,q) + Student-t gradient."""
+    ...
+
+def _egarch_ll_hess_11_studentt(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+) -> None:
+    """EGARCH(1,1) + Student-t Hessian."""
+    ...
+
+def _egarch_ll_hess_pq_studentt(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """EGARCH(p,q) + Student-t Hessian."""
+    ...
+
+def _egarch_ll_11_skewt(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+) -> float:
+    """EGARCH(1,1) + Skew-t NLL."""
+    ...
+
+def _egarch_ll_pq_skewt(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """EGARCH(p,q) + Skew-t NLL."""
+    ...
+
+def _egarch_ll_grad_11_skewt(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+) -> None:
+    """EGARCH(1,1) + Skew-t gradient."""
+    ...
+
+def _egarch_ll_grad_pq_skewt(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """EGARCH(p,q) + Skew-t gradient."""
+    ...
+
+def _egarch_ll_hess_11_skewt(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+) -> None:
+    """EGARCH(1,1) + Skew-t Hessian."""
+    ...
+
+def _egarch_ll_hess_pq_skewt(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """EGARCH(p,q) + Skew-t Hessian."""
+    ...
+
+def _egarch_ll_11_ged(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+) -> float:
+    """EGARCH(1,1) + GED NLL."""
+    ...
+
+def _egarch_ll_pq_ged(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """EGARCH(p,q) + GED NLL."""
+    ...
+
+def _egarch_ll_grad_11_ged(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+) -> None:
+    """EGARCH(1,1) + GED gradient."""
+    ...
+
+def _egarch_ll_grad_pq_ged(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """EGARCH(p,q) + GED gradient."""
+    ...
+
+def _egarch_ll_hess_11_ged(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+) -> None:
+    """EGARCH(1,1) + GED Hessian."""
+    ...
+
+def _egarch_ll_hess_pq_ged(
+    params_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """EGARCH(p,q) + GED Hessian."""
+    ...
+
+def _pack_egarch_11(z_ptr: _IntPtr, theta_ptr: _IntPtr) -> None:
+    """Transform z -> theta for EGARCH(1,1)."""
+    ...
+
+def _pack_egarch_pq(z_ptr: _IntPtr, theta_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Transform z -> theta for EGARCH(p,q)."""
+    ...
+
+def _pack_egarch_studentt_11(z_ptr: _IntPtr, theta_ptr: _IntPtr) -> None:
+    """Transform z -> theta for EGARCH(1,1)+StudentT."""
+    ...
+
+def _pack_egarch_studentt_pq(z_ptr: _IntPtr, theta_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Transform z -> theta for EGARCH(p,q)+StudentT."""
+    ...
+
+def _pack_egarch_ged_11(z_ptr: _IntPtr, theta_ptr: _IntPtr) -> None:
+    """Transform z -> theta for EGARCH(1,1)+GED."""
+    ...
+
+def _pack_egarch_ged_pq(z_ptr: _IntPtr, theta_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Transform z -> theta for EGARCH(p,q)+GED."""
+    ...
+
+def _pack_egarch_skewt_11(z_ptr: _IntPtr, theta_ptr: _IntPtr) -> None:
+    """Transform z -> theta for EGARCH(1,1)+SkewT."""
+    ...
+
+def _pack_egarch_skewt_pq(z_ptr: _IntPtr, theta_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Transform z -> theta for EGARCH(p,q)+SkewT."""
+    ...
+
+def _jacobian_egarch_11(theta_ptr: _IntPtr, J_ptr: _IntPtr) -> None:
+    """Jacobian for EGARCH(1,1)."""
+    ...
+
+def _jacobian_egarch_pq(theta_ptr: _IntPtr, J_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Jacobian for EGARCH(p,q)."""
+    ...
+
+def _jacobian_egarch_studentt_11(theta_ptr: _IntPtr, J_ptr: _IntPtr) -> None:
+    """Jacobian for EGARCH(1,1)+StudentT."""
+    ...
+
+def _jacobian_egarch_studentt_pq(theta_ptr: _IntPtr, J_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Jacobian for EGARCH(p,q)+StudentT."""
+    ...
+
+def _jacobian_egarch_ged_11(theta_ptr: _IntPtr, J_ptr: _IntPtr) -> None:
+    """Jacobian for EGARCH(1,1)+GED."""
+    ...
+
+def _jacobian_egarch_ged_pq(theta_ptr: _IntPtr, J_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Jacobian for EGARCH(p,q)+GED."""
+    ...
+
+def _jacobian_egarch_skewt_11(theta_ptr: _IntPtr, J_ptr: _IntPtr) -> None:
+    """Jacobian for EGARCH(1,1)+SkewT."""
+    ...
+
+def _jacobian_egarch_skewt_pq(theta_ptr: _IntPtr, J_ptr: _IntPtr, p: _Size, q: _Size) -> None:
+    """Jacobian for EGARCH(p,q)+SkewT."""
+    ...
+
 # GJR-GARCH log-space transforms (1,1)
 def _pack_gjr_garch_11(z_ptr: _IntPtr, theta_ptr: _IntPtr) -> None:
     """Transform z -> theta for GJR-GARCH(1,1). theta is modified in-place."""
@@ -804,6 +2280,41 @@ def _arma_garch_hess_11_studentt(
     """ARMA(1,1)-GARCH(1,1) analytical Hessian for Student-t innovations."""
     ...
 
+def _arma_garch_nll_11_ged(
+    params_ptr: _IntPtr,   # [c, phi, theta, omega, alpha, beta, nu]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-GARCH(1,1) NLL with GED innovations."""
+    ...
+
+def _arma_garch_nll_grad_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-GARCH(1,1) NLL with analytical gradient for GED innovations."""
+    ...
+
+def _arma_garch_hess_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> None:
+    """ARMA(1,1)-GARCH(1,1) analytical Hessian for GED innovations."""
+    ...
+
 def _arma_garch_nll_11_skewt(
     params_ptr: _IntPtr,   # [c, phi, theta, omega, alpha, beta, nu, lam]
     y_ptr: _IntPtr,
@@ -870,6 +2381,23 @@ def _arma_garch_nll_grad_pq_normal(
     Q_garch: _Size,
 ) -> float:
     """General ARMA(p,q)-GARCH(P,Q) NLL with analytical gradient for Normal innovations."""
+    ...
+
+def _arma_garch_opg_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    opg_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> None:
+    """General ARMA(p,q)-GARCH(P,Q) OPG for Normal innovations."""
     ...
 
 def _arma_garch_hess_pq_normal(
@@ -939,6 +2467,56 @@ def _arma_garch_hess_pq_studentt(
     """General ARMA(p,q)-GARCH(P,Q) analytical Hessian for Student-t innovations."""
     ...
 
+def _arma_garch_nll_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> float:
+    """General ARMA(p,q)-GARCH(P,Q) NLL with GED innovations."""
+    ...
+
+def _arma_garch_nll_grad_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> float:
+    """General ARMA(p,q)-GARCH(P,Q) NLL with analytical gradient for GED innovations."""
+    ...
+
+def _arma_garch_hess_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> None:
+    """General ARMA(p,q)-GARCH(P,Q) analytical Hessian for GED innovations."""
+    ...
+
 def _arma_garch_nll_pq_skewt(
     params_ptr: _IntPtr,   # [..., nu, lam]
     y_ptr: _IntPtr,
@@ -987,6 +2565,690 @@ def _arma_garch_hess_pq_skewt(
     Q_garch: _Size,
 ) -> None:
     """General ARMA(p,q)-GARCH(P,Q) analytical Hessian for Skew-t innovations."""
+    ...
+
+# ── ARMA-GJR-GARCH Functions ────────────────────────────────────────────────
+
+def _arma_gjr_garch_nll_11_normal(
+    params_ptr: _IntPtr,   # [c, phi, theta, omega, alpha, gamma, beta]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-GJR-GARCH(1,1) NLL with Normal innovations."""
+    ...
+
+def _arma_gjr_garch_nll_grad_11_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-GJR-GARCH(1,1) NLL and gradient with Normal innovations."""
+    ...
+
+def _arma_gjr_garch_hess_11_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> None:
+    """ARMA(1,1)-GJR-GARCH(1,1) analytical Hessian with Normal innovations."""
+    ...
+
+def _arma_gjr_garch_nll_11_studentt(
+    params_ptr: _IntPtr,   # [..., nu]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-GJR-GARCH(1,1) NLL with Student-t innovations."""
+    ...
+
+def _arma_gjr_garch_nll_grad_11_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-GJR-GARCH(1,1) NLL and gradient with Student-t innovations."""
+    ...
+
+def _arma_gjr_garch_hess_11_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> None:
+    """ARMA(1,1)-GJR-GARCH(1,1) analytical Hessian with Student-t innovations."""
+    ...
+
+def _arma_gjr_garch_nll_11_ged(
+    params_ptr: _IntPtr,   # [..., nu]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-GJR-GARCH(1,1) NLL with GED innovations."""
+    ...
+
+def _arma_gjr_garch_nll_grad_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-GJR-GARCH(1,1) NLL and gradient with GED innovations."""
+    ...
+
+def _arma_gjr_garch_hess_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> None:
+    """ARMA(1,1)-GJR-GARCH(1,1) analytical Hessian with GED innovations."""
+    ...
+
+def _arma_gjr_garch_nll_11_skewt(
+    params_ptr: _IntPtr,   # [..., nu, lam]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-GJR-GARCH(1,1) NLL with Skew-t innovations."""
+    ...
+
+def _arma_gjr_garch_nll_grad_11_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-GJR-GARCH(1,1) NLL and gradient with Skew-t innovations."""
+    ...
+
+def _arma_gjr_garch_hess_11_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> None:
+    """ARMA(1,1)-GJR-GARCH(1,1) analytical Hessian with Skew-t innovations."""
+    ...
+
+def _arma_gjr_garch_nll_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> float:
+    """General ARMA(p,q)-GJR-GARCH(P,Q) NLL with Normal innovations."""
+    ...
+
+def _arma_gjr_garch_nll_grad_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> float:
+    """General ARMA(p,q)-GJR-GARCH(P,Q) NLL and gradient with Normal innovations."""
+    ...
+
+def _arma_gjr_garch_hess_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> None:
+    """General ARMA(p,q)-GJR-GARCH(P,Q) analytical Hessian with Normal innovations."""
+    ...
+
+def _arma_gjr_garch_nll_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> float:
+    """General ARMA(p,q)-GJR-GARCH(P,Q) NLL with Student-t innovations."""
+    ...
+
+def _arma_gjr_garch_nll_grad_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> float:
+    """General ARMA(p,q)-GJR-GARCH(P,Q) NLL and gradient with Student-t innovations."""
+    ...
+
+def _arma_gjr_garch_hess_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> None:
+    """General ARMA(p,q)-GJR-GARCH(P,Q) analytical Hessian with Student-t innovations."""
+    ...
+
+def _arma_gjr_garch_nll_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> float:
+    """General ARMA(p,q)-GJR-GARCH(P,Q) NLL with GED innovations."""
+    ...
+
+def _arma_gjr_garch_nll_grad_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> float:
+    """General ARMA(p,q)-GJR-GARCH(P,Q) NLL and gradient with GED innovations."""
+    ...
+
+def _arma_gjr_garch_hess_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> None:
+    """General ARMA(p,q)-GJR-GARCH(P,Q) analytical Hessian with GED innovations."""
+    ...
+
+def _arma_gjr_garch_nll_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> float:
+    """General ARMA(p,q)-GJR-GARCH(P,Q) NLL with Skew-t innovations."""
+    ...
+
+def _arma_gjr_garch_nll_grad_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> float:
+    """General ARMA(p,q)-GJR-GARCH(P,Q) NLL and gradient with Skew-t innovations."""
+    ...
+
+def _arma_gjr_garch_hess_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_garch: _Size,
+) -> None:
+    """General ARMA(p,q)-GJR-GARCH(P,Q) analytical Hessian with Skew-t innovations."""
+    ...
+
+# ── ARMA-EGARCH Functions ──────────────────────────────────────────────────
+
+def _arma_egarch_nll_11_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-EGARCH(1,1) NLL with Normal innovations."""
+    ...
+
+def _arma_egarch_nll_grad_11_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-EGARCH(1,1) NLL and gradient with Normal innovations."""
+    ...
+
+def _arma_egarch_hess_11_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> None:
+    """ARMA(1,1)-EGARCH(1,1) analytical Hessian with Normal innovations."""
+    ...
+
+def _arma_egarch_nll_11_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-EGARCH(1,1) NLL with Student-t innovations."""
+    ...
+
+def _arma_egarch_nll_grad_11_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-EGARCH(1,1) NLL and gradient with Student-t innovations."""
+    ...
+
+def _arma_egarch_hess_11_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> None:
+    """ARMA(1,1)-EGARCH(1,1) analytical Hessian with Student-t innovations."""
+    ...
+
+def _arma_egarch_nll_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-EGARCH(1,1) NLL with GED innovations."""
+    ...
+
+def _arma_egarch_nll_grad_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-EGARCH(1,1) NLL and gradient with GED innovations."""
+    ...
+
+def _arma_egarch_hess_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> None:
+    """ARMA(1,1)-EGARCH(1,1) analytical Hessian with GED innovations."""
+    ...
+
+def _arma_egarch_nll_11_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-EGARCH(1,1) NLL with Skew-t innovations."""
+    ...
+
+def _arma_egarch_nll_grad_11_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> float:
+    """ARMA(1,1)-EGARCH(1,1) NLL and gradient with Skew-t innovations."""
+    ...
+
+def _arma_egarch_hess_11_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    h0: float,
+    n: _Size,
+) -> None:
+    """ARMA(1,1)-EGARCH(1,1) analytical Hessian with Skew-t innovations."""
+    ...
+
+def _arma_egarch_nll_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_egarch: _Size,
+) -> float:
+    """General ARMA(p,q)-EGARCH(P,Q) NLL with Normal innovations."""
+    ...
+
+def _arma_egarch_nll_grad_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_egarch: _Size,
+) -> float:
+    """General ARMA(p,q)-EGARCH(P,Q) NLL and gradient with Normal innovations."""
+    ...
+
+def _arma_egarch_hess_pq_normal(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_egarch: _Size,
+) -> None:
+    """General ARMA(p,q)-EGARCH(P,Q) analytical Hessian with Normal innovations."""
+    ...
+
+def _arma_egarch_nll_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_egarch: _Size,
+) -> float:
+    """General ARMA(p,q)-EGARCH(P,Q) NLL with Student-t innovations."""
+    ...
+
+def _arma_egarch_nll_grad_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_egarch: _Size,
+) -> float:
+    """General ARMA(p,q)-EGARCH(P,Q) NLL and gradient with Student-t innovations."""
+    ...
+
+def _arma_egarch_hess_pq_studentt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_egarch: _Size,
+) -> None:
+    """General ARMA(p,q)-EGARCH(P,Q) analytical Hessian with Student-t innovations."""
+    ...
+
+def _arma_egarch_nll_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_egarch: _Size,
+) -> float:
+    """General ARMA(p,q)-EGARCH(P,Q) NLL with GED innovations."""
+    ...
+
+def _arma_egarch_nll_grad_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_egarch: _Size,
+) -> float:
+    """General ARMA(p,q)-EGARCH(P,Q) NLL and gradient with GED innovations."""
+    ...
+
+def _arma_egarch_hess_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_egarch: _Size,
+) -> None:
+    """General ARMA(p,q)-EGARCH(P,Q) analytical Hessian with GED innovations."""
+    ...
+
+def _arma_egarch_nll_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_egarch: _Size,
+) -> float:
+    """General ARMA(p,q)-EGARCH(P,Q) NLL with Skew-t innovations."""
+    ...
+
+def _arma_egarch_nll_grad_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_egarch: _Size,
+) -> float:
+    """General ARMA(p,q)-EGARCH(P,Q) NLL and gradient with Skew-t innovations."""
+    ...
+
+def _arma_egarch_hess_pq_skewt(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+    P_arch: _Size,
+    Q_egarch: _Size,
+) -> None:
+    """General ARMA(p,q)-EGARCH(P,Q) analytical Hessian with Skew-t innovations."""
     ...
 
 # =============================================================================
@@ -1060,6 +3322,73 @@ def _arma_hess_pq_normal(
     """ARMA(p,q) Hessian (expected, concentrated likelihood)."""
     ...
 
+def _arma_nll_11_ged(
+    params_ptr: _IntPtr,   # [c, phi, theta, nu]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    n: _Size,
+) -> float:
+    """ARMA(1,1) NLL with GED (profiled constant variance)."""
+    ...
+
+def _arma_nll_grad_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+) -> float:
+    """ARMA(1,1) NLL with gradient for GED."""
+    ...
+
+def _arma_hess_11_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+) -> None:
+    """ARMA(1,1) Hessian for GED."""
+    ...
+
+def _arma_nll_pq_ged(
+    params_ptr: _IntPtr,   # [c, phi..., theta..., nu]
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+) -> float:
+    """ARMA(p,q) NLL with GED (profiled constant variance)."""
+    ...
+
+def _arma_nll_grad_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+) -> float:
+    """ARMA(p,q) NLL with gradient for GED."""
+    ...
+
+def _arma_hess_pq_ged(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+) -> None:
+    """ARMA(p,q) Hessian for GED."""
+    ...
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Fused log-space wrappers
 #
@@ -1104,6 +3433,25 @@ def _log_garch_ll_grad_pq_studentt(
     n: _Size, p: _Size, q: _Size,
 ) -> None:
     """Log-space GARCH(p,q) + Student-t gradient. Fused pack → grad → J^T transform."""
+    ...
+
+def _log_garch_ll_pq_ged(
+    z_ptr: _IntPtr,
+    resid2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size, p: _Size, q: _Size,
+) -> float:
+    """Log-space GARCH(p,q) + GED NLL. Fused pack -> NLL."""
+    ...
+
+def _log_garch_ll_grad_pq_ged(
+    z_ptr: _IntPtr,
+    resid2_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size, p: _Size, q: _Size,
+) -> None:
+    """Log-space GARCH(p,q) + GED gradient. Fused pack -> grad -> J^T transform."""
     ...
 
 def _log_garch_ll_pq_skewt(
@@ -1182,6 +3530,174 @@ def _log_gjr_garch_ll_grad_pq_skewt(
     """Log-space GJR-GARCH(p,q) + Skew-t gradient. Fused pack → grad → J^T transform."""
     ...
 
+def _log_egarch_ll_11_normal(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+) -> float:
+    """Log-space EGARCH(1,1) + Normal NLL."""
+    ...
+
+def _log_egarch_ll_pq_normal(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """Log-space EGARCH(p,q) + Normal NLL."""
+    ...
+
+def _log_egarch_ll_grad_11_normal(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+) -> None:
+    """Log-space EGARCH(1,1) + Normal gradient."""
+    ...
+
+def _log_egarch_ll_grad_pq_normal(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Log-space EGARCH(p,q) + Normal gradient."""
+    ...
+
+def _log_egarch_ll_11_studentt(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+) -> float:
+    """Log-space EGARCH(1,1) + Student-t NLL."""
+    ...
+
+def _log_egarch_ll_pq_studentt(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """Log-space EGARCH(p,q) + Student-t NLL."""
+    ...
+
+def _log_egarch_ll_grad_11_studentt(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+) -> None:
+    """Log-space EGARCH(1,1) + Student-t gradient."""
+    ...
+
+def _log_egarch_ll_grad_pq_studentt(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Log-space EGARCH(p,q) + Student-t gradient."""
+    ...
+
+def _log_egarch_ll_11_skewt(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+) -> float:
+    """Log-space EGARCH(1,1) + Skew-t NLL."""
+    ...
+
+def _log_egarch_ll_pq_skewt(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """Log-space EGARCH(p,q) + Skew-t NLL."""
+    ...
+
+def _log_egarch_ll_grad_11_skewt(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+) -> None:
+    """Log-space EGARCH(1,1) + Skew-t gradient."""
+    ...
+
+def _log_egarch_ll_grad_pq_skewt(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Log-space EGARCH(p,q) + Skew-t gradient."""
+    ...
+
+def _log_egarch_ll_11_ged(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+) -> float:
+    """Log-space EGARCH(1,1) + GED NLL."""
+    ...
+
+def _log_egarch_ll_pq_ged(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """Log-space EGARCH(p,q) + GED NLL."""
+    ...
+
+def _log_egarch_ll_grad_11_ged(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+) -> None:
+    """Log-space EGARCH(1,1) + GED gradient."""
+    ...
+
+def _log_egarch_ll_grad_pq_ged(
+    z_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Log-space EGARCH(p,q) + GED gradient."""
+    ...
+
 def _log_arma_nll_pq_normal(
     z_ptr: _IntPtr,
     y_ptr: _IntPtr,
@@ -1205,6 +3721,31 @@ def _log_arma_nll_grad_pq_normal(
     q_ma: _Size,
 ) -> None:
     """Log-space ARMA(p,q) + Normal gradient. Fused pack → grad → J^T transform."""
+    ...
+
+def _log_arma_nll_pq_ged(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+) -> float:
+    """Log-space ARMA(p,q) + GED NLL."""
+    ...
+
+def _log_arma_nll_grad_pq_ged(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size,
+    q_ma: _Size,
+) -> None:
+    """Log-space ARMA(p,q) + GED gradient."""
     ...
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1257,6 +3798,20 @@ def _log_arma_garch_nll_pq_studentt(
     """Log-space ARMA-GARCH + Student-t NLL. Fused pack → NLL."""
     ...
 
+def _log_arma_garch_nll_pq_ged(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_garch: _Size,
+) -> float:
+    """Log-space ARMA-GARCH + GED NLL."""
+    ...
+
 def _log_arma_garch_nll_grad_pq_studentt(
     z_ptr: _IntPtr,
     y_ptr: _IntPtr,
@@ -1270,6 +3825,21 @@ def _log_arma_garch_nll_grad_pq_studentt(
     P_arch: _Size, Q_garch: _Size,
 ) -> None:
     """Log-space ARMA-GARCH + Student-t gradient."""
+    ...
+
+def _log_arma_garch_nll_grad_pq_ged(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_garch: _Size,
+) -> None:
+    """Log-space ARMA-GARCH + GED gradient."""
     ...
 
 def _log_arma_garch_nll_pq_skewt(
@@ -1299,6 +3869,209 @@ def _log_arma_garch_nll_grad_pq_skewt(
     P_arch: _Size, Q_garch: _Size,
 ) -> None:
     """Log-space ARMA-GARCH + Skew-t gradient."""
+    ...
+
+def _log_arma_gjr_garch_nll_pq_normal(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_garch: _Size,
+) -> float:
+    """Log-space ARMA-GJR-GARCH + Normal NLL."""
+    ...
+
+def _log_arma_gjr_garch_nll_grad_pq_normal(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_garch: _Size,
+) -> None:
+    """Log-space ARMA-GJR-GARCH + Normal gradient."""
+    ...
+
+def _log_arma_gjr_garch_nll_pq_studentt(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_garch: _Size,
+) -> float:
+    """Log-space ARMA-GJR-GARCH + Student-t NLL."""
+    ...
+
+def _log_arma_gjr_garch_nll_grad_pq_studentt(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_garch: _Size,
+) -> None:
+    """Log-space ARMA-GJR-GARCH + Student-t gradient."""
+    ...
+
+def _log_arma_gjr_garch_nll_pq_skewt(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_garch: _Size,
+) -> float:
+    """Log-space ARMA-GJR-GARCH + Skew-t NLL."""
+    ...
+
+def _log_arma_gjr_garch_nll_grad_pq_skewt(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_garch: _Size,
+) -> None:
+    """Log-space ARMA-GJR-GARCH + Skew-t gradient."""
+    ...
+
+def _log_arma_egarch_nll_pq_normal(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_egarch: _Size,
+) -> float:
+    """Log-space ARMA-EGARCH + Normal NLL."""
+    ...
+
+def _log_arma_egarch_nll_grad_pq_normal(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_egarch: _Size,
+) -> None:
+    """Log-space ARMA-EGARCH + Normal gradient."""
+    ...
+
+def _log_arma_egarch_nll_pq_studentt(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_egarch: _Size,
+) -> float:
+    """Log-space ARMA-EGARCH + Student-t NLL."""
+    ...
+
+def _log_arma_egarch_nll_grad_pq_studentt(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_egarch: _Size,
+) -> None:
+    """Log-space ARMA-EGARCH + Student-t gradient."""
+    ...
+
+def _log_arma_egarch_nll_pq_ged(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_egarch: _Size,
+) -> float:
+    """Log-space ARMA-EGARCH + GED NLL."""
+    ...
+
+def _log_arma_egarch_nll_grad_pq_ged(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_egarch: _Size,
+) -> None:
+    """Log-space ARMA-EGARCH + GED gradient."""
+    ...
+
+def _log_arma_egarch_nll_pq_skewt(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_egarch: _Size,
+) -> float:
+    """Log-space ARMA-EGARCH + Skew-t NLL."""
+    ...
+
+def _log_arma_egarch_nll_grad_pq_skewt(
+    z_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    e0_ptr: _IntPtr,
+    h0_ptr: _IntPtr,
+    grad_z_ptr: _IntPtr,
+    n: _Size,
+    p_ar: _Size, q_ma: _Size,
+    P_arch: _Size, Q_egarch: _Size,
+) -> None:
+    """Log-space ARMA-EGARCH + Skew-t gradient."""
     ...
 
 # ═══════════════════════════════════════════════════════════════════════════

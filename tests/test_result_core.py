@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from scivol import ARMA, GARCH, StudentT, Role, CompositeSpec
+from scivol import ARMA, EGARCH, GARCH, Normal, StudentT, Role, CompositeSpec
 from scivol.result import EstimationResult
 
 
@@ -54,6 +54,15 @@ def _build_fitted_spec() -> CompositeSpec:
     t_dist.unpack(np.array([8.0]))                      # df
 
     return arma + garch + t_dist
+
+
+def _build_fitted_egarch_spec() -> CompositeSpec:
+    """EGARCH(2,1) + Normal with fake fitted parameters."""
+    egarch = EGARCH(2, 1)
+    normal = Normal()
+    egarch.unpack(np.array([-0.2, 0.15, 0.05, -0.10, 0.02, 0.85]))
+    normal.unpack(np.array([]))
+    return egarch + normal
 
 
 # ------------------------------------------------------------------ #
@@ -129,6 +138,33 @@ def test_to_dict_structure():
         assert d["parameters"][comp.signature] == comp.fitted_params
 
 
+def test_fit_info_is_exposed_in_result_and_dict():
+    data = np.ones(50)
+    spec = _build_fitted_spec()
+    opt = DummyOpt(x=np.arange(spec.total_params), fun=10.0)
+    res = EstimationResult(
+        spec,
+        opt,
+        data,
+        fit_info={
+            "solver": "slsqp",
+            "log_mode": True,
+            "optimization_space": "z-space",
+            "used_default_solver": False,
+            "used_default_log_mode": True,
+        },
+    )
+
+    assert res.fit_info.solver == "slsqp"
+    assert res.fit_info.log_mode is True
+    assert res.fit_info.optimization_space == "z-space"
+
+    d = res.to_dict()
+    assert d["fit_info"]["solver"] == "slsqp"
+    assert d["fit_info"]["optimization_space"] == "z-space"
+    assert d["fit_info"]["used_default_log_mode"] is True
+
+
 def test_component_params_are_snapshotted():
     data = np.ones(50)
     spec = _build_fitted_spec()
@@ -172,43 +208,74 @@ def test_summary_prints(capsys):
     data = np.zeros(30)
     spec = _build_fitted_spec()
     opt = DummyOpt(x=np.zeros(spec.total_params), fun=0.0)
-    res = EstimationResult(spec, opt, data)
+    res = EstimationResult(
+        spec,
+        opt,
+        data,
+        fit_info={
+            "solver": "slsqp",
+            "log_mode": False,
+            "optimization_space": "theta-space",
+            "used_default_solver": False,
+            "used_default_log_mode": True,
+            "requested_hold_back": 5,
+            "effective_hold_back": 7,
+            "scale": 100.0,
+        },
+    )
 
     # should not raise and should write to stdout
     res.summary()
     captured = capsys.readouterr().out
 
     # very loose sanity checks
+    assert "Model Estimation Results" in captured
     assert str(spec) in captured
     assert re.search(r"Log-?Likelihood", captured, flags=re.I)
     assert "Persistence" in captured  # Check for persistence info
+    assert "Solver:" in captured
+    assert "Path:" in captured
+    assert "Hold-back:" in captured
+    assert "requested 5, effective 7" in captured
+    assert "Scale:" in captured
+
+
+def test_egarch_summary_prints_egarch_diagnostics(capsys):
+    data = np.zeros(40)
+    spec = _build_fitted_egarch_spec()
+    opt = DummyOpt(x=np.array([-0.2, 0.15, 0.05, -0.10, 0.02, 0.85]), fun=1.0)
+    res = EstimationResult(spec, opt, data)
+
+    res.summary()
+    captured = capsys.readouterr().out
+
+    assert "Persistence (beta)" in captured
+    assert "Unconditional Log Variance" in captured
+    assert "non-stationary log-variance recursion" not in captured
 
 
 # ------------------------------------------------------------------ #
 # 4. forecast() method
 # ------------------------------------------------------------------ #
-def test_forecast_returns_dict():
-    """forecast() should return dict with variance and volatility."""
+def test_forecast_returns_object():
+    """forecast() should return a forecast object with mapping-style access."""
     rng = np.random.default_rng(99)
     data = rng.standard_normal(100) * 0.01
     spec = _build_fitted_spec()
-    # Create params with reasonable GARCH values
-    params = np.array([1e-6, 0.1, 0.85, 8.0, 0.0, 0.0, 0.0])
+    # ARMA(1,1) + GARCH(1,1) + Student-t parameter order:
+    # [const, ar1, ma1, omega, alpha1, beta1, nu]
+    params = np.array([0.05, 0.20, -0.10, 1e-6, 0.10, 0.85, 8.0])
     opt = DummyOpt(x=params, fun=10.0)
     res = EstimationResult(spec, opt, data)
-    
-    # Need to set sigma2 for forecast to work
-    res._sigma2 = rng.random(len(data)) * 1e-4
-    
+
     fc = res.forecast(horizon=5)
     
-    assert isinstance(fc, dict)
-    assert 'variance' in fc
-    assert 'volatility' in fc
-    assert len(fc['variance']) == 5
-    assert len(fc['volatility']) == 5
+    assert hasattr(fc, "variance")
+    assert hasattr(fc, "volatility")
+    assert len(fc["variance"]) == 5
+    assert len(fc["volatility"]) == 5
     # Volatility should be sqrt of variance
-    np.testing.assert_allclose(fc['volatility'], np.sqrt(fc['variance']))
+    np.testing.assert_allclose(fc["volatility"], np.sqrt(fc["variance"]))
 
 
 def test_forecast_convergence():
@@ -249,5 +316,5 @@ def test_forecast_convergence():
     
     # Check last forecast is close to unconditional (within 30%)
     # Loose tolerance due to estimation error
-    rel_diff = abs(fc['variance'][-1] - unconditional_var) / unconditional_var
+    rel_diff = abs(fc.variance[-1] - unconditional_var) / unconditional_var
     assert rel_diff < 0.3, f"Forecast didn't converge: rel_diff = {rel_diff}"
