@@ -61,10 +61,11 @@ def build_linear_mean_features(
         prefix[0] = 0.0
         np.cumsum(y, out=prefix[1:])
         for horizon in mean.horizons:
-            for t in range(1, n):
-                width = min(horizon, t)
-                if width > 0:
-                    feats[t, col] = (prefix[t] - prefix[t - width]) / float(width)
+            warmup_stop = min(horizon, n)
+            for t in range(1, warmup_stop):
+                feats[t, col] = prefix[t] / float(t)
+            for t in range(horizon, n):
+                feats[t, col] = (prefix[t] - prefix[t - horizon]) / float(horizon)
             col += 1
         if x_arr is not None and mean.n_exog > 0:
             feats[:, col:col + mean.n_exog] = x_arr

@@ -1232,23 +1232,21 @@ void egarch_variance_pq(const double *params,
     }
 
     for (size_t t = 1; t < n; ++t) {
+        const size_t p_terms = (t < p) ? t : p;
+        const size_t q_terms = (t < q) ? t : q;
         double x_t = omega;
 
-        for (size_t i = 0; i < p; ++i) {
-            if (t > i) {
-                const size_t lag = t - 1 - i;
-                const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
-                const double z_lag = residuals[lag] / sqrt(h_lag);
-                x_t += alpha[i] * (fabs(z_lag) - EGARCH_ABS_NORMAL) + gamma[i] * z_lag;
-            }
+        for (size_t i = 0; i < p_terms; ++i) {
+            const size_t lag = t - 1 - i;
+            const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
+            const double z_lag = residuals[lag] / sqrt(h_lag);
+            x_t += alpha[i] * (fabs(z_lag) - EGARCH_ABS_NORMAL) + gamma[i] * z_lag;
         }
 
-        for (size_t j = 0; j < q; ++j) {
-            if (t > j) {
-                const size_t lag = t - 1 - j;
-                const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
-                x_t += beta[j] * log(h_lag);
-            }
+        for (size_t j = 0; j < q_terms; ++j) {
+            const size_t lag = t - 1 - j;
+            const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
+            x_t += beta[j] * log(h_lag);
         }
 
         sigma2[t] = exp(x_t);
@@ -1320,23 +1318,21 @@ static double egarch_ll_grad_hess_pq_normal_core(const double *params,
     nll += 0.5 * (log(sigma2[0]) + residuals[0] * residuals[0] / sigma2[0]);
 
     for (size_t t = 1; t < n; ++t) {
+        const size_t p_terms = (t < p) ? t : p;
+        const size_t q_terms = (t < q) ? t : q;
         double x_t = omega;
 
-        for (size_t i = 0; i < p; ++i) {
-            if (t > i) {
-                const size_t lag = t - 1 - i;
-                const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
-                const double z_lag = residuals[lag] / sqrt(h_lag);
-                x_t += alpha[i] * (fabs(z_lag) - EGARCH_ABS_NORMAL) + gamma[i] * z_lag;
-            }
+        for (size_t i = 0; i < p_terms; ++i) {
+            const size_t lag = t - 1 - i;
+            const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
+            const double z_lag = residuals[lag] / sqrt(h_lag);
+            x_t += alpha[i] * (fabs(z_lag) - EGARCH_ABS_NORMAL) + gamma[i] * z_lag;
         }
 
-        for (size_t j = 0; j < q; ++j) {
-            if (t > j) {
-                const size_t lag = t - 1 - j;
-                const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
-                x_t += beta[j] * log(h_lag);
-            }
+        for (size_t j = 0; j < q_terms; ++j) {
+            const size_t lag = t - 1 - j;
+            const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
+            x_t += beta[j] * log(h_lag);
         }
 
         sigma2[t] = exp(x_t);
@@ -1355,10 +1351,7 @@ static double egarch_ll_grad_hess_pq_normal_core(const double *params,
                 double *d2_t = d2_buf + (t % ring) * K * K;
                 dzeros(d2_t, K * K);
 
-                for (size_t i = 0; i < p; ++i) {
-                    if (t <= i) {
-                        continue;
-                    }
+                for (size_t i = 0; i < p_terms; ++i) {
                     const size_t lag = t - 1 - i;
                     const size_t alpha_idx = alpha_base + i;
                     const size_t gamma_idx = gamma_base + i;
@@ -1389,10 +1382,7 @@ static double egarch_ll_grad_hess_pq_normal_core(const double *params,
                     }
                 }
 
-                for (size_t j = 0; j < q; ++j) {
-                    if (t <= j) {
-                        continue;
-                    }
+                for (size_t j = 0; j < q_terms; ++j) {
                     const size_t lag = t - 1 - j;
                     const size_t beta_idx = beta_base + j;
                     const double *d_lag = d_buf + (lag % ring) * K;
@@ -1415,10 +1405,7 @@ static double egarch_ll_grad_hess_pq_normal_core(const double *params,
                     }
                 }
             } else {
-                for (size_t i = 0; i < p; ++i) {
-                    if (t <= i) {
-                        continue;
-                    }
+                for (size_t i = 0; i < p_terms; ++i) {
                     const size_t lag = t - 1 - i;
                     const size_t alpha_idx = alpha_base + i;
                     const size_t gamma_idx = gamma_base + i;
@@ -1434,10 +1421,7 @@ static double egarch_ll_grad_hess_pq_normal_core(const double *params,
                     d_t[gamma_idx] += z_lag;
                 }
 
-                for (size_t j = 0; j < q; ++j) {
-                    if (t <= j) {
-                        continue;
-                    }
+                for (size_t j = 0; j < q_terms; ++j) {
                     const size_t lag = t - 1 - j;
                     const size_t beta_idx = beta_base + j;
                     const double *d_lag = d_buf + (lag % ring) * K;
@@ -1567,23 +1551,21 @@ static double egarch_ll_grad_hess_pq_studentt_core(const double *params,
     }
 
     for (size_t t = 1; t < n; ++t) {
+        const size_t p_terms = (t < p) ? t : p;
+        const size_t q_terms = (t < q) ? t : q;
         double x_t = omega;
 
-        for (size_t i = 0; i < p; ++i) {
-            if (t > i) {
-                const size_t lag = t - 1 - i;
-                const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
-                const double z_lag = residuals[lag] / sqrt(h_lag);
-                x_t += alpha[i] * (fabs(z_lag) - abs_moment) + gamma[i] * z_lag;
-            }
+        for (size_t i = 0; i < p_terms; ++i) {
+            const size_t lag = t - 1 - i;
+            const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
+            const double z_lag = residuals[lag] / sqrt(h_lag);
+            x_t += alpha[i] * (fabs(z_lag) - abs_moment) + gamma[i] * z_lag;
         }
 
-        for (size_t j = 0; j < q; ++j) {
-            if (t > j) {
-                const size_t lag = t - 1 - j;
-                const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
-                x_t += beta[j] * log(h_lag);
-            }
+        for (size_t j = 0; j < q_terms; ++j) {
+            const size_t lag = t - 1 - j;
+            const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
+            x_t += beta[j] * log(h_lag);
         }
 
         sigma2[t] = exp(x_t);
@@ -1602,10 +1584,7 @@ static double egarch_ll_grad_hess_pq_studentt_core(const double *params,
                 double *d2_t = d2_buf + (t % ring) * K * K;
                 dzeros(d2_t, K * K);
 
-                for (size_t i = 0; i < p; ++i) {
-                    if (t <= i) {
-                        continue;
-                    }
+                for (size_t i = 0; i < p_terms; ++i) {
                     const size_t lag = t - 1 - i;
                     const size_t alpha_idx = alpha_base + i;
                     const size_t gamma_idx = gamma_base + i;
@@ -1644,10 +1623,7 @@ static double egarch_ll_grad_hess_pq_studentt_core(const double *params,
                     }
                 }
 
-                for (size_t j = 0; j < q; ++j) {
-                    if (t <= j) {
-                        continue;
-                    }
+                for (size_t j = 0; j < q_terms; ++j) {
                     const size_t lag = t - 1 - j;
                     const size_t beta_idx = beta_base + j;
                     const double *d_lag = d_buf + (lag % ring) * K;
@@ -1670,10 +1646,7 @@ static double egarch_ll_grad_hess_pq_studentt_core(const double *params,
                     }
                 }
             } else {
-                for (size_t i = 0; i < p; ++i) {
-                    if (t <= i) {
-                        continue;
-                    }
+                for (size_t i = 0; i < p_terms; ++i) {
                     const size_t lag = t - 1 - i;
                     const size_t alpha_idx = alpha_base + i;
                     const size_t gamma_idx = gamma_base + i;
@@ -1691,10 +1664,7 @@ static double egarch_ll_grad_hess_pq_studentt_core(const double *params,
                     d_t[gamma_idx] += z_lag;
                 }
 
-                for (size_t j = 0; j < q; ++j) {
-                    if (t <= j) {
-                        continue;
-                    }
+                for (size_t j = 0; j < q_terms; ++j) {
                     const size_t lag = t - 1 - j;
                     const size_t beta_idx = beta_base + j;
                     const double *d_lag = d_buf + (lag % ring) * K;
@@ -1835,23 +1805,21 @@ static double egarch_ll_grad_hess_pq_ged_core(const double *params,
     }
 
     for (size_t t = 1; t < n; ++t) {
+        const size_t p_terms = (t < p) ? t : p;
+        const size_t q_terms = (t < q) ? t : q;
         double x_t = omega;
 
-        for (size_t i = 0; i < p; ++i) {
-            if (t > i) {
-                const size_t lag = t - 1 - i;
-                const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
-                const double z_lag = residuals[lag] / sqrt(h_lag);
-                x_t += alpha[i] * (fabs(z_lag) - abs_moment) + gamma[i] * z_lag;
-            }
+        for (size_t i = 0; i < p_terms; ++i) {
+            const size_t lag = t - 1 - i;
+            const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
+            const double z_lag = residuals[lag] / sqrt(h_lag);
+            x_t += alpha[i] * (fabs(z_lag) - abs_moment) + gamma[i] * z_lag;
         }
 
-        for (size_t j = 0; j < q; ++j) {
-            if (t > j) {
-                const size_t lag = t - 1 - j;
-                const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
-                x_t += beta[j] * log(h_lag);
-            }
+        for (size_t j = 0; j < q_terms; ++j) {
+            const size_t lag = t - 1 - j;
+            const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
+            x_t += beta[j] * log(h_lag);
         }
 
         sigma2[t] = exp(x_t);
@@ -1870,10 +1838,7 @@ static double egarch_ll_grad_hess_pq_ged_core(const double *params,
                 double *d2_t = d2_buf + (t % ring) * K * K;
                 dzeros(d2_t, K * K);
 
-                for (size_t i = 0; i < p; ++i) {
-                    if (t <= i) {
-                        continue;
-                    }
+                for (size_t i = 0; i < p_terms; ++i) {
                     const size_t lag = t - 1 - i;
                     const size_t alpha_idx = alpha_base + i;
                     const size_t gamma_idx = gamma_base + i;
@@ -1912,10 +1877,7 @@ static double egarch_ll_grad_hess_pq_ged_core(const double *params,
                     }
                 }
 
-                for (size_t j = 0; j < q; ++j) {
-                    if (t <= j) {
-                        continue;
-                    }
+                for (size_t j = 0; j < q_terms; ++j) {
                     const size_t lag = t - 1 - j;
                     const size_t beta_idx = beta_base + j;
                     const double *d_lag = d_buf + (lag % ring) * K;
@@ -1938,10 +1900,7 @@ static double egarch_ll_grad_hess_pq_ged_core(const double *params,
                     }
                 }
             } else {
-                for (size_t i = 0; i < p; ++i) {
-                    if (t <= i) {
-                        continue;
-                    }
+                for (size_t i = 0; i < p_terms; ++i) {
                     const size_t lag = t - 1 - i;
                     const size_t alpha_idx = alpha_base + i;
                     const size_t gamma_idx = gamma_base + i;
@@ -1959,10 +1918,7 @@ static double egarch_ll_grad_hess_pq_ged_core(const double *params,
                     d_t[gamma_idx] += z_lag;
                 }
 
-                for (size_t j = 0; j < q; ++j) {
-                    if (t <= j) {
-                        continue;
-                    }
+                for (size_t j = 0; j < q_terms; ++j) {
                     const size_t lag = t - 1 - j;
                     const size_t beta_idx = beta_base + j;
                     const double *d_lag = d_buf + (lag % ring) * K;
@@ -2126,23 +2082,21 @@ static double egarch_ll_grad_hess_pq_skewt_core(const double *params,
     }
 
     for (size_t t = 1; t < n; ++t) {
+        const size_t p_terms = (t < p) ? t : p;
+        const size_t q_terms = (t < q) ? t : q;
         double x_t = omega;
 
-        for (size_t i = 0; i < p; ++i) {
-            if (t > i) {
-                const size_t lag = t - 1 - i;
-                const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
-                const double z_lag = residuals[lag] / sqrt(h_lag);
-                x_t += alpha[i] * (fabs(z_lag) - kappa) + gamma[i] * z_lag;
-            }
+        for (size_t i = 0; i < p_terms; ++i) {
+            const size_t lag = t - 1 - i;
+            const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
+            const double z_lag = residuals[lag] / sqrt(h_lag);
+            x_t += alpha[i] * (fabs(z_lag) - kappa) + gamma[i] * z_lag;
         }
 
-        for (size_t j = 0; j < q; ++j) {
-            if (t > j) {
-                const size_t lag = t - 1 - j;
-                const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
-                x_t += beta[j] * log(h_lag);
-            }
+        for (size_t j = 0; j < q_terms; ++j) {
+            const size_t lag = t - 1 - j;
+            const double h_lag = sigma2[lag] > H_FLOOR ? sigma2[lag] : H_FLOOR;
+            x_t += beta[j] * log(h_lag);
         }
 
         sigma2[t] = exp(x_t);
@@ -2161,10 +2115,7 @@ static double egarch_ll_grad_hess_pq_skewt_core(const double *params,
                 double *d2_t = d2_buf + (t % ring) * K * K;
                 dzeros(d2_t, K * K);
 
-                for (size_t i = 0; i < p; ++i) {
-                    if (t <= i) {
-                        continue;
-                    }
+                for (size_t i = 0; i < p_terms; ++i) {
                     const size_t lag = t - 1 - i;
                     const size_t alpha_idx = alpha_base + i;
                     const size_t gamma_idx = gamma_base + i;
@@ -2213,10 +2164,7 @@ static double egarch_ll_grad_hess_pq_skewt_core(const double *params,
                     }
                 }
 
-                for (size_t j = 0; j < q; ++j) {
-                    if (t <= j) {
-                        continue;
-                    }
+                for (size_t j = 0; j < q_terms; ++j) {
                     const size_t lag = t - 1 - j;
                     const size_t beta_idx = beta_base + j;
                     const double *d_lag = d_buf + (lag % ring) * K;
@@ -2239,10 +2187,7 @@ static double egarch_ll_grad_hess_pq_skewt_core(const double *params,
                     }
                 }
             } else {
-                for (size_t i = 0; i < p; ++i) {
-                    if (t <= i) {
-                        continue;
-                    }
+                for (size_t i = 0; i < p_terms; ++i) {
                     const size_t lag = t - 1 - i;
                     const size_t alpha_idx = alpha_base + i;
                     const size_t gamma_idx = gamma_base + i;
@@ -2261,10 +2206,7 @@ static double egarch_ll_grad_hess_pq_skewt_core(const double *params,
                     d_t[gamma_idx] += z_lag;
                 }
 
-                for (size_t j = 0; j < q; ++j) {
-                    if (t <= j) {
-                        continue;
-                    }
+                for (size_t j = 0; j < q_terms; ++j) {
                     const size_t lag = t - 1 - j;
                     const size_t beta_idx = beta_base + j;
                     const double *d_lag = d_buf + (lag % ring) * K;

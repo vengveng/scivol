@@ -153,7 +153,8 @@ def _build(mean: ARX | HARX, p: int, q: int, density_name: str) -> Routine:
         features = build_linear_mean_features(mean, y_arr, x_arr)
         resid = np.zeros(n, dtype=np.float64)
         sigma2 = np.zeros(n, dtype=np.float64)
-        sigma2[0] = np.mean(y_arr * y_arr)
+        h0 = float(np.mean(y_arr * y_arr))
+        sigma2[0] = h0
 
         y_ptr = _as_cptr(y_arr)
         feat_ptr = _as_cptr(features)
@@ -166,7 +167,7 @@ def _build(mean: ARX | HARX, p: int, q: int, density_name: str) -> Routine:
         hess_ptr = _as_cptr(hess_mat)
 
         def call_nll(theta: NDArray[np.float64]) -> float:
-            sigma2[0] = np.mean(y_arr * y_arr)
+            sigma2[0] = h0
             if use_specialized:
                 return getattr(_core, f"_linear_mean_egarch_nll_11_{ops.suffix}")(
                     _as_cptr(theta), y_ptr, feat_ptr, resid_ptr, sigma2_ptr, n, n_mean
@@ -176,7 +177,7 @@ def _build(mean: ARX | HARX, p: int, q: int, density_name: str) -> Routine:
             )
 
         def call_grad(theta: NDArray[np.float64]) -> NDArray[np.float64]:
-            sigma2[0] = np.mean(y_arr * y_arr)
+            sigma2[0] = h0
             if use_specialized:
                 getattr(_core, f"_linear_mean_egarch_nll_grad_11_{ops.suffix}")(
                     _as_cptr(theta), y_ptr, feat_ptr, resid_ptr, sigma2_ptr, grad_ptr, n, n_mean
@@ -188,7 +189,7 @@ def _build(mean: ARX | HARX, p: int, q: int, density_name: str) -> Routine:
             return grad_vec.copy()
 
         def call_hess(theta: NDArray[np.float64]) -> NDArray[np.float64]:
-            sigma2[0] = np.mean(y_arr * y_arr)
+            sigma2[0] = h0
             if use_specialized:
                 getattr(_core, f"_linear_mean_egarch_hess_11_{ops.suffix}")(
                     _as_cptr(theta), y_ptr, feat_ptr, resid_ptr, sigma2_ptr, hess_ptr, n, n_mean

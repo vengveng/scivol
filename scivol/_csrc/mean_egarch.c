@@ -869,21 +869,19 @@ static double linear_mean_egarch_core(
         }
 
         if (t > 0) {
+            const size_t arch_terms = (t < p) ? t : p;
+            const size_t garch_terms = (t < q) ? t : q;
             x_t = omega;
             if (dx_t) {
                 dx_t[omega_idx] = 1.0;
             }
 
-            for (size_t i = 0; i < p; ++i) {
-                const int lag_valid = (t > i);
-                if (!lag_valid) {
-                    continue;
-                }
+            for (size_t i = 0; i < arch_terms; ++i) {
                 const size_t lag = t - 1 - i;
                 const double *dx_lag = dx_buf ? (dx_buf + ((lag % ring) * K)) : zero_vec;
                 const double *d2x_lag = d2x_buf ? (d2x_buf + ((lag % ring) * K * K)) : zero_mat;
+                const double *f_lag = features + lag * n_mean;
                 const double h_lag = MAX(sigma2[lag], H_FLOOR);
-                const double x_lag = log(h_lag);
                 const double e_lag = resid[lag];
                 const double sqrt_h = sqrt(h_lag);
                 const double inv_sqrt_h = 1.0 / sqrt_h;
@@ -892,13 +890,12 @@ static double linear_mean_egarch_core(
                 const double sign_z = (z_lag >= 0.0) ? 1.0 : -1.0;
                 const size_t alpha_idx = alpha_base + i;
                 const size_t gamma_idx = gamma_base + i;
-                (void)x_lag;
 
                 x_t += alpha[i] * (abs_z - kappa) + gamma[i] * z_lag;
 
                 if (dx_t) {
                     for (size_t k = 0; k < K; ++k) {
-                        const double de_lag = (lag_valid && k < n_mean) ? -(features[lag * n_mean + k]) : 0.0;
+                        const double de_lag = (k < n_mean) ? -f_lag[k] : 0.0;
                         const double dz = inv_sqrt_h * de_lag - 0.5 * z_lag * dx_lag[k];
                         double dkappa = 0.0;
                         if (k == nu_idx) {
@@ -914,7 +911,7 @@ static double linear_mean_egarch_core(
 
                 if (d2x_t) {
                     for (size_t a = 0; a < K; ++a) {
-                        const double de_a = (lag_valid && a < n_mean) ? -(features[lag * n_mean + a]) : 0.0;
+                        const double de_a = (a < n_mean) ? -f_lag[a] : 0.0;
                         const double dz_a = inv_sqrt_h * de_a - 0.5 * z_lag * dx_lag[a];
                         const double dabs_a = sign_z * dz_a;
                         double dkappa_a = 0.0;
@@ -925,7 +922,7 @@ static double linear_mean_egarch_core(
                         }
                         for (size_t b = 0; b < K; ++b) {
                             const size_t off = a * K + b;
-                            const double de_b = (lag_valid && b < n_mean) ? -(features[lag * n_mean + b]) : 0.0;
+                            const double de_b = (b < n_mean) ? -f_lag[b] : 0.0;
                             const double dz_b = inv_sqrt_h * de_b - 0.5 * z_lag * dx_lag[b];
                             const double dabs_b = sign_z * dz_b;
                             double Hkappa = 0.0;
@@ -957,11 +954,7 @@ static double linear_mean_egarch_core(
                 }
             }
 
-            for (size_t j = 0; j < q; ++j) {
-                const int lag_valid = (t > j);
-                if (!lag_valid) {
-                    continue;
-                }
+            for (size_t j = 0; j < garch_terms; ++j) {
                 const size_t lag = t - 1 - j;
                 const double *dx_lag = dx_buf ? (dx_buf + ((lag % ring) * K)) : zero_vec;
                 const double *d2x_lag = d2x_buf ? (d2x_buf + ((lag % ring) * K * K)) : zero_mat;
