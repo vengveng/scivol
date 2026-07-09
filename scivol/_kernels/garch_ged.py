@@ -176,12 +176,22 @@ def _build(p: int, q: int) -> Routine:
             t_elapsed = time.perf_counter() - t_start
 
             _compute_garch_variance(theta_hat, resid2, sigma2, p, q)
+
+            def analytical_hess_z(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                theta_local = pack_garch_ged(z, p, q)
+                call_c_jac(theta_local)
+                grad_theta = grad_vec.copy()
+                call_c_hess(theta_local)
+                hess_theta = hess_mat.copy()
+                return log_hessian_garch(theta_local, grad_theta, hess_theta, p, q, dist="ged")
+
             hessian_theta, cov_matrix = compute_se_via_logspace(
                 theta_hat=theta_hat,
                 nll_theta=lambda th: call_c_obj(th),
                 unpack_fn=lambda th: unpack_garch_ged(th, p, q),
                 jacobian_fn=lambda th: jacobian_garch_ged(th, p, q),
                 pack_fn=lambda z: pack_garch_ged(z, p, q),
+                hess_z_fn=analytical_hess_z,
             )
 
             return EstimationResult(
@@ -211,13 +221,16 @@ def _build(p: int, q: int) -> Routine:
             _core._log_garch_ll_grad_pq_ged(_as_cptr(z), resid2_c, sigma2_c, grad_z_c, n, p, q)
             return grad_z_buf.copy() * p_scaler
 
-        def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
+        def analytical_hess_z(z: NDArray[np.float64]) -> NDArray[np.float64]:
             theta_local = pack(z).copy()
             call_c_jac(theta_local)
-            grad_theta = grad_vec.copy() * p_scaler
+            grad_theta = grad_vec.copy()
             call_c_hess(theta_local)
-            hess_theta = hess_mat.copy() * p_scaler
+            hess_theta = hess_mat.copy()
             return log_hessian_garch(theta_local, grad_theta, hess_theta, p, q, dist="ged")
+
+        def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
+            return analytical_hess_z(z) * p_scaler
 
         z0 = unpack_garch_ged(np.concatenate((vol.default_start(resid), dens.default_start(resid))), p, q)
 
@@ -262,6 +275,7 @@ def _build(p: int, q: int) -> Routine:
 
         theta_hat = pack_garch_ged(np.asarray(res.x, dtype=np.float64), p, q)
         res.x = theta_hat
+        res.fun = float(res.fun) / p_scaler
         vol.unpack(theta_hat[: vol.n_params])
         dens.unpack(theta_hat[vol.n_params :])
         t_elapsed = time.perf_counter() - t_start
@@ -273,7 +287,7 @@ def _build(p: int, q: int) -> Routine:
             unpack_fn=lambda th: unpack_garch_ged(th, p, q),
             jacobian_fn=lambda th: jacobian_garch_ged(th, p, q),
             pack_fn=lambda z: pack_garch_ged(z, p, q),
-            hess_z_fn=lambda z: hess_log(z),
+            hess_z_fn=lambda z: analytical_hess_z(z),
         )
 
         return EstimationResult(

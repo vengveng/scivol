@@ -216,6 +216,10 @@ def _fit_candidate_worker(
     fit_kwargs: Dict[str, Any],
     criterion: Callable[..., float],
     diagnostic_kwargs: Optional[Dict[str, Any]],
+    select_by: str = "aic+diag",
+    oos_split: Optional[Tuple[int, int, int]] = None,
+    oos_loss: str = "logscore",
+    diagnostic_weight: float = 50.0,
 ) -> Any:
     """
     Worker function for fitting a single model candidate (for auto-selection).
@@ -242,7 +246,13 @@ def _fit_candidate_worker(
     ModelCandidate
     """
     import time
-    from ._autoselect import ModelCandidate, _score_candidate
+    from ._autoselect import (
+        ModelCandidate,
+        _compute_oos_losses,
+        _diagnostic_penalty,
+        _score_candidate,
+        _split_x,
+    )
     
     vol_map = _get_vol_map()
     density_map = _get_density_map()
@@ -251,7 +261,7 @@ def _fit_candidate_worker(
     density_cls = density_map.get(density_name, density_map['Normal'])
     spec = vol_cls(p, q) + density_cls()
     
-    candidate = ModelCandidate(spec=spec)
+    candidate = ModelCandidate(spec=spec, vol_type=vol_type, p=p, q=q, density=density_name)
     start_time = time.perf_counter()
     
     try:
@@ -259,17 +269,45 @@ def _fit_candidate_worker(
         fit_kwargs_copy = fit_kwargs.copy()
         fit_kwargs_copy.pop('n_jobs', None)
         
-        result = spec.fit(data, n_jobs=1, **fit_kwargs_copy)
+        fit_data = data
+        if oos_split is not None:
+            train_stop, _, _ = oos_split
+            fit_data = data[:train_stop]
+            if "x" in fit_kwargs_copy:
+                fit_kwargs_copy["x"] = _split_x(fit_kwargs_copy["x"], train_stop)
+        result = spec.fit(fit_data, n_jobs=1, **fit_kwargs_copy)
         candidate.result = result
         candidate.aic = result.aic
+        candidate.bic = result.bic
+        candidate.hqic = result.hqic
         candidate.fit_time = time.perf_counter() - start_time
         
         # Score via criterion
         score, diagnostics = _score_candidate(
             result, criterion, diagnostic_kwargs
         )
-        candidate.score = score
         candidate.diagnostics = diagnostics
+        candidate.diagnostic_penalty = _diagnostic_penalty(diagnostics, diagnostic_weight)
+        if select_by == "oos" and oos_split is not None:
+            _, holdout_start, holdout_stop = oos_split
+            losses = _compute_oos_losses(
+                result,
+                data,
+                full_x=fit_kwargs.get("x"),
+                start=holdout_start,
+                stop=holdout_stop,
+                loss=oos_loss,
+            )
+            if not np.all(np.isfinite(losses)):
+                raise FloatingPointError("OOS filter produced non-finite losses.")
+            candidate.oos_losses = losses
+            candidate.oos_loss = float(np.mean(losses))
+            candidate.oos_loss_name = oos_loss.lower()
+            candidate.oos_start = holdout_start
+            candidate.oos_stop = holdout_stop
+            candidate.score = candidate.oos_loss
+        else:
+            candidate.score = score
         
         # Populate convenience fields from diagnostics
         if diagnostics is not None:
@@ -282,6 +320,8 @@ def _fit_candidate_worker(
     except Exception as e:
         candidate.fit_time = time.perf_counter() - start_time
         candidate.score = float('inf')
+        if select_by == "oos":
+            candidate.oos_loss = float("inf")
         candidate.error_message = str(e)
     
     return candidate
@@ -293,10 +333,17 @@ def select_best_parallel(
     density_candidates: List[str],
     *,
     criterion: Callable[..., float],
+    select_by: str = "aic+diag",
     diagnostic_kwargs: Optional[Dict[str, Any]] = None,
     n_jobs: Optional[int] = None,
     selection_verbose: bool = False,
     show_progress: bool = False,
+    oos_loss: str = "logscore",
+    oos_test_size: float | int = 0.2,
+    min_train_size: int = 250,
+    min_test_size: int = 50,
+    allow_density_blind_loss: bool = False,
+    diagnostic_weight: float = 50.0,
     **fit_kwargs: Any,
 ) -> Tuple[Any, List[Any]]:
     """
@@ -329,8 +376,28 @@ def select_best_parallel(
         (best_result, all_candidates)
     """
     from ._progress import get_progress_bar, tqdm_joblib
+    from ._autoselect import (
+        SelectionResult,
+        _check_density_blind_loss,
+        _finalize_candidate_ranking,
+        _resolve_oos_split,
+    )
 
     n_jobs = n_jobs if n_jobs is not None else get_default_workers()
+    _check_density_blind_loss(
+        oos_loss=oos_loss,
+        density_candidates=density_candidates,
+        allow_density_blind_loss=allow_density_blind_loss,
+    )
+    oos_split = None
+    if select_by == "oos":
+        oos_split = _resolve_oos_split(
+            len(data),
+            effective_hold_back=int(fit_kwargs.get("hold_back", 0) or 0),
+            oos_test_size=oos_test_size,
+            min_train_size=min_train_size,
+            min_test_size=min_test_size,
+        )
     
     # Build task list
     tasks = [
@@ -357,7 +424,7 @@ def select_best_parallel(
             
             candidate = _fit_candidate_worker(
                 vol_type, p, q, d, data, fit_kwargs,
-                criterion, diagnostic_kwargs,
+                criterion, diagnostic_kwargs, select_by, oos_split, oos_loss, diagnostic_weight,
             )
             candidates.append(candidate)
             
@@ -374,7 +441,7 @@ def select_best_parallel(
             candidates = Parallel(n_jobs=actual_workers, prefer="processes")(
                 delayed(_fit_candidate_worker)(
                     vol_type, p, q, d, data, fit_kwargs,
-                    criterion, diagnostic_kwargs,
+                    criterion, diagnostic_kwargs, select_by, oos_split, oos_loss, diagnostic_weight,
                 )
                 for vol_type, p, q, d in tasks
             )
@@ -390,6 +457,7 @@ def select_best_parallel(
     
     # Sort by score
     candidates.sort(key=lambda c: c.score)
+    _finalize_candidate_ranking(candidates)
     
     # Find best successful candidate
     best = None
@@ -404,10 +472,39 @@ def select_best_parallel(
             f"Errors: {[c.error_message for c in candidates if c.error_message]}"
         )
     
+    if select_by == "oos":
+        fit_kwargs_copy = fit_kwargs.copy()
+        fit_kwargs_copy["n_jobs"] = 1
+        final_result = best.spec.fit(data, **fit_kwargs_copy)
+    else:
+        final_result = best.result
+
+    search_space = {
+        "vol_candidates": list(vol_candidates),
+        "density_candidates": list(density_candidates),
+        "n_candidates": total,
+    }
+    selection = SelectionResult(
+        candidates,
+        select_by=select_by,
+        criterion_name=f"oos:{oos_loss.lower()}" if select_by == "oos" else select_by,
+        search_space=search_space,
+    )
+    final_result.selection = selection
+    final_result._selection_candidates = candidates
+    final_result.fit_info.selected_by = selection.criterion_name
+    final_result.fit_info.selection_search_space = search_space
+    final_result.fit_info.selection_refit_on_full = select_by == "oos"
+    if oos_split is not None:
+        train_stop, holdout_start, holdout_stop = oos_split
+        final_result.fit_info.oos_train_size = train_stop
+        final_result.fit_info.oos_test_size = holdout_stop - holdout_start
+        final_result.fit_info.oos_loss = oos_loss.lower()
+
     if selection_verbose:
         print(f"\nBest model: {best.spec} (Score={best.score:.2f})")
-    
-    return best.result, candidates
+
+    return final_result, candidates
 
 
 def _fit_series_candidate_worker(
@@ -421,6 +518,7 @@ def _fit_series_candidate_worker(
     criterion: Callable[..., float],
     diagnostic_kwargs: Optional[Dict[str, Any]],
     index: Optional[Any],
+    diagnostic_weight: float = 50.0,
 ) -> Tuple[str, Any]:
     """
     Worker for fitting a single (series, candidate) pair.
@@ -454,7 +552,7 @@ def _fit_series_candidate_worker(
         (series_name, ModelCandidate)
     """
     import time
-    from ._autoselect import ModelCandidate, _score_candidate
+    from ._autoselect import ModelCandidate, _diagnostic_penalty, _score_candidate
     
     vol_map = _get_vol_map()
     density_map = _get_density_map()
@@ -463,7 +561,7 @@ def _fit_series_candidate_worker(
     density_cls = density_map.get(density_name, density_map['Normal'])
     spec = vol_cls(p, q) + density_cls()
     
-    candidate = ModelCandidate(spec=spec)
+    candidate = ModelCandidate(spec=spec, vol_type=vol_type, p=p, q=q, density=density_name)
     start_time = time.perf_counter()
     
     try:
@@ -474,6 +572,8 @@ def _fit_series_candidate_worker(
         
         candidate.result = result
         candidate.aic = result.aic
+        candidate.bic = result.bic
+        candidate.hqic = result.hqic
         candidate.fit_time = time.perf_counter() - start_time
         
         # Score via criterion
@@ -482,6 +582,7 @@ def _fit_series_candidate_worker(
         )
         candidate.score = score
         candidate.diagnostics = diagnostics
+        candidate.diagnostic_penalty = _diagnostic_penalty(diagnostics, diagnostic_weight)
         
         # Populate convenience fields
         if diagnostics is not None:
@@ -506,7 +607,9 @@ def fit_multi_auto_parallel(
     index: Optional[Any],
     *,
     criterion: Callable[..., float],
+    select_by: str = "aic+diag",
     diagnostic_kwargs: Optional[Dict[str, Any]] = None,
+    diagnostic_weight: float = 50.0,
     n_jobs: Optional[int] = None,
     selection_verbose: bool = False,
     show_progress: bool = False,
@@ -548,6 +651,7 @@ def fit_multi_auto_parallel(
     Dict[str, EstimationResult]
         Best result for each series
     """
+    from ._autoselect import SelectionResult, _finalize_candidate_ranking
     from ._progress import tqdm_joblib
 
     n_jobs = n_jobs if n_jobs is not None else get_default_workers()
@@ -585,7 +689,7 @@ def fit_multi_auto_parallel(
         parallel_results = Parallel(n_jobs=actual_workers, prefer="processes")(
             delayed(_fit_series_candidate_worker)(
                 series_name, vol_type, p, q, d, data, fit_kwargs,
-                criterion, diagnostic_kwargs, index,
+                criterion, diagnostic_kwargs, index, diagnostic_weight,
             )
             for series_name, vol_type, p, q, d, data in tasks
         )
@@ -616,6 +720,7 @@ def fit_multi_auto_parallel(
         
         # Sort by score and pick best
         candidates.sort(key=lambda c: c.score)
+        _finalize_candidate_ranking(candidates)
         
         best = None
         for c in candidates:
@@ -625,7 +730,21 @@ def fit_multi_auto_parallel(
         
         if best is not None:
             # Attach selection metadata
+            search_space = {
+                "vol_candidates": list(vol_candidates),
+                "density_candidates": list(density_candidates),
+                "n_candidates": n_candidates_per,
+            }
+            best.result.selection = SelectionResult(
+                candidates,
+                select_by=select_by,
+                criterion_name=select_by,
+                search_space=search_space,
+            )
             best.result._selection_candidates = candidates
+            best.result.fit_info.selected_by = select_by
+            best.result.fit_info.selection_search_space = search_space
+            best.result.fit_info.selection_refit_on_full = False
             results[series_name] = best.result
             
             if selection_verbose:

@@ -13,6 +13,7 @@ from ..components.mean import ARMA
 from ..components.vol import EGARCH
 from ..result import EstimationResult
 from ..spec.composite import CompositeSpec
+from .arma_egarch_common import arma_egarch_total_derivative, arma_egarch_total_nll
 from .routine import Routine
 from .transforms import (
     compute_se_via_logspace,
@@ -241,25 +242,45 @@ def _build(p_ar: int, q_ma: int, p_arch: int, q_egarch: int) -> Routine:
             res.x = theta_hat.copy()
             res.fun = float(res.fun) / p_scaler
 
-        _ = call_nll(theta_hat)
+        final_avg_nll = call_nll(theta_hat)
+        res.fun = arma_egarch_total_nll(
+            final_avg_nll,
+            n,
+            p_ar,
+            q_ma,
+            p_arch,
+            q_egarch,
+            dist="normal",
+        )
         hessian_theta = None
         cov_matrix = None
         if log_mode:
-            hessian_theta, cov_matrix = compute_se_via_logspace(
-                theta_hat=theta_hat,
-                nll_theta=lambda theta: call_nll(theta),
-                unpack_fn=lambda theta: unpack_arma_egarch_normal(theta, p_ar, q_ma, p_arch, q_egarch),
-                jacobian_fn=lambda theta: jacobian_arma_egarch_normal(theta, p_ar, q_ma, p_arch, q_egarch),
-                pack_fn=lambda z: pack_arma_egarch_normal(z, p_ar, q_ma, p_arch, q_egarch),
-                hess_z_fn=lambda z: log_hessian_arma_egarch_normal(
-                    pack_arma_egarch_normal(z, p_ar, q_ma, p_arch, q_egarch),
-                    call_grad(pack_arma_egarch_normal(z, p_ar, q_ma, p_arch, q_egarch)),
-                    call_hess(pack_arma_egarch_normal(z, p_ar, q_ma, p_arch, q_egarch)),
+            def nll_theta_total(theta: NDArray[np.float64]) -> float:
+                return arma_egarch_total_nll(
+                    call_nll(theta),
+                    n,
                     p_ar,
                     q_ma,
                     p_arch,
                     q_egarch,
-                ),
+                    dist="normal",
+                )
+
+            def hess_z_total(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                theta_local = pack_arma_egarch_normal(z, p_ar, q_ma, p_arch, q_egarch)
+                grad_theta = arma_egarch_total_derivative(call_grad(theta_local), n, p_ar, q_ma, p_arch, q_egarch)
+                hess_theta = arma_egarch_total_derivative(call_hess(theta_local), n, p_ar, q_ma, p_arch, q_egarch)
+                return log_hessian_arma_egarch_normal(
+                    theta_local, grad_theta, hess_theta, p_ar, q_ma, p_arch, q_egarch
+                )
+
+            hessian_theta, cov_matrix = compute_se_via_logspace(
+                theta_hat=theta_hat,
+                nll_theta=nll_theta_total,
+                unpack_fn=lambda theta: unpack_arma_egarch_normal(theta, p_ar, q_ma, p_arch, q_egarch),
+                jacobian_fn=lambda theta: jacobian_arma_egarch_normal(theta, p_ar, q_ma, p_arch, q_egarch),
+                pack_fn=lambda z: pack_arma_egarch_normal(z, p_ar, q_ma, p_arch, q_egarch),
+                hess_z_fn=hess_z_total,
             )
 
         return EstimationResult(

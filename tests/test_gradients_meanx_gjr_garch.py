@@ -43,13 +43,31 @@ def _call_meanx_gjr_kernel(
     nll = float(value(*args))
     if grad is not None:
         sigma2[0] = np.mean(y * y)
-        args = [_as_cptr(theta), _as_cptr(y), _as_cptr(features), _as_cptr(resid), _as_cptr(sigma2), _as_cptr(grad), y.size, n_mean]
+        args = [
+            _as_cptr(theta),
+            _as_cptr(y),
+            _as_cptr(features),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            _as_cptr(grad),
+            y.size,
+            n_mean,
+        ]
         if not specialized:
             args.extend([p, q])
         getattr(_c, f"_linear_mean_gjr_garch_nll_grad_{infix}_{suffix}")(*args)
     if hess is not None:
         sigma2[0] = np.mean(y * y)
-        args = [_as_cptr(theta), _as_cptr(y), _as_cptr(features), _as_cptr(resid), _as_cptr(sigma2), _as_cptr(hess), y.size, n_mean]
+        args = [
+            _as_cptr(theta),
+            _as_cptr(y),
+            _as_cptr(features),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            _as_cptr(hess),
+            y.size,
+            n_mean,
+        ]
         if not specialized:
             args.extend([p, q])
         getattr(_c, f"_linear_mean_gjr_garch_hess_{infix}_{suffix}")(*args)
@@ -294,6 +312,61 @@ def test_harx_gjr_pq_ged_theta_grad_hess_match_ad(
     np.testing.assert_allclose(value_c, value_ad, rtol=2e-6, atol=3e-6)
     np.testing.assert_allclose(grad, grad_ad, rtol=4e-5, atol=6e-6)
     np.testing.assert_allclose(hess, hess_ad, rtol=1e-3, atol=1.5e-2)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "dist", "params"),
+    [
+        (
+            "studentt",
+            "studentt",
+            np.array([0.01, 0.35, 0.10, 0.12, 3e-6, 0.03, 0.015, 0.02, 0.01, 0.88, 8.0], dtype=np.float64),
+        ),
+        (
+            "skewt",
+            "skewt",
+            np.array(
+                [0.01, 0.35, 0.10, 0.12, 3e-6, 0.03, 0.015, 0.02, 0.01, 0.88, 8.0, -0.10],
+                dtype=np.float64,
+            ),
+        ),
+    ],
+)
+def test_harx_gjr_pq_nonnormal_theta_grad_hess_match_ad(
+    harx_gjr_series_pq: tuple[NDArray[np.float64], NDArray[np.float64]],
+    suffix: str,
+    dist: str,
+    params: NDArray[np.float64],
+) -> None:
+    y, x = harx_gjr_series_pq
+    mean = HARX((1, 5))
+    mean.set_n_exog(1)
+    features = build_linear_mean_features(mean, y, x)
+    resid = np.zeros_like(y)
+    sigma2 = np.zeros_like(y)
+    sigma2[0] = np.mean(y * y)
+    grad = np.zeros_like(params)
+    hess = np.zeros((params.size, params.size), dtype=np.float64)
+
+    value_c = _call_meanx_gjr_kernel(
+        suffix,
+        False,
+        params,
+        y,
+        features,
+        resid,
+        sigma2,
+        grad,
+        hess,
+        n_mean=mean.n_params,
+        p=2,
+        q=1,
+    )
+    value_ad, grad_ad, hess_ad = linear_mean_gjr_garch_value_grad_hess(params, y, features, 2, 1, dist=dist)
+
+    np.testing.assert_allclose(value_c, value_ad, rtol=3e-6, atol=4e-6)
+    np.testing.assert_allclose(grad, grad_ad, rtol=5e-5, atol=8e-6)
+    np.testing.assert_allclose(hess, hess_ad, rtol=2e-3, atol=2.5e-2)
 
 
 @pytest.mark.parametrize(

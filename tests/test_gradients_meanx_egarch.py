@@ -114,13 +114,31 @@ def _call_meanx_egarch_kernel(
     nll = float(value(*args))
     if grad is not None:
         sigma2[0] = np.mean(y * y)
-        args = [_as_cptr(theta), _as_cptr(y), _as_cptr(features), _as_cptr(resid), _as_cptr(sigma2), _as_cptr(grad), y.size, n_mean]
+        args = [
+            _as_cptr(theta),
+            _as_cptr(y),
+            _as_cptr(features),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            _as_cptr(grad),
+            y.size,
+            n_mean,
+        ]
         if not specialized:
             args.extend([p, q])
         getattr(_c, f"_linear_mean_egarch_nll_grad_{infix}_{suffix}")(*args)
     if hess is not None:
         sigma2[0] = np.mean(y * y)
-        args = [_as_cptr(theta), _as_cptr(y), _as_cptr(features), _as_cptr(resid), _as_cptr(sigma2), _as_cptr(hess), y.size, n_mean]
+        args = [
+            _as_cptr(theta),
+            _as_cptr(y),
+            _as_cptr(features),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            _as_cptr(hess),
+            y.size,
+            n_mean,
+        ]
         if not specialized:
             args.extend([p, q])
         getattr(_c, f"_linear_mean_egarch_hess_{infix}_{suffix}")(*args)
@@ -269,3 +287,121 @@ def test_arx_egarch11_studentt_theta_grad_hess_match_ad() -> None:
     np.testing.assert_allclose(value_c, value_ad, rtol=2e-5, atol=5e-6)
     np.testing.assert_allclose(grad, grad_ad, rtol=5e-5, atol=8e-6)
     np.testing.assert_allclose(hess, hess_ad, rtol=1e-3, atol=8e-3)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "dist", "params"),
+    [
+        (
+            "skewt",
+            "skewt",
+            np.array([0.02, 0.22, 0.15, -0.15, 0.10, -0.04, 0.91, 8.0, -0.05], dtype=np.float64),
+        ),
+        (
+            "ged",
+            "ged",
+            np.array([0.02, 0.22, 0.15, -0.15, 0.10, -0.04, 0.91, 1.6], dtype=np.float64),
+        ),
+    ],
+)
+def test_arx_egarch11_extended_theta_grad_hess_match_ad(
+    arx_egarch_series_11: tuple[NDArray[np.float64], NDArray[np.float64]],
+    suffix: str,
+    dist: str,
+    params: NDArray[np.float64],
+) -> None:
+    y, x = arx_egarch_series_11
+    mean = ARX(1)
+    mean.set_n_exog(1)
+    features = build_linear_mean_features(mean, y, x)
+    resid = np.zeros_like(y)
+    sigma2 = np.zeros_like(y)
+    sigma2[0] = np.mean(y * y)
+    grad = np.zeros_like(params)
+    hess = np.zeros((params.size, params.size), dtype=np.float64)
+
+    value_c = _call_meanx_egarch_kernel(
+        suffix,
+        True,
+        params,
+        y,
+        features,
+        resid,
+        sigma2,
+        grad,
+        hess,
+        n_mean=mean.n_params,
+        p=1,
+        q=1,
+    )
+    value_ad, grad_ad, hess_ad = linear_mean_egarch_value_grad_hess(params, y, features, 1, 1, dist=dist)
+
+    grad_rtol = 2e-2 if dist == "skewt" else 2e-3
+    hess_rtol = 1.2e-1 if dist == "skewt" else 7e-2
+    hess_atol = 8.0 if dist == "skewt" else 7e-2
+    np.testing.assert_allclose(value_c, value_ad, rtol=3e-5, atol=6e-6)
+    np.testing.assert_allclose(grad, grad_ad, rtol=grad_rtol, atol=2e-4)
+    np.testing.assert_allclose(hess, hess_ad, rtol=hess_rtol, atol=hess_atol)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "dist", "params"),
+    [
+        (
+            "studentt",
+            "studentt",
+            np.array([0.01, 0.30, 0.09, 0.12, -0.20, 0.06, 0.03, 0.02, -0.01, 0.89, 8.0], dtype=np.float64),
+        ),
+        (
+            "skewt",
+            "skewt",
+            np.array(
+                [0.01, 0.30, 0.09, 0.12, -0.20, 0.06, 0.03, 0.02, -0.01, 0.89, 8.0, -0.05],
+                dtype=np.float64,
+            ),
+        ),
+        (
+            "ged",
+            "ged",
+            np.array([0.01, 0.30, 0.09, 0.12, -0.20, 0.06, 0.03, 0.02, -0.01, 0.89, 1.6], dtype=np.float64),
+        ),
+    ],
+)
+def test_harx_egarch_pq_nonnormal_theta_grad_hess_match_ad(
+    harx_egarch_series_pq: tuple[NDArray[np.float64], NDArray[np.float64]],
+    suffix: str,
+    dist: str,
+    params: NDArray[np.float64],
+) -> None:
+    y, x = harx_egarch_series_pq
+    mean = HARX((1, 5))
+    mean.set_n_exog(1)
+    features = build_linear_mean_features(mean, y, x)
+    resid = np.zeros_like(y)
+    sigma2 = np.zeros_like(y)
+    sigma2[0] = np.mean(y * y)
+    grad = np.zeros_like(params)
+    hess = np.zeros((params.size, params.size), dtype=np.float64)
+
+    value_c = _call_meanx_egarch_kernel(
+        suffix,
+        False,
+        params,
+        y,
+        features,
+        resid,
+        sigma2,
+        grad,
+        hess,
+        n_mean=mean.n_params,
+        p=2,
+        q=1,
+    )
+    value_ad, grad_ad, hess_ad = linear_mean_egarch_value_grad_hess(params, y, features, 2, 1, dist=dist)
+
+    grad_rtol = 2e-2 if dist == "skewt" else 2e-3
+    hess_rtol = 1.2e-1 if dist == "skewt" else 8e-2
+    hess_atol = 8.0 if dist == "skewt" else 8e-2
+    np.testing.assert_allclose(value_c, value_ad, rtol=3e-5, atol=6e-6)
+    np.testing.assert_allclose(grad, grad_ad, rtol=grad_rtol, atol=3e-4)
+    np.testing.assert_allclose(hess, hess_ad, rtol=hess_rtol, atol=hess_atol)

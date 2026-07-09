@@ -18,6 +18,7 @@ from ._validation import validate_data, validate_spec
 from .components.density import GED, Normal, SkewT, StudentT
 from .components.mean import ARMA, ARX, HARX
 from .components.vol import EGARCH, GARCH, GJRGARCH
+from ._kernels.arma_egarch_common import arma_egarch_total_derivative, arma_egarch_total_nll
 from ._kernels.linear_mean_garch_common import build_linear_mean_features
 from .result import EstimationResult
 from .roles import Role
@@ -1696,7 +1697,7 @@ def _filter_arma_egarch(spec: Any, data: NDArray[np.float64], theta: NDArray[np.
                 p_arch,
                 q_egarch,
             )
-        score = -grad
+        score = -arma_egarch_total_derivative(grad, n, p_ar, q_ma, p_arch, q_egarch)
 
     hess = None
     if compute_hessian:
@@ -1718,12 +1719,13 @@ def _filter_arma_egarch(spec: Any, data: NDArray[np.float64], theta: NDArray[np.
                 p_arch,
                 q_egarch,
             )
-        hess = -hess_mat
+        hess = -arma_egarch_total_derivative(hess_mat, n, p_ar, q_ma, p_arch, q_egarch)
 
     mean = y - resid
     nu = float(theta[-1]) if isinstance(dens, (StudentT, GED)) else (float(theta[-2]) if isinstance(dens, SkewT) else None)
     lam = float(theta[-1]) if isinstance(dens, SkewT) else None
-    return FilteredState(y, mean, resid, sigma2, -nll, score, hess, dens.signature, nu=nu, lam=lam)
+    nll_total = arma_egarch_total_nll(nll, n, p_ar, q_ma, p_arch, q_egarch, dist=suffix)
+    return FilteredState(y, mean, resid, sigma2, -nll_total, score, hess, dens.signature, nu=nu, lam=lam)
 
 
 def _filter_meanx_egarch(

@@ -380,12 +380,12 @@ VLK_INLINE int lmgjr_ged_obs_derivs(
 )
 {
     const double h_safe = h > H_FLOOR ? h : H_FLOOR;
-    const double abs_e = MAX(fabs(e), DBL_MIN);
-    const double sign_e = (e >= 0.0) ? 1.0 : -1.0;
+    const double abs_e = MAX(fabs(e), 1e-300);
+    const double e_safe = (fabs(e) < 1e-12) ? ((e < 0.0) ? -1e-12 : 1e-12) : e;
     const double inv_h = 1.0 / h_safe;
     const double inv_h2 = inv_h * inv_h;
-    const double inv_abs_e = 1.0 / abs_e;
-    const double inv_abs_e2 = inv_abs_e * inv_abs_e;
+    const double inv_e = 1.0 / e_safe;
+    const double inv_e2 = inv_e * inv_e;
     const double log_ratio = log(abs_e) - 0.5 * log(h_safe) - cache->log_scale;
     const double A = exp(nu * log_ratio);
     const double S = log_ratio - nu * cache->log_scale_nu;
@@ -396,13 +396,13 @@ VLK_INLINE int lmgjr_ged_obs_derivs(
     }
 
     out->value = cache->nll_const + 0.5 * log(h_safe) + A;
-    out->ell_e = nu * A * sign_e * inv_abs_e;
+    out->ell_e = nu * A * inv_e;
     out->ell_h = 0.5 * (1.0 - nu * A) * inv_h;
     out->ell_nu = cache->nll_const_nu + A * S;
-    out->ell_ee = nu * (nu - 1.0) * A * inv_abs_e2;
-    out->ell_eh = -0.5 * nu * nu * A * sign_e * inv_abs_e * inv_h;
+    out->ell_ee = nu * (nu - 1.0) * A * inv_e2;
+    out->ell_eh = -0.5 * nu * nu * A * inv_e * inv_h;
     out->ell_hh = (-0.5 + 0.25 * nu * (nu + 2.0) * A) * inv_h2;
-    out->ell_e_nu = A * sign_e * inv_abs_e * (1.0 + nu * S);
+    out->ell_e_nu = A * inv_e * (1.0 + nu * S);
     out->ell_h_nu = -0.5 * A * (1.0 + nu * S) * inv_h;
     out->ell_nu_nu = cache->nll_const_nunu + A * (S * S + S_nu);
     return 1;

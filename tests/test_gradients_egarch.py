@@ -16,8 +16,17 @@ import pytest
 from numpy.typing import NDArray
 
 import scivol._core as _c
-from scivol._devtools.ad_oracle import egarch_value_grad_hess
+from scivol._devtools.ad_oracle import egarch_logspace_value_grad_hess, egarch_value_grad_hess
 from scivol._evaluation import _egarch_abs_moment, _hansen_skewt_ppf
+from scivol._kernels.transforms import (
+    log_hessian_egarch,
+    pack_egarch,
+    pack_egarch_ged,
+    pack_egarch_studentt,
+    unpack_egarch,
+    unpack_egarch_ged,
+    unpack_egarch_studentt,
+)
 
 
 if importlib.util.find_spec("jax") is None:
@@ -28,7 +37,13 @@ def _as_cptr(a: NDArray[np.float64]) -> int:
     return np.ascontiguousarray(a, np.float64).ctypes.data
 
 
-def _make_egarch_data(n: int = 700, seed: int = 42, dist: str = "normal", p: int = 1, q: int = 1) -> NDArray[np.float64]:
+def _make_egarch_data(
+    n: int = 700,
+    seed: int = 42,
+    dist: str = "normal",
+    p: int = 1,
+    q: int = 1,
+) -> NDArray[np.float64]:
     rng = np.random.default_rng(seed)
     omega = -0.45
     alpha = np.full(p, 0.12 / p, dtype=np.float64)
@@ -110,6 +125,9 @@ def _c_egarch_grad_hess(
     elif dist == "skewt":
         grad_fn = _c._egarch_ll_grad_11_skewt if (p, q) == (1, 1) else _c._egarch_ll_grad_pq_skewt
         hess_fn = _c._egarch_ll_hess_11_skewt if (p, q) == (1, 1) else _c._egarch_ll_hess_pq_skewt
+    elif dist == "ged":
+        grad_fn = _c._egarch_ll_grad_11_ged if (p, q) == (1, 1) else _c._egarch_ll_grad_pq_ged
+        hess_fn = _c._egarch_ll_hess_11_ged if (p, q) == (1, 1) else _c._egarch_ll_hess_pq_ged
     else:
         raise ValueError(dist)
 
@@ -122,6 +140,31 @@ def _c_egarch_grad_hess(
         grad_fn(_as_cptr(params), _as_cptr(resid), _as_cptr(sigma_g), _as_cptr(grad), len(resid), p, q)
         hess_fn(_as_cptr(params), _as_cptr(resid), _as_cptr(sigma_h), _as_cptr(hess), len(resid), p, q)
     return grad, hess.reshape(len(params), len(params))
+
+
+def _c_egarch_value(
+    params: NDArray[np.float64],
+    resid: NDArray[np.float64],
+    dist: str,
+    p: int = 1,
+    q: int = 1,
+) -> float:
+    params = np.ascontiguousarray(params, dtype=np.float64)
+    resid = np.ascontiguousarray(resid, dtype=np.float64)
+    sigma = _sigma_seed(resid)
+    if dist == "normal":
+        fn = _c._egarch_ll_11_normal if (p, q) == (1, 1) else _c._egarch_ll_pq_normal
+    elif dist == "studentt":
+        fn = _c._egarch_ll_11_studentt if (p, q) == (1, 1) else _c._egarch_ll_pq_studentt
+    elif dist == "skewt":
+        fn = _c._egarch_ll_11_skewt if (p, q) == (1, 1) else _c._egarch_ll_pq_skewt
+    elif dist == "ged":
+        fn = _c._egarch_ll_11_ged if (p, q) == (1, 1) else _c._egarch_ll_pq_ged
+    else:
+        raise ValueError(dist)
+    if (p, q) == (1, 1):
+        return float(fn(_as_cptr(params), _as_cptr(resid), _as_cptr(sigma), len(resid)))
+    return float(fn(_as_cptr(params), _as_cptr(resid), _as_cptr(sigma), len(resid), p, q))
 
 
 @pytest.fixture(scope="module")
@@ -147,7 +190,11 @@ class TestEGARCHNormalAD:
             np.array([-0.30, 0.08, 0.03, 0.90], dtype=np.float64),
         ],
     )
-    def test_gradient_and_hessian_match_ad(self, resid_normal: NDArray[np.float64], params: NDArray[np.float64]) -> None:
+    def test_gradient_and_hessian_match_ad(
+        self,
+        resid_normal: NDArray[np.float64],
+        params: NDArray[np.float64],
+    ) -> None:
         grad_c, hess_c = _c_egarch_grad_hess(params, resid_normal, "normal")
         _, grad_ref, hess_ref = egarch_value_grad_hess(params, resid_normal, dist="normal")
         np.testing.assert_allclose(grad_c, grad_ref, rtol=1e-7, atol=1e-8)
@@ -225,3 +272,78 @@ class TestEGARCHPQSkewTAD:
         params = np.array([-0.45, 0.08, 0.04, -0.06, 0.02, 0.95, 8.0, -0.15], dtype=np.float64)
         _, hess_c = _c_egarch_grad_hess(params, resid_skewt_pq, "skewt", p=2, q=1)
         np.testing.assert_allclose(hess_c, hess_c.T, rtol=1e-10, atol=1e-12)
+
+
+class TestEGARCHGEDAD:
+    def test_ged_11_gradient_and_hessian_match_ad(self, resid_normal: NDArray[np.float64]) -> None:
+        params = np.array([-0.45, 0.12, -0.06, 0.95, 1.6], dtype=np.float64)
+        value_c = _c_egarch_value(params, resid_normal, "ged")
+        grad_c, hess_c = _c_egarch_grad_hess(params, resid_normal, "ged")
+        value_ref, grad_ref, hess_ref = egarch_value_grad_hess(params, resid_normal, dist="ged")
+
+        np.testing.assert_allclose(value_c, value_ref, rtol=3e-6, atol=3e-6)
+        np.testing.assert_allclose(grad_c, grad_ref, rtol=5e-5, atol=8e-6)
+        np.testing.assert_allclose(hess_c, hess_ref, rtol=1e-3, atol=2e-2)
+
+    def test_ged_pq_gradient_and_hessian_match_ad(self, resid_normal_pq: NDArray[np.float64]) -> None:
+        params = np.array([-0.45, 0.08, 0.04, -0.06, 0.02, 0.95, 1.7], dtype=np.float64)
+        value_c = _c_egarch_value(params, resid_normal_pq, "ged", p=2, q=1)
+        grad_c, hess_c = _c_egarch_grad_hess(params, resid_normal_pq, "ged", p=2, q=1)
+        value_ref, grad_ref, hess_ref = egarch_value_grad_hess(params, resid_normal_pq, dist="ged", p=2, q=1)
+
+        np.testing.assert_allclose(value_c, value_ref, rtol=3e-6, atol=3e-6)
+        np.testing.assert_allclose(grad_c, grad_ref, rtol=7e-5, atol=1e-5)
+        np.testing.assert_allclose(hess_c, hess_ref, rtol=2e-3, atol=3e-2)
+
+
+@pytest.mark.parametrize(
+    ("dist", "params", "unpack_fn", "pack_fn", "resid_fixture"),
+    [
+        (
+            "normal",
+            np.array([-0.45, 0.08, 0.04, -0.06, 0.02, 0.95], dtype=np.float64),
+            unpack_egarch,
+            pack_egarch,
+            "normal",
+        ),
+        (
+            "studentt",
+            np.array([-0.45, 0.08, 0.04, -0.06, 0.02, 0.95, 8.0], dtype=np.float64),
+            unpack_egarch_studentt,
+            pack_egarch_studentt,
+            "studentt",
+        ),
+        (
+            "ged",
+            np.array([-0.45, 0.08, 0.04, -0.06, 0.02, 0.95, 1.7], dtype=np.float64),
+            unpack_egarch_ged,
+            pack_egarch_ged,
+            "normal",
+        ),
+    ],
+)
+def test_egarch_pq_logspace_grad_hess_match_ad(
+    request,
+    dist: str,
+    params: NDArray[np.float64],
+    unpack_fn,
+    pack_fn,
+    resid_fixture: str,
+) -> None:
+    resid = request.getfixturevalue(f"resid_{resid_fixture}_pq")
+    z = unpack_fn(params, 2, 1)
+    theta = pack_fn(z, 2, 1)
+    sigma_grad = _sigma_seed(resid)
+
+    log_value_fn = getattr(_c, f"_log_egarch_ll_pq_{dist}")
+    log_grad_fn = getattr(_c, f"_log_egarch_ll_grad_pq_{dist}")
+    value_c = float(log_value_fn(_as_cptr(z), _as_cptr(resid), _as_cptr(_sigma_seed(resid)), resid.size, 2, 1))
+    grad_z = np.zeros_like(z)
+    log_grad_fn(_as_cptr(z), _as_cptr(resid), _as_cptr(sigma_grad), _as_cptr(grad_z), resid.size, 2, 1)
+    grad_theta, hess_theta = _c_egarch_grad_hess(theta, resid, dist, p=2, q=1)
+    hess_z = log_hessian_egarch(theta, grad_theta, hess_theta, 2, 1, dist=dist)
+    value_ref, grad_ref, hess_ref = egarch_logspace_value_grad_hess(z, resid, dist=dist, p=2, q=1)
+
+    np.testing.assert_allclose(value_c, value_ref, rtol=5e-6, atol=5e-6)
+    np.testing.assert_allclose(grad_z, grad_ref, rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(hess_z, hess_ref, rtol=3e-3, atol=3e-2)

@@ -247,6 +247,12 @@ class FitMetadata:
     effective_n_obs: Optional[int] = None
     scale: Optional[float] = None
     common_sample: Optional[bool] = None
+    selected_by: Optional[str] = None
+    selection_search_space: Optional[Dict[str, Any]] = None
+    selection_refit_on_full: Optional[bool] = None
+    oos_train_size: Optional[int] = None
+    oos_test_size: Optional[int] = None
+    oos_loss: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -263,6 +269,12 @@ class FitMetadata:
             "effective_n_obs": self.effective_n_obs,
             "scale": self.scale,
             "common_sample": self.common_sample,
+            "selected_by": self.selected_by,
+            "selection_search_space": self.selection_search_space,
+            "selection_refit_on_full": self.selection_refit_on_full,
+            "oos_train_size": self.oos_train_size,
+            "oos_test_size": self.oos_test_size,
+            "oos_loss": self.oos_loss,
         }
 
 
@@ -1288,6 +1300,10 @@ class EstimationResult:
         This method is only available when the model was fitted using
         auto-selection (e.g., GARCH(auto=True) or AutoDensity).
         """
+        if hasattr(self, "selection"):
+            self.selection.summary(top_n=top_n)
+            return
+
         if not hasattr(self, '_selection_candidates'):
             print("Model was not auto-selected. No selection summary available.")
             return

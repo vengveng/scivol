@@ -47,8 +47,14 @@ class FitsMixin:
         diagnostic_weight: float = 50.0,
         verbose_selection: bool = False,
         show_progress: Optional[bool] = None,
+        select_by: str = "aic+diag",
         criterion: Optional[Callable[..., float]] = None,
         diagnostic_kwargs: Optional[Dict[str, Any]] = None,
+        oos_loss: str = "logscore",
+        oos_test_size: float | int = 0.2,
+        min_train_size: int = 250,
+        min_test_size: int = 50,
+        allow_density_blind_loss: bool = False,
         **kwargs: Any,
     ) -> Union[EstimationResult, Dict[str, EstimationResult]]:
         """
@@ -91,6 +97,9 @@ class FitsMixin:
         diagnostic_kwargs : dict, optional
             Keyword arguments forwarded to ``result.diagnostic_tests()``
             during auto-selection.
+        select_by : str, default ``'aic+diag'``
+            Built-in auto-selection criterion. One of ``'aic+diag'``,
+            ``'aic'``, ``'bic'``, ``'hqic'``, or ``'oos'``.
         **kwargs
             Additional arguments passed to the kernel ``routine.fit()``
             (e.g. ``solver``, ``log_mode``, ``verbose``).
@@ -99,6 +108,9 @@ class FitsMixin:
         -------
         EstimationResult or Dict[str, EstimationResult]
         """
+        if "selection_verbose" in kwargs:
+            verbose_selection = bool(kwargs.pop("selection_verbose"))
+
         # Warn if both criterion and diagnostic_weight are explicitly set
         if criterion is not None and diagnostic_weight != 50.0:
             warnings.warn(
@@ -131,8 +143,14 @@ class FitsMixin:
                 diagnostic_weight=diagnostic_weight,
                 verbose_selection=verbose_selection,
                 show_progress=show_progress,
+                select_by=select_by,
                 criterion=criterion,
                 diagnostic_kwargs=diagnostic_kwargs,
+                oos_loss=oos_loss,
+                oos_test_size=oos_test_size,
+                min_train_size=min_train_size,
+                min_test_size=min_test_size,
+                allow_density_blind_loss=allow_density_blind_loss,
                 **kwargs,
             )
 
@@ -150,8 +168,14 @@ class FitsMixin:
             diagnostic_weight=diagnostic_weight,
             verbose_selection=verbose_selection,
             show_progress=show_progress,
+            select_by=select_by,
             criterion=criterion,
             diagnostic_kwargs=diagnostic_kwargs,
+            oos_loss=oos_loss,
+            oos_test_size=oos_test_size,
+            min_train_size=min_train_size,
+            min_test_size=min_test_size,
+            allow_density_blind_loss=allow_density_blind_loss,
             **kwargs,
         )
 
@@ -303,8 +327,14 @@ class FitsMixin:
         diagnostic_weight: float = 50.0,
         verbose_selection: bool = False,
         show_progress: bool = False,
+        select_by: str = "aic+diag",
         criterion: Optional[Callable[..., float]] = None,
         diagnostic_kwargs: Optional[Dict[str, Any]] = None,
+        oos_loss: str = "logscore",
+        oos_test_size: float | int = 0.2,
+        min_train_size: int = 250,
+        min_test_size: int = 50,
+        allow_density_blind_loss: bool = False,
         **kwargs: Any,
     ) -> EstimationResult:
         """Fit a single time series."""
@@ -323,8 +353,14 @@ class FitsMixin:
                 diagnostic_weight=diagnostic_weight,
                 selection_verbose=verbose_selection,
                 show_progress=show_progress,
+                select_by=select_by,
                 criterion=criterion,
                 diagnostic_kwargs=diagnostic_kwargs,
+                oos_loss=oos_loss,
+                oos_test_size=oos_test_size,
+                min_train_size=min_train_size,
+                min_test_size=min_test_size,
+                allow_density_blind_loss=allow_density_blind_loss,
                 **kwargs,
             )
         else:
@@ -426,6 +462,20 @@ class FitsMixin:
 
         return [density.signature]
 
+    def preview_candidates(self) -> List["CompositeSpec"]:
+        """Return concrete auto-selection candidate specs without fitting them."""
+        from ._autoselect import _get_density_map, _get_vol_map
+
+        vol_map = _get_vol_map()
+        density_map = _get_density_map()
+        candidates = []
+        for vol_type, p, q in self._get_vol_candidates():
+            vol_cls = vol_map[vol_type]
+            for density_name in self._get_density_candidates():
+                density_cls = density_map[density_name]
+                candidates.append(vol_cls(p, q) + density_cls())
+        return candidates
+
     def _spec_to_params(self) -> Dict[str, Any]:
         """Serialize spec to dict for cross-process reconstruction."""
         from .roles import Role
@@ -474,8 +524,14 @@ class FitsMixin:
         diagnostic_weight: float = 50.0,
         verbose_selection: bool = False,
         show_progress: bool = False,
+        select_by: str = "aic+diag",
         criterion: Optional[Callable[..., float]] = None,
         diagnostic_kwargs: Optional[Dict[str, Any]] = None,
+        oos_loss: str = "logscore",
+        oos_test_size: float | int = 0.2,
+        min_train_size: int = 250,
+        min_test_size: int = 50,
+        allow_density_blind_loss: bool = False,
         **kwargs: Any,
     ) -> Dict[str, EstimationResult]:
         """Fit multiple time series in parallel."""
@@ -491,15 +547,25 @@ class FitsMixin:
         if self._has_auto_components():
             vol_candidates = self._get_vol_candidates()
             density_candidates = self._get_density_candidates()
-            crit = criterion if criterion is not None else make_default_criterion(diagnostic_weight)
+            from ._autoselect import _resolve_selection_mode
+
+            selection_mode, crit, _ = _resolve_selection_mode(
+                select_by=select_by,
+                criterion=criterion,
+                diagnostic_weight=diagnostic_weight,
+            )
+            if selection_mode == "oos":
+                raise NotImplementedError("OOS auto-selection is currently supported for single-series fits only.")
 
             return fit_multi_auto_parallel(
                 data_dict=data_dict,
                 vol_candidates=vol_candidates,
                 density_candidates=density_candidates,
                 index=index,
+                select_by=selection_mode,
                 criterion=crit,
                 diagnostic_kwargs=diagnostic_kwargs,
+                diagnostic_weight=diagnostic_weight,
                 n_jobs=n_jobs,
                 selection_verbose=verbose_selection,
                 show_progress=show_progress,
@@ -546,8 +612,14 @@ class FitsMixin:
         diagnostic_weight: float = 50.0,
         selection_verbose: bool = False,
         show_progress: bool = False,
+        select_by: str = "aic+diag",
         criterion: Optional[Callable[..., float]] = None,
         diagnostic_kwargs: Optional[Dict[str, Any]] = None,
+        oos_loss: str = "logscore",
+        oos_test_size: float | int = 0.2,
+        min_train_size: int = 250,
+        min_test_size: int = 50,
+        allow_density_blind_loss: bool = False,
         **kwargs: Any,
     ) -> EstimationResult:
         """Perform automatic model selection."""
@@ -561,12 +633,18 @@ class FitsMixin:
             vol_candidates,
             density_candidates,
             x=x,
+            select_by=select_by,
             criterion=criterion,
             diagnostic_kwargs=diagnostic_kwargs,
             diagnostic_weight=diagnostic_weight,
             selection_verbose=selection_verbose,
             show_progress=show_progress,
             n_jobs=n_jobs,
+            oos_loss=oos_loss,
+            oos_test_size=oos_test_size,
+            min_train_size=min_train_size,
+            min_test_size=min_test_size,
+            allow_density_blind_loss=allow_density_blind_loss,
             method=method,
             hold_back=hold_back,
             scale=scale,

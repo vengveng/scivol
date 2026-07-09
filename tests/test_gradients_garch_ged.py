@@ -137,3 +137,5 @@ def test_garch_ged_public_fit_and_filter_surface(garch_ged_series_11: NDArray[np
     assert fit_log.params.shape == (4,)
     assert np.all(np.isfinite(fit_theta.params))
     assert np.all(np.isfinite(fit_log.params))
+    state_log = spec.filter(garch_ged_series_11, fit_log.params)
+    np.testing.assert_allclose(fit_log.log_likelihood, state_log.log_likelihood, rtol=1e-10, atol=1e-8)

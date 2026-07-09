@@ -24,6 +24,35 @@ QMLE estimation, diagnostic tests and automatic model selection.
 - Multivariate correlation model: `DCC(1, 1)` with Gaussian correlation dynamics
 - Automatic model selection helpers: `AutoVol()` and `AutoDensity()`
 
+## Performance
+
+Scivol consistently outperforms other libraries in both speed and optimality. Below are benchmarks on synthetic data. Unless noted, each row uses 1,000,000 observations.
+
+GARCH(1,1)-Normal:
+| Library | Time | Converged | Reported log-likelihood |
+|---|---:|---|---:|
+| scivol | 0.300 s | Yes | -1,379,431.12 |
+| Python `arch` 8.0.0 | 1.951 s | Yes | -1,379,777.40 |
+| MATLAB R2024a `garch(1,1)` | 3.400 s | Yes | -1,379,432.00 |
+| R `rugarch` 1.5.5 | 24.029 s | Yes | -1,379,432.00 |
+| Manual Python | 6.659 s | Yes | -1,383,160.89 |
+
+GJR-GARCH(5,5)+Student-t:
+| Library | Time | Converged | Reported log-likelihood |
+|---|---:|---|---:|
+| scivol | 7.583 s | Yes | -844,600.85 |
+| Python `arch` 8.0.0 | 27.267 s | Yes | -844,604.00 |
+| MATLAB R2024a `gjr(5,5)` | 44.125 s | Yes | -844,604.00 |
+| R `rugarch` 1.5.5 | 477.904 s | Yes | -844,605.57 |
+
+AR(1)+EGARCH(2,1)+Normal:
+| Library | Time | Converged | Reported log-likelihood |
+|---|---:|---|---:|
+| scivol | 1.895 s | Yes | -318,924.29 |
+| Python `arch` 8.0.0 | 9.792 s | Yes | -318,925.65 |
+| MATLAB R2024a `arima` + `egarch` | 83.554 s | Yes | -318,925.47 |
+| R `rugarch` 1.5.5 | 121.280 s | Yes | -318,925.49 |
+
 ## Install
 
 ```bash
@@ -99,14 +128,15 @@ Half-life (periods):      106.3
 
 ## Contents
 
-1. [Model specification](#model-specification)
-2. [Components](#components)
-3. [Estimation](#estimation)
-4. [Automatic model selection](#automatic-model-selection)
-5. [Results](#results)
-6. [Display settings](#display-settings)
-7. [Diagnostics](#diagnostics)
-8. [API reference](#api-reference)
+1. [Performance](#performance)
+2. [Model specification](#model-specification)
+3. [Components](#components)
+4. [Estimation](#estimation)
+5. [Automatic model selection](#automatic-model-selection)
+6. [Results](#results)
+7. [Display settings](#display-settings)
+8. [Diagnostics](#diagnostics)
+9. [API reference](#api-reference)
 
 ---
 
@@ -415,10 +445,13 @@ Combine them to search volatility model, order, and distribution at once:
 from scivol import AutoVol, AutoDensity
 
 spec = AutoVol() + AutoDensity()
+print(len(spec.preview_candidates()))
+
 result = spec.fit(returns, verbose_selection=True)
 
 print(result.spec)
 result.selection_summary()
+df = result.selection.to_dataframe()
 ```
 
 ### Selection criterion
@@ -431,13 +464,26 @@ $$
 
 where `n_failed_tests` counts failures of the DGT and Ljung-Box tests. Default `diagnostic_weight` is 50.
 
-```python
-# Heavier diagnostic penalty
-result = spec.fit(returns, diagnostic_weight=100.0)
+Use a built-in criterion with `select_by`:
 
-# AIC only
-result = spec.fit(returns, diagnostic_weight=0.0)
+```python
+result = spec.fit(returns)                 # "aic+diag" default
+result = spec.fit(returns, select_by="aic")
+result = spec.fit(returns, select_by="bic")
+result = spec.fit(returns, select_by="hqic")
 ```
+
+Use OOS selection to fit each candidate on the training portion, score the
+holdout, then refit the winner on the full sample:
+
+```python
+result = spec.fit(returns, select_by="oos")  # log score, last 20%
+result = spec.fit(returns, select_by="oos", oos_test_size=500)
+```
+
+`oos_loss="qlike"` and `oos_loss="mse"` score variance forecasts, not the full
+predictive density. They are blocked with `AutoDensity` unless you pass
+`allow_density_blind_loss=True`.
 
 For full control, pass a callable:
 
@@ -519,8 +565,11 @@ results = spec.fit_multiple(returns_list, n_jobs=4)
 ```python
 result.selection_summary()
 
-for c in result._selection_candidates[:5]:
-    print(f"{c.spec}: AIC={c.aic:.2f}, Score={c.score:.2f}")
+for c in result.selection.candidates[:5]:
+    print(f"{c.spec}: AIC={c.aic:.2f}, BIC={c.bic:.2f}, Score={c.score:.2f}")
+
+result.selection.best
+result.selection.to_dataframe()
 ```
 
 QMLE with AutoDensity is redundant (QMLE always uses Normal likelihood). scivol warns and fits Normal only.
@@ -694,8 +743,11 @@ result = spec.fit(
     verbose=False,
     n_jobs=None,               # parallel workers (auto-selection)
     diagnostic_weight=50.0,    # AIC penalty per failed test
+    select_by="aic+diag",      # "aic+diag", "aic", "bic", "hqic", or "oos"
     criterion=None,            # custom scoring callable
     diagnostic_kwargs=None,    # forwarded to diagnostic_tests()
+    oos_loss="logscore",       # for select_by="oos"
+    oos_test_size=0.2,         # float fraction or int holdout count
 )
 ```
 
@@ -758,7 +810,8 @@ result.cov_matrix, result.cov_robust
 result.success, result.niter, result.time_elapsed
 result.summary(), result.to_dict(), result.diagnostic_tests()
 result.selection_summary()
-result._selection_candidates  # list of all evaluated models
+result.selection.candidates   # list of all evaluated models
+result.selection.to_dataframe()
 ```
 
 ### DCCResult

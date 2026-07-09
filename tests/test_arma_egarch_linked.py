@@ -344,7 +344,10 @@ class TestARMAEGARCHPublicSurface:
         assert result.params is not None
         assert len(result.params) == 7
         assert np.all(np.isfinite(result.params))
-        assert np.isfinite(spec.loglikelihood(arma_egarch_series, result.params))
+        fixed_ll = spec.loglikelihood(arma_egarch_series, result.params)
+        assert np.isfinite(fixed_ll)
+        assert result.log_likelihood == pytest.approx(fixed_ll, rel=1e-12, abs=1e-10)
+        assert abs(result.log_likelihood) > 100.0
         assert np.all(np.isfinite(spec.score(arma_egarch_series, result.params)))
         assert np.all(np.isfinite(spec.hessian(arma_egarch_series, result.params)))
         filtered = spec.filter(arma_egarch_series, result.params)

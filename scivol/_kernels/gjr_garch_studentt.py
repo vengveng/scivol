@@ -176,12 +176,21 @@ def _build(p: int, q: int) -> Routine:
             def nll_theta(theta: NDArray[np.float64]) -> float:
                 return call_c_obj(theta)
 
+            def analytical_hess_z(z: NDArray[np.float64]) -> NDArray[np.float64]:
+                theta_local = pack_gjr_garch_studentt(z, p, q)
+                call_c_jac(theta_local)
+                grad_theta = grad_vec.copy()
+                call_c_hess(theta_local)
+                hess_theta = hess_mat.copy()
+                return log_hessian_gjr_garch(theta_local, grad_theta, hess_theta, p, q, dist="studentt")
+
             H_theta, cov_matrix = compute_se_via_logspace(
                 theta_hat=res.x,
                 nll_theta=nll_theta,
                 unpack_fn=lambda th: unpack_gjr_garch_studentt(th, p, q),
                 jacobian_fn=lambda th: jacobian_gjr_garch_studentt(th, p, q),
                 pack_fn=lambda z: pack_gjr_garch_studentt(z, p, q),
+                hess_z_fn=analytical_hess_z,
             )
 
             return EstimationResult(
