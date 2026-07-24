@@ -60,6 +60,47 @@ def _egarch_skewt_quadrature_rule() -> tuple[NDArray[np.float64], NDArray[np.flo
     return nodes.astype(np.float64), weights.astype(np.float64)
 
 
+def _jax_hansen_skewt_abs_moment(jnp, jsp, nu, lam, nodes, weights):
+    """Smooth JAX reference for E|z| under scivol's Hansen skew-t convention."""
+    c_log = (
+        jsp.special.gammaln(0.5 * (nu + 1.0))
+        - jsp.special.gammaln(0.5 * nu)
+        - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
+    )
+    first_half_moment = jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
+    a = 4.0 * lam * first_half_moment
+    b = jnp.sqrt(1.0 + 3.0 * lam * lam - a * a)
+    left_scale = 1.0 - lam
+    right_scale = 1.0 + lam
+    threshold = jnp.where(a >= 0.0, a / right_scale, a / left_scale)
+
+    half_width = 0.5 * jnp.abs(threshold)
+    x = half_width * (nodes + 1.0)
+    kernel = jnp.exp(c_log) * jnp.power(
+        1.0 + x * x / (nu - 2.0),
+        -0.5 * (nu + 1.0),
+    )
+    integral = half_width * jnp.sum(weights * kernel)
+    cdf = 0.5 + jnp.where(threshold >= 0.0, integral, -integral)
+    partial_first = -first_half_moment * jnp.power(
+        1.0 + threshold * threshold / (nu - 2.0),
+        -0.5 * (nu - 1.0),
+    )
+    positive_a = (
+        0.5 * a * left_scale
+        + left_scale * left_scale * first_half_moment
+        + a * right_scale * (2.0 * cdf - 1.5)
+        + right_scale * right_scale * (-first_half_moment - 2.0 * partial_first)
+    )
+    negative_a = (
+        a * left_scale * (2.0 * cdf - 0.5)
+        + left_scale * left_scale * (-first_half_moment - 2.0 * partial_first)
+        + right_scale * right_scale * first_half_moment
+        - 0.5 * a * right_scale
+    )
+    return jnp.where(a >= 0.0, positive_a, negative_a) / b
+
+
 def garch_value_grad_hess(
     theta: NDArray[np.float64],
     resid2: NDArray[np.float64],
@@ -131,11 +172,11 @@ def garch_value_grad_hess(
             z = resid_j / jnp.sqrt(sigma2)
             bz_plus_a = b * z + a
             sign_term = jnp.where(bz_plus_a >= 0.0, 1.0, -1.0)
-            z_adj = bz_plus_a / (1.0 - lam * sign_term)
+            z_adj = bz_plus_a / (1.0 + lam * sign_term)
             ll = (
                 n * c_log
                 - 0.5 * jnp.sum(jnp.log(sigma2))
-                + jnp.log(b)
+                + n * jnp.log(b)
                 - 0.5 * (nu + 1.0) * jnp.sum(jnp.log1p(z_adj * z_adj / (nu - 2.0)))
             )
             return -ll
@@ -225,7 +266,7 @@ def linear_mean_garch_value_grad_hess(
             z = resid / jnp.sqrt(sigma2)
             bz_plus_a = b * z + a
             sign_term = jnp.where(bz_plus_a >= 0.0, 1.0, -1.0)
-            z_adj = bz_plus_a / (1.0 - lam * sign_term)
+            z_adj = bz_plus_a / (1.0 + lam * sign_term)
             ll = (
                 n * c_log
                 - 0.5 * jnp.sum(jnp.log(sigma2))
@@ -321,6 +362,80 @@ def linear_mean_normal_log_value_grad_hess(
     return _value_grad_hess(objective, np.asarray(z_j, dtype=np.float64))
 
 
+def linear_mean_logspace_chain_rule_value_grad_hess(
+    z: NDArray[np.float64],
+    theta: NDArray[np.float64],
+    value_theta: float,
+    grad_theta: NDArray[np.float64],
+    hess_theta: NDArray[np.float64],
+    mean_scales: NDArray[np.float64],
+    p: int,
+    q: int,
+    *,
+    model: str,
+    dist: str,
+) -> Tuple[float, NDArray[np.float64], NDArray[np.float64]]:
+    """Independent AD chain-rule oracle for linked linear-mean log transforms."""
+    _, jnp, _ = _jax_modules()
+    theta_ref = jnp.asarray(theta, dtype=jnp.float64)
+    grad_ref = jnp.asarray(grad_theta, dtype=jnp.float64)
+    hess_ref = jnp.asarray(hess_theta, dtype=jnp.float64)
+    scales = jnp.asarray(mean_scales, dtype=jnp.float64)
+    n_mean = int(mean_scales.size)
+
+    def pack(z_j):
+        mean_theta = scales * jnp.tanh(z_j[:n_mean])
+        z_model = z_j[n_mean:]
+
+        if model == "garch":
+            omega = _softplus_production(jnp, z_model[0])
+            active_count = p + q
+            logits = jnp.concatenate([z_model[1:1 + active_count], jnp.zeros((1,), dtype=z_j.dtype)])
+            dynamic = jnp.exp(logits - jnp.max(logits))
+            dynamic = dynamic[:-1] / jnp.sum(dynamic)
+            model_theta = jnp.concatenate([jnp.array([omega]), dynamic])
+            offset = 1 + active_count
+        elif model == "gjr":
+            omega = _softplus_production(jnp, z_model[0])
+            active_count = 2 * p + q
+            logits = jnp.concatenate([z_model[1:1 + active_count], jnp.zeros((1,), dtype=z_j.dtype)])
+            dynamic = jnp.exp(logits - jnp.max(logits))
+            dynamic = dynamic[:-1] / jnp.sum(dynamic)
+            model_theta = jnp.concatenate([jnp.array([omega]), dynamic])
+            offset = 1 + active_count
+        elif model == "egarch":
+            k_vol = 1 + 2 * p + q
+            model_theta = jnp.concatenate(
+                [z_model[:1 + 2 * p], jnp.tanh(z_model[1 + 2 * p:k_vol])]
+            )
+            offset = k_vol
+        else:
+            raise ValueError(f"Unsupported transformed model: {model}")
+
+        if dist == "normal":
+            dist_theta = jnp.zeros((0,), dtype=z_j.dtype)
+        elif dist == "studentt":
+            dist_theta = jnp.array([2.0 + _softplus_production(jnp, z_model[offset])])
+        elif dist == "ged":
+            dist_theta = jnp.array([1.01 + _softplus_production(jnp, z_model[offset])])
+        elif dist == "skewt":
+            dist_theta = jnp.array(
+                [
+                    2.0 + _softplus_production(jnp, z_model[offset]),
+                    jnp.tanh(z_model[offset + 1]),
+                ]
+            )
+        else:
+            raise ValueError(f"Unsupported transformed distribution: {dist}")
+        return jnp.concatenate([mean_theta, model_theta, dist_theta])
+
+    def local_quadratic(z_j):
+        delta = pack(z_j) - theta_ref
+        return value_theta + grad_ref @ delta + 0.5 * delta @ hess_ref @ delta
+
+    return _value_grad_hess(local_quadratic, z)
+
+
 def linear_mean_gjr_garch_value_grad_hess(
     theta: NDArray[np.float64],
     y: NDArray[np.float64],
@@ -392,7 +507,7 @@ def linear_mean_gjr_garch_value_grad_hess(
             z = resid / jnp.sqrt(sigma2)
             bz_plus_a = b * z + a
             sign_term = jnp.where(bz_plus_a >= 0.0, 1.0, -1.0)
-            z_adj = bz_plus_a / (1.0 - lam * sign_term)
+            z_adj = bz_plus_a / (1.0 + lam * sign_term)
             ll = (
                 n * c_log
                 - 0.5 * jnp.sum(jnp.log(sigma2))
@@ -473,37 +588,8 @@ def linear_mean_egarch_value_grad_hess(
         log_scale = 0.5 * (jsp.special.gammaln(1.0 / nu) - jsp.special.gammaln(3.0 / nu))
         return jnp.exp(log_scale + jsp.special.gammaln(2.0 / nu) - jsp.special.gammaln(1.0 / nu))
 
-    def ged_abs_moment(nu):
-        log_scale = 0.5 * (jsp.special.gammaln(1.0 / nu) - jsp.special.gammaln(3.0 / nu))
-        return jnp.exp(log_scale + jsp.special.gammaln(2.0 / nu) - jsp.special.gammaln(1.0 / nu))
-
     def skewt_abs_moment(nu, lam):
-        bound = 50.0
-        c_log = (
-            jsp.special.gammaln(0.5 * (nu + 1.0))
-            - jsp.special.gammaln(0.5 * nu)
-            - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
-        )
-        a = 4.0 * lam * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
-        b = jnp.sqrt(1.0 + 3.0 * lam * lam - a * a)
-        split = -a / b
-
-        def panel(lo, hi):
-            center = 0.5 * (hi + lo)
-            half_width = 0.5 * (hi - lo)
-            z = center + half_width * quad_nodes
-            w = half_width * quad_weights
-            bz_plus_a = b * z + a
-            denom = jnp.where(bz_plus_a < 0.0, 1.0 + lam, 1.0 - lam)
-            z_adj = bz_plus_a / denom
-            log_pdf = c_log + jnp.log(b) - 0.5 * (nu + 1.0) * jnp.log1p(z_adj * z_adj / (nu - 2.0))
-            return jnp.sum(w * jnp.abs(z) * jnp.exp(log_pdf))
-
-        return jnp.where(
-            jnp.logical_and(split > -bound, split < bound),
-            panel(-bound, split) + panel(split, bound),
-            panel(-bound, bound),
-        )
+        return _jax_hansen_skewt_abs_moment(jnp, jsp, nu, lam, quad_nodes, quad_weights)
 
     def objective(theta_j):
         beta_mean = theta_j[:n_mean]
@@ -595,7 +681,7 @@ def linear_mean_egarch_value_grad_hess(
         z = resid / jnp.sqrt(sigma2)
         bz_plus_a = b * z + a
         sign_term = jnp.where(bz_plus_a >= 0.0, 1.0, -1.0)
-        z_adj = bz_plus_a / (1.0 - lam * sign_term)
+        z_adj = bz_plus_a / (1.0 + lam * sign_term)
         ll = (
             n * c_log
             - 0.5 * jnp.sum(jnp.log(sigma2))
@@ -675,11 +761,11 @@ def gjr_garch_value_grad_hess(
             z = resid_j / jnp.sqrt(sigma2)
             bz_plus_a = b * z + a
             sign_term = jnp.where(bz_plus_a >= 0.0, 1.0, -1.0)
-            z_adj = bz_plus_a / (1.0 - lam * sign_term)
+            z_adj = bz_plus_a / (1.0 + lam * sign_term)
             ll = (
                 n * c_log
                 - 0.5 * jnp.sum(jnp.log(sigma2))
-                + jnp.log(b)
+                + n * jnp.log(b)
                 - 0.5 * (nu + 1.0) * jnp.sum(jnp.log1p(z_adj * z_adj / (nu - 2.0)))
             )
             return -ll
@@ -725,32 +811,7 @@ def egarch_value_grad_hess(
         return jnp.exp(log_scale + jsp.special.gammaln(2.0 / nu) - jsp.special.gammaln(1.0 / nu))
 
     def skewt_abs_moment(nu, lam):
-        bound = 50.0
-        c_log = (
-            jsp.special.gammaln(0.5 * (nu + 1.0))
-            - jsp.special.gammaln(0.5 * nu)
-            - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
-        )
-        a = 4.0 * lam * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
-        b = jnp.sqrt(1.0 + 3.0 * lam * lam - a * a)
-        split = -a / b
-
-        def panel(lo, hi):
-            center = 0.5 * (hi + lo)
-            half_width = 0.5 * (hi - lo)
-            z = center + half_width * quad_nodes
-            w = half_width * quad_weights
-            bz_plus_a = b * z + a
-            denom = jnp.where(bz_plus_a < 0.0, 1.0 + lam, 1.0 - lam)
-            z_adj = bz_plus_a / denom
-            log_pdf = c_log + jnp.log(b) - 0.5 * (nu + 1.0) * jnp.log1p(z_adj * z_adj / (nu - 2.0))
-            return jnp.sum(w * jnp.abs(z) * jnp.exp(log_pdf))
-
-        return jnp.where(
-            jnp.logical_and(split > -bound, split < bound),
-            panel(-bound, split) + panel(split, bound),
-            panel(-bound, bound),
-        )
+        return _jax_hansen_skewt_abs_moment(jnp, jsp, nu, lam, quad_nodes, quad_weights)
 
     def objective(theta_j):
         k_vol = 1 + 2 * p + q
@@ -836,11 +897,11 @@ def egarch_value_grad_hess(
         z = resid_j / jnp.sqrt(sigma2)
         bz_plus_a = b * z + a
         sign_term = jnp.where(bz_plus_a >= 0.0, 1.0, -1.0)
-        z_adj = bz_plus_a / (1.0 - lam * sign_term)
+        z_adj = bz_plus_a / (1.0 + lam * sign_term)
         ll = (
             n * c_log
             - 0.5 * jnp.sum(jnp.log(sigma2))
-            + jnp.log(b)
+            + n * jnp.log(b)
             - 0.5 * (nu + 1.0) * jnp.sum(jnp.log1p(z_adj * z_adj / (nu - 2.0)))
         )
         return -ll
@@ -882,32 +943,7 @@ def egarch_logspace_value_grad_hess(
         return jnp.exp(log_scale + jsp.special.gammaln(2.0 / nu) - jsp.special.gammaln(1.0 / nu))
 
     def skewt_abs_moment(nu, lam):
-        bound = 50.0
-        c_log = (
-            jsp.special.gammaln(0.5 * (nu + 1.0))
-            - jsp.special.gammaln(0.5 * nu)
-            - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
-        )
-        a = 4.0 * lam * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
-        b = jnp.sqrt(1.0 + 3.0 * lam * lam - a * a)
-        split = -a / b
-
-        def panel(lo, hi):
-            center = 0.5 * (hi + lo)
-            half_width = 0.5 * (hi - lo)
-            z_panel = center + half_width * quad_nodes
-            w = half_width * quad_weights
-            bz_plus_a = b * z_panel + a
-            denom = jnp.where(bz_plus_a < 0.0, 1.0 + lam, 1.0 - lam)
-            z_adj = bz_plus_a / denom
-            log_pdf = c_log + jnp.log(b) - 0.5 * (nu + 1.0) * jnp.log1p(z_adj * z_adj / (nu - 2.0))
-            return jnp.sum(w * jnp.abs(z_panel) * jnp.exp(log_pdf))
-
-        return jnp.where(
-            jnp.logical_and(split > -bound, split < bound),
-            panel(-bound, split) + panel(split, bound),
-            panel(-bound, bound),
-        )
+        return _jax_hansen_skewt_abs_moment(jnp, jsp, nu, lam, quad_nodes, quad_weights)
 
     def objective(z_theta):
         omega = z_theta[0]
@@ -995,11 +1031,11 @@ def egarch_logspace_value_grad_hess(
         z_std = resid_j / jnp.sqrt(sigma2)
         bz_plus_a = b * z_std + a
         sign_term = jnp.where(bz_plus_a >= 0.0, 1.0, -1.0)
-        z_adj = bz_plus_a / (1.0 - lam * sign_term)
+        z_adj = bz_plus_a / (1.0 + lam * sign_term)
         ll = (
             n * c_log
             - 0.5 * jnp.sum(jnp.log(sigma2))
-            + jnp.log(b)
+            + n * jnp.log(b)
             - 0.5 * (nu + 1.0) * jnp.sum(jnp.log1p(z_adj * z_adj / (nu - 2.0)))
         )
         return -ll
@@ -1052,6 +1088,78 @@ def dcc_value_grad_hess(
                 eps_buf = jnp.concatenate([e[None, :], eps_buf[:p - 1]], axis=0)
             if q > 0:
                 q_buf = jnp.concatenate([q_t[None, :, :], q_buf[:q - 1]], axis=0)
+            return (q_buf, eps_buf), contrib
+
+        (_, _), contribs = jax.lax.scan(step, (q_buf0, eps_buf0), eps_j)
+        return jnp.sum(contribs) / t_count
+
+    return _value_grad_hess(objective, theta)
+
+
+def dcc_studentt_value_grad_hess(
+    theta: NDArray[np.float64],
+    eps: NDArray[np.float64],
+    qbar: NDArray[np.float64],
+    p: int,
+    q: int,
+) -> Tuple[float, NDArray[np.float64], NDArray[np.float64]]:
+    """Reference Student-t copula DCC(p,q) NLL and derivatives.
+
+    ``theta`` contains the DCC coefficients followed by the common degrees of
+    freedom. The objective divides the multivariate standardized Student-t
+    density by its univariate Student-t margins.
+    """
+    jax, jnp, jsp = _jax_modules()
+    eps_j = jnp.asarray(eps, dtype=jnp.float64)
+    qbar_j = jnp.asarray(qbar, dtype=jnp.float64)
+    t_count = int(eps.shape[0])
+    n_series = int(eps.shape[1])
+
+    def objective(theta_j):
+        dynamics = theta_j[: p + q]
+        nu = theta_j[p + q]
+        a = dynamics[:p]
+        b = dynamics[p:]
+        coeff = 1.0 - jnp.sum(dynamics)
+        nu_half = 0.5 * nu
+        joint_half = 0.5 * (nu + n_series)
+        marginal_half = 0.5 * (nu + 1.0)
+        scale = nu - 2.0
+        copula_constant = (
+            -jsp.special.gammaln(joint_half)
+            + (1.0 - n_series) * jsp.special.gammaln(nu_half)
+            + n_series * jsp.special.gammaln(marginal_half)
+        )
+
+        q_buf0 = jnp.tile(qbar_j[None, :, :], (max(q, 1), 1, 1))
+        eps_buf0 = jnp.zeros((max(p, 1), n_series), dtype=theta_j.dtype)
+
+        def step(carry, e):
+            q_buf, eps_buf = carry
+            q_t = coeff * qbar_j
+            for i in range(p):
+                q_t = q_t + a[i] * jnp.outer(eps_buf[i], eps_buf[i])
+            for j in range(q):
+                q_t = q_t + b[j] * q_buf[j]
+
+            d = jnp.sqrt(jnp.maximum(jnp.diag(q_t), DCC_H_FLOOR))
+            r_t = q_t / jnp.outer(d, d)
+            chol = jnp.linalg.cholesky(r_t)
+            y = jsp.linalg.solve_triangular(chol, e, lower=True)
+            delta = y @ y
+            joint_tail = joint_half * jnp.log1p(delta / scale)
+            marginal_tail = marginal_half * jnp.sum(jnp.log1p(e * e / scale))
+            contrib = (
+                copula_constant
+                + jnp.sum(jnp.log(jnp.diag(chol)))
+                + joint_tail
+                - marginal_tail
+            )
+
+            if p > 0:
+                eps_buf = jnp.concatenate([e[None, :], eps_buf[: p - 1]], axis=0)
+            if q > 0:
+                q_buf = jnp.concatenate([q_t[None, :, :], q_buf[: q - 1]], axis=0)
             return (q_buf, eps_buf), contrib
 
         (_, _), contribs = jax.lax.scan(step, (q_buf0, eps_buf0), eps_j)
@@ -1295,11 +1403,11 @@ def garch_logspace_value_grad_hess(
             z_std = resid_j / jnp.sqrt(sigma2)
             bz_plus_a = b * z_std + a
             sign_term = jnp.where(bz_plus_a >= 0.0, 1.0, -1.0)
-            z_adj = bz_plus_a / (1.0 - lam * sign_term)
+            z_adj = bz_plus_a / (1.0 + lam * sign_term)
             ll = (
                 n * c_log
                 - 0.5 * jnp.sum(jnp.log(sigma2))
-                + jnp.log(b)
+                + n * jnp.log(b)
                 - 0.5 * (nu + 1.0) * jnp.sum(jnp.log1p(z_adj * z_adj / (nu - 2.0)))
             )
             return -ll
@@ -1390,11 +1498,11 @@ def gjr_garch_logspace_value_grad_hess(
             z_std = resid_j / jnp.sqrt(sigma2)
             bz_plus_a = b * z_std + a
             sign_term = jnp.where(bz_plus_a >= 0.0, 1.0, -1.0)
-            z_adj = bz_plus_a / (1.0 - lam * sign_term)
+            z_adj = bz_plus_a / (1.0 + lam * sign_term)
             ll = (
                 n * c_log
                 - 0.5 * jnp.sum(jnp.log(sigma2))
-                + jnp.log(b)
+                + n * jnp.log(b)
                 - 0.5 * (nu + 1.0) * jnp.sum(jnp.log1p(z_adj * z_adj / (nu - 2.0)))
             )
             return -ll
@@ -1921,6 +2029,9 @@ def arma_egarch_value_grad_hess(
     y_j = jnp.asarray(y, dtype=jnp.float64)
     n = int(y.shape[0])
     max_lag = max(p_ar, q_ma, p_arch, q_egarch, 1)
+    quad_nodes_np, quad_weights_np = _egarch_skewt_quadrature_rule()
+    quad_nodes = jnp.asarray(quad_nodes_np, dtype=jnp.float64)
+    quad_weights = jnp.asarray(quad_weights_np, dtype=jnp.float64)
 
     def studentt_abs_moment(nu):
         c_log = (
@@ -1929,6 +2040,13 @@ def arma_egarch_value_grad_hess(
             - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
         )
         return 2.0 * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
+
+    def ged_abs_moment(nu):
+        log_scale = 0.5 * (jsp.special.gammaln(1.0 / nu) - jsp.special.gammaln(3.0 / nu))
+        return jnp.exp(log_scale + jsp.special.gammaln(2.0 / nu) - jsp.special.gammaln(1.0 / nu))
+
+    def skewt_abs_moment(nu, lam):
+        return _jax_hansen_skewt_abs_moment(jnp, jsp, nu, lam, quad_nodes, quad_weights)
 
     def objective(theta_j):
         idx = 0
@@ -1953,10 +2071,23 @@ def arma_egarch_value_grad_hess(
         if dist == "normal":
             abs_moment = jnp.sqrt(2.0 / jnp.pi)
             nu = None
+            lam = None
         elif dist == "studentt":
             nu = theta_j[idx]
             invalid = jnp.logical_or(invalid, nu <= 2.001)
             abs_moment = studentt_abs_moment(nu)
+            lam = None
+        elif dist == "ged":
+            nu = theta_j[idx]
+            invalid = jnp.logical_or(invalid, nu <= 1.01)
+            abs_moment = ged_abs_moment(nu)
+            lam = None
+        elif dist == "skewt":
+            nu = theta_j[idx]
+            lam = theta_j[idx + 1]
+            invalid = jnp.logical_or(invalid, nu <= 2.001)
+            invalid = jnp.logical_or(invalid, jnp.abs(lam) >= 0.999)
+            abs_moment = skewt_abs_moment(nu, lam)
         else:
             raise ValueError(f"Unsupported ARMA-EGARCH distribution: {dist}")
 
@@ -1997,7 +2128,7 @@ def arma_egarch_value_grad_hess(
 
         if dist == "normal":
             nll = jnp.sum(0.5 * (x_tail + resid_tail * resid_tail / sigma_tail)) / n_eff
-        else:
+        elif dist == "studentt":
             assert nu is not None
             constant = (
                 jsp.special.gammaln(0.5 * (nu + 1.0))
@@ -2008,6 +2139,30 @@ def arma_egarch_value_grad_hess(
             nll = (
                 jnp.sum(0.5 * x_tail + 0.5 * (nu + 1.0) * tail) - n_eff * constant
             ) / n_eff
+        elif dist == "ged":
+            assert nu is not None
+            log_scale = 0.5 * (jsp.special.gammaln(1.0 / nu) - jsp.special.gammaln(3.0 / nu))
+            log_const = jnp.log(nu) - jnp.log(2.0) - log_scale - jsp.special.gammaln(1.0 / nu)
+            standardized = jnp.abs(resid_tail) / (jnp.sqrt(sigma_tail) * jnp.exp(log_scale))
+            nll = (-n_eff * log_const + 0.5 * jnp.sum(x_tail) + jnp.sum(standardized**nu)) / n_eff
+        else:
+            assert nu is not None and lam is not None
+            c_log = (
+                jsp.special.gammaln(0.5 * (nu + 1.0))
+                - jsp.special.gammaln(0.5 * nu)
+                - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
+            )
+            a = 4.0 * lam * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
+            b = jnp.sqrt(1.0 + 3.0 * lam * lam - a * a)
+            shifted = b * resid_tail / jnp.sqrt(sigma_tail) + a
+            sign_term = jnp.where(shifted >= 0.0, 1.0, -1.0)
+            adjusted = shifted / (1.0 + lam * sign_term)
+            ll = (
+                n_eff * (c_log + jnp.log(b))
+                - 0.5 * jnp.sum(x_tail)
+                - 0.5 * (nu + 1.0) * jnp.sum(jnp.log1p(adjusted * adjusted / (nu - 2.0)))
+            )
+            nll = -ll / n_eff
 
         return jnp.where(invalid, 1e10, nll)
 
@@ -2029,6 +2184,9 @@ def arma_egarch_logspace_value_grad_hess(
     y_j = jnp.asarray(y, dtype=jnp.float64)
     n = int(y.shape[0])
     max_lag = max(p_ar, q_ma, p_arch, q_egarch, 1)
+    quad_nodes_np, quad_weights_np = _egarch_skewt_quadrature_rule()
+    quad_nodes = jnp.asarray(quad_nodes_np, dtype=jnp.float64)
+    quad_weights = jnp.asarray(quad_weights_np, dtype=jnp.float64)
 
     def studentt_abs_moment(nu):
         c_log = (
@@ -2037,6 +2195,13 @@ def arma_egarch_logspace_value_grad_hess(
             - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
         )
         return 2.0 * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
+
+    def ged_abs_moment(nu):
+        log_scale = 0.5 * (jsp.special.gammaln(1.0 / nu) - jsp.special.gammaln(3.0 / nu))
+        return jnp.exp(log_scale + jsp.special.gammaln(2.0 / nu) - jsp.special.gammaln(1.0 / nu))
+
+    def skewt_abs_moment(nu, lam):
+        return _jax_hansen_skewt_abs_moment(jnp, jsp, nu, lam, quad_nodes, quad_weights)
 
     def objective(z_theta):
         n_mean = 1 + p_ar + q_ma
@@ -2055,9 +2220,19 @@ def arma_egarch_logspace_value_grad_hess(
         if dist == "normal":
             abs_moment = jnp.sqrt(2.0 / jnp.pi)
             nu = None
+            lam = None
         elif dist == "studentt":
             nu = 2.0 + _softplus_production(jnp, z_theta[n_mean + k_vol])
             abs_moment = studentt_abs_moment(nu)
+            lam = None
+        elif dist == "ged":
+            nu = 1.01 + _softplus_production(jnp, z_theta[n_mean + k_vol])
+            abs_moment = ged_abs_moment(nu)
+            lam = None
+        elif dist == "skewt":
+            nu = 2.0 + _softplus_production(jnp, z_theta[n_mean + k_vol])
+            lam = jnp.tanh(z_theta[n_mean + k_vol + 1])
+            abs_moment = skewt_abs_moment(nu, lam)
         else:
             raise ValueError(f"Unsupported ARMA-EGARCH distribution: {dist}")
 
@@ -2099,13 +2274,39 @@ def arma_egarch_logspace_value_grad_hess(
         if dist == "normal":
             return jnp.sum(0.5 * (x_tail + resid_tail * resid_tail / sigma_tail)) / n_eff
 
-        assert nu is not None
-        constant = (
+        if dist == "studentt":
+            assert nu is not None
+            constant = (
+                jsp.special.gammaln(0.5 * (nu + 1.0))
+                - jsp.special.gammaln(0.5 * nu)
+                - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
+            )
+            tail = jnp.log1p((resid_tail * resid_tail / sigma_tail) / (nu - 2.0))
+            return (jnp.sum(0.5 * x_tail + 0.5 * (nu + 1.0) * tail) - n_eff * constant) / n_eff
+
+        if dist == "ged":
+            assert nu is not None
+            log_scale = 0.5 * (jsp.special.gammaln(1.0 / nu) - jsp.special.gammaln(3.0 / nu))
+            log_const = jnp.log(nu) - jnp.log(2.0) - log_scale - jsp.special.gammaln(1.0 / nu)
+            standardized = jnp.abs(resid_tail) / (jnp.sqrt(sigma_tail) * jnp.exp(log_scale))
+            return (-n_eff * log_const + 0.5 * jnp.sum(x_tail) + jnp.sum(standardized**nu)) / n_eff
+
+        assert nu is not None and lam is not None
+        c_log = (
             jsp.special.gammaln(0.5 * (nu + 1.0))
             - jsp.special.gammaln(0.5 * nu)
             - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
         )
-        tail = jnp.log1p((resid_tail * resid_tail / sigma_tail) / (nu - 2.0))
-        return (jnp.sum(0.5 * x_tail + 0.5 * (nu + 1.0) * tail) - n_eff * constant) / n_eff
+        a = 4.0 * lam * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
+        b = jnp.sqrt(1.0 + 3.0 * lam * lam - a * a)
+        shifted = b * resid_tail / jnp.sqrt(sigma_tail) + a
+        sign_term = jnp.where(shifted >= 0.0, 1.0, -1.0)
+        adjusted = shifted / (1.0 + lam * sign_term)
+        ll = (
+            n_eff * (c_log + jnp.log(b))
+            - 0.5 * jnp.sum(x_tail)
+            - 0.5 * (nu + 1.0) * jnp.sum(jnp.log1p(adjusted * adjusted / (nu - 2.0)))
+        )
+        return -ll / n_eff
 
     return _value_grad_hess(objective, np.asarray(z_j, dtype=np.float64))

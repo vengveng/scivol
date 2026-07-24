@@ -2575,6 +2575,35 @@ void dcc_nll_grad_hess_pq_gaussian(const double *theta, const double *eps,
                                    double *scores,  /* NULL ok */
                                    size_t T, size_t N, size_t p, size_t q);
 
+/* DCC(p,q) Student-t copula NLL and exact derivatives. theta ends with nu. */
+double dcc_nll_11_studentt(const double *theta, const double *eps,
+                           const double *Qbar, size_t T, size_t N);
+
+void dcc_nll_grad_11_studentt(const double *theta, const double *eps,
+                              const double *Qbar,
+                              double *grad, double *nll, double *scores,
+                              size_t T, size_t N);
+
+void dcc_nll_grad_hess_11_studentt(const double *theta, const double *eps,
+                                   const double *Qbar,
+                                   double *grad, double *hess, double *nll,
+                                   double *scores, size_t T, size_t N);
+
+double dcc_nll_pq_studentt(const double *theta, const double *eps,
+                           const double *Qbar,
+                           size_t T, size_t N, size_t p, size_t q);
+
+void dcc_nll_grad_pq_studentt(const double *theta, const double *eps,
+                              const double *Qbar,
+                              double *grad, double *nll, double *scores,
+                              size_t T, size_t N, size_t p, size_t q);
+
+void dcc_nll_grad_hess_pq_studentt(const double *theta, const double *eps,
+                                   const double *Qbar,
+                                   double *grad, double *hess, double *nll,
+                                   double *scores,
+                                   size_t T, size_t N, size_t p, size_t q);
+
 #ifdef __cplusplus
 }
 #endif

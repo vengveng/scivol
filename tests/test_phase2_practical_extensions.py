@@ -123,6 +123,19 @@ def test_hold_back_and_scale_are_recorded_in_fit_info() -> None:
     assert result.data.shape == (data.size - 7,)
 
 
+def test_volatility_orders_do_not_implicitly_trim_the_sample() -> None:
+    rng = np.random.default_rng(2027)
+    data = rng.standard_normal(260).astype(np.float64) * 0.01
+
+    result = (GARCH(2, 1) + Normal()).fit(data, solver="slsqp", verbose=False)
+
+    assert result.fit_info.requested_hold_back == 0
+    assert result.fit_info.effective_hold_back == 0
+    assert result.fit_info.original_n_obs == data.size
+    assert result.fit_info.effective_n_obs == data.size
+    assert result.data.shape == data.shape
+
+
 def test_auto_selection_common_sample_uses_max_candidate_hold_back() -> None:
     rng = np.random.default_rng(91)
     data = rng.standard_normal(220).astype(np.float64) * 0.01

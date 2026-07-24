@@ -471,7 +471,7 @@ VLK_INLINE int lm_skewt_obs_derivs(
     const double z_eh = -0.5 * z_e / h;
     const double u = cache->b * z + cache->a;
     const double sign_u = (u >= 0.0) ? 1.0 : -1.0;
-    const double s = 1.0 - sign_u * lam;
+    const double s = 1.0 + sign_u * lam;
     if (s <= 0.0 || !isfinite(s)) {
         return 0;
     }
@@ -507,7 +507,7 @@ VLK_INLINE int lm_skewt_obs_derivs(
     const double u_nu_nu = cache->a_nunu + cache->b_nunu * z;
     const double u_nu_lam = cache->a_nulam + cache->b_nulam * z;
     const double u_lam_lam = cache->b_lamlam * z;
-    const double s_lam = -sign_u;
+    const double s_lam = sign_u;
     const double v_e = u_e * inv_s;
     const double v_h = u_h * inv_s;
     const double v_nu = u_nu * inv_s;

@@ -21,7 +21,7 @@ QMLE estimation, diagnostic tests and automatic model selection.
   `StudentT()`, `SkewT()`, and `GED()`, plus linked `ARX/HARX + GARCH(P, Q)`,
   `ARX/HARX + GJRGARCH(P, Q)`, and `ARX/HARX + EGARCH(P, Q)` with the same
   shipped densities
-- Multivariate correlation model: `DCC(1, 1)` with Gaussian correlation dynamics
+- Multivariate correlation model: `DCC(p, q)` with Gaussian or common-df Student-t copula dynamics
 - Automatic model selection helpers: `AutoVol()` and `AutoDensity()`
 
 ## Performance
@@ -229,19 +229,49 @@ Dynamic Conditional Correlation for multivariate return series.
 
 `DCC.fit()` uses a two-step workflow:
 1. Fit a univariate volatility model to each series.
-2. Fit Gaussian DCC dynamics to the resulting standardised residuals.
+2. Fit Gaussian or Student-t copula DCC dynamics to the standardized residuals.
 
 ```python
 from scivol import DCC, GARCH, StudentT
 
 dcc = DCC(1, 1)
 result = dcc.fit(returns_df, univariate_spec=GARCH(1, 1) + StudentT())
+
+t_dcc = DCC(1, 1, distribution="studentt")
+t_result = t_dcc.fit(returns_df, univariate_spec=GARCH(1, 1) + StudentT())
+t_result.params.nu
 ```
 
 Result access focuses on the economically useful correlation objects:
 - `result.Rt` for the full time-varying correlation path
 - `result.corr(i, j)` for a single pair
 - `result.unconditional_corr` for the long-run correlation matrix
+- `result.forecast_correlation(horizon)` for the forecast correlation path
+- `result.forecast(horizon)` for joint marginal and correlation forecasts
+
+Draw many outcomes from one unchanged forecast origin with `scenarios()`:
+
+```python
+scenarios = result.scenarios(50_000, seed=7)
+empirical = result.scenarios(50_000, seed=7, innovations="empirical")
+```
+
+The fitted DCC distribution supplies the Gaussian or Student-t copula. The
+parametric mode maps its draws through each fitted marginal density; the
+empirical mode uses standardized-residual quantiles. `simulate()` uses the same
+copula and marginals along an evolving time path.
+
+Rolling DCC fits warm-start both the marginals and correlation dynamics:
+
+```python
+rolling = dcc.fit_rolling(
+    returns_df,
+    window=1000,
+    step=20,
+    univariate_spec=GARCH(1, 1) + StudentT(),
+    n_jobs=4,
+)
+```
 
 ### ARMA(p, q)
 
@@ -298,7 +328,7 @@ Heavier tails than Normal. One extra parameter: `nu` ($\nu > 2$). Lower $\nu$ me
 
 ### SkewT()
 
-Hansen's skewed Student-t. Two extra parameters: `nu` ($\nu > 2$) and `lambda` ($-1 < \lambda < 1$). $\lambda = 0$ gives a symmetric Student-t; $\lambda < 0$ shifts weight to the left tail.
+Hansen's zero-mean, unit-variance skewed Student-t. Two extra parameters: `nu` ($\nu > 2$) and `lambda` ($-1 < \lambda < 1$). $\lambda = 0$ gives a symmetric Student-t; $\lambda < 0$ shifts weight to the left tail.
 
 ---
 
@@ -348,6 +378,21 @@ result.fit_info.to_dict()
 # solver='slsqp', log_mode=True/False, optimization_space='z-space'/'theta-space'
 ```
 
+Volatility orders do not implicitly remove observations. Mean models apply the
+lags they require; `hold_back=k` requests at least `k` leading observations be
+trimmed. Results preserve pandas alignment, and the effective sample is recorded
+in `result.fit_info`.
+
+Standalone GARCH, GJR-GARCH, and EGARCH fits accept constrained-space warm
+starts and explicit optimizer budgets. The same start works in theta- or
+z-space:
+
+```python
+first = spec.fit(returns, maxiter=500)
+updated = spec.fit(new_returns, initial_params=first, maxiter=100)
+updated.fit_info.warm_started
+```
+
 Current default path policy:
 
 | Family | Default path |
@@ -393,7 +438,7 @@ result = spec.fit(data, method='qmle')
 spec = GJRGARCH(1, 1) + Normal()
 result = spec.fit(data, method='qmle')
 
-spec = ARMA(2, 1) + GARCH(1, 2) + Normal()
+spec = ARMA(2, 1) + GARCH(1, 2) + SkewT()
 result = spec.fit(data, method='qmle')
 ```
 
@@ -546,18 +591,49 @@ result = spec.fit(returns, n_jobs=1) # sequential
 Fit one specification to many series at once:
 
 ```python
-spec = GARCH(1, 1) + Normal()
-results = spec.fit_multiple([returns1, returns2, returns3], n_jobs=4)
+import pandas as pd
 
-for i, r in enumerate(results):
-    print(f"Series {i}: persistence = {r.garch_params.persistence:.4f}")
+spec = GARCH(1, 1) + Normal()
+returns = pd.DataFrame(
+    {"asset_1": returns1, "asset_2": returns2, "asset_3": returns3}
+)
+results = spec.fit(returns, n_jobs=4)
+
+for name, r in results.items():
+    print(f"{name}: persistence = {r.garch_params.persistence:.4f}")
+```
+
+For repeated portfolio work, `fit_many()` returns structured successes and
+failures and supports per-fit limits and prior results:
+
+```python
+batch = spec.fit_many(
+    returns,
+    n_jobs=4,
+    maxiter=500,
+    timeout=10.0,
+    on_error="record",
+)
+
+updated = spec.fit_many(new_returns, initial_results=batch, n_jobs=4)
+batch.results
+batch.failures
+batch.warning_summary
+batch.to_dataframe()
+```
+
+Rolling windows reuse each series' last successful parameters:
+
+```python
+rolling = spec.fit_rolling(returns, window=1000, step=20, n_jobs=4)
+latest = rolling[-1].batch
 ```
 
 Auto-selection works here too -- each series gets its own best model:
 
 ```python
 spec = GARCH(auto=True) + AutoDensity()
-results = spec.fit_multiple(returns_list, n_jobs=4)
+results = spec.fit(returns, n_jobs=4)
 ```
 
 ### Inspecting candidates
@@ -621,6 +697,7 @@ result.std_errors        # MLE (from inverse Hessian)
 result.std_errors_robust # sandwich (QMLE only)
 result.cov_matrix        # H⁻¹
 result.cov_robust        # H⁻¹ @ OPG @ H⁻¹
+result.warnings          # persistent fit warnings shown by result.summary()
 ```
 
 ### Output
@@ -713,7 +790,9 @@ diag['ljung_box'][2]['reject']
 
 Auto-selection uses these tests internally to penalize poorly fitting candidates.
 
-Analytical gradients and Hessians are verified in the internal development test suite against independent AD reference implementations. That validation machinery is intended for library development rather than end-user workflows.
+Every shipped univariate surface has full theta-space and log-space validation
+against independent AD reference implementations. The machine-checked contract
+and current verification status live in [MODELS.md](MODELS.md).
 
 ---
 
@@ -726,8 +805,9 @@ from scivol import (
     EGARCH, GARCH, GJRGARCH, ARMA, DCC,
     Normal, StudentT, SkewT,
     AutoDensity, AutoVol,
+    BatchFitResult, RollingFitResult,
     Component, CompositeSpec, Role,
-    DCCParams, DCCResult,
+    DCCParams, DCCResult, MultivariateScenarioResult,
     settings, __version__,
 )
 ```
@@ -737,11 +817,17 @@ from scivol import (
 ```python
 result = spec.fit(
     data,                      # 1D array, Series, or DataFrame
+    hold_back=0,               # explicit leading observations to trim
+    scale=None,                # optional estimation scale
+    common_sample=None,        # align auto-selection candidates
     method="mle",              # "mle" or "qmle"
     solver="trust",
     log_mode=True,
+    initial_params=None,        # prior result or constrained parameter vector
+    maxiter=5000,               # standalone volatility fits
+    maxfev=50000,               # derivative-free evaluation budget
     verbose=False,
-    n_jobs=None,               # parallel workers (auto-selection)
+    n_jobs=None,               # parallel workers (selection or multi-series)
     diagnostic_weight=50.0,    # AIC penalty per failed test
     select_by="aic+diag",      # "aic+diag", "aic", "bic", "hqic", or "oos"
     criterion=None,            # custom scoring callable
@@ -797,6 +883,8 @@ ad = AutoDensity(candidates=['Normal', 'StudentT'])
 ```python
 dcc = DCC(1, 1)
 dcc.p, dcc.q, dcc.n_params, dcc.signature
+
+t_dcc = DCC(1, 1, distribution="studentt")
 ```
 
 ### EstimationResult
@@ -818,10 +906,13 @@ result.selection.to_dataframe()
 
 ```python
 result.params, result.log_likelihood, result.aic, result.bic
+result.params.nu              # Student-t DCC
 result.Rt
 result.corr(0, 1)
 result.unconditional_corr
 result.std_errors, result.std_errors_robust
+result.scenarios(10_000, seed=7)
+result.simulate(250, seed=7)
 result.summary()
 ```
 

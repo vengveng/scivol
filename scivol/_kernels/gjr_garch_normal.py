@@ -20,6 +20,7 @@ from ..components.vol import GJRGARCH
 from ..components.density import Normal
 from ..spec.composite import CompositeSpec
 from ..result import EstimationResult
+from .._optimizer import resolve_initial_params, resolve_optimizer_budget
 from .routine import Routine
 
 _CACHE: Dict[Tuple[int, int], Routine] = {}
@@ -106,6 +107,7 @@ def _build(p: int, q: int) -> Routine:
             "log_mode": bool(log_mode),
             "optimization_space": "z-space" if log_mode else "theta-space",
         }
+        maxiter, maxfev = resolve_optimizer_budget(kwargs.get("maxiter"), kwargs.get("maxfev"))
 
         debug_capture = kwargs.pop("debug_capture", None)
         debug_theta_start = kwargs.pop("debug_theta_start", None)
@@ -186,21 +188,27 @@ def _build(p: int, q: int) -> Routine:
             return log_hessian_gjr_garch(theta_local, grad_theta, hess_theta, p, q, dist="normal")
 
         theta_start_default = _default_theta_start(vol, dens, resid, solver)
+        theta_start_public, warm_started = resolve_initial_params(
+            kwargs.get("initial_params"), theta_start_default, K, uid
+        )
         theta_start = (
             np.ascontiguousarray(debug_theta_start, dtype=np.float64)
             if debug_theta_start is not None
-            else theta_start_default.copy()
+            else theta_start_public.copy()
         )
-        z_start_default = unpack_gjr_garch(
+        z_theta_start, _ = resolve_initial_params(
+            kwargs.get("initial_params"),
             np.concatenate((vol.default_start(resid), dens.default_start(resid))),
-            p,
-            q,
+            K,
+            uid,
         )
+        z_start_default = unpack_gjr_garch(z_theta_start, p, q)
         z0 = (
             np.ascontiguousarray(debug_z_start, dtype=np.float64)
             if debug_z_start is not None
             else np.ascontiguousarray(z_start_default, dtype=np.float64)
         )
+        fit_info.update(warm_started=warm_started, maxiter=maxiter)
 
         def _theta_from_z(z: NDArray[np.float64]) -> NDArray[np.float64]:
             pack_gjr_garch_c(z, _theta_buf, p, q)
@@ -321,7 +329,7 @@ def _build(p: int, q: int) -> Routine:
             if solver.lower() == "nelder-mead":
                 res = minimize(obj, start, method="Nelder-Mead",
                               bounds=bounds, tol=1e-12,
-                              options={"maxfev": 50000, "disp": verbose})
+                              options={"maxfev": maxfev, "disp": verbose})
 
             elif solver.lower() == "slsqp":
                 tol_theta = float(debug_tol) if debug_tol is not None else 1e-12
@@ -330,7 +338,7 @@ def _build(p: int, q: int) -> Routine:
                 res = minimize(obj, start, method="SLSQP",
                               jac=jac, bounds=bounds, constraints=lc,
                               tol=tol_theta,
-                              options={"disp": verbose, 'ftol': ftol_theta, "maxiter": 5000},
+                              options={"disp": verbose, 'ftol': ftol_theta, "maxiter": maxiter},
                               callback=theta_callback)
 
             elif solver.lower() in ("trust", "trust-constr"):
@@ -340,7 +348,7 @@ def _build(p: int, q: int) -> Routine:
                               jac=jac, hess=hess,
                               bounds=bounds, constraints=lc,
                               tol=tol_theta,
-                              options={"disp": verbose, "xtol": 1e-6, "maxiter": 5000,
+                              options={"disp": verbose, "xtol": 1e-6, "maxiter": maxiter,
                                       'initial_tr_radius': radius})
             else:
                 raise ValueError(f"Unknown solver '{solver}'")
@@ -364,7 +372,7 @@ def _build(p: int, q: int) -> Routine:
             if solver.lower() == "nelder-mead":
                 res = minimize(obj_log, z0, method="Nelder-Mead",
                               tol=1e-12,
-                              options={"disp": verbose, "maxiter": 5000, "maxfev": 50000,
+                              options={"disp": verbose, "maxiter": maxiter, "maxfev": maxfev,
                                       "xatol": 1e-8, "fatol": 1e-12, "adaptive": True})
 
             elif solver.lower() == "slsqp":
@@ -379,7 +387,7 @@ def _build(p: int, q: int) -> Routine:
                               method="SLSQP",
                               jac=lambda z: jac_log(z) / n,
                               tol=tol_z,
-                              options={"disp": verbose, 'ftol': ftol_z, "maxiter": 5000},
+                              options={"disp": verbose, 'ftol': ftol_z, "maxiter": maxiter},
                               callback=z_callback)
                 res.fun *= n
 
@@ -390,7 +398,7 @@ def _build(p: int, q: int) -> Routine:
                               jac=lambda z: jac_log(z) / n,
                               hess=lambda z: hess_log(z) / n,
                               tol=tol_z,
-                              options={"disp": verbose, "maxiter": 5000})
+                              options={"disp": verbose, "maxiter": maxiter})
                 res.fun *= n
 
             else:

@@ -7,11 +7,14 @@ SciPy, the optimisation routine or the C kernels.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 
 from scivol import GARCH, ARMA, Role, CompositeSpec
 from scivol._kernels.routine import Routine
+from scivol.result import FitMetadata
 
 
 class DummyResult:  # simple stand-in for EstimationResult
@@ -19,6 +22,7 @@ class DummyResult:  # simple stand-in for EstimationResult
         self.spec = spec
         self.n_obs = data_len
         self.kwargs = kwargs
+        self.fit_info = FitMetadata()
         self._index = None
         self._name = None
 
@@ -72,8 +76,8 @@ def test_fit_default_method(monkeypatched_routine, sample_data):
     res = model.fit(sample_data)  # uses default MLE path
 
     # The monkey-patched routine should have been called
-    assert monkeypatched_routine["y"] is sample_data
-    assert monkeypatched_routine["kw"] == {}
+    np.testing.assert_array_equal(monkeypatched_routine["y"], sample_data)
+    assert monkeypatched_routine["kw"] == {"x": None}
     assert isinstance(res, DummyResult)
     assert res.n_obs == len(sample_data)
 
@@ -86,8 +90,21 @@ def test_fit_passes_kwargs(monkeypatched_routine, sample_data):
 
     res = model.fit(sample_data, foo="bar")
 
-    assert monkeypatched_routine["kw"] == {"foo": "bar"}
+    assert monkeypatched_routine["kw"] == {"foo": "bar", "x": None}
     assert isinstance(res, DummyResult)
+
+
+def test_small_sample_warning_is_recorded_not_emitted(monkeypatched_routine):
+    model = GARCH(1, 1)
+    data = np.arange(10.0)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        res = model.fit(data)
+
+    runtime_warnings = [w for w in caught if issubclass(w.category, RuntimeWarning)]
+    assert runtime_warnings == []
+    assert res.fit_info.warnings == ("10 obs for 3 parameters; recommend >15.",)
 
 
 # ------------------------------------------------------------------ #
@@ -98,7 +115,7 @@ def test_fit_on_composite_spec(monkeypatched_routine, sample_data):
 
     res = spec.fit(sample_data, answer=42)
 
-    assert monkeypatched_routine["kw"] == {"answer": 42}
+    assert monkeypatched_routine["kw"] == {"answer": 42, "x": None}
     assert isinstance(res, DummyResult)
 
     # CompositeSpec has a volatility component
@@ -124,8 +141,8 @@ def test_fit_qmle_dispatch(monkeypatch, sample_data):
     res = model.fit(sample_data, method="qmle", solver="slsqp")
 
     assert calls["spec"] == model.spec
-    assert calls["data"] is sample_data
-    assert calls["kw"] == {"solver": "slsqp"}
+    np.testing.assert_array_equal(calls["data"], sample_data)
+    assert calls["kw"] == {"solver": "slsqp", "x": None}
     assert isinstance(res, DummyResult)
 
 
@@ -139,5 +156,5 @@ def test_fit_mle_no_qmle(monkeypatched_routine, sample_data):
     res = model.fit(sample_data, method="mle")
 
     # Kernel routine was called
-    assert monkeypatched_routine["y"] is sample_data
+    np.testing.assert_array_equal(monkeypatched_routine["y"], sample_data)
     assert isinstance(res, DummyResult)

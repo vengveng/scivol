@@ -21,6 +21,7 @@ from ..components.vol import GARCH
 from ..components.density import SkewT
 from ..spec.composite import CompositeSpec
 from ..result import EstimationResult
+from .._optimizer import resolve_initial_params, resolve_optimizer_budget
 from .routine import Routine
 from .transforms import (
     pack_garch_skewt, unpack_garch_skewt, jacobian_garch_skewt,
@@ -97,6 +98,7 @@ def _build(p: int, q: int) -> Routine:
             "log_mode": bool(log_mode),
             "optimization_space": "z-space" if log_mode else "theta-space",
         }
+        maxiter, maxfev = resolve_optimizer_budget(_.get("maxiter"), _.get("maxfev"))
 
         n = resid.size
         resid2 = resid ** 2
@@ -176,7 +178,13 @@ def _build(p: int, q: int) -> Routine:
             # =========================================================
             
             # Initial values and bounds
-            start = np.concatenate((vol.default_start(resid), dens.default_start(resid)))
+            start, warm_started = resolve_initial_params(
+                _.get("initial_params"),
+                np.concatenate((vol.default_start(resid), dens.default_start(resid))),
+                n_total,
+                uid,
+            )
+            fit_info.update(warm_started=warm_started, maxiter=maxiter)
             bounds = vol.bounds() + dens.bounds()
 
             # Stationarity constraint: sum(alpha) + sum(beta) < 1
@@ -193,7 +201,7 @@ def _build(p: int, q: int) -> Routine:
                     method="Nelder-Mead",
                     bounds=bounds,
                     tol=1e-12,
-                    options={"maxfev": 50000, "disp": verbose}
+                    options={"maxfev": maxfev, "disp": verbose}
                 )
             elif solver.lower() == "slsqp":
                 res = minimize(
@@ -204,7 +212,7 @@ def _build(p: int, q: int) -> Routine:
                     bounds=bounds,
                     constraints=lc,
                     tol=1e-12,
-                    options={"disp": verbose, "ftol": 1e-12, "maxiter": 5000}
+                    options={"disp": verbose, "ftol": 1e-12, "maxiter": maxiter}
                 )
             elif solver.lower() in ("trust-constr", "trust"):
                 res = minimize(
@@ -216,7 +224,7 @@ def _build(p: int, q: int) -> Routine:
                     bounds=bounds,
                     constraints=lc,
                     tol=1e-12,
-                    options={"disp": verbose, "xtol": 1e-6, "maxiter": 5000}
+                    options={"disp": verbose, "xtol": 1e-6, "maxiter": maxiter}
                 )
             else:
                 raise ValueError(f"Unknown solver '{solver}'")
@@ -310,7 +318,13 @@ def _build(p: int, q: int) -> Routine:
                 return analytical_hess_z(z) * p_scaler
             
             # Initial values in theta-space, then transform to z-space
-            theta0 = np.concatenate((vol.default_start(resid), dens.default_start(resid)))
+            theta0, warm_started = resolve_initial_params(
+                _.get("initial_params"),
+                np.concatenate((vol.default_start(resid), dens.default_start(resid))),
+                n_total,
+                uid,
+            )
+            fit_info.update(warm_started=warm_started, maxiter=maxiter)
             z0 = unpack_garch_skewt(theta0, p, q)
             
             if solver.lower() == "nelder-mead":
@@ -322,8 +336,8 @@ def _build(p: int, q: int) -> Routine:
                     tol=1e-12,
                     options={
                         "disp": verbose,
-                        "maxiter": 5000,
-                        "maxfev": 50000,
+                        "maxiter": maxiter,
+                        "maxfev": maxfev,
                         "xatol": 1e-8,
                         "fatol": 1e-12 * n * p_scaler,  # Scale with objective
                         "adaptive": True,
@@ -337,7 +351,7 @@ def _build(p: int, q: int) -> Routine:
                     method="SLSQP",
                     jac=lambda z: jac_log(z) / n,
                     tol=1e-16,
-                    options={"disp": verbose, "ftol": 1e-16, "maxiter": 5000}
+                    options={"disp": verbose, "ftol": 1e-16, "maxiter": maxiter}
                 )
                 res.fun *= n
             
@@ -349,7 +363,7 @@ def _build(p: int, q: int) -> Routine:
                     jac=lambda z: jac_log(z) / n,
                     hess=lambda z: hess_log(z) / n,
                     tol=1e-12,
-                    options={"disp": verbose, "maxiter": 5000}
+                    options={"disp": verbose, "maxiter": maxiter}
                 )
                 res.fun *= n
             

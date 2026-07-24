@@ -20,6 +20,7 @@ from ..components.vol import GJRGARCH
 from ..components.density import StudentT
 from ..spec.composite import CompositeSpec
 from ..result import EstimationResult
+from .._optimizer import resolve_initial_params, resolve_optimizer_budget
 from .routine import Routine
 from .transforms import (
     compute_se_via_logspace,
@@ -91,6 +92,7 @@ def _build(p: int, q: int) -> Routine:
             "log_mode": bool(log_mode),
             "optimization_space": "z-space" if log_mode else "theta-space",
         }
+        maxiter, maxfev = resolve_optimizer_budget(_.get("maxiter"), _.get("maxfev"))
 
         n = resid.size
         sigma2 = np.zeros(n, dtype=np.float64)
@@ -135,7 +137,13 @@ def _build(p: int, q: int) -> Routine:
                 call_c_hess(theta)
                 return hess_mat.copy() / n
 
-            start = np.concatenate((vol.default_start(resid) / 2, dens.default_start(resid)))
+            start, warm_started = resolve_initial_params(
+                _.get("initial_params"),
+                np.concatenate((vol.default_start(resid) / 2, dens.default_start(resid))),
+                vol.n_params + dens.n_params,
+                uid,
+            )
+            fit_info.update(warm_started=warm_started, maxiter=maxiter)
             bounds = vol.bounds() + dens.bounds()
 
             # Stationarity: α + γ + β < 1
@@ -143,24 +151,26 @@ def _build(p: int, q: int) -> Routine:
             lc = LinearConstraint(A, lb=1e-12, ub=1.0 - 1e-8)
 
             if solver.lower() == "nelder-mead":
-                start[0] = 0.025
+                if not warm_started:
+                    start[0] = 0.025
                 res = minimize(obj, start, method="Nelder-Mead",
                               bounds=bounds, tol=1e-12,
-                              options={"maxfev": 50000, "disp": verbose})
+                              options={"maxfev": maxfev, "disp": verbose})
 
             elif solver.lower() == "slsqp":
-                start[0] = 0.025
+                if not warm_started:
+                    start[0] = 0.025
                 res = minimize(obj, start, method="SLSQP",
                               jac=jac, bounds=bounds, constraints=lc,
                               tol=1e-12,
-                              options={"disp": verbose, 'ftol': 1e-16, "maxiter": 5000})
+                              options={"disp": verbose, 'ftol': 1e-16, "maxiter": maxiter})
 
             elif solver.lower() in ("trust", "trust-constr"):
                 res = minimize(obj, start, method="trust-constr",
                               jac=jac, hess=hess,
                               bounds=bounds, constraints=lc,
                               tol=1e-12,
-                              options={"disp": verbose, "xtol": 1e-6, "maxiter": 5000,
+                              options={"disp": verbose, "xtol": 1e-6, "maxiter": maxiter,
                                       'initial_tr_radius': 1e-2})
             else:
                 raise ValueError(f"Unknown solver '{solver}'")
@@ -239,13 +249,19 @@ def _build(p: int, q: int) -> Routine:
             def hess_log(z: NDArray[np.float64]) -> NDArray[np.float64]:
                 return analytical_hess_z(z) * p_scaler
 
-            theta0 = np.concatenate((vol.default_start(resid), dens.default_start(resid)))
+            theta0, warm_started = resolve_initial_params(
+                _.get("initial_params"),
+                np.concatenate((vol.default_start(resid), dens.default_start(resid))),
+                vol.n_params + dens.n_params,
+                uid,
+            )
+            fit_info.update(warm_started=warm_started, maxiter=maxiter)
             z0 = unpack_gjr_garch_studentt(theta0, p, q)
 
             if solver.lower() == "nelder-mead":
                 res = minimize(obj_log, z0, method="Nelder-Mead",
                               tol=1e-12,
-                              options={"disp": verbose, "maxiter": 5000, "maxfev": 50000,
+                              options={"disp": verbose, "maxiter": maxiter, "maxfev": maxfev,
                                       "xatol": 1e-8, "fatol": 1e-12, "adaptive": True})
 
             elif solver.lower() == "slsqp":
@@ -253,7 +269,7 @@ def _build(p: int, q: int) -> Routine:
                               method="SLSQP",
                               jac=lambda z: jac_log(z) / n,
                               tol=1e-16,
-                              options={"disp": verbose, "ftol": 1e-16, "maxiter": 5000})
+                              options={"disp": verbose, "ftol": 1e-16, "maxiter": maxiter})
                 res.fun *= n
 
             elif solver.lower() in ("trust", "trust-constr", "trust-exact"):
@@ -262,7 +278,7 @@ def _build(p: int, q: int) -> Routine:
                               jac=lambda z: jac_log(z) / n,
                               hess=lambda z: hess_log(z) / n,
                               tol=1e-12,
-                              options={"disp": verbose, "maxiter": 5000})
+                              options={"disp": verbose, "maxiter": maxiter})
                 res.fun *= n
 
             else:

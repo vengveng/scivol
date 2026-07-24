@@ -16,6 +16,7 @@ import pytest
 from scivol import ARMA, GARCH
 from scivol._validation import validate_data
 from scivol._kernels.routine import Routine
+from scivol.result import FitMetadata
 
 
 # ------------------------------------------------------------------ #
@@ -27,7 +28,13 @@ def _make_dummy(uid: str, calls: Dict[str, dict]) -> Routine:
         calls["y"] = y
         calls["kw"] = kw
         # simple stand-in that looks like EstimationResult
-        return SimpleNamespace(spec=uid, n_obs=len(y), _index=None, _name=None)
+        return SimpleNamespace(
+            spec=uid,
+            n_obs=len(y),
+            fit_info=FitMetadata(),
+            _index=None,
+            _name=None,
+        )
 
     return Routine(uid=uid, n_params=1, fit=_fit)
 
@@ -64,7 +71,7 @@ def test_mle_component_spec(dummy_routines):
     assert res.n_obs == 30
     assert dummy_routines["uid"] == "GARCH(1,1)+Normal"
     assert np.all(dummy_routines["y"] == data)
-    assert dummy_routines["kw"] == {"foo": "bar"}
+    assert dummy_routines["kw"] == {"foo": "bar", "x": None}
 
 
 # ------------------------------------------------------------------ #

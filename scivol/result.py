@@ -53,9 +53,14 @@ def _hansen_skewt_cdf(z: np.ndarray, nu: float, lam: float) -> np.ndarray:
     b = np.sqrt(1.0 + 3.0 * lam * lam - a * a)
 
     bz_a = b * z + a
-    # piecewise transform back to symmetric standardized-t variable y
-    y = np.where(bz_a < 0.0, bz_a / (1.0 + lam), bz_a / (1.0 - lam))
-    return _std_t_cdf(y, nu)
+    left = bz_a < 0.0
+    scale = np.where(left, 1.0 - lam, 1.0 + lam)
+    base_cdf = _std_t_cdf(bz_a / scale, nu)
+    return np.where(
+        left,
+        (1.0 - lam) * base_cdf,
+        (1.0 + lam) * base_cdf - lam,
+    )
 
 
 def _std_ged_cdf(x: np.ndarray, nu: float) -> np.ndarray:
@@ -253,6 +258,19 @@ class FitMetadata:
     oos_train_size: Optional[int] = None
     oos_test_size: Optional[int] = None
     oos_loss: Optional[str] = None
+    warm_started: Optional[bool] = None
+    maxiter: Optional[int] = None
+    timeout: Optional[float] = None
+    warnings: tuple[str, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        self.warnings = tuple(str(w) for w in self.warnings if str(w))
+
+    def add_warning(self, message: str) -> None:
+        """Record a user-visible fit warning without duplicating it."""
+        message = str(message)
+        if message and message not in self.warnings:
+            self.warnings = (*self.warnings, message)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -275,6 +293,10 @@ class FitMetadata:
             "oos_train_size": self.oos_train_size,
             "oos_test_size": self.oos_test_size,
             "oos_loss": self.oos_loss,
+            "warm_started": self.warm_started,
+            "maxiter": self.maxiter,
+            "timeout": self.timeout,
+            "warnings": list(self.warnings),
         }
 
 
@@ -387,6 +409,11 @@ class EstimationResult:
     @property
     def convergence_message(self) -> str:
         return self.optimization_result.message
+
+    @property
+    def warnings(self) -> tuple[str, ...]:
+        """Persistent warnings about the fitted result."""
+        return tuple(self._collect_warnings())
     
     # Deprecated aliases (for backward compatibility)
     @property
@@ -971,32 +998,42 @@ class EstimationResult:
             half_life = np.log(0.5) / np.log(gp.persistence)
             print(f"{'Half-life (periods):':<35} {half_life:.1f}")
     
-    def _print_warnings(self, width: int) -> None:
-        """Print any warnings about the estimation."""
-        warnings_list: List[str] = []
-        
+    def _collect_warnings(self) -> List[str]:
+        """Collect persistent and derived warnings about the estimation."""
+        warnings_list: List[str] = list(self.fit_info.warnings)
+
+        def add(message: str) -> None:
+            if message not in warnings_list:
+                warnings_list.append(message)
+
         if not self.converged:
-            warnings_list.append("Optimization did not converge")
+            add("Optimization did not converge")
         
         gp = self.garch_params
         if gp is not None:
             if isinstance(gp, EGARCHParams):
                 if abs(gp.persistence) >= 1.0:
-                    warnings_list.append("Non-stationary EGARCH log-variance recursion detected")
+                    add("Non-stationary EGARCH log-variance recursion detected")
                 elif abs(gp.persistence) > 0.99:
-                    warnings_list.append("Near-unit-root EGARCH persistence very close to 1")
+                    add("Near-unit-root EGARCH persistence very close to 1")
             else:
                 if gp.persistence >= 1.0:
-                    warnings_list.append("IGARCH or explosive process detected")
+                    add("IGARCH or explosive process detected")
                 elif gp.persistence > 0.99:
-                    warnings_list.append("Near-IGARCH: persistence very close to 1")
+                    add("Near-IGARCH: persistence very close to 1")
         
         if self.std_errors is not None:
             if np.any(~np.isfinite(self.std_errors)):
-                warnings_list.append("Some standard errors could not be computed")
+                add("Some standard errors could not be computed")
             elif np.any(self.std_errors <= 0):
-                warnings_list.append("Some standard errors are non-positive (Hessian issues)")
-        
+                add("Some standard errors are non-positive (Hessian issues)")
+
+        return warnings_list
+
+    def _print_warnings(self, width: int) -> None:
+        """Print any warnings about the estimation."""
+        warnings_list = self._collect_warnings()
+
         if warnings_list:
             print()
             print(f"{'Warnings':^{width}}")
@@ -1033,6 +1070,7 @@ class EstimationResult:
             'n_iter': self.n_iter,
             'time_elapsed': self.time_elapsed,
             'fit_info': self.fit_info.to_dict(),
+            'warnings': list(self.warnings),
             'parameters': {},
         }
         

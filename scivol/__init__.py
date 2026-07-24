@@ -13,7 +13,18 @@ from .components import ARMA, ARX, AutoDensity, AutoVol, Component, EGARCH, GED,
 from .spec import CompositeSpec
 from .roles import Role
 from ._settings import settings
-from .dcc import CCC, CCCParams, CCCResult, DCC, DCCResult, DCCParams
+from .dcc import (
+    CCC,
+    CCCParams,
+    CCCResult,
+    DCC,
+    DCCParams,
+    DCCResult,
+    MultivariateScenarioResult,
+    RollingDCCResult,
+    RollingDCCWindow,
+)
+from .batch import BatchFitFailure, BatchFitResult, FitTimeoutError, RollingFitResult, RollingFitWindow
 # from ._kernels import get_routine
 
 __all__: list[str] = [
@@ -21,6 +32,8 @@ __all__: list[str] = [
     "ARX",
     "AutoDensity",
     "AutoVol",
+    "BatchFitFailure",
+    "BatchFitResult",
     "Component",
     "CompositeSpec",
     "CCC",
@@ -34,9 +47,15 @@ __all__: list[str] = [
     "GARCH",
     "GJRGARCH",
     "HARX",
+    "FitTimeoutError",
+    "MultivariateScenarioResult",
     # "get_routine",
     "Normal",
     "Role",
+    "RollingFitResult",
+    "RollingFitWindow",
+    "RollingDCCResult",
+    "RollingDCCWindow",
     "settings",
     "SkewT",
     "StudentT",

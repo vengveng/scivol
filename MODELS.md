@@ -79,30 +79,24 @@ standalone `ARMA + SkewT`.
 
 ## Known Verification Exceptions
 
-The table below is generated from the manifest. It lists validation debt, not
+This status is generated from the manifest and tracks validation debt, not
 missing implementations.
 
 <!-- surface-manifest:verification-exceptions:start -->
-| Surface group | Missing evidence | Current protection | Closure target |
-|---|---|---|---|
-| EGARCH SkewT log mode | Direct log-space AD checks for fused SkewT EGARCH log NLL/gradient/Hessian. | Theta gradient and volatility-block Hessian AD plus runtime gates. | Add full log-space AD value/gradient/Hessian checks. |
-| EGARCH non-Normal theta checks | Full theta AD Hessian evidence. | Gradient and volatility-block Hessian AD checks. | Promote StudentT and SkewT to full theta AD. |
-| ARMA + EGARCH non-Normal | Full AD coverage for StudentT and any AD coverage for SkewT/GED. | Partial AD for StudentT; public/fixed runtime gates for SkewT/GED. | Promote StudentT, SkewT, and GED to full theta/log AD. |
-| Standalone ARX/HARX non-Normal | AD coverage for constant-variance non-Normal meanx surfaces. | Public and fixed workflow runtime gates. | Add AD checks or keep these explicitly runtime-validated. |
-| Meanx + GARCH log mode | Direct log-space AD chain-rule checks. | Theta AD plus public log-mode smoke. | Add log-space AD checks over representative ARX and HARX orders. |
-| Meanx + GJR-GARCH | Direct log-space AD checks. | Theta AD plus public log-mode smoke. | Add log-space AD checks over representative ARX and HARX orders. |
-| Meanx + EGARCH | Direct log-space AD checks. | Theta AD plus public log-mode smoke. | Add log-space AD checks over representative ARX and HARX orders. |
+No known verification exceptions.
 <!-- surface-manifest:verification-exceptions:end -->
 
 ---
 
 ## Multivariate Models
 
-`CCC()` and `DCC(p,q)` sit outside the univariate tensor because they are
-Gaussian correlation models. `CCC()` is closed-form. `DCC(p,q)` uses a
-two-step workflow: fitted univariate volatility models first, then Gaussian
-correlation dynamics on standardized residuals. DCC derivative validation uses
-`scivol._devtools.ad_oracle`.
+`CCC()` and `DCC(p,q)` sit outside the univariate tensor. `CCC()` is a
+closed-form Gaussian correlation model. `DCC(p,q)` supports Gaussian and
+common-df Student-t copula correlation likelihoods after the univariate
+marginals are fitted. Both DCC likelihoods have analytical C gradients and
+Hessians; `(1,1)` has dedicated C entry points and arbitrary `(p,q)` uses the
+generic C kernels. Full value, gradient, and Hessian validation uses independent
+JAX objectives in `scivol._devtools.ad_oracle`.
 
 ---
 
@@ -118,8 +112,7 @@ They are maintained through `benchmark_optimizers.py` and exposed on
 
 QMLE is supported where the robust OPG/Hessian path is implemented. The current
 QMLE tests cover GARCH Normal/StudentT/SkewT and generic ARMA-GARCH
-Normal/StudentT. Generic ARMA-GARCH SkewT QMLE remains a test-matrix gap if the
-documented two-step claim is kept.
+Normal/StudentT/SkewT.
 
 ---
 

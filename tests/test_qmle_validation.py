@@ -369,6 +369,15 @@ class TestARMAGARCHQMLE:
         assert len(result.std_errors_robust) == 9
         assert np.all(np.isfinite(result.std_errors_robust))
 
+    def test_generic_order_skewt_qmle_two_step(self, arma_garch_data):
+        spec = ARMA(2, 1) + GARCH(1, 2) + SkewT()
+        result = spec.fit(arma_garch_data, method="qmle", solver="slsqp", verbose=False)
+
+        assert result.method == "QMLE"
+        assert result.std_errors_robust is not None
+        assert len(result.std_errors_robust) == 10
+        assert np.all(np.isfinite(result.std_errors_robust))
+
 
 class TestDefaultOptimizationPathVisibility:
     """Kernel defaults should match benchmark policy and be visible in fit_info."""

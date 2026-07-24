@@ -5093,6 +5093,119 @@ py_dcc_nll_grad_hess_pq_gaussian(PyObject *self,
     Py_RETURN_NONE;
 }
 
+static PyObject *
+py_dcc_nll_11_studentt(PyObject *self,
+                       PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 5) { BAD_ARITY("dcc_nll_11_studentt", 5, nargs); return NULL; }
+    const double *theta = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *eps = (const double *)PyLong_AsVoidPtr(args[1]);
+    const double *Qbar = (const double *)PyLong_AsVoidPtr(args[2]);
+    size_t T = PyLong_AsSize_t(args[3]);
+    size_t N = PyLong_AsSize_t(args[4]);
+    if (PyErr_Occurred()) return NULL;
+    return PyFloat_FromDouble(dcc_nll_11_studentt(theta, eps, Qbar, T, N));
+}
+
+static PyObject *
+py_dcc_nll_grad_11_studentt(PyObject *self,
+                            PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 8) { BAD_ARITY("dcc_nll_grad_11_studentt", 8, nargs); return NULL; }
+    const double *theta = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *eps = (const double *)PyLong_AsVoidPtr(args[1]);
+    const double *Qbar = (const double *)PyLong_AsVoidPtr(args[2]);
+    double *grad = (double *)PyLong_AsVoidPtr(args[3]);
+    double *nll = (double *)PyLong_AsVoidPtr(args[4]);
+    long scores_addr = PyLong_AsLong(args[5]);
+    double *scores = scores_addr == 0 ? NULL : (double *)PyLong_AsVoidPtr(args[5]);
+    size_t T = PyLong_AsSize_t(args[6]);
+    size_t N = PyLong_AsSize_t(args[7]);
+    if (PyErr_Occurred()) return NULL;
+    dcc_nll_grad_11_studentt(theta, eps, Qbar, grad, nll, scores, T, N);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_dcc_nll_grad_hess_11_studentt(PyObject *self,
+                                 PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 9) { BAD_ARITY("dcc_nll_grad_hess_11_studentt", 9, nargs); return NULL; }
+    const double *theta = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *eps = (const double *)PyLong_AsVoidPtr(args[1]);
+    const double *Qbar = (const double *)PyLong_AsVoidPtr(args[2]);
+    double *grad = (double *)PyLong_AsVoidPtr(args[3]);
+    double *hess = (double *)PyLong_AsVoidPtr(args[4]);
+    double *nll = (double *)PyLong_AsVoidPtr(args[5]);
+    long scores_addr = PyLong_AsLong(args[6]);
+    double *scores = scores_addr == 0 ? NULL : (double *)PyLong_AsVoidPtr(args[6]);
+    size_t T = PyLong_AsSize_t(args[7]);
+    size_t N = PyLong_AsSize_t(args[8]);
+    if (PyErr_Occurred()) return NULL;
+    dcc_nll_grad_hess_11_studentt(theta, eps, Qbar, grad, hess, nll, scores, T, N);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_dcc_nll_pq_studentt(PyObject *self,
+                       PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 7) { BAD_ARITY("dcc_nll_pq_studentt", 7, nargs); return NULL; }
+    const double *theta = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *eps = (const double *)PyLong_AsVoidPtr(args[1]);
+    const double *Qbar = (const double *)PyLong_AsVoidPtr(args[2]);
+    size_t T = PyLong_AsSize_t(args[3]);
+    size_t N = PyLong_AsSize_t(args[4]);
+    size_t p = PyLong_AsSize_t(args[5]);
+    size_t q = PyLong_AsSize_t(args[6]);
+    if (PyErr_Occurred()) return NULL;
+    return PyFloat_FromDouble(dcc_nll_pq_studentt(theta, eps, Qbar, T, N, p, q));
+}
+
+static PyObject *
+py_dcc_nll_grad_pq_studentt(PyObject *self,
+                            PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 10) { BAD_ARITY("dcc_nll_grad_pq_studentt", 10, nargs); return NULL; }
+    const double *theta = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *eps = (const double *)PyLong_AsVoidPtr(args[1]);
+    const double *Qbar = (const double *)PyLong_AsVoidPtr(args[2]);
+    double *grad = (double *)PyLong_AsVoidPtr(args[3]);
+    double *nll = (double *)PyLong_AsVoidPtr(args[4]);
+    long scores_addr = PyLong_AsLong(args[5]);
+    double *scores = scores_addr == 0 ? NULL : (double *)PyLong_AsVoidPtr(args[5]);
+    size_t T = PyLong_AsSize_t(args[6]);
+    size_t N = PyLong_AsSize_t(args[7]);
+    size_t p = PyLong_AsSize_t(args[8]);
+    size_t q = PyLong_AsSize_t(args[9]);
+    if (PyErr_Occurred()) return NULL;
+    dcc_nll_grad_pq_studentt(theta, eps, Qbar, grad, nll, scores, T, N, p, q);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_dcc_nll_grad_hess_pq_studentt(PyObject *self,
+                                 PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 11) { BAD_ARITY("dcc_nll_grad_hess_pq_studentt", 11, nargs); return NULL; }
+    const double *theta = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *eps = (const double *)PyLong_AsVoidPtr(args[1]);
+    const double *Qbar = (const double *)PyLong_AsVoidPtr(args[2]);
+    double *grad = (double *)PyLong_AsVoidPtr(args[3]);
+    double *hess = (double *)PyLong_AsVoidPtr(args[4]);
+    double *nll = (double *)PyLong_AsVoidPtr(args[5]);
+    long scores_addr = PyLong_AsLong(args[6]);
+    double *scores = scores_addr == 0 ? NULL : (double *)PyLong_AsVoidPtr(args[6]);
+    size_t T = PyLong_AsSize_t(args[7]);
+    size_t N = PyLong_AsSize_t(args[8]);
+    size_t p = PyLong_AsSize_t(args[9]);
+    size_t q = PyLong_AsSize_t(args[10]);
+    if (PyErr_Occurred()) return NULL;
+    dcc_nll_grad_hess_pq_studentt(
+        theta, eps, Qbar, grad, hess, nll, scores, T, N, p, q);
+    Py_RETURN_NONE;
+}
+
 
 /* ======================== Method Table ===================================== */
 
@@ -5852,6 +5965,18 @@ static PyMethodDef Methods[] = {
                                        METH_FASTCALL, "DCC(p,q) Gaussian NLL+Gradient"},
     {"_dcc_nll_grad_hess_pq_gaussian",(PyCFunction)py_dcc_nll_grad_hess_pq_gaussian,
                                        METH_FASTCALL, "DCC(p,q) Gaussian NLL+Gradient+Hessian"},
+    {"_dcc_nll_11_studentt",          (PyCFunction)py_dcc_nll_11_studentt,
+                                       METH_FASTCALL, "DCC(1,1) Student-t copula NLL"},
+    {"_dcc_nll_grad_11_studentt",     (PyCFunction)py_dcc_nll_grad_11_studentt,
+                                       METH_FASTCALL, "DCC(1,1) Student-t copula NLL+Gradient"},
+    {"_dcc_nll_grad_hess_11_studentt",(PyCFunction)py_dcc_nll_grad_hess_11_studentt,
+                                       METH_FASTCALL, "DCC(1,1) Student-t copula NLL+Gradient+Hessian"},
+    {"_dcc_nll_pq_studentt",          (PyCFunction)py_dcc_nll_pq_studentt,
+                                       METH_FASTCALL, "DCC(p,q) Student-t copula NLL"},
+    {"_dcc_nll_grad_pq_studentt",     (PyCFunction)py_dcc_nll_grad_pq_studentt,
+                                       METH_FASTCALL, "DCC(p,q) Student-t copula NLL+Gradient"},
+    {"_dcc_nll_grad_hess_pq_studentt",(PyCFunction)py_dcc_nll_grad_hess_pq_studentt,
+                                       METH_FASTCALL, "DCC(p,q) Student-t copula NLL+Gradient+Hessian"},
 
     {NULL, NULL, 0, NULL}
 };

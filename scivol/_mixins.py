@@ -179,6 +179,81 @@ class FitsMixin:
             **kwargs,
         )
 
+    def fit_many(
+        self,
+        data: Any,
+        *,
+        initial_results: Any = None,
+        n_jobs: Optional[int] = None,
+        timeout: Optional[float] = None,
+        on_error: str = "record",
+        show_progress: bool = False,
+        **fit_kwargs: Any,
+    ):
+        """Fit one fixed specification across a cross-section of series."""
+        from .batch import fit_many_spec
+
+        return fit_many_spec(
+            self,
+            data,
+            initial_results=initial_results,
+            n_jobs=n_jobs,
+            timeout=timeout,
+            on_error=on_error,
+            show_progress=show_progress,
+            **fit_kwargs,
+        )
+
+    def fit_rolling(
+        self,
+        data: Any,
+        *,
+        window: int,
+        step: int = 1,
+        expanding: bool = False,
+        initial_results: Any = None,
+        n_jobs: Optional[int] = None,
+        timeout: Optional[float] = None,
+        on_error: str = "record",
+        **fit_kwargs: Any,
+    ):
+        """Fit rolling or expanding cross-sectional windows with warm starts."""
+        from .batch import RollingFitResult, RollingFitWindow
+
+        if not isinstance(window, int) or window <= 0:
+            raise ValueError("window must be a positive integer.")
+        if not isinstance(step, int) or step <= 0:
+            raise ValueError("step must be a positive integer.")
+
+        _, _, values, _ = self._extract_pandas_info(data)
+        n_obs = int(np.asarray(values).shape[0])
+        if window > n_obs:
+            raise ValueError("window cannot exceed the number of observations.")
+
+        windows = []
+        previous = initial_results
+        for stop in range(window, n_obs + 1, step):
+            start = 0 if expanding else stop - window
+            try:
+                window_data = data.iloc[start:stop]
+                label = data.index[stop - 1]
+            except AttributeError:
+                window_data = np.asarray(data)[start:stop]
+                label = stop - 1
+
+            batch = self.fit_many(
+                window_data,
+                initial_results=previous,
+                n_jobs=n_jobs,
+                timeout=timeout,
+                on_error=on_error,
+                **fit_kwargs,
+            )
+            windows.append(RollingFitWindow(start=start, stop=stop, label=label, batch=batch))
+            previous = batch
+
+        return RollingFitResult(tuple(windows))
+
     def loglikelihood(
         self,
         data: Any,
@@ -341,6 +416,19 @@ class FitsMixin:
         from ._validation import prepare_series_input, validate_spec
 
         spec = validate_spec(self.spec)
+        if any(key in kwargs for key in ("initial_params", "maxiter", "maxfev")):
+            from .components.vol import EGARCH, GARCH, GJRGARCH
+            from .roles import Role
+
+            mean = spec.get_component(Role.MEAN)
+            vol = spec.get_component(Role.VOLATILITY)
+            if mean is not None or not isinstance(vol, (GARCH, GJRGARCH, EGARCH)):
+                raise NotImplementedError(
+                    "initial_params and optimizer budgets currently support fixed "
+                    "standalone GARCH, GJR-GARCH, and EGARCH specifications."
+                )
+            if method.lower() == "qmle" and "initial_params" in kwargs:
+                raise NotImplementedError("QMLE warm starts are not yet supported.")
         if self._has_auto_components():
             result = self._auto_fit(
                 data,
@@ -367,29 +455,34 @@ class FitsMixin:
             # Direct (non-auto) fit
             method_lower = method.lower() if isinstance(method, str) else "mle"
             prepared = prepare_series_input(spec, data, x=x, hold_back=hold_back, scale=scale)
+            from ._validation import small_sample_warning
+
+            fit_warning = small_sample_warning(spec, prepared.data)
             if method_lower == "qmle":
                 from ._qmle import fit_qmle
                 result = fit_qmle(spec, prepared.data, x=prepared.x, **kwargs)
             else:
-                from ._validation import warn_small_sample
                 from ._kernels import get_routine
-
-                warn_small_sample(spec, prepared.data)
 
                 routine = get_routine(str(spec))
                 result = routine.fit(prepared.data, x=prepared.x, **kwargs)
                 result._fit_x = prepared.x
-                result.fit_info.requested_hold_back = prepared.requested_hold_back
-                result.fit_info.effective_hold_back = prepared.effective_hold_back
-                result.fit_info.original_n_obs = prepared.original_n_obs
-                result.fit_info.effective_n_obs = prepared.effective_n_obs
-                result.fit_info.scale = prepared.scale
-                result.fit_info.common_sample = common_sample
+
+            if fit_warning is not None:
+                result.fit_info.add_warning(fit_warning)
+            result.fit_info.requested_hold_back = prepared.requested_hold_back
+            result.fit_info.effective_hold_back = prepared.effective_hold_back
+            result.fit_info.original_n_obs = prepared.original_n_obs
+            result.fit_info.effective_n_obs = prepared.effective_n_obs
+            result.fit_info.scale = prepared.scale
+            result.fit_info.common_sample = common_sample
 
         self._annotate_fit_request_metadata(result, kwargs)
 
         # Attach pandas metadata
-        effective_hold_back = getattr(result.fit_info, "effective_hold_back", hold_back)
+        effective_hold_back = result.fit_info.effective_hold_back
+        if effective_hold_back is None:
+            effective_hold_back = hold_back
         result._index = None if index is None else index[effective_hold_back:]
         result._name = name
 

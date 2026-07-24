@@ -4162,5 +4162,85 @@ def _dcc_nll_grad_hess_pq_gaussian(
     """DCC(p,q) Gaussian NLL + gradient + Hessian."""
     ...
 
+def _dcc_nll_11_studentt(
+    theta_ptr: _IntPtr,
+    eps_ptr: _IntPtr,
+    Qbar_ptr: _IntPtr,
+    T: _Size,
+    N: _Size,
+) -> float:
+    """DCC(1,1) Student-t copula NLL."""
+    ...
+
+def _dcc_nll_grad_11_studentt(
+    theta_ptr: _IntPtr,
+    eps_ptr: _IntPtr,
+    Qbar_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    nll_ptr: _IntPtr,
+    scores_ptr: _IntPtr,
+    T: _Size,
+    N: _Size,
+) -> None:
+    """DCC(1,1) Student-t copula NLL and exact gradient."""
+    ...
+
+def _dcc_nll_grad_hess_11_studentt(
+    theta_ptr: _IntPtr,
+    eps_ptr: _IntPtr,
+    Qbar_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    nll_ptr: _IntPtr,
+    scores_ptr: _IntPtr,
+    T: _Size,
+    N: _Size,
+) -> None:
+    """DCC(1,1) Student-t copula NLL, exact gradient, and Hessian."""
+    ...
+
+def _dcc_nll_pq_studentt(
+    theta_ptr: _IntPtr,
+    eps_ptr: _IntPtr,
+    Qbar_ptr: _IntPtr,
+    T: _Size,
+    N: _Size,
+    p: _Size,
+    q: _Size,
+) -> float:
+    """DCC(p,q) Student-t copula NLL; theta ends with common nu."""
+    ...
+
+def _dcc_nll_grad_pq_studentt(
+    theta_ptr: _IntPtr,
+    eps_ptr: _IntPtr,
+    Qbar_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    nll_ptr: _IntPtr,
+    scores_ptr: _IntPtr,
+    T: _Size,
+    N: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """DCC(p,q) Student-t copula NLL and exact gradient."""
+    ...
+
+def _dcc_nll_grad_hess_pq_studentt(
+    theta_ptr: _IntPtr,
+    eps_ptr: _IntPtr,
+    Qbar_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    nll_ptr: _IntPtr,
+    scores_ptr: _IntPtr,
+    T: _Size,
+    N: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """DCC(p,q) Student-t copula NLL, exact gradient, and Hessian."""
+    ...
+
 # Nothing is meant for star-import; keep top-level clean
 __all__: list[str] = []

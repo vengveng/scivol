@@ -1,7 +1,7 @@
 /*
  * scivol/_csrc/dcc_gaussian.c
  * ===========================
- * DCC(1,1) and DCC(p,q) Gaussian correlation kernels.
+ * DCC(1,1) and DCC(p,q) Gaussian and Student-t correlation kernels.
  *
  * Interface:  Python passes only meaningful inputs/outputs.
  * Internals:  C malloc/frees its own working memory per call.
@@ -808,4 +808,335 @@ cleanup_hess_pq:
     free(d2Q_cur); free(d2R_cur);
     free(dQ_new); free(dR_all); free(A_all); free(u_all);
     free(qd); free(si); free(v); free(lam); free(lk); free(ll); free(mu);
+}
+
+
+/* ========================================================================== */
+/* DCC(p,q) Student-t copula correlation likelihood                           */
+/* ========================================================================== */
+
+static void dcc_studentt_core(
+    const double *theta, const double *eps, const double *Qbar,
+    double *grad, double *hess, double *nll_out, double *scores,
+    size_t T, size_t N, size_t p, size_t q,
+    int need_grad, int need_hess)
+{
+    const size_t D = p + q, K = D + 1, nn = N * N, KK = K * K;
+    const size_t Dtri = D * (D + 1) / 2;
+    const size_t maxq = q > 0 ? q : 1, maxp = p > 0 ? p : 1;
+    const double *a_p = theta, *b_p = theta + p;
+    const double nu = theta[D], scale = nu - 2.0;
+    const double joint_half = 0.5 * (nu + (double)N);
+    const double marginal_half = 0.5 * (nu + 1.0);
+    const double nu_half = 0.5 * nu;
+
+    if (!(nu > 2.0) || !isfinite(nu)) {
+        *nll_out = 1e10;
+        if (need_grad) dzeros(grad, K);
+        if (need_hess) dzeros(hess, KK);
+        return;
+    }
+
+    double sum_ab = 0.0;
+    for (size_t k = 0; k < D; k++) sum_ab += theta[k];
+    const double coeff = 1.0 - sum_ab;
+    const double constant =
+        -lgamma(joint_half)
+        + (1.0 - (double)N) * lgamma(nu_half)
+        + (double)N * lgamma(marginal_half);
+    const double constant_grad =
+        -0.5 * digamma_approx(joint_half)
+        + 0.5 * (1.0 - (double)N) * digamma_approx(nu_half)
+        + 0.5 * (double)N * digamma_approx(marginal_half);
+    const double constant_hess =
+        -0.25 * trigamma_approx(joint_half)
+        + 0.25 * (1.0 - (double)N) * trigamma_approx(nu_half)
+        + 0.25 * (double)N * trigamma_approx(marginal_half);
+
+    double *Q_buf = (double *)malloc(maxq * nn * sizeof(double));
+    double *eps_buf = (double *)calloc(maxp * N, sizeof(double));
+    double *Q = (double *)malloc(nn * sizeof(double));
+    double *R = (double *)malloc(nn * sizeof(double));
+    double *L = (double *)malloc(nn * sizeof(double));
+    double *Rinv = (double *)malloc(nn * sizeof(double));
+    double *qd = (double *)malloc(N * sizeof(double));
+    double *si = (double *)malloc(N * sizeof(double));
+    double *v = (double *)malloc(N * sizeof(double));
+
+    double *dQ_buf = NULL, *dQ_new = NULL, *dR_all = NULL;
+    double *A_all = NULL, *u_all = NULL, *W = NULL, *lam = NULL;
+    double *dquad = NULL;
+    double *d2Q_buf = NULL, *d2Q_cur = NULL, *d2R_cur = NULL;
+    double *lk = NULL, *ll = NULL, *mu = NULL;
+
+    if (need_grad) {
+        dQ_buf = (double *)calloc(D * maxq * nn, sizeof(double));
+        dQ_new = (double *)malloc(D * nn * sizeof(double));
+        dR_all = (double *)malloc(D * nn * sizeof(double));
+        A_all = (double *)malloc(D * nn * sizeof(double));
+        u_all = (double *)malloc(D * N * sizeof(double));
+        W = (double *)malloc(nn * sizeof(double));
+        lam = (double *)malloc(N * sizeof(double));
+        dquad = (double *)malloc(D * sizeof(double));
+        dzeros(grad, K);
+    }
+    if (need_hess) {
+        d2Q_buf = (double *)calloc(Dtri * maxq * nn, sizeof(double));
+        d2Q_cur = (double *)malloc(nn * sizeof(double));
+        d2R_cur = (double *)malloc(nn * sizeof(double));
+        lk = (double *)malloc(N * sizeof(double));
+        ll = (double *)malloc(N * sizeof(double));
+        mu = (double *)malloc(N * sizeof(double));
+        dzeros(hess, KK);
+    }
+
+    for (size_t j = 0; j < maxq; j++)
+        memcpy(Q_buf + j * nn, Qbar, nn * sizeof(double));
+
+    double sum_nll = 0.0;
+    for (size_t t = 0; t < T; t++) {
+        const double *e = eps + t * N;
+
+        for (size_t ij = 0; ij < nn; ij++) Q[ij] = coeff * Qbar[ij];
+        for (size_t i = 0; i < p; i++) {
+            const double *ep = eps_buf + i * N;
+            for (size_t r = 0; r < N; r++)
+                for (size_t c = 0; c < N; c++)
+                    Q[r * N + c] += a_p[i] * ep[r] * ep[c];
+        }
+        for (size_t j = 0; j < q; j++)
+            mat_add_scaled(Q, b_p[j], Q_buf + j * nn, nn);
+
+        if (need_grad) {
+            for (size_t k = 0; k < D; k++) {
+                double *dQk = dQ_new + k * nn;
+                if (k < p) {
+                    const double *ep = eps_buf + k * N;
+                    for (size_t i = 0; i < N; i++)
+                        for (size_t j = 0; j < N; j++)
+                            dQk[i * N + j] = -Qbar[i * N + j] + ep[i] * ep[j];
+                } else {
+                    for (size_t ij = 0; ij < nn; ij++)
+                        dQk[ij] = -Qbar[ij] + Q_buf[(k - p) * nn + ij];
+                }
+                for (size_t j = 0; j < q; j++)
+                    mat_add_scaled(dQk, b_p[j], dQ_buf + (k * maxq + j) * nn, nn);
+            }
+        }
+
+        dcc_normalise(Q, R, qd, si, N);
+        if (chol_decomp(R, L, N) != 0) {
+            *nll_out = 1e10;
+            if (need_grad) dzeros(grad, K);
+            if (need_hess) dzeros(hess, KK);
+            goto cleanup_studentt;
+        }
+        chol_inv(L, Rinv, N);
+        mat_vec(Rinv, e, v, N);
+        const double delta = vec_dot(e, v, N);
+        const double joint_u = scale + delta;
+        double marginal_log_sum = 0.0;
+        for (size_t i = 0; i < N; i++)
+            marginal_log_sum += log1p(e[i] * e[i] / scale);
+        sum_nll += constant + 0.5 * chol_logdet(L, N)
+            + joint_half * log1p(delta / scale)
+            - marginal_half * marginal_log_sum;
+
+        if (need_grad) {
+            const double weight = 2.0 * joint_half / joint_u;
+            for (size_t i = 0; i < N; i++)
+                for (size_t j = 0; j < N; j++)
+                    W[i * N + j] = Rinv[i * N + j] - weight * v[i] * v[j];
+
+            for (size_t k = 0; k < D; k++) {
+                double *dRk = dR_all + k * nn;
+                dcc_dR_from_dQ(dQ_new + k * nn, R, qd, si, dRk, lam, N);
+                mat_mul(Rinv, dRk, A_all + k * nn, N);
+                mat_vec(A_all + k * nn, v, u_all + k * N, N);
+                dquad[k] = 0.0;
+                for (size_t i = 0; i < N; i++)
+                    for (size_t j = 0; j < N; j++)
+                        dquad[k] += v[i] * dRk[i * N + j] * v[j];
+                const double gk = 0.5 * mat_elem_dot(W, dRk, nn);
+                grad[k] += gk;
+                if (scores) scores[t * K + k] = -gk;
+            }
+
+            double gnu = constant_grad
+                + 0.5 * log(joint_u / scale)
+                + joint_half * (1.0 / joint_u - 1.0 / scale);
+            for (size_t i = 0; i < N; i++) {
+                const double marginal_u = scale + e[i] * e[i];
+                gnu -= 0.5 * log(marginal_u / scale)
+                    + marginal_half * (1.0 / marginal_u - 1.0 / scale);
+            }
+            grad[D] += gnu;
+            if (scores) scores[t * K + D] = -gnu;
+
+            if (need_hess) {
+                for (size_t k = 0; k < D; k++) {
+                    for (size_t l = k; l < D; l++) {
+                        dzeros(d2Q_cur, nn);
+                        if (k >= p && (k - p) < maxq)
+                            mat_add_scaled(d2Q_cur, 1.0,
+                                           dQ_buf + (l * maxq + (k - p)) * nn, nn);
+                        if (l >= p && (l - p) < maxq)
+                            mat_add_scaled(d2Q_cur, 1.0,
+                                           dQ_buf + (k * maxq + (l - p)) * nn, nn);
+                        const size_t tri = TRI(k, l, D);
+                        for (size_t j = 0; j < q; j++)
+                            mat_add_scaled(d2Q_cur, b_p[j],
+                                           d2Q_buf + (tri * maxq + j) * nn, nn);
+
+                        double vdru_kl = 0.0, vdru_lk = 0.0;
+                        for (size_t i = 0; i < N; i++) {
+                            double s1 = 0.0, s2 = 0.0;
+                            for (size_t j = 0; j < N; j++) {
+                                s1 += dR_all[k * nn + i * N + j] * u_all[l * N + j];
+                                s2 += dR_all[l * nn + i * N + j] * u_all[k * N + j];
+                            }
+                            vdru_kl += v[i] * s1;
+                            vdru_lk += v[i] * s2;
+                        }
+                        dcc_d2R_from_d2Q(
+                            d2Q_cur, dQ_new + k * nn, dQ_new + l * nn,
+                            dR_all + l * nn, R, qd, si, d2R_cur,
+                            lk, ll, mu, N);
+                        const double tr_aat =
+                            mat_trace_prod(A_all + l * nn, A_all + k * nn, N);
+                        const double val =
+                            -0.5 * tr_aat
+                            + joint_half / joint_u * (vdru_kl + vdru_lk)
+                            - joint_half / (joint_u * joint_u) * dquad[k] * dquad[l]
+                            + 0.5 * mat_elem_dot(W, d2R_cur, nn);
+                        hess[k * K + l] += val;
+                        if (k != l) hess[l * K + k] += val;
+
+                        for (size_t j = maxq - 1; j > 0; j--)
+                            memcpy(d2Q_buf + (tri * maxq + j) * nn,
+                                   d2Q_buf + (tri * maxq + j - 1) * nn,
+                                   nn * sizeof(double));
+                        memcpy(d2Q_buf + tri * maxq * nn,
+                               d2Q_cur, nn * sizeof(double));
+                    }
+
+                    const double cross =
+                        (joint_half - 0.5 * joint_u)
+                        / (joint_u * joint_u) * dquad[k];
+                    hess[k * K + D] += cross;
+                    hess[D * K + k] += cross;
+                }
+
+                double hnu = constant_hess
+                    + (1.0 / joint_u - 1.0 / scale)
+                    + joint_half * (-1.0 / (joint_u * joint_u)
+                                    + 1.0 / (scale * scale));
+                for (size_t i = 0; i < N; i++) {
+                    const double marginal_u = scale + e[i] * e[i];
+                    hnu -= (1.0 / marginal_u - 1.0 / scale)
+                        + marginal_half * (-1.0 / (marginal_u * marginal_u)
+                                           + 1.0 / (scale * scale));
+                }
+                hess[D * K + D] += hnu;
+            }
+        }
+
+        if (need_grad) {
+            for (size_t k = 0; k < D; k++) {
+                for (size_t j = maxq - 1; j > 0; j--)
+                    memcpy(dQ_buf + (k * maxq + j) * nn,
+                           dQ_buf + (k * maxq + j - 1) * nn,
+                           nn * sizeof(double));
+                memcpy(dQ_buf + k * maxq * nn, dQ_new + k * nn, nn * sizeof(double));
+            }
+        }
+        if (p > 0) {
+            for (size_t i = maxp - 1; i > 0; i--)
+                memcpy(eps_buf + i * N, eps_buf + (i - 1) * N, N * sizeof(double));
+            memcpy(eps_buf, e, N * sizeof(double));
+        }
+        if (q > 0) {
+            for (size_t j = maxq - 1; j > 0; j--)
+                memcpy(Q_buf + j * nn, Q_buf + (j - 1) * nn, nn * sizeof(double));
+            memcpy(Q_buf, Q, nn * sizeof(double));
+        }
+    }
+
+    {
+        const double inv_t = 1.0 / (double)T;
+        *nll_out = sum_nll * inv_t;
+        if (need_grad)
+            for (size_t k = 0; k < K; k++) grad[k] *= inv_t;
+        if (need_hess)
+            for (size_t kl = 0; kl < KK; kl++) hess[kl] *= inv_t;
+    }
+
+cleanup_studentt:
+    free(Q_buf); free(eps_buf); free(Q); free(R); free(L); free(Rinv);
+    free(qd); free(si); free(v);
+    free(dQ_buf); free(dQ_new); free(dR_all); free(A_all); free(u_all);
+    free(W); free(lam); free(dquad);
+    free(d2Q_buf); free(d2Q_cur); free(d2R_cur); free(lk); free(ll); free(mu);
+}
+
+__attribute__((visibility("default"), hot))
+double dcc_nll_pq_studentt(
+    const double *theta, const double *eps, const double *Qbar,
+    size_t T, size_t N, size_t p, size_t q)
+{
+    double nll = 0.0;
+    dcc_studentt_core(theta, eps, Qbar, NULL, NULL, &nll, NULL,
+                      T, N, p, q, 0, 0);
+    return nll;
+}
+
+__attribute__((visibility("default"), hot, flatten))
+double dcc_nll_11_studentt(
+    const double *theta, const double *eps, const double *Qbar,
+    size_t T, size_t N)
+{
+    double nll = 0.0;
+    dcc_studentt_core(theta, eps, Qbar, NULL, NULL, &nll, NULL,
+                      T, N, 1, 1, 0, 0);
+    return nll;
+}
+
+__attribute__((visibility("default"), hot))
+void dcc_nll_grad_pq_studentt(
+    const double *theta, const double *eps, const double *Qbar,
+    double *grad, double *nll_out, double *scores,
+    size_t T, size_t N, size_t p, size_t q)
+{
+    dcc_studentt_core(theta, eps, Qbar, grad, NULL, nll_out, scores,
+                      T, N, p, q, 1, 0);
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void dcc_nll_grad_11_studentt(
+    const double *theta, const double *eps, const double *Qbar,
+    double *grad, double *nll_out, double *scores,
+    size_t T, size_t N)
+{
+    dcc_studentt_core(theta, eps, Qbar, grad, NULL, nll_out, scores,
+                      T, N, 1, 1, 1, 0);
+}
+
+__attribute__((visibility("default"), hot))
+void dcc_nll_grad_hess_pq_studentt(
+    const double *theta, const double *eps, const double *Qbar,
+    double *grad, double *hess, double *nll_out, double *scores,
+    size_t T, size_t N, size_t p, size_t q)
+{
+    dcc_studentt_core(theta, eps, Qbar, grad, hess, nll_out, scores,
+                      T, N, p, q, 1, 1);
+}
+
+__attribute__((visibility("default"), hot, flatten))
+void dcc_nll_grad_hess_11_studentt(
+    const double *theta, const double *eps, const double *Qbar,
+    double *grad, double *hess, double *nll_out, double *scores,
+    size_t T, size_t N)
+{
+    dcc_studentt_core(theta, eps, Qbar, grad, hess, nll_out, scores,
+                      T, N, 1, 1, 1, 1);
 }

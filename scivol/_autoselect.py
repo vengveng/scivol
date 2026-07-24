@@ -358,7 +358,7 @@ def _per_observation_loglik(
         b = np.sqrt(max(1.0 + 3.0 * lam * lam - a * a, 1e-12))
         bz_plus_a = b * z + a
         sign_term = np.where(bz_plus_a >= 0.0, 1.0, -1.0)
-        z_adj = bz_plus_a / (1.0 - lam * sign_term)
+        z_adj = bz_plus_a / (1.0 + lam * sign_term)
         return (
             c_log
             + np.log(b)

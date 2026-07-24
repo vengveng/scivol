@@ -1,32 +1,34 @@
 """
 scivol/dcc.py
 =============
-Gaussian multivariate correlation models.
+Multivariate correlation models.
 
 Shipped surfaces:
   - CCC(): constant conditional correlation baseline / diagnostic model
   - DCC(p, q): dynamic conditional correlation model
 
 Both models use the existing univariate result layer for marginal forecasting.
-Dynamic DCC fitting stays on the shipped C likelihood / gradient / Hessian
-kernels; the Python layer only orchestrates inputs, cached post-fit recursions,
-and result surfaces.
+Dynamic DCC fitting stays on the shipped Gaussian or Student-t C likelihood,
+gradient, and Hessian kernels; the Python layer only orchestrates inputs,
+cached post-fit recursions, and result surfaces.
 """
 
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from numpy.typing import NDArray
 from scipy.optimize import minimize
+from scipy.stats import norm, t as student_t
 
 from . import _dcc_kernels as _dk
 from .components import ARMA, ARX, GARCH, GJRGARCH, HARX, Normal
 from .roles import Role
+from ._optimizer import resolve_optimizer_budget
 
 if TYPE_CHECKING:
     from ._evaluation import ForecastResult, FilteredState
@@ -63,6 +65,12 @@ def _prepare_univariate_results(
     returns_np: NDArray[np.float64],
     univariate_spec: Optional["CompositeSpec"],
     univariate_results: Optional[List["EstimationResult"]],
+    *,
+    returns_source: Any = None,
+    initial_results: Any = None,
+    n_jobs: Optional[int] = None,
+    timeout: Optional[float] = None,
+    fit_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Tuple[NDArray[np.float64], List["EstimationResult"]]:
     n_series = returns_np.shape[1]
 
@@ -78,12 +86,22 @@ def _prepare_univariate_results(
     if univariate_spec is None:
         univariate_spec = GARCH(1, 1) + Normal()
 
-    fitted: List["EstimationResult"] = []
-    std_resid_cols: List[NDArray[np.float64]] = []
-    for i in range(n_series):
-        result = univariate_spec.fit(returns_np[:, i])
-        fitted.append(result)
-        std_resid_cols.append(np.asarray(result.std_resid, dtype=np.float64))
+    batch = univariate_spec.fit_many(
+        returns_np if returns_source is None else returns_source,
+        initial_results=initial_results,
+        n_jobs=n_jobs,
+        timeout=timeout,
+        on_error="record",
+        **(fit_kwargs or {}),
+    )
+    if batch.failures:
+        details = "; ".join(
+            f"{name}: {failure.message}" for name, failure in batch.failures.items()
+        )
+        raise RuntimeError(f"Univariate marginal fitting failed: {details}")
+
+    fitted = list(batch.results.values())
+    std_resid_cols = [np.asarray(result.std_resid, dtype=np.float64) for result in fitted]
     return np.ascontiguousarray(np.column_stack(std_resid_cols), dtype=np.float64), fitted
 
 
@@ -251,13 +269,15 @@ class MultivariateSimulationResult:
     innovations: NDArray[np.float64]
     correlation: NDArray[np.float64]
     residual_covariance: NDArray[np.float64]
+    copula_distribution: str = "gaussian"
+    copula_nu: Optional[float] = None
     columns: Optional[List[Any]] = None
 
     @property
     def std_resid(self) -> NDArray[np.float64]:
         return self.innovations
 
-    def to_dict(self) -> dict[str, NDArray[np.float64]]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "data": self.data.copy(),
             "mean": self.mean.copy(),
@@ -266,7 +286,62 @@ class MultivariateSimulationResult:
             "innovations": self.innovations.copy(),
             "correlation": self.correlation.copy(),
             "residual_covariance": self.residual_covariance.copy(),
+            "copula_distribution": self.copula_distribution,
+            "copula_nu": self.copula_nu,
         }
+
+
+@dataclass(slots=True)
+class MultivariateScenarioResult:
+    data: NDArray[np.float64]
+    mean: NDArray[np.float64]
+    residuals: NDArray[np.float64]
+    residual_variance: NDArray[np.float64]
+    innovations: NDArray[np.float64]
+    correlation: NDArray[np.float64]
+    residual_covariance: NDArray[np.float64]
+    innovation_method: str
+    copula_distribution: str = "gaussian"
+    copula_nu: Optional[float] = None
+    columns: Optional[List[Any]] = None
+
+    @property
+    def sigma2(self) -> NDArray[np.float64]:
+        return self.residual_variance
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "data": self.data.copy(),
+            "mean": self.mean.copy(),
+            "residuals": self.residuals.copy(),
+            "residual_variance": self.residual_variance.copy(),
+            "sigma2": self.sigma2.copy(),
+            "innovations": self.innovations.copy(),
+            "correlation": self.correlation.copy(),
+            "residual_covariance": self.residual_covariance.copy(),
+            "innovation_method": self.innovation_method,
+            "copula_distribution": self.copula_distribution,
+            "copula_nu": self.copula_nu,
+        }
+
+
+@dataclass(frozen=True)
+class RollingDCCWindow:
+    start: int
+    stop: int
+    label: Any
+    result: "DCCResult"
+
+
+@dataclass(frozen=True)
+class RollingDCCResult(Sequence[RollingDCCWindow]):
+    windows: tuple[RollingDCCWindow, ...]
+
+    def __getitem__(self, index):
+        return self.windows[index]
+
+    def __len__(self) -> int:
+        return len(self.windows)
 
 
 @dataclass
@@ -275,6 +350,7 @@ class DCCParams:
 
     a: NDArray[np.float64]
     b: NDArray[np.float64]
+    nu: Optional[float] = None
 
     @property
     def persistence(self) -> float:
@@ -283,7 +359,11 @@ class DCCParams:
     def __repr__(self) -> str:
         a_str = ", ".join(f"{x:.6f}" for x in self.a)
         b_str = ", ".join(f"{x:.6f}" for x in self.b)
-        return f"DCCParams(a=[{a_str}], b=[{b_str}], persistence={self.persistence:.6f})"
+        nu_str = "" if self.nu is None else f", nu={self.nu:.6f}"
+        return (
+            f"DCCParams(a=[{a_str}], b=[{b_str}]"
+            f"{nu_str}, persistence={self.persistence:.6f})"
+        )
 
 
 @dataclass
@@ -447,6 +527,9 @@ class _DCCCorrelationProcess(_CorrelationProcess):
 
 @dataclass
 class _MarginalSimulationRuntime:
+    distribution: str
+    distribution_nu: Optional[float]
+    distribution_lam: Optional[float]
     mean_kind: str
     vol_kind: str
     const: float
@@ -554,13 +637,6 @@ def _build_marginal_runtimes(
         mean_comp = spec.get_component(Role.MEAN)
         vol = spec.get_component(Role.VOLATILITY)
 
-        if state.distribution != "Normal":
-            raise NotImplementedError(
-                "Multivariate simulation currently requires Normal marginals. "
-                "Non-Normal joint innovation simulation is intentionally unshipped "
-                "until it can match the package contract without approximation."
-            )
-
         const = 0.0
         unconditional_mean = 0.0
         phi = np.zeros(0, dtype=np.float64)
@@ -612,6 +688,9 @@ def _build_marginal_runtimes(
 
         runtimes.append(
             _MarginalSimulationRuntime(
+                distribution=state.distribution,
+                distribution_nu=state.nu,
+                distribution_lam=state.lam,
                 mean_kind=mean_kind,
                 vol_kind=vol_kind,
                 const=const,
@@ -642,6 +721,8 @@ def _simulate_multivariate_path(
     n_obs: int,
     seed: Optional[int],
     columns: Optional[List[Any]],
+    copula_distribution: str = "gaussian",
+    copula_nu: Optional[float] = None,
 ) -> MultivariateSimulationResult:
     n_series = len(runtimes)
     rng = np.random.default_rng(seed)
@@ -665,7 +746,24 @@ def _simulate_multivariate_path(
             chol = np.linalg.cholesky(corr_t)
         except np.linalg.LinAlgError:
             chol = np.linalg.cholesky(corr_t + 1e-10 * np.eye(n_series, dtype=np.float64))
-        innovations[t] = chol @ rng.standard_normal(n_series)
+        latent = chol @ rng.standard_normal(n_series)
+        if copula_distribution == "studentt":
+            if copula_nu is None:
+                raise RuntimeError("Student-t simulation requires stored degrees of freedom.")
+            latent = latent * np.sqrt(copula_nu / rng.chisquare(copula_nu))
+            uniforms = student_t.cdf(latent, df=copula_nu)
+        else:
+            uniforms = norm.cdf(latent)
+        uniforms = np.clip(uniforms, 1e-12, 1.0 - 1e-12)
+        from ._evaluation import _distribution_quantile
+
+        for i, runtime in enumerate(runtimes):
+            innovations[t, i] = _distribution_quantile(
+                runtime.distribution,
+                np.asarray([uniforms[i]], dtype=np.float64),
+                runtime.distribution_nu,
+                runtime.distribution_lam,
+            )[0]
 
         residuals[t] = np.sqrt(sigma2[t]) * innovations[t]
         data[t] = mean[t] + residuals[t]
@@ -682,6 +780,8 @@ def _simulate_multivariate_path(
         innovations=innovations,
         correlation=correlation,
         residual_covariance=residual_covariance,
+        copula_distribution=copula_distribution,
+        copula_nu=copula_nu,
         columns=columns,
     )
 
@@ -758,7 +858,7 @@ class _CorrelationResultMixin:
         if horizon <= 0:
             raise ValueError("horizon must be positive")
 
-        correlation = self._forecast_correlation_matrices(horizon)
+        correlation = self.forecast_correlation(horizon)
         marginals = self._require_univariate_results("forecast")
         marginal_forecasts, mean, variance, residual_variance = _stack_marginal_forecasts(
             marginals,
@@ -777,6 +877,100 @@ class _CorrelationResultMixin:
             columns=self._columns,
         )
 
+    def forecast_correlation(self, horizon: int = 10) -> NDArray[np.float64]:
+        """Return the conditional correlation forecast path."""
+        if horizon <= 0:
+            raise ValueError("horizon must be positive")
+        return self._forecast_correlation_matrices(horizon)
+
+    def scenarios(
+        self,
+        n_draws: int,
+        *,
+        seed: Optional[int] = None,
+        x: Any = None,
+        innovations: str = "parametric",
+    ) -> MultivariateScenarioResult:
+        """Draw many one-step outcomes from the same forecast origin."""
+        if not isinstance(n_draws, (int, np.integer)) or int(n_draws) <= 0:
+            raise ValueError("n_draws must be a positive integer")
+        if innovations not in {"parametric", "empirical"}:
+            raise ValueError("innovations must be 'parametric' or 'empirical'.")
+
+        marginals = self._require_univariate_results("scenarios")
+        _, mean_path, _, residual_variance_path = _stack_marginal_forecasts(
+            marginals, 1, x, self._columns
+        )
+        mean = mean_path[0]
+        residual_variance = residual_variance_path[0]
+        correlation = self.forecast_correlation(1)[0]
+        residual_covariance = _residual_covariance_from_correlation(
+            correlation[None, :, :], residual_variance[None, :]
+        )[0]
+
+        rng = np.random.default_rng(seed)
+        try:
+            chol = np.linalg.cholesky(correlation)
+        except np.linalg.LinAlgError:
+            chol = np.linalg.cholesky(
+                correlation + 1e-10 * np.eye(correlation.shape[0], dtype=np.float64)
+            )
+        latent = rng.standard_normal((int(n_draws), self.N)) @ chol.T
+        copula_distribution = getattr(self, "distribution", "gaussian")
+        if copula_distribution == "studentt":
+            copula_nu = getattr(self.params, "nu", None)
+            if copula_nu is None:
+                raise RuntimeError("Student-t scenarios require stored degrees of freedom.")
+            scales = np.sqrt(copula_nu / rng.chisquare(copula_nu, size=int(n_draws)))
+            latent = latent * scales[:, None]
+            uniforms = student_t.cdf(latent, df=copula_nu)
+        else:
+            uniforms = norm.cdf(latent)
+        uniforms = np.clip(uniforms, 1e-12, 1.0 - 1e-12)
+        sampled = np.empty_like(latent)
+
+        if innovations == "parametric":
+            from ._evaluation import _distribution_quantile
+
+            for i, result in enumerate(marginals):
+                state = result.filter()
+                sampled[:, i] = _distribution_quantile(
+                    state.distribution,
+                    uniforms[:, i],
+                    state.nu,
+                    state.lam,
+                )
+        else:
+            for i, result in enumerate(marginals):
+                empirical = np.asarray(result.std_resid, dtype=np.float64)
+                empirical = empirical[np.isfinite(empirical)]
+                if empirical.size < 10:
+                    raise ValueError(
+                        f"Series {i} has fewer than 10 finite standardized residuals."
+                    )
+                empirical = empirical - empirical.mean()
+                scale = empirical.std(ddof=0)
+                if not np.isfinite(scale) or scale <= 0:
+                    raise ValueError(f"Series {i} has degenerate standardized residuals.")
+                empirical = empirical / scale
+                sampled[:, i] = np.quantile(empirical, uniforms[:, i], method="linear")
+
+        residuals = sampled * np.sqrt(np.maximum(residual_variance, 1e-12))
+        data = mean + residuals
+        return MultivariateScenarioResult(
+            data=data,
+            mean=mean,
+            residuals=residuals,
+            residual_variance=residual_variance,
+            innovations=sampled,
+            correlation=correlation,
+            residual_covariance=residual_covariance,
+            innovation_method=innovations,
+            copula_distribution=copula_distribution,
+            copula_nu=(getattr(self.params, "nu", None)),
+            columns=self._columns,
+        )
+
     def simulate(
         self,
         n_obs: int,
@@ -789,7 +983,15 @@ class _CorrelationResultMixin:
 
         marginals = self._require_univariate_results("simulate")
         runtimes = _build_marginal_runtimes(marginals, n_obs, x, self._columns)
-        return _simulate_multivariate_path(self._make_simulation_process(), runtimes, n_obs, seed, self._columns)
+        return _simulate_multivariate_path(
+            self._make_simulation_process(),
+            runtimes,
+            n_obs,
+            seed,
+            self._columns,
+            copula_distribution=getattr(self, "distribution", "gaussian"),
+            copula_nu=getattr(self.params, "nu", None),
+        )
 
 
 @dataclass
@@ -889,6 +1091,9 @@ class DCCResult(_CorrelationResultMixin):
     converged: bool
     nit: int
     time_elapsed: float
+    warm_started: bool = False
+    maxiter: int = 500
+    distribution: str = "gaussian"
     hessian: Optional[NDArray[np.float64]] = None
     opg: Optional[NDArray[np.float64]] = None
     cov_mle: Optional[NDArray[np.float64]] = None
@@ -902,7 +1107,7 @@ class DCCResult(_CorrelationResultMixin):
 
     @property
     def K(self) -> int:
-        return self.p + self.q
+        return int(self.theta.size)
 
     @property
     def log_likelihood(self) -> float:
@@ -936,7 +1141,8 @@ class DCCResult(_CorrelationResultMixin):
                 "Standardised residuals not stored on this result. "
                 "Use DCC.fit() or DCC.fit_from_residuals() to create results."
             )
-        rt, qt = _dcc_recursion(self.theta, self._eps, self.Qbar, self.p, self.q, return_q=True)
+        dynamics = self.theta[: self.p + self.q]
+        rt, qt = _dcc_recursion(dynamics, self._eps, self.Qbar, self.p, self.q, return_q=True)
         object.__setattr__(self, "_Rt_cache", rt)
         object.__setattr__(self, "_Qt_cache", qt)
 
@@ -948,7 +1154,7 @@ class DCCResult(_CorrelationResultMixin):
     def _forecast_correlation_matrices(self, horizon: int) -> NDArray[np.float64]:
         self._ensure_recursion()
         return _dcc_forecast_correlation_path(
-            self.theta,
+            self.theta[: self.p + self.q],
             self._eps,  # type: ignore[arg-type]
             self.Qbar,
             self._Qt_cache,  # type: ignore[arg-type]
@@ -960,7 +1166,7 @@ class DCCResult(_CorrelationResultMixin):
     def _make_simulation_process(self) -> _CorrelationProcess:
         self._ensure_recursion()
         return _DCCCorrelationProcess(
-            self.theta,
+            self.theta[: self.p + self.q],
             self.Qbar,
             self._Qt_cache,  # type: ignore[arg-type]
             self._eps,  # type: ignore[arg-type]
@@ -970,6 +1176,8 @@ class DCCResult(_CorrelationResultMixin):
 
     def summary(self) -> str:
         names = [f"a[{i + 1}]" for i in range(self.p)] + [f"b[{j + 1}]" for j in range(self.q)]
+        if self.distribution == "studentt":
+            names.append("nu")
         se = self.std_errors
         se_r = self.std_errors_robust
 
@@ -978,7 +1186,8 @@ class DCCResult(_CorrelationResultMixin):
         lines.append(f"{'DCC(' + str(self.p) + ',' + str(self.q) + ') Estimation Results':^72}")
         lines.append("=" * 72)
         lines.append(f"  Model: DCC({self.p},{self.q})")
-        lines.append("  Method: Gaussian correlation MLE")
+        method = "Student-t copula correlation MLE" if self.distribution == "studentt" else "Gaussian correlation MLE"
+        lines.append(f"  Method: {method}")
         lines.append(
             f"  Obs: {self.T}  Series: {self.N}  "
             f"Converged: {self.converged}"
@@ -1019,12 +1228,25 @@ class CCC:
         returns: Any,
         univariate_spec: Optional["CompositeSpec"] = None,
         univariate_results: Optional[List["EstimationResult"]] = None,
+        univariate_initial_results: Any = None,
+        univariate_fit_kwargs: Optional[Dict[str, Any]] = None,
+        n_jobs: Optional[int] = None,
+        marginal_timeout: Optional[float] = None,
     ) -> CCCResult:
         returns_np, index, columns = _extract_multivariate_input(returns)
-        std_resid, uni_res = _prepare_univariate_results(returns_np, univariate_spec, univariate_results)
+        std_resid, uni_res = _prepare_univariate_results(
+            returns_np,
+            univariate_spec,
+            univariate_results,
+            returns_source=returns,
+            initial_results=univariate_initial_results,
+            n_jobs=n_jobs,
+            timeout=marginal_timeout,
+            fit_kwargs=univariate_fit_kwargs,
+        )
         result = self.fit_from_residuals(std_resid)
         object.__setattr__(result, "univariate_results", uni_res)
-        object.__setattr__(result, "_index", index)
+        object.__setattr__(result, "_index", None if index is None else index[-result.T:])
         object.__setattr__(result, "_columns", columns)
         return result
 
@@ -1075,33 +1297,52 @@ class DCC:
         Number of GARCH-type lags for correlation dynamics.
     """
 
-    def __init__(self, p: int = 1, q: int = 1) -> None:
+    def __init__(self, p: int = 1, q: int = 1, distribution: str = "gaussian") -> None:
         if p < 1 or q < 1:
             raise ValueError("DCC requires p >= 1 and q >= 1")
+        distribution_key = distribution.lower().replace("-", "").replace("_", "")
+        aliases = {"gaussian": "gaussian", "normal": "gaussian", "studentt": "studentt", "t": "studentt"}
+        if distribution_key not in aliases:
+            raise ValueError("distribution must be 'gaussian' or 'studentt'.")
         self.p = p
         self.q = q
+        self.distribution = aliases[distribution_key]
 
     @property
     def signature(self) -> str:
-        return f"DCC({self.p},{self.q})"
+        suffix = "" if self.distribution == "gaussian" else "+StudentT"
+        return f"DCC({self.p},{self.q}){suffix}"
 
     @property
     def n_params(self) -> int:
-        return self.p + self.q
+        return self.p + self.q + (1 if self.distribution == "studentt" else 0)
 
     def fit(
         self,
         returns: Any,
         univariate_spec: Optional["CompositeSpec"] = None,
         univariate_results: Optional[List["EstimationResult"]] = None,
+        univariate_initial_results: Any = None,
+        univariate_fit_kwargs: Optional[Dict[str, Any]] = None,
+        n_jobs: Optional[int] = None,
+        marginal_timeout: Optional[float] = None,
         **kwargs: Any,
     ) -> DCCResult:
         returns_np, index, columns = _extract_multivariate_input(returns)
-        std_resid, uni_res = _prepare_univariate_results(returns_np, univariate_spec, univariate_results)
+        std_resid, uni_res = _prepare_univariate_results(
+            returns_np,
+            univariate_spec,
+            univariate_results,
+            returns_source=returns,
+            initial_results=univariate_initial_results,
+            n_jobs=n_jobs,
+            timeout=marginal_timeout,
+            fit_kwargs=univariate_fit_kwargs,
+        )
 
         result = self.fit_from_residuals(std_resid, **kwargs)
         object.__setattr__(result, "univariate_results", uni_res)
-        object.__setattr__(result, "_index", index)
+        object.__setattr__(result, "_index", None if index is None else index[-result.T:])
         object.__setattr__(result, "_columns", columns)
         return result
 
@@ -1110,6 +1351,8 @@ class DCC:
         eps: NDArray[np.float64],
         Qbar: Optional[NDArray[np.float64]] = None,
         theta0: Optional[NDArray[np.float64]] = None,
+        initial_result: Optional[DCCResult] = None,
+        maxiter: Optional[int] = None,
         compute_se: bool = True,
     ) -> DCCResult:
         eps = np.ascontiguousarray(eps, dtype=np.float64)
@@ -1117,18 +1360,46 @@ class DCC:
             raise ValueError("eps must be 2-D (T, N)")
         t_count, n_series = eps.shape
         p, q = self.p, self.q
-        k = p + q
+        dynamics_count = p + q
+        k = self.n_params
 
         if Qbar is None:
             Qbar = _dk.compute_qbar(eps)
         Qbar = np.ascontiguousarray(Qbar, dtype=np.float64)
 
+        if theta0 is not None and initial_result is not None:
+            raise ValueError("Pass either theta0 or initial_result, not both.")
+        warm_started = initial_result is not None or theta0 is not None
+        if initial_result is not None:
+            if initial_result.p != p or initial_result.q != q:
+                raise ValueError(
+                    f"Warm-start DCC result is DCC({initial_result.p},{initial_result.q}); "
+                    f"expected DCC({p},{q})."
+                )
+            if initial_result.distribution != self.distribution:
+                raise ValueError(
+                    f"Warm-start DCC result uses {initial_result.distribution}; "
+                    f"expected {self.distribution}."
+                )
+            theta0 = initial_result.theta
         if theta0 is None:
             theta0 = np.full(k, 0.05, dtype=np.float64)
+            if self.distribution == "studentt":
+                theta0[-1] = 10.0
         theta0 = np.ascontiguousarray(theta0, dtype=np.float64)
+        if theta0.shape != (k,) or not np.all(np.isfinite(theta0)):
+            raise ValueError(f"theta0 must be finite with shape ({k},).")
+        resolved_maxiter, _ = resolve_optimizer_budget(
+            maxiter,
+            None,
+            default_maxiter=500,
+            default_maxfev=5000,
+        )
 
-        bounds = [(1e-6, 0.999)] * k
-        constraints = [{"type": "ineq", "fun": lambda x: 0.9999 - np.sum(x)}]
+        bounds = [(1e-6, 0.999)] * dynamics_count
+        if self.distribution == "studentt":
+            bounds.append((2.01, 200.0))
+        constraints = [{"type": "ineq", "fun": lambda x: 0.9999 - np.sum(x[:dynamics_count])}]
         cache: Dict[Tuple[float, ...], Tuple[float, NDArray[np.float64]]] = {}
 
         def _eval(x: NDArray[np.float64]) -> Tuple[float, NDArray[np.float64]]:
@@ -1136,7 +1407,10 @@ class DCC:
             key = tuple(float(v) for v in x_arr)
             cached = cache.get(key)
             if cached is None:
-                cached = _dk.dcc_nll_grad(x_arr, eps, Qbar, p, q)
+                if self.distribution == "studentt":
+                    cached = _dk.dcc_studentt_nll_grad(x_arr, eps, Qbar, p, q)
+                else:
+                    cached = _dk.dcc_nll_grad(x_arr, eps, Qbar, p, q)
                 cache[key] = cached
                 if len(cache) > 20:
                     cache.pop(next(iter(cache)))
@@ -1151,14 +1425,21 @@ class DCC:
             jac=lambda x: _eval(np.asarray(x, dtype=np.float64))[1],
             bounds=bounds,
             constraints=constraints,
-            options={"maxiter": 500, "ftol": 1e-12},
+            options={"maxiter": resolved_maxiter, "ftol": 1e-12},
         )
         elapsed = time.perf_counter() - start
         theta_hat = np.asarray(opt.x, dtype=np.float64).copy()
 
         hessian = opg = cov_mle = cov_robust = None
         if compute_se:
-            _, _, hess_h, scores_h = _dk.dcc_nll_grad_hess(theta_hat, eps, Qbar, p, q, return_scores=True)
+            if self.distribution == "studentt":
+                _, _, hess_h, scores_h = _dk.dcc_studentt_nll_grad_hess(
+                    theta_hat, eps, Qbar, p, q, return_scores=True
+                )
+            else:
+                _, _, hess_h, scores_h = _dk.dcc_nll_grad_hess(
+                    theta_hat, eps, Qbar, p, q, return_scores=True
+                )
             hessian = hess_h
             opg = (scores_h.T @ scores_h) / t_count
             try:
@@ -1168,7 +1449,11 @@ class DCC:
             except np.linalg.LinAlgError:
                 pass
 
-        params = DCCParams(a=theta_hat[:p].copy(), b=theta_hat[p:].copy())
+        params = DCCParams(
+            a=theta_hat[:p].copy(),
+            b=theta_hat[p:dynamics_count].copy(),
+            nu=(float(theta_hat[-1]) if self.distribution == "studentt" else None),
+        )
         return DCCResult(
             params=params,
             theta=theta_hat,
@@ -1181,12 +1466,67 @@ class DCC:
             converged=bool(opt.success),
             nit=int(opt.nit),
             time_elapsed=elapsed,
+            warm_started=warm_started,
+            maxiter=resolved_maxiter,
+            distribution=self.distribution,
             hessian=hessian,
             opg=opg,
             cov_mle=cov_mle,
             cov_robust=cov_robust,
             _eps=eps,
         )
+
+    def fit_rolling(
+        self,
+        returns: Any,
+        *,
+        window: int,
+        step: int = 1,
+        expanding: bool = False,
+        univariate_spec: Optional["CompositeSpec"] = None,
+        initial_result: Optional[DCCResult] = None,
+        univariate_fit_kwargs: Optional[Dict[str, Any]] = None,
+        n_jobs: Optional[int] = None,
+        marginal_timeout: Optional[float] = None,
+        maxiter: Optional[int] = None,
+        compute_se: bool = True,
+    ) -> RollingDCCResult:
+        """Fit rolling DCC windows using prior marginal and DCC estimates."""
+        returns_np, index, _ = _extract_multivariate_input(returns)
+        if not isinstance(window, int) or window <= 0:
+            raise ValueError("window must be a positive integer.")
+        if not isinstance(step, int) or step <= 0:
+            raise ValueError("step must be a positive integer.")
+        if window > returns_np.shape[0]:
+            raise ValueError("window cannot exceed the number of observations.")
+
+        previous = initial_result
+        windows = []
+        for stop in range(window, returns_np.shape[0] + 1, step):
+            start = 0 if expanding else stop - window
+            try:
+                window_returns = returns.iloc[start:stop]
+            except AttributeError:
+                window_returns = returns_np[start:stop]
+            label = index[stop - 1] if index is not None else stop - 1
+            fitted = self.fit(
+                window_returns,
+                univariate_spec=univariate_spec,
+                univariate_initial_results=(
+                    None if previous is None else previous.univariate_results
+                ),
+                univariate_fit_kwargs=univariate_fit_kwargs,
+                n_jobs=n_jobs,
+                marginal_timeout=marginal_timeout,
+                initial_result=previous,
+                maxiter=maxiter,
+                compute_se=compute_se,
+            )
+            windows.append(
+                RollingDCCWindow(start=start, stop=stop, label=label, result=fitted)
+            )
+            previous = fitted
+        return RollingDCCResult(tuple(windows))
 
     def __repr__(self) -> str:
         return self.signature

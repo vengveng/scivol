@@ -70,6 +70,14 @@ class TestMultiSeriesFitting:
         
         for name in ['SPY', 'AAPL', 'GOOGL']:
             assert results[name].series_name == name
+
+    def test_explicit_hold_back_preserves_effective_index(self, multi_series_df):
+        spec = GARCH(1, 1) + Normal()
+        results = spec.fit(multi_series_df, n_jobs=1, hold_back=7)
+
+        for result in results.values():
+            pd.testing.assert_index_equal(result.sigma2.index, multi_series_df.index[7:])
+            assert result.fit_info.effective_hold_back == 7
     
     def test_n_jobs_one_sequential(self, multi_series_df):
         """n_jobs=1 should work (sequential fallback)."""

@@ -38,7 +38,7 @@ from .roles import Role
 from ._kernels import get_routine
 from . import _core
 from ._settings import settings
-from ._validation import validate_spec, validate_data, warn_small_sample
+from ._validation import small_sample_warning, validate_spec, validate_data
 
 if TYPE_CHECKING:
     from .result import EstimationResult
@@ -452,7 +452,7 @@ def fit_qmle(
     # Validate
     spec = validate_spec(spec)
     data = validate_data(data)
-    warn_small_sample(spec, data)
+    fit_warning = small_sample_warning(spec, data)
 
     # ── identify components ────────────────────────────────────────
     density = spec.get_component(Role.DENSITY)
@@ -501,6 +501,8 @@ def fit_qmle(
 
     routine = get_routine(str(normal_spec))
     fit_result = routine.fit(data, solver=solver, verbose=verbose, **kwargs)
+    if fit_warning is not None:
+        fit_result.fit_info.add_warning(fit_warning)
 
     if fit_result.sigma2 is None:
         warnings.warn("Cannot compute robust SEs: sigma2 not available from estimation")

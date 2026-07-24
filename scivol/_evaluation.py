@@ -9,7 +9,6 @@ from typing import Any, Optional
 import numpy as np
 from numpy.typing import NDArray
 from scipy.integrate import quad
-from scipy.optimize import brentq
 from scipy.special import gammaln
 from scipy.stats import gennorm, norm, t as t_dist
 
@@ -43,24 +42,30 @@ def _hansen_skewt_cdf(z: NDArray[np.float64], nu: float, lam: float) -> NDArray[
     a = 4.0 * lam * np.exp(c) * (nu - 2.0) / (nu - 1.0)
     b = np.sqrt(1.0 + 3.0 * lam * lam - a * a)
     bz_a = b * z + a
-    y = np.where(bz_a < 0.0, bz_a / (1.0 + lam), bz_a / (1.0 - lam))
-    return _std_t_cdf(y, nu)
+    left = bz_a < 0.0
+    scale = np.where(left, 1.0 - lam, 1.0 + lam)
+    base_cdf = _std_t_cdf(bz_a / scale, nu)
+    return np.where(
+        left,
+        (1.0 - lam) * base_cdf,
+        (1.0 + lam) * base_cdf - lam,
+    )
 
 
 def _hansen_skewt_ppf(levels: NDArray[np.float64], nu: float, lam: float) -> NDArray[np.float64]:
-    out = np.empty_like(levels, dtype=np.float64)
-    for idx, level in enumerate(levels):
-        lo, hi = -10.0, 10.0
-        while _hansen_skewt_cdf(np.array([lo]), nu, lam)[0] > level:
-            lo *= 2.0
-        while _hansen_skewt_cdf(np.array([hi]), nu, lam)[0] < level:
-            hi *= 2.0
-        out[idx] = brentq(
-            lambda x: float(_hansen_skewt_cdf(np.array([x]), nu, lam)[0] - level),
-            lo,
-            hi,
-        )
-    return out
+    levels = np.asarray(levels, dtype=np.float64)
+    left = levels < 0.5 * (1.0 - lam)
+    base_levels = np.where(
+        left,
+        levels / (1.0 - lam),
+        (levels + lam) / (1.0 + lam),
+    )
+    scale = np.where(left, 1.0 - lam, 1.0 + lam)
+
+    c_log = gammaln(0.5 * (nu + 1.0)) - gammaln(0.5 * nu) - 0.5 * np.log(np.pi * (nu - 2.0))
+    a = 4.0 * lam * np.exp(c_log) * (nu - 2.0) / (nu - 1.0)
+    b = np.sqrt(1.0 + 3.0 * lam * lam - a * a)
+    return (scale * _std_t_ppf(base_levels, nu) - a) / b
 
 
 def _hansen_skewt_pdf_scalar(z: float, nu: float, lam: float) -> float:
@@ -68,7 +73,7 @@ def _hansen_skewt_pdf_scalar(z: float, nu: float, lam: float) -> float:
     a = 4.0 * lam * np.exp(c_log) * (nu - 2.0) / (nu - 1.0)
     b = np.sqrt(1.0 + 3.0 * lam * lam - a * a)
     bz_a = b * z + a
-    denom = (1.0 + lam) if bz_a < 0.0 else (1.0 - lam)
+    denom = (1.0 - lam) if bz_a < 0.0 else (1.0 + lam)
     z_adj = bz_a / denom
     return float(np.exp(c_log) * b * (1.0 + z_adj * z_adj / (nu - 2.0)) ** (-0.5 * (nu + 1.0)))
 

@@ -182,7 +182,7 @@ def test_std_resid_uses_filtered_residuals_for_arma_garch() -> None:
 
 
 @pytest.mark.skipif(not HAS_ARCH, reason="arch is not installed")
-def test_arch_fixed_loglikelihood_and_forecast_parity_garch_normal() -> None:
+def test_arch_fixed_garch_normal_respects_initialization_conventions() -> None:
     from arch import arch_model
 
     params = np.array([1e-6, 0.08, 0.90], dtype=np.float64)
@@ -195,7 +195,15 @@ def test_arch_fixed_loglikelihood_and_forecast_parity_garch_normal() -> None:
     arch_fixed = am.fix(params)
     arch_fc = arch_fixed.forecast(horizon=5, reindex=False)
 
-    assert fixed.log_likelihood == pytest.approx(float(arch_fixed.loglikelihood), rel=1e-6, abs=1e-6)
+    sigma2 = np.empty_like(data)
+    sigma2[0] = np.mean(data**2)
+    for t in range(1, data.size):
+        sigma2[t] = params[0] + params[1] * data[t - 1] ** 2 + params[2] * sigma2[t - 1]
+    expected_ll = -0.5 * np.sum(np.log(2.0 * np.pi) + np.log(sigma2) + data**2 / sigma2)
+
+    # scivol conditions on h0 = mean(y^2); arch uses an EWMA backcast.
+    assert fixed.log_likelihood == pytest.approx(expected_ll, rel=1e-12, abs=1e-12)
+    assert fixed.log_likelihood == pytest.approx(float(arch_fixed.loglikelihood), abs=0.1)
     np.testing.assert_allclose(fixed.forecast(5).variance, arch_fc.variance.values[-1], rtol=1e-6, atol=1e-10)
 
 

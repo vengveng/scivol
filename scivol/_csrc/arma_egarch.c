@@ -1123,7 +1123,7 @@ static inline double arma_egarch_skewt_pdf(double z, double nu, double lam, cons
 {
     const double u = cache->b * z + cache->a;
     const double sign_u = (u >= 0.0) ? 1.0 : -1.0;
-    const double s = 1.0 - sign_u * lam;
+    const double s = 1.0 + sign_u * lam;
     const double nu_m2 = nu - 2.0;
     if (s <= 0.0 || nu_m2 <= 0.0 || !isfinite(s)) {
         return 0.0;
@@ -1134,21 +1134,7 @@ static inline double arma_egarch_skewt_pdf(double z, double nu, double lam, cons
 
 static inline double arma_egarch_skewt_kappa_value(double nu, double lam)
 {
-    arma_egarch_skewt_cache_t cache;
-    if (!arma_egarch_skewt_precompute_full(nu, lam, &cache)) {
-        return NAN;
-    }
-
-    const double dz = (2.0 * ARMA_EGARCH_SKEWT_QUAD_UMAX) / (double)ARMA_EGARCH_SKEWT_QUAD_N;
-    double total = 0.0;
-    for (size_t i = 0; i <= ARMA_EGARCH_SKEWT_QUAD_N; ++i) {
-        const double z = -ARMA_EGARCH_SKEWT_QUAD_UMAX + dz * (double)i;
-        const double pdf = arma_egarch_skewt_pdf(z, nu, lam, &cache);
-        const double val = fabs(z) * pdf;
-        const double weight = (i == 0 || i == ARMA_EGARCH_SKEWT_QUAD_N) ? 0.5 : 1.0;
-        total += weight * val;
-    }
-    return total * dz;
+    return hansen_skewt_abs_moment(nu, lam);
 }
 
 static inline void arma_egarch_skewt_kappa_full(
@@ -1163,12 +1149,12 @@ static inline void arma_egarch_skewt_kappa_full(
 )
 {
     const double nu_margin = MAX(nu - NU_MIN, 1e-4);
-    double h_nu = 1e-4 * MAX(1.0, nu);
+    double h_nu = 1e-3 * MAX(1.0, nu);
     if (h_nu >= 0.5 * nu_margin) h_nu = 0.25 * nu_margin;
     if (h_nu < 1e-6) h_nu = 1e-6;
 
     const double lam_margin = LAM_MAX - fabs(lam);
-    double h_lam = 1e-4 * MAX(1.0, lam_margin);
+    double h_lam = 1e-3 * MAX(1.0, lam_margin);
     if (h_lam >= 0.5 * lam_margin) h_lam = 0.25 * lam_margin;
     if (h_lam < 1e-6) h_lam = 1e-6;
 
@@ -1203,7 +1189,7 @@ static inline int arma_egarch_skewt_obs_derivs(
     const double z = e / sqrth;
     const double u = cache->b * z + cache->a;
     const double sign_u = (u >= 0.0) ? 1.0 : -1.0;
-    const double s = 1.0 - sign_u * lam;
+    const double s = 1.0 + sign_u * lam;
     if (s <= 0.0 || !isfinite(s)) {
         return 0;
     }
@@ -1246,7 +1232,7 @@ static inline int arma_egarch_skewt_obs_derivs(
     const double u_nu_lam = cache->a_nulam + cache->b_nulam * z;
     const double u_lam_lam = cache->b_lamlam * z;
 
-    const double s_lam = -sign_u;
+    const double s_lam = sign_u;
     const double v_e = u_e * inv_s;
     const double v_h = u_h * inv_s;
     const double v_nu = u_nu * inv_s;
@@ -1276,11 +1262,14 @@ static inline int arma_egarch_skewt_obs_derivs(
     const double R_nu_lam = 2.0 * (v_nu * v_lam + v * v_nu_lam);
     const double R_lam_lam = 2.0 * (v_lam * v_lam + v * v_lam_lam);
 
-    out->value = 0.5 * log(h) + q * (log(R) - log(nu_m2));
+    const double inv_b = 1.0 / cache->b;
+    const double inv_b2 = inv_b * inv_b;
+    out->value = -cache->c_log - log(cache->b) + 0.5 * log(h) + q * (log(R) - log(nu_m2));
     out->ell_e = q * R_e * inv_R;
     out->ell_h = 0.5 * inv_h + q * R_h * inv_R;
-    out->ell_nu = 0.5 * (log(R) - log(nu_m2)) + q * (R_nu * inv_R - 1.0 / nu_m2);
-    out->ell_lam = q * R_lam * inv_R;
+    out->ell_nu = -cache->dc_log_dnu - cache->b_nu * inv_b
+                 + 0.5 * (log(R) - log(nu_m2)) + q * (R_nu * inv_R - 1.0 / nu_m2);
+    out->ell_lam = -cache->b_lam * inv_b + q * R_lam * inv_R;
     out->ell_ee = q * (R_ee * inv_R - R_e * R_e * inv_R2);
     out->ell_eh = q * (R_eh * inv_R - R_e * R_h * inv_R2);
     out->ell_hh = -0.5 * inv_h2 + q * (R_hh * inv_R - R_h * R_h * inv_R2);
@@ -1288,9 +1277,13 @@ static inline int arma_egarch_skewt_obs_derivs(
     out->ell_e_lam = q * (R_e_lam * inv_R - R_e * R_lam * inv_R2);
     out->ell_h_nu = 0.5 * R_h * inv_R + q * (R_h_nu * inv_R - R_h * R_nu * inv_R2);
     out->ell_h_lam = q * (R_h_lam * inv_R - R_h * R_lam * inv_R2);
-    out->ell_nu_nu = (R_nu * inv_R - 1.0 / nu_m2) + q * (R_nu_nu * inv_R - R_nu * R_nu * inv_R2 + 1.0 / (nu_m2 * nu_m2));
-    out->ell_nu_lam = 0.5 * R_lam * inv_R + q * (R_nu_lam * inv_R - R_nu * R_lam * inv_R2);
-    out->ell_lam_lam = q * (R_lam_lam * inv_R - R_lam * R_lam * inv_R2);
+    out->ell_nu_nu = -cache->d2c_log_dnu2 - cache->b_nunu * inv_b + cache->b_nu * cache->b_nu * inv_b2
+                       + (R_nu * inv_R - 1.0 / nu_m2)
+                       + q * (R_nu_nu * inv_R - R_nu * R_nu * inv_R2 + 1.0 / (nu_m2 * nu_m2));
+    out->ell_nu_lam = -cache->b_nulam * inv_b + cache->b_nu * cache->b_lam * inv_b2
+                      + 0.5 * R_lam * inv_R + q * (R_nu_lam * inv_R - R_nu * R_lam * inv_R2);
+    out->ell_lam_lam = -cache->b_lamlam * inv_b + cache->b_lam * cache->b_lam * inv_b2
+                       + q * (R_lam_lam * inv_R - R_lam * R_lam * inv_R2);
 
     if (!isfinite(out->ell_e)) out->ell_e = q * sign_e * inv_abs_e;
     if (!isfinite(out->ell_ee)) out->ell_ee = q * inv_abs_e2;

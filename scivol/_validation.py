@@ -15,7 +15,6 @@ import numpy as np
 
 from .components.base import Component
 from .components.mean import ARMA, ARX, HARX
-from .components.vol import EGARCH, GARCH, GJRGARCH
 from .roles import Role
 from .spec import CompositeSpec
 
@@ -113,17 +112,12 @@ def validate_regressors(x: Any, n_obs: int) -> np.ndarray:
 def infer_required_hold_back(spec: CompositeSpec) -> int:
     hold_back = 0
     mean = spec.get_component(Role.MEAN)
-    vol = spec.get_component(Role.VOLATILITY)
-
     if isinstance(mean, ARMA):
         hold_back = max(hold_back, mean.p, mean.q)
     elif isinstance(mean, ARX):
         hold_back = max(hold_back, mean.required_hold_back)
     elif isinstance(mean, HARX):
         hold_back = max(hold_back, mean.required_hold_back)
-
-    if isinstance(vol, (GARCH, GJRGARCH, EGARCH)):
-        hold_back = max(hold_back, vol.p, vol.q)
 
     return hold_back
 
@@ -181,16 +175,25 @@ def prepare_series_input(
     )
 
 
-def warn_small_sample(spec: CompositeSpec, data: np.ndarray) -> None:
+def small_sample_warning(spec: CompositeSpec, data: np.ndarray) -> Optional[str]:
     """
-    Emit a RuntimeWarning if the sample looks too small for the number
-    of parameters.  Current heuristic: ``len(data) < 5 * n_params``.
+    Return a warning message if the sample looks too small for the number
+    of parameters. Current heuristic: ``len(data) < 5 * n_params``.
     """
     min_obs = spec.total_params * 5
     if len(data) < min_obs:
-        warnings.warn(
+        return (
             f"{len(data)} obs for {spec.total_params} parameters; "
-            f"recommend >{min_obs}.",
-            RuntimeWarning,
-            stacklevel=3,
+            f"recommend >{min_obs}."
         )
+    return None
+
+
+def warn_small_sample(spec: CompositeSpec, data: np.ndarray) -> None:
+    """
+    Emit a RuntimeWarning for callers that explicitly want Python warning
+    behavior. Normal fitting records this warning on the result instead.
+    """
+    message = small_sample_warning(spec, data)
+    if message is not None:
+        warnings.warn(message, RuntimeWarning, stacklevel=3)

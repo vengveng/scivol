@@ -3,7 +3,7 @@
 Parallel fitting utilities for scivol.
 
 This module provides functions for fitting multiple time series in parallel
-using joblib for robust cross-platform parallelism.
+using joblib with spawn-based workers for cross-platform parallelism.
 """
 from __future__ import annotations
 
@@ -11,8 +11,12 @@ import os
 from typing import Callable, Dict, List, Tuple, Any, Optional
 import numpy as np
 
-# Use joblib for parallelism (handles spawn/fork issues gracefully)
+# Spawn avoids forking a process after BLAS or a development AD oracle has
+# initialized native worker threads.
 from joblib import Parallel, delayed
+from joblib.externals.loky.backend.context import set_start_method
+
+set_start_method("spawn", force=True)
 
 
 def get_default_workers() -> int:
@@ -128,7 +132,10 @@ def _fit_single_series_worker(
     result = spec.fit(series_data, n_jobs=1, **fit_kwargs_copy)
     
     # Attach metadata
-    result._index = index
+    effective_hold_back = result.fit_info.effective_hold_back
+    if effective_hold_back is None:
+        effective_hold_back = int(fit_kwargs_copy.get("hold_back", 0) or 0)
+    result._index = None if index is None else index[effective_hold_back:]
     result._name = name
     
     return name, result
@@ -169,15 +176,6 @@ def fit_multi_parallel(
 
     n_jobs = n_jobs if n_jobs is not None else get_default_workers()
 
-    requested_hold_back = int(fit_kwargs.get("hold_back", 0) or 0)
-    common_sample = fit_kwargs.get("common_sample", None)
-    if common_sample is not False and vol_candidates:
-        common_hold_back = max(max(p, q) for _, p, q in vol_candidates)
-        fit_kwargs["hold_back"] = max(requested_hold_back, common_hold_back)
-        fit_kwargs["common_sample"] = True
-    else:
-        fit_kwargs["hold_back"] = requested_hold_back
-        fit_kwargs["common_sample"] = False
     n_series = len(data_dict)
     
     if n_jobs == 1 or n_series == 1:

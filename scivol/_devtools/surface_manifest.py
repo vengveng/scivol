@@ -195,25 +195,15 @@ def _extend(
 
 
 def _egarch_theta_validation(density: str) -> str:
-    if density in {"Normal", "GED"}:
-        return AD_FULL
-    if density in {"StudentT", "SkewT"}:
-        return AD_PARTIAL
-    return RUNTIME
+    return AD_FULL
 
 
 def _egarch_log_validation(density: str) -> str:
-    if density in {"Normal", "StudentT", "GED"}:
-        return AD_FULL
-    return RUNTIME
+    return AD_FULL
 
 
 def _arma_egarch_validation(density: str) -> str:
-    if density == "Normal":
-        return AD_FULL
-    if density == "StudentT":
-        return AD_PARTIAL
-    return RUNTIME
+    return AD_FULL
 
 
 def _meanx_gjr_theta_validation(density: str) -> str:
@@ -346,8 +336,8 @@ def _surfaces() -> tuple[SurfaceContract, ...]:
                     volatility=None,
                     density=density,
                     kind="standalone mean",
-                    theta_validation=AD_FULL if density == "Normal" else RUNTIME,
-                    log_validation=AD_FULL if density == "Normal" else RUNTIME,
+                    theta_validation=AD_FULL,
+                    log_validation=AD_FULL,
                     default_log_mode=False,
                 )
             )
@@ -360,7 +350,7 @@ def _surfaces() -> tuple[SurfaceContract, ...]:
             log_nll=PY_C,
             log_grad=PY_C,
             theta_validation=lambda _density: AD_FULL,
-            log_validation=lambda _density: RUNTIME,
+            log_validation=lambda _density: AD_FULL,
             default_log_mode=False,
         )
         _extend(
@@ -372,7 +362,7 @@ def _surfaces() -> tuple[SurfaceContract, ...]:
             log_nll=PY_C,
             log_grad=PY_C,
             theta_validation=_meanx_gjr_theta_validation,
-            log_validation=lambda _density: RUNTIME,
+            log_validation=lambda _density: AD_FULL,
             default_log_mode=False,
         )
         _extend(
@@ -384,7 +374,7 @@ def _surfaces() -> tuple[SurfaceContract, ...]:
             log_nll=PY_C,
             log_grad=PY_C,
             theta_validation=_meanx_egarch_theta_validation,
-            log_validation=lambda _density: RUNTIME,
+            log_validation=lambda _density: AD_FULL,
             default_log_mode=False,
         )
 
@@ -399,73 +389,7 @@ def _ids(predicate: Callable[[SurfaceContract], bool]) -> tuple[str, ...]:
     return tuple(surface.surface_id for surface in SURFACES if predicate(surface))
 
 
-VERIFICATION_EXCEPTIONS = (
-    VerificationException(
-        group="EGARCH SkewT log mode",
-        surface_ids=_ids(
-            lambda surface: surface.mean is None
-            and surface.volatility == "EGARCH"
-            and surface.density == "SkewT"
-        ),
-        missing="Direct log-space AD checks for fused SkewT EGARCH log NLL/gradient/Hessian.",
-        current="Theta gradient and volatility-block Hessian AD plus runtime gates.",
-        target="Add full log-space AD value/gradient/Hessian checks.",
-    ),
-    VerificationException(
-        group="EGARCH non-Normal theta checks",
-        surface_ids=_ids(
-            lambda surface: surface.mean is None
-            and surface.volatility == "EGARCH"
-            and surface.density in {"StudentT", "SkewT"}
-        ),
-        missing="Full theta AD Hessian evidence.",
-        current="Gradient and volatility-block Hessian AD checks.",
-        target="Promote StudentT and SkewT to full theta AD.",
-    ),
-    VerificationException(
-        group="ARMA + EGARCH non-Normal",
-        surface_ids=_ids(
-            lambda surface: surface.mean == "ARMA"
-            and surface.volatility == "EGARCH"
-            and surface.density != "Normal"
-        ),
-        missing="Full AD coverage for StudentT and any AD coverage for SkewT/GED.",
-        current="Partial AD for StudentT; public/fixed runtime gates for SkewT/GED.",
-        target="Promote StudentT, SkewT, and GED to full theta/log AD.",
-    ),
-    VerificationException(
-        group="Standalone ARX/HARX non-Normal",
-        surface_ids=_ids(
-            lambda surface: surface.mean in {"ARX", "HARX"}
-            and surface.volatility is None
-            and surface.density != "Normal"
-        ),
-        missing="AD coverage for constant-variance non-Normal meanx surfaces.",
-        current="Public and fixed workflow runtime gates.",
-        target="Add AD checks or keep these explicitly runtime-validated.",
-    ),
-    VerificationException(
-        group="Meanx + GARCH log mode",
-        surface_ids=_ids(lambda surface: surface.mean in {"ARX", "HARX"} and surface.volatility == "GARCH"),
-        missing="Direct log-space AD chain-rule checks.",
-        current="Theta AD plus public log-mode smoke.",
-        target="Add log-space AD checks over representative ARX and HARX orders.",
-    ),
-    VerificationException(
-        group="Meanx + GJR-GARCH",
-        surface_ids=_ids(lambda surface: surface.mean in {"ARX", "HARX"} and surface.volatility == "GJR-GARCH"),
-        missing="Direct log-space AD checks.",
-        current="Theta AD plus public log-mode smoke.",
-        target="Add log-space AD checks over representative ARX and HARX orders.",
-    ),
-    VerificationException(
-        group="Meanx + EGARCH",
-        surface_ids=_ids(lambda surface: surface.mean in {"ARX", "HARX"} and surface.volatility == "EGARCH"),
-        missing="Direct log-space AD checks.",
-        current="Theta AD plus public log-mode smoke.",
-        target="Add log-space AD checks over representative ARX and HARX orders.",
-    ),
-)
+VERIFICATION_EXCEPTIONS: tuple[VerificationException, ...] = ()
 
 
 def shipped_surface_ids() -> tuple[str, ...]:
@@ -508,6 +432,9 @@ def canonical_tensor_markdown() -> str:
 
 
 def verification_exceptions_markdown() -> str:
+    if not VERIFICATION_EXCEPTIONS:
+        return "No known verification exceptions."
+
     lines = [
         "| Surface group | Missing evidence | Current protection | Closure target |",
         "|---|---|---|---|",

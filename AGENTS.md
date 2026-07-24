@@ -11,6 +11,8 @@
 
 **Local development:** All development scripts, experiments, and analysis code should go in `localdev/`. This folder is git-ignored. Directories prefixed with `localdev_*` are also ignored (e.g., `localdev_data/`, `localdev_results/`).
 
+**Bug-fix ledger:** Keep the git-ignored `bugfix.md` evergreen. Whenever a confirmed bug is fixed, append its user impact, root cause, fix, and regression coverage. Do not remove older entries.
+
 ---
 
 ## Table of Contents
@@ -808,6 +810,7 @@ from scivol.result import EstimationResult
 - ✅ Fused log-space C wrappers (`log_wrappers.c`) for GARCH/GJR-GARCH + Normal/Student-t
 - ✅ ARMA-GARCH C pack/jacobian in `transforms_logspace.c` (6 pack + 6 jacobian = 12 functions)
 - ✅ Fused log-space C wrappers for ARMA-GARCH (3 NLL + 3 gradient functions)
+- ✅ DCC(p,q) Student-t copula C likelihood, gradient, Hessian, and scores, with dedicated DCC(1,1) entry points
 - ✅ Exact observed C Hessians for ARMA-GARCH + Normal/Student-t with promoted analytical log-Hessians
 - ✅ Exact observed C gradients/Hessians for ARMA-GARCH + Skew-t with promoted analytical log-Hessians
 - ✅ Exact observed C gradients/Hessians for GARCH + Skew-t with promoted analytical log-Hessians

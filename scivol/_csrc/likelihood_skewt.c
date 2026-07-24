@@ -21,7 +21,7 @@
 //   c = Gamma((nu+1)/2) / (Gamma(nu/2) * sqrt(pi*(nu-2)))
 //   a = 4 * lam * exp(c) * (nu-2) / (nu-1)
 //   b = sqrt(1 + 3*lam^2 - a^2)
-//   z_adj = (b*z + a) / (1 - lam * sign(b*z + a))
+//   z_adj = (b*z + a) / (1 + lam * sign(b*z + a))
 //
 // For standardized residuals z = eps / sqrt(sigma2), the log-likelihood is:
 //   ll = n*log(c) - 0.5*sum(log(sigma2)) + n*log(b) 
@@ -55,7 +55,7 @@ double skewt_ll(
         // Adjusted residual (Hansen transformation)
         const double bz_plus_a = b * z + a;
         const double sign_term = (bz_plus_a >= 0.0) ? 1.0 : -1.0;
-        const double z_adj = bz_plus_a / (1.0 - lam * sign_term);
+        const double z_adj = bz_plus_a / (1.0 + lam * sign_term);
         
         // Accumulate sums
         sum_log_sigma2 += log(sigma2[t]);
@@ -63,11 +63,9 @@ double skewt_ll(
     }
     
     // Final log-likelihood
-    // ll = n*c_log - 0.5*sum(log(sigma2)) + log(b) - 0.5*(nu+1)*sum(log(1 + z_adj^2/(nu-2)))
-    // Note: The Python uses np.sum(np.log(b)) where b is scalar, which is just log(b)
     const double ll = (double)n * c_log
                     - 0.5 * sum_log_sigma2
-                    + log(b)
+                    + (double)n * log(b)
                     - half_nup1 * sum_log_kernel;
     
     return ll;
@@ -103,17 +101,15 @@ double skewt_ll_z(
     for (size_t t = 0; t < n; ++t) {
         const double bz_plus_a = b * z[t] + a;
         const double sign_term = (bz_plus_a >= 0.0) ? 1.0 : -1.0;
-        const double z_adj = bz_plus_a / (1.0 - lam * sign_term);
+        const double z_adj = bz_plus_a / (1.0 + lam * sign_term);
         
         sum_log_sigma2 += log(sigma2[t]);
         sum_log_kernel += log1p(z_adj * z_adj / nu_m2);
     }
     
-    // Note: Python uses np.sum(np.log(b)) where b is scalar = log(b)
-    // Mathematically it should be n*log(b), but we match Python for consistency
     return (double)n * c_log
          - 0.5 * sum_log_sigma2
-         + log(b)
+         + (double)n * log(b)
          - half_nup1 * sum_log_kernel;
 }
 
@@ -191,10 +187,10 @@ double garch_ll_grad_11_skewt(
     if (h0 < H_FLOOR) h0 = H_FLOOR;
     
     // Initialize accumulation
-    double nll = -(double)n * c_log - log_b;
+    double nll = -(double)n * (c_log + log_b);
     double grad_omega = 0.0, grad_alpha = 0.0, grad_beta = 0.0;
-    double grad_nu = -(double)n * dclog_dnu - db_dnu / b;
-    double grad_lam = -db_dlam / b;
+    double grad_nu = -(double)n * (dclog_dnu + db_dnu / b);
+    double grad_lam = -(double)n * db_dlam / b;
     
     // Variance and sensitivity states
     double h_prev = h0;
@@ -210,7 +206,7 @@ double garch_ll_grad_11_skewt(
         const double z = e / sqrth;
         const double u = b * z + a;
         const double sign_u = (u >= 0.0) ? 1.0 : -1.0;
-        const double s = 1.0 - sign_u * lam;
+        const double s = 1.0 + sign_u * lam;
         const double z_adj = u / s;
         const double D = nu_m2 + z_adj * z_adj;
 
@@ -223,7 +219,7 @@ double garch_ll_grad_11_skewt(
                  + half_nup1 * (dD_dnu / D - 1.0 / nu_m2);
 
         const double du_dlam = db_dlam * z + da_dlam;
-        const double ds_dlam = -sign_u;
+        const double ds_dlam = sign_u;
         const double dz_adj_dlam = (du_dlam * s - u * ds_dlam) / (s * s);
         const double dD_dlam = 2.0 * z_adj * dz_adj_dlam;
         grad_lam += half_nup1 * dD_dlam / D;
@@ -251,7 +247,7 @@ double garch_ll_grad_11_skewt(
         // Hansen transformation
         const double u = b * z + a;
         const double sign_u = (u >= 0.0) ? 1.0 : -1.0;
-        const double s = 1.0 - sign_u * lam;
+        const double s = 1.0 + sign_u * lam;
         const double z_adj = u / s;
         const double D = nu_m2 + z_adj * z_adj;
         
@@ -288,7 +284,7 @@ double garch_ll_grad_11_skewt(
         // Gradient w.r.t. lam
         // ==============================
         const double du_dlam = db_dlam * z + da_dlam;
-        const double ds_dlam = -sign_u;
+        const double ds_dlam = sign_u;
         const double dz_adj_dlam = (du_dlam * s - u * ds_dlam) / (s * s);
         const double dD_dlam = 2.0 * z_adj * dz_adj_dlam;
         

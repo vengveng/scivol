@@ -234,7 +234,7 @@ VLK_INLINE int garch_skewt_obs_derivs(
     const double z = e / sqrth;
     const double u = cache->b * z + cache->a;
     const double sign_u = (u >= 0.0) ? 1.0 : -1.0;
-    const double s = 1.0 - sign_u * lam;
+    const double s = 1.0 + sign_u * lam;
     if (s <= 0.0 || !isfinite(s)) {
         return 0;
     }
@@ -267,7 +267,7 @@ VLK_INLINE int garch_skewt_obs_derivs(
     const double u_nu_lam = cache->a_nulam + cache->b_nulam * z;
     const double u_lam_lam = cache->b_lamlam * z;
 
-    const double s_lam = -sign_u;
+    const double s_lam = sign_u;
     const double v_h = u_h * inv_s;
     const double v_nu = u_nu * inv_s;
     const double v_lam = u_lam * inv_s - u * s_lam * inv_s2;
@@ -1594,8 +1594,8 @@ void garch_ll_grad_pq_skewt(
     }
 
     dzeros(grad, K);
-    grad[K_garch] = -((double)n) * cache.dc_log_dnu - cache.b_nu / cache.b;
-    grad[K_garch + 1] = -cache.b_lam / cache.b;
+    grad[K_garch] = -((double)n) * (cache.dc_log_dnu + cache.b_nu / cache.b);
+    grad[K_garch + 1] = -((double)n) * cache.b_lam / cache.b;
 
     const size_t ring = q + 1;
     double *d_buf = (double *)calloc(ring * K_garch, sizeof(double));
@@ -1713,11 +1713,11 @@ void garch_ll_hess_pq_skewt(
     const double inv_b = 1.0 / cache.b;
     const double inv_b2 = inv_b * inv_b;
     hessian_accumulate(hess, K_garch, K_garch, K,
-        -((double)n) * cache.d2c_log_dnu2 - cache.b_nunu * inv_b + cache.b_nu * cache.b_nu * inv_b2);
+        -((double)n) * (cache.d2c_log_dnu2 + cache.b_nunu * inv_b - cache.b_nu * cache.b_nu * inv_b2));
     hessian_accumulate(hess, K_garch, K_garch + 1, K,
-        -cache.b_nulam * inv_b + cache.b_nu * cache.b_lam * inv_b2);
+        -((double)n) * (cache.b_nulam * inv_b - cache.b_nu * cache.b_lam * inv_b2));
     hessian_accumulate(hess, K_garch + 1, K_garch + 1, K,
-        -cache.b_lamlam * inv_b + cache.b_lam * cache.b_lam * inv_b2);
+        -((double)n) * (cache.b_lamlam * inv_b - cache.b_lam * cache.b_lam * inv_b2));
 
     const size_t ring = q + 1;
     double *d_buf = (double *)calloc(ring * K_garch, sizeof(double));

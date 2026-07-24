@@ -236,7 +236,7 @@ VLK_INLINE double egarch_skewt_pdf(double z, double nu, double lam, const egarch
 {
     const double u = cache->b * z + cache->a;
     const double sign_u = (u >= 0.0) ? 1.0 : -1.0;
-    const double s = 1.0 - sign_u * lam;
+    const double s = 1.0 + sign_u * lam;
     const double nu_m2 = nu - 2.0;
     if (s <= 0.0 || nu_m2 <= 0.0 || !isfinite(s)) {
         return 0.0;
@@ -314,7 +314,7 @@ VLK_INLINE int egarch_skewt_obs_derivs(
     const double z = e / sqrth;
     const double u = cache->b * z + cache->a;
     const double sign_u = (u >= 0.0) ? 1.0 : -1.0;
-    const double s = 1.0 - sign_u * lam;
+    const double s = 1.0 + sign_u * lam;
     if (s <= 0.0 || !isfinite(s)) {
         return 0;
     }
@@ -347,7 +347,7 @@ VLK_INLINE int egarch_skewt_obs_derivs(
     const double u_nu_lam = cache->a_nulam + cache->b_nulam * z;
     const double u_lam_lam = cache->b_lamlam * z;
 
-    const double s_lam = -sign_u;
+    const double s_lam = sign_u;
     const double v_h = u_h * inv_s;
     const double v_nu = u_nu * inv_s;
     const double v_lam = u_lam * inv_s - u * s_lam * inv_s2;
@@ -383,22 +383,7 @@ VLK_INLINE int egarch_skewt_obs_derivs(
 
 VLK_INLINE double egarch_skewt_kappa_value(double nu, double lam)
 {
-    egarch_skewt_cache_t cache;
-    if (!egarch_skewt_precompute_full(nu, lam, &cache)) {
-        return NAN;
-    }
-
-    const double dz = (2.0 * EGARCH_SKEWT_QUAD_UMAX) / (double)EGARCH_SKEWT_QUAD_N;
-
-    double total = 0.0;
-    for (size_t i = 0; i <= EGARCH_SKEWT_QUAD_N; ++i) {
-        const double z = -EGARCH_SKEWT_QUAD_UMAX + dz * (double)i;
-        const double pdf = egarch_skewt_pdf(z, nu, lam, &cache);
-        const double val = fabs(z) * pdf;
-        const double weight = (i == 0 || i == EGARCH_SKEWT_QUAD_N) ? 0.5 : 1.0;
-        total += weight * val;
-    }
-    return total * dz;
+    return hansen_skewt_abs_moment(nu, lam);
 }
 
 VLK_INLINE void egarch_skewt_kappa_full(
@@ -413,7 +398,7 @@ VLK_INLINE void egarch_skewt_kappa_full(
 )
 {
     const double nu_margin = MAX(nu - NU_MIN, 1e-4);
-    double h_nu = 1e-4 * MAX(1.0, nu);
+    double h_nu = 1e-3 * MAX(1.0, nu);
     if (h_nu >= 0.5 * nu_margin) {
         h_nu = 0.25 * nu_margin;
     }
@@ -422,7 +407,7 @@ VLK_INLINE void egarch_skewt_kappa_full(
     }
 
     const double lam_margin = LAM_MAX - fabs(lam);
-    double h_lam = 1e-4 * MAX(1.0, lam_margin);
+    double h_lam = 1e-3 * MAX(1.0, lam_margin);
     if (h_lam >= 0.5 * lam_margin) {
         h_lam = 0.25 * lam_margin;
     }
@@ -593,8 +578,8 @@ void egarch_ll_grad_11_skewt(const double *params, const double *residuals, doub
     }
 
     dzeros(grad, K);
-    grad[4] = -((double)n) * cache.dc_log_dnu - cache.b_nu / cache.b;
-    grad[5] = -cache.b_lam / cache.b;
+    grad[4] = -((double)n) * (cache.dc_log_dnu + cache.b_nu / cache.b);
+    grad[5] = -((double)n) * cache.b_lam / cache.b;
 
     {
         egarch_skewt_obs_derivs_t obs;
@@ -671,9 +656,9 @@ void egarch_ll_hess_11_skewt(const double *params, const double *residuals, doub
     {
         const double inv_b = 1.0 / cache.b;
         const double inv_b2 = inv_b * inv_b;
-        egarch_hess_accumulate(hess, 4, 4, K, -((double)n) * cache.d2c_log_dnu2 - cache.b_nunu * inv_b + cache.b_nu * cache.b_nu * inv_b2);
-        egarch_hess_accumulate(hess, 4, 5, K, -cache.b_nulam * inv_b + cache.b_nu * cache.b_lam * inv_b2);
-        egarch_hess_accumulate(hess, 5, 5, K, -cache.b_lamlam * inv_b + cache.b_lam * cache.b_lam * inv_b2);
+        egarch_hess_accumulate(hess, 4, 4, K, -((double)n) * (cache.d2c_log_dnu2 + cache.b_nunu * inv_b - cache.b_nu * cache.b_nu * inv_b2));
+        egarch_hess_accumulate(hess, 4, 5, K, -((double)n) * (cache.b_nulam * inv_b - cache.b_nu * cache.b_lam * inv_b2));
+        egarch_hess_accumulate(hess, 5, 5, K, -((double)n) * (cache.b_lamlam * inv_b - cache.b_lam * cache.b_lam * inv_b2));
 
         egarch_skewt_obs_derivs_t obs0;
         if (!egarch_skewt_obs_derivs(residuals[0], sigma2[0], nu, lam, &cache, &obs0)) {
@@ -2052,7 +2037,7 @@ static double egarch_ll_grad_hess_pq_skewt_core(const double *params,
         sigma2[0] = H_FLOOR;
     }
 
-    nll = -((double)n) * cache.c_log - log(cache.b);
+    nll = -((double)n) * (cache.c_log + log(cache.b));
     {
         egarch_skewt_obs_derivs_t obs0;
         if (!egarch_skewt_obs_derivs(residuals[0], sigma2[0], nu, lam, &cache, &obs0)) {
@@ -2062,18 +2047,18 @@ static double egarch_ll_grad_hess_pq_skewt_core(const double *params,
         }
         nll += obs0.value;
         if (want_grad) {
-            grad[nu_idx] = -((double)n) * cache.dc_log_dnu - cache.b_nu / cache.b + obs0.ell_nu;
-            grad[lam_idx] = -cache.b_lam / cache.b + obs0.ell_lam;
+            grad[nu_idx] = -((double)n) * (cache.dc_log_dnu + cache.b_nu / cache.b) + obs0.ell_nu;
+            grad[lam_idx] = -((double)n) * cache.b_lam / cache.b + obs0.ell_lam;
         }
         if (want_hess) {
             const double inv_b = 1.0 / cache.b;
             const double inv_b2 = inv_b * inv_b;
-            hess[nu_idx * K + nu_idx] += -((double)n) * cache.d2c_log_dnu2
-                                       - cache.b_nunu * inv_b
-                                       + cache.b_nu * cache.b_nu * inv_b2;
-            hess[nu_idx * K + lam_idx] += -cache.b_nulam * inv_b + cache.b_nu * cache.b_lam * inv_b2;
+            hess[nu_idx * K + nu_idx] += -((double)n) * (cache.d2c_log_dnu2
+                                       + cache.b_nunu * inv_b
+                                       - cache.b_nu * cache.b_nu * inv_b2);
+            hess[nu_idx * K + lam_idx] += -((double)n) * (cache.b_nulam * inv_b - cache.b_nu * cache.b_lam * inv_b2);
             hess[lam_idx * K + nu_idx] = hess[nu_idx * K + lam_idx];
-            hess[lam_idx * K + lam_idx] += -cache.b_lamlam * inv_b + cache.b_lam * cache.b_lam * inv_b2;
+            hess[lam_idx * K + lam_idx] += -((double)n) * (cache.b_lamlam * inv_b - cache.b_lam * cache.b_lam * inv_b2);
             hess[nu_idx * K + nu_idx] += obs0.ell_nu_nu;
             hess[nu_idx * K + lam_idx] += obs0.ell_nu_lam;
             hess[lam_idx * K + nu_idx] = hess[nu_idx * K + lam_idx];

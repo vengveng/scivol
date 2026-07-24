@@ -22,9 +22,11 @@ from scivol._kernels.transforms import (
     log_hessian_egarch,
     pack_egarch,
     pack_egarch_ged,
+    pack_egarch_skewt,
     pack_egarch_studentt,
     unpack_egarch,
     unpack_egarch_ged,
+    unpack_egarch_skewt,
     unpack_egarch_studentt,
 )
 
@@ -212,7 +214,7 @@ class TestEGARCHStudentTAD:
         grad_c, hess_c = _c_egarch_grad_hess(params, resid_studentt, "studentt")
         _, grad_ref, hess_ref = egarch_value_grad_hess(params, resid_studentt, dist="studentt")
         np.testing.assert_allclose(grad_c, grad_ref, rtol=2e-4, atol=5e-6)
-        np.testing.assert_allclose(hess_c[:4, :4], hess_ref[:4, :4], rtol=2e-4, atol=2e-5)
+        np.testing.assert_allclose(hess_c, hess_ref, rtol=3e-4, atol=3e-5)
 
     def test_hessian_symmetry(self, resid_studentt: NDArray[np.float64]) -> None:
         _, hess_c = _c_egarch_grad_hess(np.array([-0.45, 0.12, -0.06, 0.95, 8.0]), resid_studentt, "studentt")
@@ -234,7 +236,7 @@ class TestEGARCHPQStudentTAD:
         grad_c, hess_c = _c_egarch_grad_hess(params, resid_studentt_pq, "studentt", p=2, q=1)
         _, grad_ref, hess_ref = egarch_value_grad_hess(params, resid_studentt_pq, dist="studentt", p=2, q=1)
         np.testing.assert_allclose(grad_c, grad_ref, rtol=5e-4, atol=1e-5)
-        np.testing.assert_allclose(hess_c[:6, :6], hess_ref[:6, :6], rtol=5e-4, atol=2e-5)
+        np.testing.assert_allclose(hess_c, hess_ref, rtol=6e-4, atol=3e-5)
 
 
 class TestEGARCHSkewTAD:
@@ -244,11 +246,11 @@ class TestEGARCHSkewTAD:
         _, grad_ref, _ = egarch_value_grad_hess(params, resid_skewt, dist="skewt")
         np.testing.assert_allclose(grad_c, grad_ref, rtol=3e-2, atol=2e-3)
 
-    def test_hessian_matches_ad_on_vol_block(self, resid_skewt: NDArray[np.float64]) -> None:
+    def test_full_hessian_matches_ad(self, resid_skewt: NDArray[np.float64]) -> None:
         params = np.array([-0.45, 0.12, -0.06, 0.95, 8.0, -0.15], dtype=np.float64)
         _, hess_c = _c_egarch_grad_hess(params, resid_skewt, "skewt")
         _, _, hess_ref = egarch_value_grad_hess(params, resid_skewt, dist="skewt")
-        np.testing.assert_allclose(hess_c[:4, :4], hess_ref[:4, :4], rtol=8e-2, atol=5e-3)
+        np.testing.assert_allclose(hess_c, hess_ref, rtol=3e-2, atol=5e-2)
 
     def test_hessian_symmetry(self, resid_skewt: NDArray[np.float64]) -> None:
         _, hess_c = _c_egarch_grad_hess(np.array([-0.45, 0.12, -0.06, 0.95, 8.0, -0.15]), resid_skewt, "skewt")
@@ -262,11 +264,11 @@ class TestEGARCHPQSkewTAD:
         _, grad_ref, _ = egarch_value_grad_hess(params, resid_skewt_pq, dist="skewt", p=2, q=1)
         np.testing.assert_allclose(grad_c, grad_ref, rtol=6e-2, atol=3e-3)
 
-    def test_hessian_matches_ad_on_vol_block(self, resid_skewt_pq: NDArray[np.float64]) -> None:
+    def test_full_hessian_matches_ad(self, resid_skewt_pq: NDArray[np.float64]) -> None:
         params = np.array([-0.45, 0.08, 0.04, -0.06, 0.02, 0.95, 8.0, -0.15], dtype=np.float64)
         _, hess_c = _c_egarch_grad_hess(params, resid_skewt_pq, "skewt", p=2, q=1)
         _, _, hess_ref = egarch_value_grad_hess(params, resid_skewt_pq, dist="skewt", p=2, q=1)
-        np.testing.assert_allclose(hess_c[:6, :6], hess_ref[:6, :6], rtol=9e-2, atol=6e-3)
+        np.testing.assert_allclose(hess_c, hess_ref, rtol=3e-2, atol=6e-2)
 
     def test_hessian_symmetry(self, resid_skewt_pq: NDArray[np.float64]) -> None:
         params = np.array([-0.45, 0.08, 0.04, -0.06, 0.02, 0.95, 8.0, -0.15], dtype=np.float64)
@@ -320,6 +322,13 @@ class TestEGARCHGEDAD:
             pack_egarch_ged,
             "normal",
         ),
+        (
+            "skewt",
+            np.array([-0.45, 0.08, 0.04, -0.06, 0.02, 0.95, 8.0, -0.15], dtype=np.float64),
+            unpack_egarch_skewt,
+            pack_egarch_skewt,
+            "skewt",
+        ),
     ],
 )
 def test_egarch_pq_logspace_grad_hess_match_ad(
@@ -344,6 +353,10 @@ def test_egarch_pq_logspace_grad_hess_match_ad(
     hess_z = log_hessian_egarch(theta, grad_theta, hess_theta, 2, 1, dist=dist)
     value_ref, grad_ref, hess_ref = egarch_logspace_value_grad_hess(z, resid, dist=dist, p=2, q=1)
 
-    np.testing.assert_allclose(value_c, value_ref, rtol=5e-6, atol=5e-6)
-    np.testing.assert_allclose(grad_z, grad_ref, rtol=1e-4, atol=1e-5)
-    np.testing.assert_allclose(hess_z, hess_ref, rtol=3e-3, atol=3e-2)
+    value_rtol = 5e-6 if dist != "skewt" else 2e-5
+    grad_rtol = 1e-4 if dist != "skewt" else 6e-3
+    hess_rtol = 3e-3 if dist != "skewt" else 3e-2
+    hess_atol = 3e-2 if dist != "skewt" else 6e-2
+    np.testing.assert_allclose(value_c, value_ref, rtol=value_rtol, atol=5e-6)
+    np.testing.assert_allclose(grad_z, grad_ref, rtol=grad_rtol, atol=1e-5)
+    np.testing.assert_allclose(hess_z, hess_ref, rtol=hess_rtol, atol=hess_atol)

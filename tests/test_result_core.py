@@ -152,17 +152,35 @@ def test_fit_info_is_exposed_in_result_and_dict():
             "optimization_space": "z-space",
             "used_default_solver": False,
             "used_default_log_mode": True,
+            "warnings": ["small sample"],
         },
     )
 
     assert res.fit_info.solver == "slsqp"
     assert res.fit_info.log_mode is True
     assert res.fit_info.optimization_space == "z-space"
+    assert res.fit_info.warnings == ("small sample",)
+    assert res.warnings == ("small sample",)
 
     d = res.to_dict()
     assert d["fit_info"]["solver"] == "slsqp"
     assert d["fit_info"]["optimization_space"] == "z-space"
     assert d["fit_info"]["used_default_log_mode"] is True
+    assert d["fit_info"]["warnings"] == ["small sample"]
+    assert d["warnings"] == ["small sample"]
+
+
+def test_summary_prints_recorded_fit_warnings(capsys):
+    data = np.ones(50)
+    spec = _build_fitted_spec()
+    opt = DummyOpt(x=np.arange(spec.total_params), fun=10.0)
+    res = EstimationResult(spec, opt, data, fit_info={"warnings": ["small sample"]})
+
+    res.summary()
+
+    out = capsys.readouterr().out
+    assert "Warnings" in out
+    assert "small sample" in out
 
 
 def test_component_params_are_snapshotted():

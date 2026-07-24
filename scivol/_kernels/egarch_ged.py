@@ -11,6 +11,7 @@ from .. import _core
 from ..components.density import GED
 from ..components.vol import EGARCH
 from ..result import EstimationResult
+from .._optimizer import resolve_initial_params, resolve_optimizer_budget
 from ..spec.composite import CompositeSpec
 from .routine import Routine
 from .transforms import (
@@ -58,6 +59,7 @@ def _build(p: int, q: int) -> Routine:
             "log_mode": bool(log_mode),
             "optimization_space": "z-space" if log_mode else "theta-space",
         }
+        maxiter, maxfev = resolve_optimizer_budget(_.get("maxiter"), _.get("maxfev"))
 
         resid = np.ascontiguousarray(resid, dtype=np.float64)
         n = resid.size
@@ -101,7 +103,13 @@ def _build(p: int, q: int) -> Routine:
             call_c_hess(theta)
             return hess_mat.copy() / n
 
-        theta0 = np.concatenate((vol.default_start(resid), dens.default_start(resid)))
+        theta0, warm_started = resolve_initial_params(
+            _.get("initial_params"),
+            np.concatenate((vol.default_start(resid), dens.default_start(resid))),
+            vol.n_params + dens.n_params,
+            uid,
+        )
+        fit_info.update(warm_started=warm_started, maxiter=maxiter)
         bounds = vol.bounds() + dens.bounds()
 
         if not log_mode:
@@ -111,7 +119,7 @@ def _build(p: int, q: int) -> Routine:
                     theta0,
                     method="Nelder-Mead",
                     tol=1e-12,
-                    options={"maxfev": 50000, "disp": verbose},
+                    options={"maxfev": maxfev, "disp": verbose},
                 )
             elif solver.lower() == "slsqp":
                 res = minimize(
@@ -121,7 +129,7 @@ def _build(p: int, q: int) -> Routine:
                     jac=gradient,
                     bounds=bounds,
                     tol=1e-12,
-                    options={"disp": verbose, "ftol": 1e-12, "maxiter": 5000},
+                    options={"disp": verbose, "ftol": 1e-12, "maxiter": maxiter},
                 )
             elif solver.lower() in ("trust", "trust-constr"):
                 res = minimize(
@@ -132,7 +140,7 @@ def _build(p: int, q: int) -> Routine:
                     hess=hessian,
                     bounds=bounds,
                     tol=1e-12,
-                    options={"disp": verbose, "xtol": 1e-6, "maxiter": 5000, "initial_tr_radius": 1e-2},
+                    options={"disp": verbose, "xtol": 1e-6, "maxiter": maxiter, "initial_tr_radius": 1e-2},
                 )
             else:
                 raise ValueError(f"Unknown solver '{solver}'")
@@ -171,7 +179,7 @@ def _build(p: int, q: int) -> Routine:
                     z0,
                     method="Nelder-Mead",
                     tol=1e-12,
-                    options={"disp": verbose, "maxiter": 5000, "maxfev": 50000, "adaptive": True},
+                    options={"disp": verbose, "maxiter": maxiter, "maxfev": maxfev, "adaptive": True},
                 )
             elif solver.lower() == "slsqp":
                 res = minimize(
@@ -180,7 +188,7 @@ def _build(p: int, q: int) -> Routine:
                     method="SLSQP",
                     jac=gradient_log,
                     tol=1e-12,
-                    options={"disp": verbose, "ftol": 1e-12, "maxiter": 5000},
+                    options={"disp": verbose, "ftol": 1e-12, "maxiter": maxiter},
                 )
             elif solver.lower() in ("trust", "trust-constr"):
                 res = minimize(
@@ -190,7 +198,7 @@ def _build(p: int, q: int) -> Routine:
                     jac=gradient_log,
                     hess=hessian_log,
                     tol=1e-12,
-                    options={"disp": verbose, "xtol": 1e-6, "maxiter": 5000, "initial_tr_radius": 1e-2},
+                    options={"disp": verbose, "xtol": 1e-6, "maxiter": maxiter, "initial_tr_radius": 1e-2},
                 )
             else:
                 raise ValueError(f"Unknown solver '{solver}'")

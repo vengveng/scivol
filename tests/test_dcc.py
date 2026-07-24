@@ -285,6 +285,84 @@ class TestDCCFit:
         result = dcc.fit_from_residuals(eps)
         assert 0 < result.params.persistence < 1
 
+    def test_warm_start_and_iteration_budget(self, dcc_dgp_data):
+        eps = dcc_dgp_data["eps"]
+        dcc = DCC(1, 1)
+        cold = dcc.fit_from_residuals(eps, maxiter=100)
+        warm = dcc.fit_from_residuals(eps, initial_result=cold, maxiter=2)
+
+        assert cold.warm_started is False
+        assert warm.warm_started is True
+        assert warm.maxiter == 2
+        assert warm.nit <= 2
+
+    def test_rolling_dcc_reuses_marginal_and_correlation_starts(self, fitted_multivariate_results):
+        rolling = DCC(1, 1).fit_rolling(
+            fitted_multivariate_results["returns"],
+            window=1000,
+            step=100,
+            univariate_spec=GARCH(1, 1) + Normal(),
+            univariate_fit_kwargs={"maxiter": 30, "verbose": False},
+            n_jobs=1,
+            maxiter=30,
+            compute_se=False,
+        )
+
+        assert len(rolling) == 3
+        assert rolling[0].result.warm_started is False
+        assert all(window.result.warm_started is True for window in rolling[1:])
+        assert all(
+            marginal.fit_info.warm_started is True
+            for window in rolling[1:]
+            for marginal in window.result.univariate_results
+        )
+
+    def test_fit_routes_marginals_through_batch_api(self, fitted_multivariate_results):
+        import pandas as pd
+
+        returns = pd.DataFrame(
+            fitted_multivariate_results["returns"][:400],
+            columns=["equity", "bond", "commodity"],
+        )
+        result = DCC(1, 1).fit(
+            returns,
+            univariate_spec=GARCH(1, 1) + Normal(),
+            univariate_fit_kwargs={"maxiter": 50, "verbose": False},
+            n_jobs=1,
+            maxiter=50,
+            compute_se=False,
+        )
+
+        assert len(result.univariate_results) == 3
+        assert [marginal.series_name for marginal in result.univariate_results] == [
+            "equity",
+            "bond",
+            "commodity",
+        ]
+        assert all(
+            marginal.fit_info.maxiter == 50
+            for marginal in result.univariate_results
+        )
+
+    def test_dcc_index_uses_the_effective_marginal_sample(self, fitted_multivariate_results):
+        import pandas as pd
+
+        returns = pd.DataFrame(
+            fitted_multivariate_results["returns"][:350],
+            columns=["a", "b", "c"],
+            index=pd.date_range("2021-01-01", periods=350),
+        )
+        marginals = [
+            (GARCH(1, 1) + Normal()).fit(
+                returns[column], hold_back=7, maxiter=50, verbose=False
+            )
+            for column in returns
+        ]
+        result = DCC(1, 1).fit(returns, univariate_results=marginals, compute_se=False)
+
+        assert result.T == 343
+        assert result.corr("a", "b").index.equals(returns.index[7:])
+
 
 class TestMultivariateForecastAndSimulation:
     def test_ccc_summary(self, dcc_dgp_data):
@@ -331,6 +409,38 @@ class TestMultivariateForecastAndSimulation:
             atol=1e-12,
         )
 
+    def test_public_forecast_correlation_matches_forecast(self, fitted_multivariate_results):
+        result = fitted_multivariate_results["dcc"]
+        np.testing.assert_allclose(
+            result.forecast_correlation(5),
+            result.forecast(5).correlation,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+
+    def test_same_origin_scenarios_are_reproducible(self, fitted_multivariate_results):
+        result = fitted_multivariate_results["dcc"]
+        before = result.Rt.copy()
+        first = result.scenarios(4000, seed=123, innovations="parametric")
+        second = result.scenarios(4000, seed=123, innovations="parametric")
+
+        assert first.data.shape == (4000, 3)
+        assert first.mean.shape == (3,)
+        assert first.residual_variance.shape == (3,)
+        assert first.correlation.shape == (3, 3)
+        np.testing.assert_allclose(first.data, second.data)
+        np.testing.assert_allclose(first.data, first.mean + first.residuals)
+        np.testing.assert_allclose(result.Rt, before)
+        np.testing.assert_allclose(first.correlation, result.forecast_correlation(1)[0])
+
+    def test_empirical_scenarios_standardize_marginal_draws(self, fitted_multivariate_results):
+        result = fitted_multivariate_results["dcc"]
+        scenarios = result.scenarios(10000, seed=456, innovations="empirical")
+
+        assert scenarios.innovation_method == "empirical"
+        np.testing.assert_allclose(scenarios.innovations.mean(axis=0), 0.0, atol=0.06)
+        np.testing.assert_allclose(scenarios.innovations.var(axis=0), 1.0, atol=0.10)
+
     def test_ccc_forecast_and_simulate_keep_constant_correlation(self, fitted_multivariate_results):
         result = fitted_multivariate_results["ccc"]
         forecast = result.forecast(horizon=4)
@@ -375,8 +485,10 @@ class TestMultivariateForecastAndSimulation:
             ccc_result.forecast(2)
         with pytest.raises(RuntimeError, match="stored univariate marginal fits"):
             ccc_result.simulate(5)
+        with pytest.raises(RuntimeError, match="stored univariate marginal fits"):
+            dcc_result.scenarios(5)
 
-    def test_simulate_rejects_non_normal_marginals(self, fitted_multivariate_results, monkeypatch):
+    def test_simulate_supports_non_normal_marginals(self, fitted_multivariate_results, monkeypatch):
         result = fitted_multivariate_results["dcc"]
         original_state = result.univariate_results[0].filter()
 
@@ -384,8 +496,35 @@ class TestMultivariateForecastAndSimulation:
             return replace(original_state, distribution="StudentT", nu=8.0)
 
         monkeypatch.setattr(result.univariate_results[0], "filter", fake_filter)
-        with pytest.raises(NotImplementedError, match="requires Normal marginals"):
-            result.simulate(5, seed=7)
+        simulated = result.simulate(50, seed=7)
+        assert simulated.data.shape == (50, 3)
+        assert np.all(np.isfinite(simulated.innovations))
+
+    def test_studentt_dcc_scenarios_and_simulation(self, fitted_multivariate_results):
+        source = fitted_multivariate_results
+        result = DCC(1, 1, "studentt").fit(
+            source["returns"],
+            univariate_results=source["univariate_results"],
+            compute_se=False,
+        )
+        scenarios = result.scenarios(4000, seed=919)
+        simulated = result.simulate(30, seed=919)
+
+        assert result.params.nu is not None
+        assert scenarios.copula_distribution == "studentt"
+        assert scenarios.copula_nu == result.params.nu
+        assert simulated.copula_distribution == "studentt"
+        assert simulated.copula_nu == result.params.nu
+        assert scenarios.data.shape == (4000, 3)
+        assert simulated.data.shape == (30, 3)
+        assert np.all(np.isfinite(scenarios.data))
+        assert np.all(np.isfinite(simulated.data))
+        np.testing.assert_allclose(
+            scenarios.correlation,
+            result.forecast_correlation(1)[0],
+            rtol=1e-12,
+            atol=1e-12,
+        )
 
 
 # =============================================================================

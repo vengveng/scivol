@@ -2382,6 +2382,71 @@ class TestDCCGARCH:
         assert "a[1]" in s and "b[1]" in s
 
 
+def simulate_studentt_dcc_11(
+    T: int,
+    dcc_a: float,
+    dcc_b: float,
+    nu: float,
+    Qbar: NDArray[np.float64],
+    seed: int = 44,
+) -> NDArray[np.float64]:
+    """Simulate unit-variance Student-t innovations from DCC(1,1)."""
+    rng = np.random.default_rng(seed)
+    n_series = Qbar.shape[0]
+    q_prev = Qbar.copy()
+    eps_prev = np.zeros(n_series)
+    eps = np.empty((T, n_series), dtype=np.float64)
+
+    for t in range(T):
+        q_t = (
+            (1.0 - dcc_a - dcc_b) * Qbar
+            + dcc_a * np.outer(eps_prev, eps_prev)
+            + dcc_b * q_prev
+        )
+        scale = np.sqrt(np.diag(q_t))
+        corr = q_t / np.outer(scale, scale)
+        normal = np.linalg.cholesky(corr) @ rng.standard_normal(n_series)
+        eps_prev = normal * np.sqrt((nu - 2.0) / rng.chisquare(nu))
+        eps[t] = eps_prev
+        q_prev = q_t
+    return eps
+
+
+class TestDCCStudentT:
+    """DCC(1,1) Student-t copula convergence and parameter recovery."""
+
+    @pytest.fixture(scope="class")
+    def result(self):
+        from scivol import DCC
+
+        truth = {
+            "a": 0.04,
+            "b": 0.93,
+            "nu": 7.0,
+            "qbar": np.array(
+                [[1.0, 0.45, 0.25], [0.45, 1.0, 0.35], [0.25, 0.35, 1.0]]
+            ),
+        }
+        eps = simulate_studentt_dcc_11(
+            10_000, truth["a"], truth["b"], truth["nu"], truth["qbar"]
+        )
+        fitted = DCC(1, 1, "studentt").fit_from_residuals(
+            eps, compute_se=False, maxiter=300
+        )
+        return fitted, truth
+
+    def test_convergence(self, result) -> None:
+        fitted, _ = result
+        assert fitted.converged
+
+    def test_parameter_recovery(self, result) -> None:
+        fitted, truth = result
+        np.testing.assert_allclose(
+            fitted.theta[:2], [truth["a"], truth["b"]], rtol=0.20, atol=0.015
+        )
+        assert 4.0 < fitted.params.nu < 14.0
+
+
 # -----------------------------------------------------------------------------
 # Run tests directly
 # -----------------------------------------------------------------------------

@@ -12,6 +12,7 @@ scivol.egg-info/
 dist/
 build/
 examples/
+bugfix.md
 *.gz
 *.whl
 /.*/

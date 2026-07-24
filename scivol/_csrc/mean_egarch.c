@@ -341,7 +341,7 @@ VLK_INLINE int lm_skewt_obs_derivs(double e, double h, double nu, double lam, co
     const double z_eh = -0.5 * z_e / h;
     const double u = cache->b * z + cache->a;
     const double sign_u = (u >= 0.0) ? 1.0 : -1.0;
-    const double s = 1.0 - sign_u * lam;
+    const double s = 1.0 + sign_u * lam;
     if (s <= 0.0 || !isfinite(s)) {
         return 0;
     }
@@ -377,7 +377,7 @@ VLK_INLINE int lm_skewt_obs_derivs(double e, double h, double nu, double lam, co
     const double u_nu_nu = cache->a_nunu + cache->b_nunu * z;
     const double u_nu_lam = cache->a_nulam + cache->b_nulam * z;
     const double u_lam_lam = cache->b_lamlam * z;
-    const double s_lam = -sign_u;
+    const double s_lam = sign_u;
     const double v_e = u_e * inv_s;
     const double v_h = u_h * inv_s;
     const double v_nu = u_nu * inv_s;
@@ -512,7 +512,7 @@ VLK_INLINE double egarch_skewt_pdf(double z, double nu, double lam, const egarch
 {
     const double u = cache->b * z + cache->a;
     const double sign_u = (u >= 0.0) ? 1.0 : -1.0;
-    const double s = 1.0 - sign_u * lam;
+    const double s = 1.0 + sign_u * lam;
     const double nu_m2 = nu - 2.0;
     if (s <= 0.0 || nu_m2 <= 0.0 || !isfinite(s)) {
         return 0.0;
@@ -579,27 +579,13 @@ VLK_INLINE int egarch_skewt_precompute_full(double nu, double lam, egarch_skewt_
 
 VLK_INLINE double egarch_skewt_kappa_value(double nu, double lam)
 {
-    egarch_skewt_cache_t cache;
-    if (!egarch_skewt_precompute_full(nu, lam, &cache)) {
-        return NAN;
-    }
-
-    const double dz = (2.0 * EGARCH_SKEWT_QUAD_UMAX) / (double)EGARCH_SKEWT_QUAD_N;
-    double total = 0.0;
-    for (size_t i = 0; i <= EGARCH_SKEWT_QUAD_N; ++i) {
-        const double z = -EGARCH_SKEWT_QUAD_UMAX + dz * (double)i;
-        const double pdf = egarch_skewt_pdf(z, nu, lam, &cache);
-        const double val = fabs(z) * pdf;
-        const double weight = (i == 0 || i == EGARCH_SKEWT_QUAD_N) ? 0.5 : 1.0;
-        total += weight * val;
-    }
-    return total * dz;
+    return hansen_skewt_abs_moment(nu, lam);
 }
 
 VLK_INLINE void egarch_skewt_kappa_full(double nu, double lam, double *kappa, double *kappa_nu, double *kappa_lam, double *kappa_nunu, double *kappa_nulam, double *kappa_lamlam)
 {
     const double nu_margin = MAX(nu - NU_MIN, 1e-4);
-    double h_nu = 1e-4 * MAX(1.0, nu);
+    double h_nu = 1e-3 * MAX(1.0, nu);
     if (h_nu >= 0.5 * nu_margin) {
         h_nu = 0.25 * nu_margin;
     }
@@ -608,7 +594,7 @@ VLK_INLINE void egarch_skewt_kappa_full(double nu, double lam, double *kappa, do
     }
 
     const double lam_margin = LAM_MAX - fabs(lam);
-    double h_lam = 1e-4 * MAX(1.0, lam_margin);
+    double h_lam = 1e-3 * MAX(1.0, lam_margin);
     if (h_lam >= 0.5 * lam_margin) {
         h_lam = 0.25 * lam_margin;
     }

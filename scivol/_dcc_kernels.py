@@ -1,7 +1,7 @@
 """
 scivol/_dcc_kernels.py
 ======================
-Thin Python wrappers around the C DCC Gaussian kernels.
+Thin Python wrappers around the C DCC Gaussian and Student-t kernels.
 
 All computation is in C (including internal memory management).
 This module only:
@@ -129,6 +129,94 @@ def dcc_nll_grad_hess(
     if return_scores:
         return nll, grad, hess_mat, scores.reshape(T, K)  # type: ignore[union-attr]
     return nll, grad, hess_mat
+
+
+def dcc_studentt_nll(
+    theta: NDArray[np.float64],
+    eps: NDArray[np.float64],
+    Qbar: NDArray[np.float64],
+    p: int,
+    q: int,
+) -> float:
+    """DCC(p,q) Student-t copula NLL with common degrees of freedom."""
+    T, N = eps.shape
+    theta_c = _c(theta.ravel())
+    eps_c = _c(eps)
+    qbar_c = _c(Qbar.ravel())
+    if p == 1 and q == 1:
+        return _core._dcc_nll_11_studentt(
+            _ptr(theta_c), _ptr(eps_c), _ptr(qbar_c), T, N
+        )
+    return _core._dcc_nll_pq_studentt(_ptr(theta_c), _ptr(eps_c), _ptr(qbar_c), T, N, p, q)
+
+
+def dcc_studentt_nll_grad(
+    theta: NDArray[np.float64],
+    eps: NDArray[np.float64],
+    Qbar: NDArray[np.float64],
+    p: int,
+    q: int,
+    return_scores: bool = False,
+) -> Tuple[float, NDArray[np.float64], ...]:
+    """DCC(p,q) Student-t copula NLL and exact gradient."""
+    T, N = eps.shape
+    K = p + q + 1
+    theta_c = _c(theta.ravel())
+    eps_c = _c(eps)
+    qbar_c = _c(Qbar.ravel())
+    grad = np.empty(K, dtype=np.float64)
+    nll_buf = np.empty(1, dtype=np.float64)
+    scores = np.empty(T * K, dtype=np.float64) if return_scores else None
+    if p == 1 and q == 1:
+        _core._dcc_nll_grad_11_studentt(
+            _ptr(theta_c), _ptr(eps_c), _ptr(qbar_c),
+            _ptr(grad), _ptr(nll_buf), 0 if scores is None else _ptr(scores), T, N,
+        )
+    else:
+        _core._dcc_nll_grad_pq_studentt(
+            _ptr(theta_c), _ptr(eps_c), _ptr(qbar_c),
+            _ptr(grad), _ptr(nll_buf), 0 if scores is None else _ptr(scores),
+            T, N, p, q,
+        )
+    if return_scores:
+        return float(nll_buf[0]), grad, scores.reshape(T, K)  # type: ignore[union-attr]
+    return float(nll_buf[0]), grad
+
+
+def dcc_studentt_nll_grad_hess(
+    theta: NDArray[np.float64],
+    eps: NDArray[np.float64],
+    Qbar: NDArray[np.float64],
+    p: int,
+    q: int,
+    return_scores: bool = False,
+) -> Tuple[float, NDArray[np.float64], NDArray[np.float64], ...]:
+    """DCC(p,q) Student-t copula NLL, exact derivatives, and scores."""
+    T, N = eps.shape
+    K = p + q + 1
+    theta_c = _c(theta.ravel())
+    eps_c = _c(eps)
+    qbar_c = _c(Qbar.ravel())
+    grad = np.empty(K, dtype=np.float64)
+    hess = np.empty(K * K, dtype=np.float64)
+    nll_buf = np.empty(1, dtype=np.float64)
+    scores = np.empty(T * K, dtype=np.float64) if return_scores else None
+    if p == 1 and q == 1:
+        _core._dcc_nll_grad_hess_11_studentt(
+            _ptr(theta_c), _ptr(eps_c), _ptr(qbar_c),
+            _ptr(grad), _ptr(hess), _ptr(nll_buf),
+            0 if scores is None else _ptr(scores), T, N,
+        )
+    else:
+        _core._dcc_nll_grad_hess_pq_studentt(
+            _ptr(theta_c), _ptr(eps_c), _ptr(qbar_c),
+            _ptr(grad), _ptr(hess), _ptr(nll_buf),
+            0 if scores is None else _ptr(scores), T, N, p, q,
+        )
+    hess_mat = hess.reshape(K, K)
+    if return_scores:
+        return float(nll_buf[0]), grad, hess_mat, scores.reshape(T, K)  # type: ignore[union-attr]
+    return float(nll_buf[0]), grad, hess_mat
 
 
 # ─────────────────────────────────────────────────────────────────────────────
