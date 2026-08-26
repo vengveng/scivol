@@ -311,8 +311,18 @@ class TestBackwardCompatibility:
         """diagnostic_weight should affect scoring when criterion is None."""
         spec = GARCH(auto={'max_p': 1, 'max_q': 1}) + Normal()
 
-        r1 = spec.fit(sample_data, n_jobs=1, diagnostic_weight=0.0)
-        r2 = spec.fit(sample_data, n_jobs=1, diagnostic_weight=500.0)
+        r1 = spec.fit(
+            sample_data,
+            n_jobs=1,
+            diagnostic_weight=0.0,
+            degeneracy_weight=0.0,
+        )
+        r2 = spec.fit(
+            sample_data,
+            n_jobs=1,
+            diagnostic_weight=500.0,
+            degeneracy_weight=0.0,
+        )
 
         # With weight=0, scores should equal AIC
         for c in r1._selection_candidates:

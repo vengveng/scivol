@@ -8,6 +8,7 @@ using joblib with spawn-based workers for cross-platform parallelism.
 from __future__ import annotations
 
 import os
+import sys
 from typing import Callable, Dict, List, Tuple, Any, Optional
 import numpy as np
 
@@ -17,6 +18,11 @@ from joblib import Parallel, delayed
 from joblib.externals.loky.backend.context import set_start_method
 
 set_start_method("spawn", force=True)
+
+
+def _parallel_preference() -> str:
+    """Avoid process creation after a development AD oracle starts JAX."""
+    return "threads" if "jax" in sys.modules else "processes"
 
 
 def get_default_workers() -> int:
@@ -33,14 +39,37 @@ def get_default_workers() -> int:
 
 def _get_vol_map() -> Dict[str, Any]:
     """Return mapping of volatility type names to classes."""
-    from .components.vol import EGARCH, GARCH, GJRGARCH
-    return {'GARCH': GARCH, 'GJRGARCH': GJRGARCH, 'EGARCH': EGARCH}
+    from .components.vol import APARCH, EGARCH, GARCH, GJRGARCH
+    return {
+        'GARCH': GARCH,
+        'GJRGARCH': GJRGARCH,
+        'EGARCH': EGARCH,
+        'APARCH': APARCH,
+    }
 
 
 def _get_density_map() -> Dict[str, Any]:
     """Return mapping of density names to classes."""
-    from .components.density import GED, Normal, StudentT, SkewT
-    return {'Normal': Normal, 'StudentT': StudentT, 'SkewT': SkewT, 'GED': GED}
+    from .components.density import (
+        GED,
+        GeneralizedHyperbolic,
+        Hyperbolic,
+        Normal,
+        NormalInverseGaussian,
+        StudentT,
+        SkewT,
+        VarianceGamma,
+    )
+    return {
+        'Normal': Normal,
+        'StudentT': StudentT,
+        'SkewT': SkewT,
+        'GED': GED,
+        'GeneralizedHyperbolic': GeneralizedHyperbolic,
+        'Hyperbolic': Hyperbolic,
+        'NormalInverseGaussian': NormalInverseGaussian,
+        'VarianceGamma': VarianceGamma,
+    }
 
 
 def _reconstruct_spec(params: Dict[str, Any]) -> Any:
@@ -194,7 +223,7 @@ def fit_multi_parallel(
     actual_workers = min(n_jobs, n_series)
     
     with tqdm_joblib(total=n_series, desc="Fitting series", disable=not show_progress):
-        parallel_results = Parallel(n_jobs=actual_workers, prefer="processes")(
+        parallel_results = Parallel(n_jobs=actual_workers, prefer=_parallel_preference())(
             delayed(_fit_single_series_worker)(
                 name, series, spec_params, fit_kwargs, index
             )
@@ -218,6 +247,9 @@ def _fit_candidate_worker(
     oos_split: Optional[Tuple[int, int, int]] = None,
     oos_loss: str = "logscore",
     diagnostic_weight: float = 50.0,
+    degeneracy_weight: float = 50.0,
+    oos_refit: Optional[int] = None,
+    mean_candidate: Tuple[str, Tuple[Any, ...]] = ("Zero", ()),
 ) -> Any:
     """
     Worker function for fitting a single model candidate (for auto-selection).
@@ -246,20 +278,20 @@ def _fit_candidate_worker(
     import time
     from ._autoselect import (
         ModelCandidate,
+        _assess_candidate_quality,
+        _build_candidate_spec,
+        _candidate_record,
         _compute_oos_losses,
+        _compute_rolling_oos_losses,
         _diagnostic_penalty,
         _score_candidate,
         _split_x,
     )
     
-    vol_map = _get_vol_map()
-    density_map = _get_density_map()
-    
-    vol_cls = vol_map.get(vol_type, vol_map['GARCH'])
-    density_cls = density_map.get(density_name, density_map['Normal'])
-    spec = vol_cls(p, q) + density_cls()
-    
-    candidate = ModelCandidate(spec=spec, vol_type=vol_type, p=p, q=q, density=density_name)
+    spec = _build_candidate_spec(mean_candidate, vol_type, p, q, density_name)
+    candidate = _candidate_record(
+        spec, mean_candidate, vol_type, p, q, density_name
+    )
     start_time = time.perf_counter()
     
     try:
@@ -286,16 +318,30 @@ def _fit_candidate_worker(
         )
         candidate.diagnostics = diagnostics
         candidate.diagnostic_penalty = _diagnostic_penalty(diagnostics, diagnostic_weight)
+        _assess_candidate_quality(candidate, degeneracy_weight=degeneracy_weight)
         if select_by == "oos" and oos_split is not None:
             _, holdout_start, holdout_stop = oos_split
-            losses = _compute_oos_losses(
-                result,
-                data,
-                full_x=fit_kwargs.get("x"),
-                start=holdout_start,
-                stop=holdout_stop,
-                loss=oos_loss,
-            )
+            if oos_refit is None:
+                losses = _compute_oos_losses(
+                    result,
+                    data,
+                    full_x=fit_kwargs.get("x"),
+                    start=holdout_start,
+                    stop=holdout_stop,
+                    loss=oos_loss,
+                )
+            else:
+                losses = _compute_rolling_oos_losses(
+                    spec,
+                    result,
+                    data,
+                    full_x=fit_kwargs.get("x"),
+                    start=holdout_start,
+                    stop=holdout_stop,
+                    loss=oos_loss,
+                    refit_every=int(oos_refit),
+                    fit_kwargs=fit_kwargs,
+                )
             if not np.all(np.isfinite(losses)):
                 raise FloatingPointError("OOS filter produced non-finite losses.")
             candidate.oos_losses = losses
@@ -305,7 +351,9 @@ def _fit_candidate_worker(
             candidate.oos_stop = holdout_stop
             candidate.score = candidate.oos_loss
         else:
-            candidate.score = score
+            candidate.score = score + (
+                candidate.degeneracy_penalty if select_by == "aic+diag" else 0.0
+            )
         
         # Populate convenience fields from diagnostics
         if diagnostics is not None:
@@ -314,6 +362,7 @@ def _fit_candidate_worker(
                 1 for lb in diagnostics['ljung_box'].values()
                 if lb['reject']
             )
+        candidate.fit_time = time.perf_counter() - start_time
             
     except Exception as e:
         candidate.fit_time = time.perf_counter() - start_time
@@ -338,10 +387,13 @@ def select_best_parallel(
     show_progress: bool = False,
     oos_loss: str = "logscore",
     oos_test_size: float | int = 0.2,
+    oos_refit: Optional[int] = None,
     min_train_size: int = 250,
     min_test_size: int = 50,
     allow_density_blind_loss: bool = False,
     diagnostic_weight: float = 50.0,
+    selection_warm_start: bool = True,
+    degeneracy_weight: float = 50.0,
     **fit_kwargs: Any,
 ) -> Tuple[Any, List[Any]]:
     """
@@ -378,7 +430,11 @@ def select_best_parallel(
         SelectionResult,
         _check_density_blind_loss,
         _finalize_candidate_ranking,
+        _finalize_oos_comparisons,
+        _get_density_map as get_density_map,
+        _get_vol_map as get_vol_map,
         _resolve_oos_split,
+        _warm_start_params,
     )
 
     n_jobs = n_jobs if n_jobs is not None else get_default_workers()
@@ -387,6 +443,11 @@ def select_best_parallel(
         density_candidates=density_candidates,
         allow_density_blind_loss=allow_density_blind_loss,
     )
+    if oos_refit is not None:
+        if select_by != "oos":
+            raise ValueError("oos_refit is only valid with select_by='oos'.")
+        if not isinstance(oos_refit, (int, np.integer)) or int(oos_refit) <= 0:
+            raise ValueError("oos_refit must be a positive integer or None.")
     oos_split = None
     if select_by == "oos":
         oos_split = _resolve_oos_split(
@@ -422,7 +483,9 @@ def select_best_parallel(
             
             candidate = _fit_candidate_worker(
                 vol_type, p, q, d, data, fit_kwargs,
-                criterion, diagnostic_kwargs, select_by, oos_split, oos_loss, diagnostic_weight,
+                criterion, diagnostic_kwargs, select_by, oos_split, oos_loss,
+                diagnostic_weight, degeneracy_weight,
+                oos_refit,
             )
             candidates.append(candidate)
             
@@ -432,17 +495,58 @@ def select_best_parallel(
                 else:
                     print(f"FAILED: {candidate.error_message}")
     else:
-        # Parallel execution with joblib
+        # Dependency waves preserve warm-start relationships while fitting
+        # independent candidates within each wave in parallel.
         actual_workers = min(n_jobs, total)
-        
+        bridge_density = "Normal" if "Normal" in density_candidates else density_candidates[0]
+        if selection_warm_start:
+            waves: List[List[Tuple[str, int, int, str]]] = []
+            wave_keys = sorted({
+                (2 * (p + q) + (0 if density == bridge_density else 1))
+                for _, p, q, density in tasks
+            })
+            for wave_key in wave_keys:
+                waves.append([
+                    task for task in tasks
+                    if 2 * (task[1] + task[2])
+                    + (0 if task[3] == bridge_density else 1) == wave_key
+                ])
+        else:
+            waves = [tasks]
+
+        candidates = []
+        vol_map = get_vol_map()
+        density_map = get_density_map()
+        fit_data = data if oos_split is None else data[:oos_split[0]]
         with tqdm_joblib(total=total, desc="Auto-selecting", disable=not show_progress):
-            candidates = Parallel(n_jobs=actual_workers, prefer="processes")(
-                delayed(_fit_candidate_worker)(
-                    vol_type, p, q, d, data, fit_kwargs,
-                    criterion, diagnostic_kwargs, select_by, oos_split, oos_loss, diagnostic_weight,
-                )
-                for vol_type, p, q, d in tasks
-            )
+            with Parallel(n_jobs=actual_workers, prefer=_parallel_preference()) as parallel:
+                for wave in waves:
+                    wave_calls = []
+                    sources = []
+                    for vol_type, p, q, density_name in wave:
+                        task_kwargs = fit_kwargs.copy()
+                        source_name = None
+                        if selection_warm_start:
+                            spec = vol_map[vol_type](p, q) + density_map[density_name]()
+                            initial_params, source_name = _warm_start_params(
+                                spec,
+                                fit_data,
+                                candidates,
+                                bridge_density=bridge_density,
+                            )
+                            if initial_params is not None:
+                                task_kwargs["initial_params"] = initial_params
+                        sources.append(source_name)
+                        wave_calls.append(delayed(_fit_candidate_worker)(
+                            vol_type, p, q, density_name, data, task_kwargs,
+                            criterion, diagnostic_kwargs, select_by, oos_split,
+                            oos_loss, diagnostic_weight, degeneracy_weight,
+                            oos_refit,
+                        ))
+                    wave_candidates = parallel(wave_calls)
+                    for candidate, source_name in zip(wave_candidates, sources):
+                        candidate.warm_started_from = source_name
+                    candidates.extend(wave_candidates)
         
         if selection_verbose:
             for i, (candidate, (vol_type, p, q, d)) in enumerate(zip(candidates, tasks)):
@@ -456,6 +560,8 @@ def select_best_parallel(
     # Sort by score
     candidates.sort(key=lambda c: c.score)
     _finalize_candidate_ranking(candidates)
+    if select_by == "oos":
+        _finalize_oos_comparisons(candidates)
     
     # Find best successful candidate
     best = None
@@ -481,6 +587,9 @@ def select_best_parallel(
         "vol_candidates": list(vol_candidates),
         "density_candidates": list(density_candidates),
         "n_candidates": total,
+        "warm_start": bool(selection_warm_start),
+        "degeneracy_weight": float(degeneracy_weight),
+        "oos_refit": oos_refit,
     }
     selection = SelectionResult(
         candidates,
@@ -498,6 +607,7 @@ def select_best_parallel(
         final_result.fit_info.oos_train_size = train_stop
         final_result.fit_info.oos_test_size = holdout_stop - holdout_start
         final_result.fit_info.oos_loss = oos_loss.lower()
+        final_result.fit_info.oos_refit = oos_refit
 
     if selection_verbose:
         print(f"\nBest model: {best.spec} (Score={best.score:.2f})")
@@ -517,6 +627,8 @@ def _fit_series_candidate_worker(
     diagnostic_kwargs: Optional[Dict[str, Any]],
     index: Optional[Any],
     diagnostic_weight: float = 50.0,
+    degeneracy_weight: float = 50.0,
+    select_by: str = "aic+diag",
 ) -> Tuple[str, Any]:
     """
     Worker for fitting a single (series, candidate) pair.
@@ -550,7 +662,12 @@ def _fit_series_candidate_worker(
         (series_name, ModelCandidate)
     """
     import time
-    from ._autoselect import ModelCandidate, _diagnostic_penalty, _score_candidate
+    from ._autoselect import (
+        ModelCandidate,
+        _assess_candidate_quality,
+        _diagnostic_penalty,
+        _score_candidate,
+    )
     
     vol_map = _get_vol_map()
     density_map = _get_density_map()
@@ -578,9 +695,12 @@ def _fit_series_candidate_worker(
         score, diagnostics = _score_candidate(
             result, criterion, diagnostic_kwargs
         )
-        candidate.score = score
         candidate.diagnostics = diagnostics
         candidate.diagnostic_penalty = _diagnostic_penalty(diagnostics, diagnostic_weight)
+        _assess_candidate_quality(candidate, degeneracy_weight=degeneracy_weight)
+        candidate.score = score + (
+            candidate.degeneracy_penalty if select_by == "aic+diag" else 0.0
+        )
         
         # Populate convenience fields
         if diagnostics is not None:
@@ -608,6 +728,8 @@ def fit_multi_auto_parallel(
     select_by: str = "aic+diag",
     diagnostic_kwargs: Optional[Dict[str, Any]] = None,
     diagnostic_weight: float = 50.0,
+    degeneracy_weight: float = 50.0,
+    selection_warm_start: bool = True,
     n_jobs: Optional[int] = None,
     selection_verbose: bool = False,
     show_progress: bool = False,
@@ -649,7 +771,11 @@ def fit_multi_auto_parallel(
     Dict[str, EstimationResult]
         Best result for each series
     """
-    from ._autoselect import SelectionResult, _finalize_candidate_ranking
+    from ._autoselect import (
+        SelectionResult,
+        _finalize_candidate_ranking,
+        _warm_start_params,
+    )
     from ._progress import tqdm_joblib
 
     n_jobs = n_jobs if n_jobs is not None else get_default_workers()
@@ -680,33 +806,65 @@ def fit_multi_auto_parallel(
         print(f"Auto-selecting {n_series} series x {n_candidates_per} candidates = {total} fits "
               f"(parallel, {min(n_jobs, total)} workers)...")
     
-    # Parallel execution with joblib
+    # Fit dependency waves so each series can reuse lower-order and Normal starts.
     actual_workers = min(n_jobs, total)
-    
-    with tqdm_joblib(total=total, desc="Auto-selecting (multi)", disable=not show_progress):
-        parallel_results = Parallel(n_jobs=actual_workers, prefer="processes")(
-            delayed(_fit_series_candidate_worker)(
-                series_name, vol_type, p, q, d, data, fit_kwargs,
-                criterion, diagnostic_kwargs, index, diagnostic_weight,
-            )
-            for series_name, vol_type, p, q, d, data in tasks
-        )
-    
-    # Group results by series
+    bridge_density = "Normal" if "Normal" in density_candidates else density_candidates[0]
+    if selection_warm_start:
+        wave_keys = sorted({
+            2 * (p + q) + (0 if density == bridge_density else 1)
+            for _, _, p, q, density, _ in tasks
+        })
+        waves = [
+            [
+                task for task in tasks
+                if 2 * (task[2] + task[3])
+                + (0 if task[4] == bridge_density else 1) == wave_key
+            ]
+            for wave_key in wave_keys
+        ]
+    else:
+        waves = [tasks]
+
     series_candidates: Dict[str, List[Any]] = {name: [] for name in data_dict.keys()}
-    
-    for i, (series_name, candidate) in enumerate(parallel_results):
-        series_candidates[series_name].append(candidate)
-        
-        if selection_verbose:
-            task = tasks[i]
-            vol_type, p, q, d = task[1], task[2], task[3], task[4]
-            if candidate.score < float('inf'):
-                print(f"  [{i+1}/{total}] {series_name}:{vol_type}({p},{q})+{d}: "
-                      f"AIC={candidate.aic:.2f}, Score={candidate.score:.2f}")
-            else:
-                print(f"  [{i+1}/{total}] {series_name}:{vol_type}({p},{q})+{d}: "
-                      f"FAILED: {candidate.error_message}")
+    vol_map = _get_vol_map()
+    density_map = _get_density_map()
+    with tqdm_joblib(total=total, desc="Auto-selecting (multi)", disable=not show_progress):
+        with Parallel(n_jobs=actual_workers, prefer=_parallel_preference()) as parallel:
+            completed = 0
+            for wave in waves:
+                calls = []
+                sources = []
+                for series_name, vol_type, p, q, density_name, series_data in wave:
+                    task_kwargs = fit_kwargs.copy()
+                    source_name = None
+                    if selection_warm_start:
+                        spec = vol_map[vol_type](p, q) + density_map[density_name]()
+                        initial_params, source_name = _warm_start_params(
+                            spec,
+                            series_data,
+                            series_candidates[series_name],
+                            bridge_density=bridge_density,
+                        )
+                        if initial_params is not None:
+                            task_kwargs["initial_params"] = initial_params
+                    sources.append(source_name)
+                    calls.append(delayed(_fit_series_candidate_worker)(
+                        series_name, vol_type, p, q, density_name, series_data,
+                        task_kwargs, criterion, diagnostic_kwargs, index,
+                        diagnostic_weight, degeneracy_weight, select_by,
+                    ))
+                wave_results = parallel(calls)
+                for (series_name, candidate), source_name in zip(wave_results, sources):
+                    candidate.warm_started_from = source_name
+                    series_candidates[series_name].append(candidate)
+                    completed += 1
+                    if selection_verbose:
+                        status = (
+                            f"AIC={candidate.aic:.2f}, Score={candidate.score:.2f}"
+                            if np.isfinite(candidate.score)
+                            else f"FAILED: {candidate.error_message}"
+                        )
+                        print(f"  [{completed}/{total}] {series_name}:{candidate.spec}: {status}")
     
     # Select best for each series
     results: Dict[str, Any] = {}
@@ -732,6 +890,8 @@ def fit_multi_auto_parallel(
                 "vol_candidates": list(vol_candidates),
                 "density_candidates": list(density_candidates),
                 "n_candidates": n_candidates_per,
+                "warm_start": bool(selection_warm_start),
+                "degeneracy_weight": float(degeneracy_weight),
             }
             best.result.selection = SelectionResult(
                 candidates,
@@ -751,3 +911,103 @@ def fit_multi_auto_parallel(
             results[series_name] = {'error': 'All candidates failed'}
     
     return results
+
+
+def _fit_series_auto_spec_worker(
+    series_name: str,
+    data: np.ndarray,
+    index: Optional[Any],
+    mean_candidates: List[Tuple[str, Tuple[Any, ...]]],
+    vol_candidates: List[Tuple[str, int, int]],
+    density_candidates: List[str],
+    select_by: str,
+    criterion: Optional[Callable[..., float]],
+    diagnostic_kwargs: Optional[Dict[str, Any]],
+    diagnostic_weight: float,
+    degeneracy_weight: float,
+    selection_warm_start: bool,
+    mean_auto: bool,
+    candidate_budget: int,
+    mean_finalists: int,
+    fit_kwargs: Dict[str, Any],
+) -> Tuple[str, Any]:
+    """Fit a complete auto-selection search for one series worker."""
+    from ._autoselect import select_best_model
+
+    try:
+        result, _ = select_best_model(
+            data,
+            vol_candidates,
+            density_candidates,
+            mean_candidates=mean_candidates,
+            mean_auto=mean_auto,
+            candidate_budget=candidate_budget,
+            mean_finalists=mean_finalists,
+            select_by=select_by,
+            criterion=criterion,
+            diagnostic_kwargs=diagnostic_kwargs,
+            diagnostic_weight=diagnostic_weight,
+            degeneracy_weight=degeneracy_weight,
+            selection_warm_start=selection_warm_start,
+            n_jobs=1,
+            show_progress=False,
+            **fit_kwargs,
+        )
+        result._index = index
+        result._name = series_name
+        return series_name, result
+    except Exception as exc:
+        return series_name, {"error": str(exc)}
+
+
+def fit_multi_auto_specs_parallel(
+    data_dict: Dict[str, np.ndarray],
+    *,
+    index: Optional[Any],
+    mean_candidates: List[Tuple[str, Tuple[Any, ...]]],
+    vol_candidates: List[Tuple[str, int, int]],
+    density_candidates: List[str],
+    select_by: str,
+    criterion: Optional[Callable[..., float]],
+    diagnostic_kwargs: Optional[Dict[str, Any]],
+    diagnostic_weight: float,
+    degeneracy_weight: float,
+    selection_warm_start: bool,
+    mean_auto: bool,
+    candidate_budget: int,
+    mean_finalists: int,
+    n_jobs: Optional[int],
+    show_progress: bool,
+    **fit_kwargs: Any,
+) -> Dict[str, Any]:
+    """Parallelize mean-aware auto selection across independent series."""
+    from ._progress import tqdm_joblib
+
+    workers = min(n_jobs or get_default_workers(), len(data_dict))
+    with tqdm_joblib(
+        total=len(data_dict),
+        desc="Auto-selecting series",
+        disable=not show_progress,
+    ):
+        fitted = Parallel(n_jobs=workers, prefer=_parallel_preference())(
+            delayed(_fit_series_auto_spec_worker)(
+                name,
+                data,
+                index,
+                mean_candidates,
+                vol_candidates,
+                density_candidates,
+                select_by,
+                criterion,
+                diagnostic_kwargs,
+                diagnostic_weight,
+                degeneracy_weight,
+                selection_warm_start,
+                mean_auto,
+                candidate_budget,
+                mean_finalists,
+                fit_kwargs,
+            )
+            for name, data in data_dict.items()
+        )
+    return dict(fitted)

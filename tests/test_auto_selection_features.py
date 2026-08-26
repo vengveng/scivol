@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import warnings
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from scivol import AutoDensity, AutoVol, GARCH, Normal
-from scivol._autoselect import _compute_oos_losses
+from scivol._autoselect import (
+    ModelCandidate,
+    SelectionResult,
+    _assess_candidate_quality,
+    _compute_oos_losses,
+    _diebold_mariano,
+)
 
 
 @pytest.fixture
@@ -50,7 +57,11 @@ def test_selection_to_dataframe(sample_data: np.ndarray) -> None:
     frame = result.selection.to_dataframe()
 
     assert isinstance(frame, pd.DataFrame)
-    assert {"model", "p", "q", "density", "aic", "bic", "score", "converged"}.issubset(frame.columns)
+    assert {
+        "model", "p", "q", "density", "aic", "bic", "score", "converged",
+        "warm_started_from", "boundary_hugging", "near_integrated",
+        "dm_pvalue_vs_best",
+    }.issubset(frame.columns)
     assert frame.loc[0, "model"] == str(result.selection.best.spec)
 
 
@@ -76,6 +87,120 @@ def test_oos_selection_records_losses_and_refits_full_sample(sample_data: np.nda
         assert candidate.oos_loss == pytest.approx(float(np.mean(candidate.oos_losses)))
         assert candidate.score == pytest.approx(candidate.oos_loss)
         assert np.all(np.isfinite(candidate.oos_losses))
+
+    assert np.isfinite(result.selection.candidates[1].dm_pvalue_vs_best)
+    assert isinstance(result.selection.decisive, bool)
+
+
+def test_auto_grid_records_lattice_and_density_warm_starts(sample_data: np.ndarray) -> None:
+    spec = AutoVol(candidates=["GARCH"], max_p=2, max_q=1) + AutoDensity(
+        candidates=["Normal", "StudentT"]
+    )
+    result = spec.fit(sample_data, n_jobs=1, select_by="bic")
+    by_key = {
+        (candidate.p, candidate.q, candidate.density): candidate
+        for candidate in result.selection.candidates
+    }
+
+    assert by_key[(1, 1, "Normal")].warm_started_from is None
+    assert by_key[(1, 1, "StudentT")].warm_started_from == "GARCH(1,1)+Normal"
+    assert by_key[(2, 1, "Normal")].warm_started_from == "GARCH(1,1)+Normal"
+    assert by_key[(2, 1, "StudentT")].warm_started_from == "GARCH(2,1)+Normal"
+    assert by_key[(2, 1, "StudentT")].result.fit_info.warm_started is True
+
+
+def test_candidate_quality_flags_bounds_and_near_integration() -> None:
+    spec = GARCH(1, 1) + Normal()
+    fake_result = SimpleNamespace(
+        spec=spec,
+        params=np.array([1e-8, 0.10, 0.899], dtype=np.float64),
+        garch_params=SimpleNamespace(persistence=0.999),
+        _get_param_names=lambda: ["omega", "alpha[1]", "beta[1]"],
+    )
+    candidate = ModelCandidate(spec=spec, result=fake_result)
+
+    _assess_candidate_quality(candidate, degeneracy_weight=40.0)
+
+    assert candidate.boundary_hugging is True
+    assert candidate.boundary_parameters == ("omega",)
+    assert candidate.near_integrated is True
+    assert candidate.degeneracy_penalty == 80.0
+
+
+def test_diebold_mariano_detects_persistent_loss_advantage() -> None:
+    winner = np.zeros(120, dtype=np.float64)
+    runner = 0.2 + 0.01 * np.sin(np.arange(120, dtype=np.float64))
+
+    statistic, pvalue = _diebold_mariano(runner, winner)
+
+    assert statistic > 0.0
+    assert pvalue < 0.01
+
+
+def test_rolling_oos_refits_preserve_loss_alignment_and_no_lookahead(
+    sample_data: np.ndarray,
+) -> None:
+    changed = sample_data.copy()
+    changed[-40:] *= -2.0
+    spec = AutoVol(candidates=["GARCH"], max_p=1, max_q=1) + Normal()
+
+    result_a = spec.fit(
+        sample_data,
+        n_jobs=1,
+        select_by="oos",
+        oos_test_size=60,
+        oos_refit=20,
+    )
+    result_b = spec.fit(
+        changed,
+        n_jobs=1,
+        select_by="oos",
+        oos_test_size=60,
+        oos_refit=20,
+    )
+
+    losses_a = result_a.selection.best.oos_losses
+    losses_b = result_b.selection.best.oos_losses
+    assert losses_a.shape == (60,)
+    np.testing.assert_array_equal(losses_a[:20], losses_b[:20])
+    assert result_a.fit_info.oos_refit == 20
+    assert result_a.fit_info.selection_search_space["oos_refit"] == 20
+
+
+def test_model_confidence_set_eliminates_clearly_inferior_model() -> None:
+    rng = np.random.default_rng(20260820)
+    common = rng.normal(1.0, 0.1, size=160)
+    specs = [GARCH(order, 1) + Normal() for order in (1, 2, 3)]
+    losses = [
+        common,
+        common + rng.normal(0.005, 0.03, size=160),
+        common + 0.4 + rng.normal(0.0, 0.02, size=160),
+    ]
+    candidates = []
+    for spec, candidate_losses in zip(specs, losses):
+        candidates.append(ModelCandidate(
+            spec=spec,
+            oos_losses=candidate_losses,
+            oos_loss=float(np.mean(candidate_losses)),
+            score=float(np.mean(candidate_losses)),
+        ))
+    candidates.sort(key=lambda candidate: candidate.score)
+    selection = SelectionResult(
+        candidates,
+        select_by="oos",
+        criterion_name="oos:logscore",
+        search_space={"n_candidates": 3},
+    )
+
+    confidence_set = selection.confidence_set(
+        alpha=0.10,
+        n_bootstrap=400,
+        random_state=7,
+    )
+
+    assert candidates[2] in confidence_set.eliminated
+    assert candidates[0] in confidence_set.candidates
+    assert len(confidence_set) < 3
 
 
 def test_oos_density_blind_loss_rejects_autodensity(sample_data: np.ndarray) -> None:

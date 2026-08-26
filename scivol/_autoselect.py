@@ -12,7 +12,10 @@ from dataclasses import dataclass
 from typing import Callable, List, Tuple, Optional, Dict, Any, TYPE_CHECKING
 import numpy as np
 import warnings
-from scipy.special import gammaln
+from scipy.special import gammaln, ndtr
+
+from ._gh import standardized_gh_logpdf
+from ._vg import standardized_vg_logpdf
 
 if TYPE_CHECKING:
     from .spec import CompositeSpec
@@ -20,6 +23,7 @@ if TYPE_CHECKING:
 
 # Type alias for the criterion callable
 CriterionFunc = Callable[["EstimationResult", Optional[Dict[str, Any]]], float]
+MeanCandidate = Tuple[str, Tuple[Any, ...]]
 
 
 @dataclass
@@ -68,8 +72,20 @@ class ModelCandidate:
     p: Optional[int] = None
     q: Optional[int] = None
     density: Optional[str] = None
+    mean_type: Optional[str] = None
+    mean_signature: Optional[str] = None
+    mean_p: Optional[int] = None
+    mean_q: Optional[int] = None
     delta_score: float = np.inf
     weight: float = 0.0
+    warm_started_from: Optional[str] = None
+    boundary_hugging: bool = False
+    boundary_parameters: Tuple[str, ...] = ()
+    near_integrated: bool = False
+    persistence: Optional[float] = None
+    degeneracy_penalty: float = 0.0
+    dm_stat_vs_best: float = np.nan
+    dm_pvalue_vs_best: float = np.nan
 
 
 class SelectionResult:
@@ -95,6 +111,14 @@ class SelectionResult:
                 return candidate
         return None
 
+    @property
+    def decisive(self) -> Optional[bool]:
+        """Whether the OOS winner beats the runner-up at the 5% level."""
+        if self.select_by != "oos" or len(self.candidates) < 2:
+            return None
+        pvalue = self.candidates[1].dm_pvalue_vs_best
+        return bool(pvalue < 0.05) if np.isfinite(pvalue) else None
+
     def to_dataframe(self) -> Any:
         try:
             import pandas as pd
@@ -111,6 +135,10 @@ class SelectionResult:
                     "p": candidate.p,
                     "q": candidate.q,
                     "density": candidate.density,
+                    "mean_type": candidate.mean_type,
+                    "mean": candidate.mean_signature,
+                    "mean_p": candidate.mean_p,
+                    "mean_q": candidate.mean_q,
                     "loglik": (
                         candidate.result.log_likelihood
                         if candidate.result is not None else np.nan
@@ -131,12 +159,80 @@ class SelectionResult:
                     ),
                     "fit_time": candidate.fit_time,
                     "error_message": candidate.error_message,
+                    "warm_started_from": candidate.warm_started_from,
+                    "boundary_hugging": candidate.boundary_hugging,
+                    "boundary_parameters": ", ".join(candidate.boundary_parameters),
+                    "near_integrated": candidate.near_integrated,
+                    "persistence": candidate.persistence,
+                    "degeneracy_penalty": candidate.degeneracy_penalty,
+                    "dm_stat_vs_best": candidate.dm_stat_vs_best,
+                    "dm_pvalue_vs_best": candidate.dm_pvalue_vs_best,
                 }
             )
         return pd.DataFrame(rows)
 
     def summary(self, top_n: int = 10) -> None:
         _print_selection_summary(self.candidates, top_n=top_n, select_by=self.select_by)
+
+    def confidence_set(
+        self,
+        alpha: float = 0.10,
+        *,
+        n_bootstrap: int = 1000,
+        block_length: Optional[int] = None,
+        random_state: Optional[int] = 0,
+    ) -> ModelConfidenceSet:
+        """Estimate a block-bootstrap model confidence set from OOS losses."""
+        if self.select_by != "oos":
+            raise ValueError("confidence_set() requires select_by='oos'.")
+        return _model_confidence_set(
+            self.candidates,
+            alpha=alpha,
+            n_bootstrap=n_bootstrap,
+            block_length=block_length,
+            random_state=random_state,
+        )
+
+
+@dataclass(frozen=True)
+class ModelConfidenceSet:
+    """Models not rejected as inferior by the bootstrap elimination procedure."""
+
+    candidates: Tuple[ModelCandidate, ...]
+    eliminated: Tuple[ModelCandidate, ...]
+    alpha: float
+    final_pvalue: float
+    elimination_pvalues: Dict[str, float]
+
+    def __len__(self) -> int:
+        return len(self.candidates)
+
+    def to_dataframe(self) -> Any:
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise ImportError("confidence_set().to_dataframe() requires pandas.") from exc
+        rows = []
+        members = {id(candidate) for candidate in self.candidates}
+        for candidate in (*self.candidates, *self.eliminated):
+            rows.append({
+                "model": str(candidate.spec),
+                "mean_loss": candidate.oos_loss,
+                "in_confidence_set": id(candidate) in members,
+                "elimination_pvalue": self.elimination_pvalues.get(str(candidate.spec), np.nan),
+            })
+        return pd.DataFrame(rows).sort_values(
+            ["in_confidence_set", "mean_loss"], ascending=[False, True]
+        ).reset_index(drop=True)
+
+    def summary(self) -> None:
+        total = len(self.candidates) + len(self.eliminated)
+        print(
+            f"Model confidence set: {len(self.candidates)} of {total} models survive "
+            f"at alpha={self.alpha:.2f}."
+        )
+        for candidate in self.candidates:
+            print(f"  {candidate.spec}: mean loss={candidate.oos_loss:.6g}")
 
 
 # =====================================================================
@@ -270,6 +366,206 @@ def _score_candidate(
     return score, diagnostics
 
 
+def _component_params(component: Any, values: np.ndarray) -> Dict[str, Any]:
+    """Unpack a component without leaving its fitted state changed."""
+    previous = getattr(component, "fitted_params", None)
+    unpacked = component.unpack(np.asarray(values, dtype=np.float64).copy())
+    component.fitted_params = previous
+    return dict(unpacked)
+
+
+def _mapped_component_start(
+    source_component: Any,
+    source_values: np.ndarray,
+    target_component: Any,
+    target_values: np.ndarray,
+) -> np.ndarray:
+    """Map shared scalar and lag parameters into a target component start."""
+    if type(source_component) is not type(target_component):
+        return target_values
+
+    source = _component_params(source_component, source_values)
+    target = _component_params(target_component, target_values)
+    zero = (
+        0.0
+        if target_component.role.name == "MEAN"
+        or target_component.signature.startswith("EGARCH")
+        else 1e-6
+    )
+    for key, target_value in target.items():
+        if key not in source:
+            continue
+        source_value = source[key]
+        if isinstance(target_value, (list, tuple, np.ndarray)):
+            target_list = [zero] * len(target_value)
+            source_list = list(source_value)
+            target_list[:min(len(target_list), len(source_list))] = source_list[:len(target_list)]
+            target[key] = target_list
+        else:
+            target[key] = source_value
+    return np.asarray(target_component.pack(target), dtype=np.float64)
+
+
+def _warm_start_params(
+    spec: CompositeSpec,
+    data: np.ndarray,
+    prior_candidates: List[ModelCandidate],
+    *,
+    bridge_density: str = "Normal",
+    x: Any = None,
+) -> tuple[Optional[np.ndarray], Optional[str]]:
+    """Build a compatible start from the closest successful lattice neighbor."""
+    from .roles import Role
+
+    target_vol = spec.get_component(Role.VOLATILITY)
+    target_density = spec.get_component(Role.DENSITY)
+    if target_vol is None or target_density is None:
+        return None, None
+
+    target_mean = spec.get_component(Role.MEAN)
+    # Linked mean kernels do not yet share a uniform public initial-parameter
+    # contract, so provenance must remain honest until that contract is added.
+    if target_mean is not None:
+        return None, None
+    target_mean_type = type(target_mean).__name__ if target_mean is not None else "Zero"
+    target_mean_p = int(getattr(target_mean, "p", 0)) if target_mean is not None else 0
+    target_mean_q = int(getattr(target_mean, "q", 0)) if target_mean is not None else 0
+    ranked_sources = []
+    for candidate in prior_candidates:
+        if candidate.result is None or not candidate.result.converged:
+            continue
+        if candidate.vol_type != type(target_vol).__name__:
+            continue
+        if candidate.mean_type != target_mean_type:
+            continue
+        if candidate.p is None or candidate.q is None:
+            continue
+        target_p = int(getattr(target_vol, "p", 0))
+        target_q = int(getattr(target_vol, "q", 0))
+        if candidate.p > target_p or candidate.q > target_q:
+            continue
+        if candidate.mean_p is not None and candidate.mean_p > target_mean_p:
+            continue
+        if candidate.mean_q is not None and candidate.mean_q > target_mean_q:
+            continue
+        mean_distance = (
+            target_mean_p - int(candidate.mean_p or 0)
+            + target_mean_q - int(candidate.mean_q or 0)
+        )
+        same_mean_order = mean_distance == 0
+        same_order = candidate.p == target_p and candidate.q == target_q
+        same_density = candidate.density == target_density.signature
+        density_bridge = candidate.density == bridge_density
+        if same_order and same_mean_order and density_bridge and not same_density:
+            priority = (0, 0)
+        elif same_density:
+            priority = (
+                1,
+                target_p - candidate.p + target_q - candidate.q + mean_distance,
+            )
+        elif density_bridge:
+            priority = (
+                2,
+                target_p - candidate.p + target_q - candidate.q + mean_distance,
+            )
+        else:
+            continue
+        ranked_sources.append((priority, candidate))
+
+    if not ranked_sources:
+        return None, None
+    source = min(ranked_sources, key=lambda item: item[0])[1]
+    source_spec = source.result.spec
+    source_params = np.asarray(source.result.params, dtype=np.float64)
+    pieces = []
+    for target_component in spec.components:
+        if hasattr(target_component, "set_n_exog") and x is not None:
+            x_array = np.asarray(x)
+            target_component.set_n_exog(1 if x_array.ndim == 1 else x_array.shape[1])
+        target_start = np.asarray(target_component.default_start(data), dtype=np.float64)
+        source_component = source_spec.get_component(target_component.role)
+        if source_component is not None:
+            source_slice = source_spec.slice_map[source_component]
+            target_start = _mapped_component_start(
+                source_component,
+                source_params[source_slice],
+                target_component,
+                target_start,
+            )
+        pieces.append(target_start)
+    return np.ascontiguousarray(np.concatenate(pieces), dtype=np.float64), str(source.spec)
+
+
+def _assess_candidate_quality(
+    candidate: ModelCandidate,
+    *,
+    degeneracy_weight: float,
+    boundary_tolerance: float = 1e-4,
+    persistence_threshold: float = 0.995,
+) -> None:
+    """Record boundary and near-unit-root evidence for one fitted candidate."""
+    result = candidate.result
+    if result is None:
+        return
+
+    bounds = [bound for component in result.spec.components for bound in component.bounds()]
+    params = np.asarray(result.params, dtype=np.float64)
+    try:
+        names = result._get_param_names()
+    except Exception:
+        names = [f"parameter[{i}]" for i in range(params.size)]
+    pinned = []
+    for index, (value, bound) in enumerate(zip(params, bounds)):
+        lower, upper = bound
+        span = upper - lower
+        tolerance = boundary_tolerance * max(abs(span), 1.0)
+        if (np.isfinite(lower) and value - lower <= tolerance) or (
+            np.isfinite(upper) and upper - value <= tolerance
+        ):
+            pinned.append(names[index] if index < len(names) else f"parameter[{index}]")
+
+    candidate.boundary_parameters = tuple(pinned)
+    candidate.boundary_hugging = bool(pinned)
+    gp = result.garch_params
+    if gp is not None:
+        candidate.persistence = float(gp.persistence)
+        candidate.near_integrated = abs(candidate.persistence) >= persistence_threshold
+    flags = int(candidate.boundary_hugging) + int(candidate.near_integrated)
+    candidate.degeneracy_penalty = float(degeneracy_weight * flags)
+
+
+def _diebold_mariano(loss_a: np.ndarray, loss_b: np.ndarray) -> tuple[float, float]:
+    """Return a two-sided HAC Diebold-Mariano statistic for equal mean loss."""
+    difference = np.asarray(loss_a, dtype=np.float64) - np.asarray(loss_b, dtype=np.float64)
+    difference = difference[np.isfinite(difference)]
+    n_obs = difference.size
+    if n_obs < 3:
+        return np.nan, np.nan
+    centered = difference - float(np.mean(difference))
+    max_lag = min(int(np.floor(n_obs ** (1.0 / 3.0))), n_obs - 1)
+    long_run_variance = float(np.dot(centered, centered) / n_obs)
+    for lag in range(1, max_lag + 1):
+        covariance = float(np.dot(centered[lag:], centered[:-lag]) / n_obs)
+        long_run_variance += 2.0 * (1.0 - lag / (max_lag + 1.0)) * covariance
+    if not np.isfinite(long_run_variance) or long_run_variance <= 0.0:
+        return np.nan, np.nan
+    statistic = float(np.mean(difference) / np.sqrt(long_run_variance / n_obs))
+    return statistic, float(2.0 * ndtr(-abs(statistic)))
+
+
+def _finalize_oos_comparisons(candidates: List[ModelCandidate]) -> None:
+    """Compare each OOS candidate's loss path with the selected winner."""
+    if not candidates or candidates[0].oos_losses is None:
+        return
+    best_losses = candidates[0].oos_losses
+    for candidate in candidates[1:]:
+        if candidate.oos_losses is None or candidate.oos_losses.shape != best_losses.shape:
+            continue
+        candidate.dm_stat_vs_best, candidate.dm_pvalue_vs_best = _diebold_mariano(
+            candidate.oos_losses, best_losses
+        )
+
+
 def _split_x(x: Any, stop: int) -> Any:
     if x is None:
         return None
@@ -324,6 +620,9 @@ def _per_observation_loglik(
     *,
     nu: Optional[float],
     lam: Optional[float],
+    rho: Optional[float] = None,
+    zeta: Optional[float] = None,
+    shape_lambda: Optional[float] = None,
 ) -> np.ndarray:
     sigma2 = np.maximum(np.asarray(sigma2, dtype=np.float64), 1e-12)
     resid = np.asarray(resid, dtype=np.float64)
@@ -365,6 +664,20 @@ def _per_observation_loglik(
             - 0.5 * np.log(sigma2)
             - 0.5 * (nu + 1.0) * np.log1p((z_adj * z_adj) / (nu - 2.0))
         )
+    if distribution in {"GeneralizedHyperbolic", "Hyperbolic", "NormalInverseGaussian"}:
+        if rho is None or zeta is None or shape_lambda is None:
+            raise ValueError(f"{distribution} OOS log score requires GH shape parameters.")
+        return (
+            standardized_gh_logpdf(z, rho, zeta, shape_lambda)
+            - 0.5 * np.log(sigma2)
+        )
+    if distribution == "VarianceGamma":
+        if rho is None or shape_lambda is None:
+            raise ValueError("VarianceGamma OOS log score requires `rho` and `lambda`.")
+        return (
+            standardized_vg_logpdf(z, rho, shape_lambda)
+            - 0.5 * np.log(sigma2)
+        )
     raise ValueError(f"Unsupported distribution '{distribution}'.")
 
 
@@ -393,6 +706,9 @@ def _compute_oos_losses(
             sigma2,
             nu=state.nu,
             lam=state.lam,
+            rho=state.rho,
+            zeta=state.zeta,
+            shape_lambda=state.shape_lambda,
         )
         return -ll
     realized_var = resid * resid
@@ -401,6 +717,135 @@ def _compute_oos_losses(
     if key == "mse":
         return (realized_var - sigma2) ** 2
     raise ValueError("oos_loss must be 'logscore', 'qlike', or 'mse'.")
+
+
+def _compute_rolling_oos_losses(
+    spec: CompositeSpec,
+    initial_result: EstimationResult,
+    full_data: np.ndarray,
+    *,
+    full_x: Any,
+    start: int,
+    stop: int,
+    loss: str,
+    refit_every: int,
+    fit_kwargs: Dict[str, Any],
+) -> np.ndarray:
+    """Score an expanding-window holdout, refitting after each completed chunk."""
+    if not isinstance(refit_every, (int, np.integer)) or int(refit_every) <= 0:
+        raise ValueError("oos_refit must be a positive integer or None.")
+    refit_every = int(refit_every)
+    current_result = initial_result
+    chunks = []
+    for chunk_start in range(start, stop, refit_every):
+        chunk_stop = min(chunk_start + refit_every, stop)
+        data_through_chunk = full_data[:chunk_stop]
+        x_through_chunk = _split_x(full_x, chunk_stop)
+        chunks.append(_compute_oos_losses(
+            current_result,
+            data_through_chunk,
+            full_x=x_through_chunk,
+            start=chunk_start,
+            stop=chunk_stop,
+            loss=loss,
+        ))
+        if chunk_stop >= stop:
+            continue
+        refit_kwargs = fit_kwargs.copy()
+        refit_kwargs["n_jobs"] = 1
+        if "x" in refit_kwargs:
+            refit_kwargs["x"] = x_through_chunk
+        method = str(refit_kwargs.get("method", "mle")).lower()
+        if method != "qmle":
+            refit_kwargs["initial_params"] = current_result.params
+        current_result = spec.fit(data_through_chunk, **refit_kwargs)
+        if not current_result.converged:
+            raise RuntimeError(
+                f"Rolling OOS refit failed to converge at observation {chunk_stop}."
+            )
+    return np.ascontiguousarray(np.concatenate(chunks), dtype=np.float64)
+
+
+def _circular_block_indices(
+    rng: np.random.Generator,
+    n_obs: int,
+    block_length: int,
+) -> np.ndarray:
+    n_blocks = int(np.ceil(n_obs / block_length))
+    starts = rng.integers(0, n_obs, size=n_blocks)
+    offsets = np.arange(block_length)
+    return ((starts[:, None] + offsets[None, :]) % n_obs).ravel()[:n_obs]
+
+
+def _model_confidence_set(
+    candidates: List[ModelCandidate],
+    *,
+    alpha: float,
+    n_bootstrap: int,
+    block_length: Optional[int],
+    random_state: Optional[int],
+) -> ModelConfidenceSet:
+    """Run a Hansen-style Tmax elimination on aligned OOS loss paths."""
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be between 0 and 1.")
+    if not isinstance(n_bootstrap, (int, np.integer)) or int(n_bootstrap) < 100:
+        raise ValueError("n_bootstrap must be an integer of at least 100.")
+    usable = [
+        candidate for candidate in candidates
+        if candidate.oos_losses is not None
+        and np.all(np.isfinite(candidate.oos_losses))
+    ]
+    if not usable:
+        raise ValueError("No finite aligned OOS loss vectors are available.")
+    lengths = {candidate.oos_losses.size for candidate in usable}
+    if len(lengths) != 1:
+        raise ValueError("MCS requires equal-length OOS loss vectors.")
+    n_obs = lengths.pop()
+    if n_obs < 20:
+        raise ValueError("MCS requires at least 20 OOS observations.")
+    if block_length is None:
+        block_length = max(2, int(round(n_obs ** (1.0 / 3.0))))
+    if not isinstance(block_length, (int, np.integer)) or not 1 <= int(block_length) <= n_obs:
+        raise ValueError("block_length must be between 1 and the OOS sample size.")
+
+    losses = np.column_stack([candidate.oos_losses for candidate in usable])
+    rng = np.random.default_rng(random_state)
+    active = list(range(len(usable)))
+    eliminated = []
+    elimination_pvalues: Dict[str, float] = {}
+    final_pvalue = 1.0
+    while len(active) > 1:
+        active_losses = losses[:, active]
+        relative = active_losses - np.mean(active_losses, axis=1, keepdims=True)
+        means = np.mean(relative, axis=0)
+        centered = relative - means
+        bootstrap_means = np.empty(
+            (int(n_bootstrap), len(active)), dtype=np.float64
+        )
+        for draw in range(int(n_bootstrap)):
+            indices = _circular_block_indices(rng, n_obs, int(block_length))
+            bootstrap_means[draw] = np.mean(centered[indices], axis=0)
+        standard_errors = np.std(bootstrap_means, axis=0, ddof=1)
+        standard_errors = np.maximum(standard_errors, np.finfo(np.float64).eps)
+        observed = float(np.max(means / standard_errors))
+        bootstrap_max = np.max(bootstrap_means / standard_errors, axis=1)
+        final_pvalue = float((1 + np.sum(bootstrap_max >= observed)) / (n_bootstrap + 1))
+        if final_pvalue >= alpha:
+            break
+        worst_position = int(np.argmax(means / standard_errors))
+        worst_index = active.pop(worst_position)
+        worst_candidate = usable[worst_index]
+        eliminated.append(worst_candidate)
+        elimination_pvalues[str(worst_candidate.spec)] = final_pvalue
+
+    survivors = tuple(usable[index] for index in active)
+    return ModelConfidenceSet(
+        candidates=survivors,
+        eliminated=tuple(eliminated),
+        alpha=float(alpha),
+        final_pvalue=final_pvalue,
+        elimination_pvalues=elimination_pvalues,
+    )
 
 
 def _has_auto_density(density_candidates: List[str]) -> bool:
@@ -489,6 +934,17 @@ def _print_selection_summary(
         print(f"Best:  {candidates[0].spec}")
     if len(candidates) > 1 and np.isfinite(candidates[1].delta_score) and candidates[1].delta_score < 2.0:
         print(f"Selection not decisive: top 2 models are within {candidates[1].delta_score:.2f} score points.")
+    if oos_mode and len(candidates) > 1:
+        pvalue = candidates[1].dm_pvalue_vs_best
+        if np.isfinite(pvalue):
+            verdict = "decisive" if pvalue < 0.05 else "not decisive"
+            print(f"Winner vs runner-up: DM p={pvalue:.3f} ({verdict} at 5%).")
+    n_degenerate = sum(
+        candidate.boundary_hugging or candidate.near_integrated
+        for candidate in candidates
+    )
+    if n_degenerate:
+        print(f"Degeneracy flags: {n_degenerate} candidate(s) near a bound or unit root.")
 
 
 # =====================================================================
@@ -497,14 +953,98 @@ def _print_selection_summary(
 
 def _get_vol_map() -> Dict[str, Any]:
     """Return mapping of volatility type names to classes."""
-    from .components.vol import EGARCH, GARCH, GJRGARCH
-    return {'GARCH': GARCH, 'GJRGARCH': GJRGARCH, 'EGARCH': EGARCH}
+    from .components.vol import APARCH, EGARCH, GARCH, GJRGARCH
+    return {
+        'GARCH': GARCH,
+        'GJRGARCH': GJRGARCH,
+        'EGARCH': EGARCH,
+        'APARCH': APARCH,
+    }
 
 
 def _get_density_map() -> Dict[str, Any]:
     """Return mapping of density names to classes."""
-    from .components.density import GED, Normal, StudentT, SkewT
-    return {'Normal': Normal, 'StudentT': StudentT, 'SkewT': SkewT, 'GED': GED}
+    from .components.density import (
+        GED,
+        GeneralizedHyperbolic,
+        Hyperbolic,
+        Normal,
+        NormalInverseGaussian,
+        StudentT,
+        SkewT,
+        VarianceGamma,
+    )
+    return {
+        'Normal': Normal,
+        'StudentT': StudentT,
+        'SkewT': SkewT,
+        'GED': GED,
+        'GeneralizedHyperbolic': GeneralizedHyperbolic,
+        'Hyperbolic': Hyperbolic,
+        'NormalInverseGaussian': NormalInverseGaussian,
+        'VarianceGamma': VarianceGamma,
+    }
+
+
+def _mean_signature(candidate: MeanCandidate) -> str:
+    kind, args = candidate
+    if kind == "Zero":
+        return "Zero"
+    if kind == "ARMA":
+        return f"ARMA({args[0]},{args[1]})"
+    if kind == "ARX":
+        return f"ARX({args[0]})"
+    if kind == "HARX":
+        return f"HARX({','.join(str(value) for value in args[0])})"
+    raise ValueError(f"Unknown mean candidate '{kind}'.")
+
+
+def _build_candidate_spec(
+    mean_candidate: MeanCandidate,
+    vol_type: str,
+    p: int,
+    q: int,
+    density_name: str,
+) -> CompositeSpec:
+    """Build one concrete mean-volatility-density candidate."""
+    from .components.mean import ARMA, ARX, HARX
+
+    vol_map = _get_vol_map()
+    density_map = _get_density_map()
+    vol = vol_map[vol_type](p, q)
+    density = density_map[density_name]()
+    kind, args = mean_candidate
+    if kind == "Zero":
+        return vol + density
+    if kind == "ARMA":
+        return ARMA(int(args[0]), int(args[1])) + vol + density
+    if kind == "ARX":
+        return ARX(int(args[0]), constant=bool(args[1])) + vol + density
+    if kind == "HARX":
+        return HARX(tuple(args[0]), constant=bool(args[1])) + vol + density
+    raise ValueError(f"Unknown mean candidate '{kind}'.")
+
+
+def _candidate_record(
+    spec: CompositeSpec,
+    mean_candidate: MeanCandidate,
+    vol_type: str,
+    p: int,
+    q: int,
+    density_name: str,
+) -> ModelCandidate:
+    kind, args = mean_candidate
+    return ModelCandidate(
+        spec=spec,
+        mean_type=kind,
+        mean_signature=_mean_signature(mean_candidate),
+        mean_p=int(args[0]) if kind == "ARMA" else 0,
+        mean_q=int(args[1]) if kind == "ARMA" else 0,
+        vol_type=vol_type,
+        p=p,
+        q=q,
+        density=density_name,
+    )
 
 
 # =====================================================================
@@ -516,6 +1056,10 @@ def select_best_model(
     vol_candidates: List[Tuple[str, int, int]],
     density_candidates: List[str],
     *,
+    mean_candidates: Optional[List[MeanCandidate]] = None,
+    mean_auto: bool = False,
+    candidate_budget: int = 120,
+    mean_finalists: int = 2,
     select_by: str = "aic+diag",
     criterion: Optional[CriterionFunc] = None,
     diagnostic_kwargs: Optional[Dict[str, Any]] = None,
@@ -525,9 +1069,12 @@ def select_best_model(
     n_jobs: Optional[int] = None,
     oos_loss: str = "logscore",
     oos_test_size: float | int = 0.2,
+    oos_refit: Optional[int] = None,
     min_train_size: int = 250,
     min_test_size: int = 50,
     allow_density_blind_loss: bool = False,
+    selection_warm_start: bool = True,
+    degeneracy_weight: float = 50.0,
     **fit_kwargs: Any,
 ) -> Tuple[EstimationResult, List[ModelCandidate]]:
     """
@@ -540,7 +1087,8 @@ def select_best_model(
     vol_candidates : List[Tuple[str, int, int]]
         List of ``(vol_type, p, q)`` tuples for volatility models/orders.
     density_candidates : List[str]
-        List of distribution names: ``'Normal'``, ``'StudentT'``, ``'SkewT'``.
+        Distribution names accepted by :class:`AutoDensity`. GH-family densities are
+        available as explicit candidates but are not in its default grid.
     criterion : callable, optional
         ``(result, diagnostics) -> float``.  Lower score is better.
         *result* is an :class:`EstimationResult`; *diagnostics* is the full
@@ -590,6 +1138,11 @@ def select_best_model(
         density_candidates=density_candidates,
         allow_density_blind_loss=allow_density_blind_loss,
     )
+    if oos_refit is not None:
+        if selection_mode != "oos":
+            raise ValueError("oos_refit is only valid with select_by='oos'.")
+        if not isinstance(oos_refit, (int, np.integer)) or int(oos_refit) <= 0:
+            raise ValueError("oos_refit must be a positive integer or None.")
     
     # Handle QMLE + AutoDensity case
     method = fit_kwargs.get('method', 'MLE')
@@ -602,17 +1155,47 @@ def select_best_model(
         )
         density_candidates = ['Normal']
 
+    mean_candidates = mean_candidates or [("Zero", ())]
     requested_hold_back = int(fit_kwargs.get("hold_back", 0) or 0)
     common_sample = fit_kwargs.get("common_sample", None)
     if common_sample is not False and vol_candidates:
         common_hold_back = max(max(p, q) for _, p, q in vol_candidates)
+        for kind, args in mean_candidates:
+            if kind == "ARMA":
+                common_hold_back = max(common_hold_back, int(args[0]), int(args[1]))
+            elif kind == "ARX":
+                common_hold_back = max(common_hold_back, int(args[0]))
+            elif kind == "HARX":
+                common_hold_back = max(common_hold_back, max(args[0]))
         fit_kwargs["hold_back"] = max(requested_hold_back, common_hold_back)
         fit_kwargs["common_sample"] = True
     else:
         fit_kwargs["hold_back"] = requested_hold_back
         fit_kwargs["common_sample"] = False
     
-    total = len(vol_candidates) * len(density_candidates)
+    full_total = len(mean_candidates) * len(vol_candidates) * len(density_candidates)
+    cross_size = len(vol_candidates) * len(density_candidates)
+    staged_mean_search = bool(mean_auto and full_total > candidate_budget and cross_size > 1)
+    if staged_mean_search:
+        if candidate_budget < len(mean_candidates):
+            raise ValueError(
+                "AutoMean candidate_budget must be large enough to screen every "
+                f"mean candidate ({len(mean_candidates)} required)."
+            )
+        allowed_finalists = min(
+            int(mean_finalists),
+            len(mean_candidates),
+            (candidate_budget - len(mean_candidates)) // (cross_size - 1),
+        )
+        if allowed_finalists < 1:
+            raise ValueError(
+                "AutoMean candidate_budget leaves no room to expand a screened "
+                "mean finalist across the volatility-density grid."
+            )
+        total = len(mean_candidates) + allowed_finalists * (cross_size - 1)
+    else:
+        allowed_finalists = len(mean_candidates)
+        total = full_total
     n_jobs_actual = n_jobs if n_jobs is not None else get_default_workers()
 
     oos_split: Optional[tuple[int, int, int]] = None
@@ -640,6 +1223,7 @@ def select_best_model(
     use_parallel = (
         n_jobs_actual > 1
         and total >= _MIN_PARALLEL_CANDIDATES
+        and mean_candidates == [("Zero", ())]
     )
     
     if use_parallel:
@@ -656,9 +1240,12 @@ def select_best_model(
             show_progress=show_progress,
             oos_loss=oos_loss,
             oos_test_size=oos_test_size,
+            oos_refit=oos_refit,
             min_train_size=min_train_size,
             min_test_size=min_test_size,
             allow_density_blind_loss=allow_density_blind_loss,
+            selection_warm_start=selection_warm_start,
+            degeneracy_weight=degeneracy_weight,
             diagnostic_weight=diagnostic_weight,
             **fit_kwargs,
         )
@@ -671,109 +1258,229 @@ def select_best_model(
     if selection_verbose:
         print(f"Auto-selecting from {total} candidate models...")
     
-    # Build flat task list for progress bar wrapping
-    _tasks = [
-        (vol_type, p, q, density_name)
-        for vol_type, p, q in vol_candidates
-        for density_name in density_candidates
-    ]
+    baseline_vol = next(
+        (candidate for candidate in vol_candidates if candidate == ("GARCH", 1, 1)),
+        vol_candidates[0],
+    )
+    baseline_density = "Normal" if "Normal" in density_candidates else density_candidates[0]
+    if staged_mean_search:
+        phases = [[
+            (mean_candidate, *baseline_vol, baseline_density)
+            for mean_candidate in mean_candidates
+        ]]
+    else:
+        phases = [[
+            (mean_candidate, vol_type, p, q, density_name)
+            for mean_candidate in mean_candidates
+            for vol_type, p, q in vol_candidates
+            for density_name in density_candidates
+        ]]
 
-    for idx, (vol_type, p, q, density_name) in enumerate(
-        get_progress_bar(_tasks, total=total, desc="Auto-selecting", disable=not show_progress)
-    ):
-        # Build spec
-        vol_cls = vol_map.get(vol_type)
-        density_cls = density_map.get(density_name)
-        if vol_cls is None:
-            warnings.warn(f"Unknown volatility model '{vol_type}', skipping.")
-            continue
-        if density_cls is None:
-            warnings.warn(f"Unknown density '{density_name}', skipping.")
-            continue
-        
-        spec = vol_cls(p, q) + density_cls()
-        candidate = ModelCandidate(
-            spec=spec,
-            vol_type=vol_type,
-            p=p,
-            q=q,
-            density=density_name,
-        )
-        
-        if selection_verbose:
-            print(f"  [{idx + 1}/{total}] Fitting {spec}...", end=" ")
-        
-        start_time = time.perf_counter()
-        
-        try:
-            # Force sequential for nested fits
-            fit_kwargs_copy = fit_kwargs.copy()
-            fit_kwargs_copy['n_jobs'] = 1
-            fit_data = data
-            if oos_split is not None:
-                train_stop, _, _ = oos_split
-                fit_data = data[:train_stop]
-                if "x" in fit_kwargs_copy:
-                    fit_kwargs_copy["x"] = _split_x(fit_kwargs_copy["x"], train_stop)
-            result = spec.fit(fit_data, **fit_kwargs_copy)
-            candidate.result = result
-            candidate.aic = result.aic
-            candidate.bic = result.bic
-            candidate.hqic = result.hqic
-            candidate.fit_time = time.perf_counter() - start_time
-            
-            score, diagnostics = _score_candidate(
-                result, criterion_func, diagnostic_kwargs
+    evaluated = 0
+    phase_index = 0
+    while phase_index < len(phases):
+        tasks = phases[phase_index]
+        if n_jobs_actual > 1 and len(tasks) >= _MIN_PARALLEL_CANDIDATES:
+            from joblib import Parallel, delayed
+            from ._parallel import _fit_candidate_worker
+            from ._progress import tqdm_joblib
+
+            actual_workers = min(n_jobs_actual, len(tasks))
+            with tqdm_joblib(
+                total=len(tasks),
+                desc="Auto-selecting",
+                disable=not show_progress,
+            ):
+                phase_candidates = Parallel(
+                    n_jobs=actual_workers, prefer="processes"
+                )(
+                    delayed(_fit_candidate_worker)(
+                        vol_type,
+                        p,
+                        q,
+                        density_name,
+                        data,
+                        fit_kwargs,
+                        criterion_func,
+                        diagnostic_kwargs,
+                        selection_mode,
+                        oos_split,
+                        oos_loss,
+                        diagnostic_weight,
+                        degeneracy_weight,
+                        oos_refit,
+                        mean_candidate,
+                    )
+                    for mean_candidate, vol_type, p, q, density_name in tasks
+                )
+            candidates.extend(phase_candidates)
+            evaluated += len(tasks)
+            if selection_verbose:
+                for candidate in phase_candidates:
+                    status = (
+                        f"AIC={candidate.aic:.2f}, Score={candidate.score:.2f}"
+                        if np.isfinite(candidate.score)
+                        else f"FAILED: {candidate.error_message}"
+                    )
+                    print(f"  [{candidate.spec}] {status}")
+            tasks = []
+        for mean_candidate, vol_type, p, q, density_name in get_progress_bar(
+            tasks,
+            total=len(tasks),
+            desc="Auto-selecting",
+            disable=not show_progress,
+        ):
+            evaluated += 1
+            if vol_type not in vol_map:
+                warnings.warn(f"Unknown volatility model '{vol_type}', skipping.")
+                continue
+            if density_name not in density_map:
+                warnings.warn(f"Unknown density '{density_name}', skipping.")
+                continue
+
+            spec = _build_candidate_spec(
+                mean_candidate, vol_type, p, q, density_name
             )
-            candidate.diagnostics = diagnostics
-            candidate.diagnostic_penalty = _diagnostic_penalty(diagnostics, diagnostic_weight)
-            if oos_split is not None:
-                _, holdout_start, holdout_stop = oos_split
-                losses = _compute_oos_losses(
-                    result,
-                    data,
-                    full_x=fit_kwargs.get("x"),
-                    start=holdout_start,
-                    stop=holdout_stop,
-                    loss=oos_loss,
-                )
-                if not np.all(np.isfinite(losses)):
-                    raise FloatingPointError("OOS filter produced non-finite losses.")
-                candidate.oos_losses = losses
-                candidate.oos_loss = float(np.mean(losses))
-                candidate.oos_loss_name = oos_loss.lower()
-                candidate.oos_start = holdout_start
-                candidate.oos_stop = holdout_stop
-                candidate.score = candidate.oos_loss
-            else:
-                candidate.score = score
-            
-            # Populate convenience fields from diagnostics
-            if diagnostics is not None:
-                candidate.dgt_passed = not diagnostics['dgt']['reject']
-                candidate.lb_failures = sum(
-                    1 for lb in diagnostics['ljung_box'].values()
-                    if lb['reject']
-                )
-            
+            candidate = _candidate_record(
+                spec, mean_candidate, vol_type, p, q, density_name
+            )
             if selection_verbose:
-                print(f"AIC={candidate.aic:.2f}, Score={candidate.score:.2f}")
-                
-        except Exception as e:
+                print(f"  [{evaluated}/{total}] Fitting {spec}...", end=" ")
+            start_time = time.perf_counter()
+
+            try:
+                fit_kwargs_copy = fit_kwargs.copy()
+                fit_kwargs_copy["n_jobs"] = 1
+                fit_data = data
+                if oos_split is not None:
+                    train_stop, _, _ = oos_split
+                    fit_data = data[:train_stop]
+                    if "x" in fit_kwargs_copy:
+                        fit_kwargs_copy["x"] = _split_x(
+                            fit_kwargs_copy["x"], train_stop
+                        )
+                if selection_warm_start:
+                    initial_params, source_name = _warm_start_params(
+                        spec,
+                        fit_data,
+                        candidates,
+                        bridge_density=baseline_density,
+                        x=fit_kwargs_copy.get("x"),
+                    )
+                    if initial_params is not None:
+                        fit_kwargs_copy["initial_params"] = initial_params
+                        candidate.warm_started_from = source_name
+                result = spec.fit(fit_data, **fit_kwargs_copy)
+                candidate.result = result
+                candidate.aic = result.aic
+                candidate.bic = result.bic
+                candidate.hqic = result.hqic
+
+                score, diagnostics = _score_candidate(
+                    result, criterion_func, diagnostic_kwargs
+                )
+                candidate.diagnostics = diagnostics
+                candidate.diagnostic_penalty = _diagnostic_penalty(
+                    diagnostics, diagnostic_weight
+                )
+                _assess_candidate_quality(
+                    candidate,
+                    degeneracy_weight=degeneracy_weight,
+                )
+                if oos_split is not None:
+                    _, holdout_start, holdout_stop = oos_split
+                    if oos_refit is None:
+                        losses = _compute_oos_losses(
+                            result,
+                            data,
+                            full_x=fit_kwargs.get("x"),
+                            start=holdout_start,
+                            stop=holdout_stop,
+                            loss=oos_loss,
+                        )
+                    else:
+                        losses = _compute_rolling_oos_losses(
+                            spec,
+                            result,
+                            data,
+                            full_x=fit_kwargs.get("x"),
+                            start=holdout_start,
+                            stop=holdout_stop,
+                            loss=oos_loss,
+                            refit_every=int(oos_refit),
+                            fit_kwargs=fit_kwargs,
+                        )
+                    if not np.all(np.isfinite(losses)):
+                        raise FloatingPointError(
+                            "OOS filter produced non-finite losses."
+                        )
+                    candidate.oos_losses = losses
+                    candidate.oos_loss = float(np.mean(losses))
+                    candidate.oos_loss_name = oos_loss.lower()
+                    candidate.oos_start = holdout_start
+                    candidate.oos_stop = holdout_stop
+                    candidate.score = candidate.oos_loss
+                else:
+                    candidate.score = score + (
+                        candidate.degeneracy_penalty
+                        if selection_mode == "aic+diag" else 0.0
+                    )
+
+                if diagnostics is not None:
+                    candidate.dgt_passed = not diagnostics["dgt"]["reject"]
+                    candidate.lb_failures = sum(
+                        1 for lb in diagnostics["ljung_box"].values()
+                        if lb["reject"]
+                    )
+                if selection_verbose:
+                    print(
+                        f"AIC={candidate.aic:.2f}, Score={candidate.score:.2f}"
+                    )
+            except Exception as exc:
+                candidate.score = np.inf
+                if oos_split is not None:
+                    candidate.oos_loss = np.inf
+                candidate.error_message = str(exc)
+                if selection_verbose:
+                    print(f"FAILED: {exc}")
             candidate.fit_time = time.perf_counter() - start_time
-            candidate.score = np.inf
-            if oos_split is not None:
-                candidate.oos_loss = np.inf
-            candidate.error_message = str(e)
-            
-            if selection_verbose:
-                print(f"FAILED: {e}")
-        
-        candidates.append(candidate)
+            candidates.append(candidate)
+
+        if staged_mean_search and phase_index == 0:
+            ranked_screen = sorted(candidates, key=lambda candidate: candidate.score)
+            finalist_signatures = []
+            for candidate in ranked_screen:
+                if not np.isfinite(candidate.score):
+                    continue
+                if candidate.mean_signature not in finalist_signatures:
+                    finalist_signatures.append(candidate.mean_signature)
+                if len(finalist_signatures) == allowed_finalists:
+                    break
+            finalist_means = [
+                mean_candidate for mean_candidate in mean_candidates
+                if _mean_signature(mean_candidate) in finalist_signatures
+            ]
+            baseline_task_keys = {
+                (candidate.mean_signature, candidate.vol_type, candidate.p,
+                 candidate.q, candidate.density)
+                for candidate in candidates
+            }
+            phases.append([
+                (mean_candidate, vol_type, p, q, density_name)
+                for mean_candidate in finalist_means
+                for vol_type, p, q in vol_candidates
+                for density_name in density_candidates
+                if (
+                    _mean_signature(mean_candidate), vol_type, p, q, density_name
+                ) not in baseline_task_keys
+            ])
+        phase_index += 1
     
     # Sort by score (lower is better)
     candidates.sort(key=lambda c: c.score)
     _finalize_candidate_ranking(candidates)
+    if selection_mode == "oos":
+        _finalize_oos_comparisons(candidates)
     
     # Find best successful candidate
     best = None
@@ -796,9 +1503,29 @@ def select_best_model(
         final_result = best.result
 
     search_space = {
+        "mean_candidates": [
+            _mean_signature(candidate) for candidate in mean_candidates
+        ],
+        "mean_auto": bool(mean_auto),
+        "mean_search_staged": staged_mean_search,
+        "mean_finalists": sorted({
+            candidate.mean_signature
+            for candidate in candidates
+            if candidate.mean_signature is not None
+            and (
+                not staged_mean_search
+                or (candidate.vol_type, candidate.p, candidate.q, candidate.density)
+                != (*baseline_vol, baseline_density)
+            )
+        }),
         "vol_candidates": list(vol_candidates),
         "density_candidates": list(density_candidates),
-        "n_candidates": total,
+        "n_candidates": len(candidates),
+        "full_grid_candidates": full_total,
+        "candidate_budget": candidate_budget if mean_auto else None,
+        "warm_start": bool(selection_warm_start),
+        "degeneracy_weight": float(degeneracy_weight),
+        "oos_refit": oos_refit,
     }
     selection = SelectionResult(
         candidates,
@@ -816,6 +1543,7 @@ def select_best_model(
         final_result.fit_info.oos_train_size = train_stop
         final_result.fit_info.oos_test_size = holdout_stop - holdout_start
         final_result.fit_info.oos_loss = oos_loss.lower()
+        final_result.fit_info.oos_refit = oos_refit
 
     if selection_verbose:
         print(f"\nBest model: {best.spec} (Score={best.score:.2f})")

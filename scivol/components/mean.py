@@ -1,7 +1,7 @@
 # scivol/components/density.py
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -194,3 +194,80 @@ class HARX(Component):
         exog = flat_params[offset:offset + self.n_exog].tolist()
         self.fitted_params = {"const": const, "har": har, "exog": exog}
         return self.fitted_params
+
+
+class AutoMean(Component):
+    """Placeholder for bounded automatic conditional-mean selection.
+
+    The default grid screens a zero mean and every ARMA(p, q) combination
+    through order two. When composed with automatic volatility or density
+    components, only the best screened mean specifications enter the full
+    cross-product search.
+    """
+
+    role = Role.MEAN
+    CANDIDATES = ("Zero", "ARMA")
+
+    def __init__(
+        self,
+        candidates: Optional[Sequence[str]] = None,
+        *,
+        max_p: int = 2,
+        max_q: int = 2,
+        candidate_budget: int = 120,
+        finalists: int = 2,
+    ) -> None:
+        selected = tuple(candidates) if candidates is not None else self.CANDIDATES
+        invalid = [name for name in selected if name not in self.CANDIDATES]
+        if invalid:
+            raise ValueError(
+                f"Unknown AutoMean candidates {invalid}; valid choices are "
+                f"{list(self.CANDIDATES)}."
+            )
+        if max_p < 0 or max_q < 0:
+            raise ValueError("AutoMean max_p and max_q must be non-negative.")
+        if candidate_budget <= 0:
+            raise ValueError("AutoMean candidate_budget must be positive.")
+        if finalists <= 0:
+            raise ValueError("AutoMean finalists must be positive.")
+        self.candidates = selected
+        self.max_p = int(max_p)
+        self.max_q = int(max_q)
+        self.candidate_budget = int(candidate_budget)
+        self.finalists = int(finalists)
+        self.fitted_params: Dict[str, Any] = {}
+        self._is_auto = True
+
+    @property
+    def signature(self) -> str:
+        return "AutoMean"
+
+    @property
+    def n_params(self) -> int:
+        return 0
+
+    def default_start(self, data: np.ndarray) -> np.ndarray:
+        return np.array([], dtype=np.float64)
+
+    def bounds(self) -> List[Tuple[float, float]]:
+        return []
+
+    def pack(self, params_dict: Dict[str, Any]) -> np.ndarray:
+        return np.array([], dtype=np.float64)
+
+    def unpack(self, flat_params: np.ndarray) -> Dict[str, Any]:
+        return {}
+
+    def get_candidates(self) -> List[Tuple[str, Tuple[Any, ...]]]:
+        candidates: List[Tuple[str, Tuple[Any, ...]]] = []
+        if "Zero" in self.candidates:
+            candidates.append(("Zero", ()))
+        if "ARMA" in self.candidates:
+            orders = [
+                (p, q)
+                for p in range(self.max_p + 1)
+                for q in range(self.max_q + 1)
+            ]
+            orders.sort(key=lambda order: (sum(order), order[0], order[1]))
+            candidates.extend(("ARMA", order) for order in orders)
+        return candidates

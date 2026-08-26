@@ -30,9 +30,9 @@ def _generated_block(text: str, name: str) -> str:
 def test_manifest_declares_current_univariate_surface_tensor() -> None:
     surface_ids = [surface.surface_id for surface in SURFACES]
 
-    assert len(SURFACES) == 58
+    assert len(SURFACES) == 126
     assert len(surface_ids) == len(set(surface_ids))
-    assert len(SURFACES) + len(ABSENT_SURFACE_IDS) == 60
+    assert len(SURFACES) + len(ABSENT_SURFACE_IDS) == 128
     assert set(ABSENT_SURFACE_IDS).isdisjoint(surface_ids)
 
 

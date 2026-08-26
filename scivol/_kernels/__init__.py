@@ -18,6 +18,18 @@ def _family_module(uid: str) -> str:
         "EGARCH(1,1)+StudentT"        -> scivol._kernels.egarch_studentt
         ...
     """
+    if uid.startswith("APARCH("):
+        return f"{__name__}.aparch"
+    if (
+        uid.startswith("ARMA(")
+        and uid.endswith(("+GeneralizedHyperbolic", "+NormalInverseGaussian", "+Hyperbolic", "+VarianceGamma"))
+    ):
+        return f"{__name__}.arma_gh"
+    if (
+        (uid.startswith("ARX(") or uid.startswith("HARX("))
+        and uid.endswith(("+GeneralizedHyperbolic", "+NormalInverseGaussian", "+Hyperbolic", "+VarianceGamma"))
+    ):
+        return f"{__name__}.meanx_gh"
     if uid.startswith("ARMA(") and uid.endswith("+GED") and "+GARCH(" not in uid and "+GJR-GARCH(" not in uid and "+EGARCH(" not in uid:
         return f"{__name__}.arma_ged"
     if uid.startswith("ARMA(") and "+GARCH(" in uid and uid.endswith("+GED"):

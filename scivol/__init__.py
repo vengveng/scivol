@@ -9,7 +9,27 @@ except ModuleNotFoundError:
         "Build wheels or run `pip install .` with a C compiler."
     )
 
-from .components import ARMA, ARX, AutoDensity, AutoVol, Component, EGARCH, GED, GARCH, GJRGARCH, HARX, Normal, StudentT, SkewT
+from .components import (
+    ARMA,
+    APARCH,
+    ARX,
+    AutoDensity,
+    AutoMean,
+    AutoVol,
+    Component,
+    EGARCH,
+    GED,
+    GARCH,
+    GJRGARCH,
+    GeneralizedHyperbolic,
+    HARX,
+    Hyperbolic,
+    Normal,
+    NormalInverseGaussian,
+    SkewT,
+    StudentT,
+    VarianceGamma,
+)
 from .spec import CompositeSpec
 from .roles import Role
 from ._settings import settings
@@ -29,8 +49,10 @@ from .batch import BatchFitFailure, BatchFitResult, FitTimeoutError, RollingFitR
 
 __all__: list[str] = [
     "ARMA",
+    "APARCH",
     "ARX",
     "AutoDensity",
+    "AutoMean",
     "AutoVol",
     "BatchFitFailure",
     "BatchFitResult",
@@ -46,11 +68,14 @@ __all__: list[str] = [
     "GED",
     "GARCH",
     "GJRGARCH",
+    "GeneralizedHyperbolic",
     "HARX",
+    "Hyperbolic",
     "FitTimeoutError",
     "MultivariateScenarioResult",
     # "get_routine",
     "Normal",
+    "NormalInverseGaussian",
     "Role",
     "RollingFitResult",
     "RollingFitWindow",
@@ -59,5 +84,6 @@ __all__: list[str] = [
     "settings",
     "SkewT",
     "StudentT",
+    "VarianceGamma",
     "__version__",
 ]

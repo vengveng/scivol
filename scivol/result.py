@@ -12,6 +12,8 @@ from scipy.special import gammaln
 
 from .roles import Role
 from ._settings import settings
+from ._gh import fixed_gh_lambda, standardized_gh_cdf
+from ._vg import standardized_vg_cdf
 
 # Lazy import for pandas to avoid hard dependency
 def _to_pandas_series(
@@ -164,10 +166,39 @@ class EGARCHParams:
 
 
 @dataclass
+class APARCHParams:
+    """Container for APARCH parameters on the conditional-power scale."""
+
+    omega: float
+    alpha: NDArray[np.float64]
+    beta: NDArray[np.float64]
+    gamma: NDArray[np.float64]
+    delta: float
+
+    @property
+    def persistence(self) -> float:
+        """Return the alpha-plus-beta persistence proxy."""
+        return float(np.sum(self.alpha) + np.sum(self.beta))
+
+    @property
+    def is_stationary(self) -> bool:
+        return self.persistence < 1.0
+
+    def to_array(self) -> NDArray[np.float64]:
+        return np.concatenate(
+            [[self.omega], self.alpha, self.gamma, self.beta, [self.delta]]
+        )
+
+
+@dataclass
 class DistributionParams:
     """Container for distribution shape parameters."""
     nu: Optional[float] = None       # Student-t degrees of freedom
     lam: Optional[float] = None      # Skew-t asymmetry (lambda)
+    rho: Optional[float] = None      # GH asymmetry
+    zeta: Optional[float] = None     # GH shape
+    shape_lambda: Optional[float] = None  # GH family index
+    shape_lambda_fixed: bool = False
     
     def to_array(self) -> NDArray[np.float64]:
         """Flatten to 1D array."""
@@ -176,6 +207,12 @@ class DistributionParams:
             parts.append(self.nu)
         if self.lam is not None:
             parts.append(self.lam)
+        if self.rho is not None:
+            parts.append(self.rho)
+        if self.zeta is not None:
+            parts.append(self.zeta)
+        if self.shape_lambda is not None and not self.shape_lambda_fixed:
+            parts.append(self.shape_lambda)
         return np.array(parts) if parts else np.array([])
 
 
@@ -258,6 +295,7 @@ class FitMetadata:
     oos_train_size: Optional[int] = None
     oos_test_size: Optional[int] = None
     oos_loss: Optional[str] = None
+    oos_refit: Optional[int] = None
     warm_started: Optional[bool] = None
     maxiter: Optional[int] = None
     timeout: Optional[float] = None
@@ -293,6 +331,7 @@ class FitMetadata:
             "oos_train_size": self.oos_train_size,
             "oos_test_size": self.oos_test_size,
             "oos_loss": self.oos_loss,
+            "oos_refit": self.oos_refit,
             "warm_started": self.warm_started,
             "maxiter": self.maxiter,
             "timeout": self.timeout,
@@ -491,13 +530,13 @@ class EstimationResult:
     # Structured parameter access (matching reference implementation)
     # --------------------------------------------------------------------- #
     @property
-    def garch_params(self) -> Optional[Union[GARCHParams, EGARCHParams]]:
+    def garch_params(self) -> Optional[Union[GARCHParams, EGARCHParams, APARCHParams]]:
         """Get volatility parameters as a structured object."""
         fp = self._component_param_snapshots.get(Role.VOLATILITY)
         if not fp:
             return None
 
-        from .components.vol import EGARCH
+        from .components.vol import APARCH, EGARCH
 
         if isinstance(self.volatility, EGARCH):
             return EGARCHParams(
@@ -505,6 +544,15 @@ class EstimationResult:
                 alpha=np.array(fp.get("alpha", []), dtype=np.float64),
                 gamma=np.array(fp.get("gamma", []), dtype=np.float64),
                 beta=np.array(fp.get("beta", []), dtype=np.float64),
+            )
+
+        if isinstance(self.volatility, APARCH):
+            return APARCHParams(
+                omega=float(fp.get("omega", 0.0)),
+                alpha=np.array(fp.get("alpha", []), dtype=np.float64),
+                gamma=np.array(fp.get("gamma", []), dtype=np.float64),
+                beta=np.array(fp.get("beta", []), dtype=np.float64),
+                delta=float(fp.get("delta", 2.0)),
             )
 
         omega = fp.get('omega', 0.0)
@@ -540,8 +588,22 @@ class EstimationResult:
 
         nu = fp.get('nu', fp.get('df'))  # Handle both 'nu' and 'df' keys
         lam = fp.get('lam')
-        
-        return DistributionParams(nu=nu, lam=lam)
+        rho = fp.get('rho')
+        zeta = fp.get('zeta')
+        shape_lambda = fp.get('lambda')
+        density_name = self.density.signature if self.density is not None else "Normal"
+        fixed_lambda = fixed_gh_lambda(density_name)
+        if fixed_lambda is not None:
+            shape_lambda = fixed_lambda
+
+        return DistributionParams(
+            nu=nu,
+            lam=lam,
+            rho=rho,
+            zeta=zeta,
+            shape_lambda=shape_lambda,
+            shape_lambda_fixed=fixed_lambda is not None,
+        )
     
     # Conditional variances and standardized residuals
     # --------------------------------------------------------------------- #
@@ -889,14 +951,31 @@ class EstimationResult:
                     names.append(_r(f"gamma[{i}]"))
             for i, _ in enumerate(gp.beta, 1):
                 names.append(_r(f"beta[{i}]"))
+            if isinstance(gp, APARCHParams):
+                names.append("delta")
 
-        if gp is None and self.distribution == "GED" and len(self.params) == len(names) + 2:
+        density_shapes = {
+            "GED": 1,
+            "GeneralizedHyperbolic": 3,
+            "Hyperbolic": 2,
+            "NormalInverseGaussian": 2,
+            "VarianceGamma": 2,
+        }
+        density_name = self.density.signature if self.density is not None else "Normal"
+        n_shapes = density_shapes.get(density_name)
+        if gp is None and n_shapes is not None and len(self.params) == len(names) + n_shapes + 1:
             names.append(_r("sigma2"))
 
         dp = self.dist_params
         if dp.nu is not None:
             names.append(_r("nu"))
         if dp.lam is not None:
+            names.append(_r("lambda"))
+        if dp.rho is not None:
+            names.append("rho")
+        if dp.zeta is not None:
+            names.append("zeta")
+        if dp.shape_lambda is not None and density_name in {"GeneralizedHyperbolic", "VarianceGamma"}:
             names.append(_r("lambda"))
         
         # Fill in remaining if needed
@@ -975,6 +1054,16 @@ class EstimationResult:
                     print(f"{'Half-life (periods):':<35} {half_life:.1f}")
                 return
 
+            if isinstance(gp, APARCHParams):
+                persistence = gp.persistence
+                print(f"{'Persistence proxy (alpha + beta):':<35} {persistence:.6f}")
+                print(f"{'Power (delta):':<35} {gp.delta:.6f}")
+                print(f"{'Proxy stationary:':<35} {'Yes' if gp.is_stationary else 'No'}")
+                if 0.0 < persistence < 1.0:
+                    half_life = np.log(0.5) / np.log(persistence)
+                    print(f"{'Proxy half-life (periods):':<35} {half_life:.1f}")
+                return
+
             persistence = gp.persistence
             a_name = _r("alpha")
             b_name = _r("beta")
@@ -1016,6 +1105,11 @@ class EstimationResult:
                     add("Non-stationary EGARCH log-variance recursion detected")
                 elif abs(gp.persistence) > 0.99:
                     add("Near-unit-root EGARCH persistence very close to 1")
+            elif isinstance(gp, APARCHParams):
+                if gp.persistence >= 1.0:
+                    add("APARCH alpha-plus-beta persistence proxy is at least 1")
+                elif gp.persistence > 0.99:
+                    add("APARCH alpha-plus-beta persistence proxy is very close to 1")
             else:
                 if gp.persistence >= 1.0:
                     add("IGARCH or explosive process detected")
@@ -1086,15 +1180,28 @@ class EstimationResult:
             }
             if gp.gamma is not None:
                 gp_dict[_r('gamma')] = gp.gamma.tolist()
+            if isinstance(gp, APARCHParams):
+                gp_dict['delta'] = gp.delta
             result_dict['garch_params'] = gp_dict
         
         # Add distribution parameters (keys use display names)
         dp = self.dist_params
-        if dp.nu is not None or dp.lam is not None:
-            result_dict['dist_params'] = {
-                _r('nu'): dp.nu,
-                _r('lam'): dp.lam,
-            }
+        if any(
+            value is not None
+            for value in (dp.nu, dp.lam, dp.rho, dp.zeta, dp.shape_lambda)
+        ):
+            dist_params: Dict[str, float] = {}
+            if dp.nu is not None:
+                dist_params[_r('nu')] = dp.nu
+            if dp.lam is not None:
+                dist_params[_r('lam')] = dp.lam
+            if dp.rho is not None:
+                dist_params['rho'] = dp.rho
+            if dp.zeta is not None:
+                dist_params['zeta'] = dp.zeta
+            if dp.shape_lambda is not None:
+                dist_params[_r('lambda')] = dp.shape_lambda
+            result_dict['dist_params'] = dist_params
         
         # Add component parameters (legacy)
         for role, fitted_params in self._component_param_snapshots.items():
@@ -1125,13 +1232,14 @@ class EstimationResult:
         
         The Probability Integral Transform (PIT) converts standardized residuals
         to uniform(0,1) using the fitted distribution's CDF. Under correct
-        specification, u_t = F(z_t) should be i.i.d. U(0,1).
+        specification, u_t = F(z_t) should be i.i.d. U(0,1). The DGT cell test
+        checks marginal uniformity; the Ljung-Box tests probe serial dependence.
         
         Tests performed:
         1. DGT (Diebold-Gunther-Tay) cell test: Pearson chi-square test for uniformity of PIT
         2. Ljung-Box tests on PIT moments: Tests for serial correlation in
            (u - 0.5)^p for p = 1, 2, 3, 4 to detect misspecification in
-           conditional mean, variance, skewness, and kurtosis.
+           location, dispersion, asymmetry, and tail shape.
         
         Parameters
         ----------
@@ -1149,7 +1257,7 @@ class EstimationResult:
         dict
             Dictionary containing:
             - 'distribution': str, name of fitted distribution
-            - 'dist_params': dict, distribution parameters (nu, lam)
+            - 'dist_params': dict, fitted distribution parameters
             - 'n_obs': int, number of observations
             - 'dgt': dict, DGT test results
             - 'ljung_box': dict, Ljung-Box test results for each moment
@@ -1159,6 +1267,23 @@ class EstimationResult:
         ------
         ValueError
             If standardized residuals are not available.
+
+        References
+        ----------
+        Diebold, F. X., Gunther, T. A., and Tay, A. S. (1998). Evaluating
+        density forecasts, with applications to financial risk management.
+        International Economic Review, 39, 863-883.
+        https://doi.org/10.2307/2527342
+
+        Ljung, G. M., and Box, G. E. P. (1978). On a measure of lack of fit in
+        time series models. Biometrika, 65, 297-303.
+        https://doi.org/10.1093/biomet/65.2.297
+
+        Pearson, K. (1900). On the criterion that a given system of deviations
+        from the probable in the case of a correlated system of variables is
+        such that it can be reasonably supposed to have arisen from random
+        sampling. Philosophical Magazine, 50, 157-175.
+        https://doi.org/10.1080/14786440009463897
         """
         # Get standardized residuals
         z = self.std_resid
@@ -1194,6 +1319,28 @@ class EstimationResult:
                 raise ValueError("GED distribution requires nu parameter")
             u = _std_ged_cdf(z, dp.nu)
             dist_params_dict = {"nu": dp.nu, "lam": None}
+        elif dist_name in {"GeneralizedHyperbolic", "Hyperbolic", "NormalInverseGaussian"}:
+            if dp.rho is None or dp.zeta is None or dp.shape_lambda is None:
+                raise ValueError(f"{dist_name} requires GH shape parameters")
+            u = standardized_gh_cdf(z, dp.rho, dp.zeta, dp.shape_lambda)
+            dist_params_dict = {
+                "nu": None,
+                "lam": None,
+                "rho": dp.rho,
+                "zeta": dp.zeta,
+                "lambda": dp.shape_lambda,
+            }
+        elif dist_name == "VarianceGamma":
+            if dp.rho is None or dp.shape_lambda is None:
+                raise ValueError("VarianceGamma requires rho and lambda parameters")
+            u = standardized_vg_cdf(z, dp.rho, dp.shape_lambda)
+            dist_params_dict = {
+                "nu": None,
+                "lam": None,
+                "rho": dp.rho,
+                "zeta": None,
+                "lambda": dp.shape_lambda,
+            }
         else:
             # Default to Normal
             u = norm.cdf(z)
@@ -1281,9 +1428,16 @@ class EstimationResult:
         # Distribution info
         dist_name = results["distribution"]
         dp = results["dist_params"]
-        if dp["nu"] is not None and dp["lam"] is not None:
+        if dp.get("rho") is not None:
+            dist_str = f"{dist_name} (rho={dp['rho']:.4f}"
+            if dp.get("zeta") is not None:
+                dist_str += f", zeta={dp['zeta']:.4f}"
+            if dist_name in {"GeneralizedHyperbolic", "VarianceGamma"}:
+                dist_str += f", lambda={dp['lambda']:.4f}"
+            dist_str += ")"
+        elif dp.get("nu") is not None and dp.get("lam") is not None:
             dist_str = f"{dist_name} (nu={dp['nu']:.2f}, lam={dp['lam']:.4f})"
-        elif dp["nu"] is not None:
+        elif dp.get("nu") is not None:
             dist_str = f"{dist_name} (nu={dp['nu']:.2f})"
         else:
             dist_str = dist_name

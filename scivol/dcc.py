@@ -530,6 +530,9 @@ class _MarginalSimulationRuntime:
     distribution: str
     distribution_nu: Optional[float]
     distribution_lam: Optional[float]
+    distribution_rho: Optional[float]
+    distribution_zeta: Optional[float]
+    distribution_shape_lambda: Optional[float]
     mean_kind: str
     vol_kind: str
     const: float
@@ -691,6 +694,9 @@ def _build_marginal_runtimes(
                 distribution=state.distribution,
                 distribution_nu=state.nu,
                 distribution_lam=state.lam,
+                distribution_rho=state.rho,
+                distribution_zeta=state.zeta,
+                distribution_shape_lambda=state.shape_lambda,
                 mean_kind=mean_kind,
                 vol_kind=vol_kind,
                 const=const,
@@ -763,6 +769,9 @@ def _simulate_multivariate_path(
                 np.asarray([uniforms[i]], dtype=np.float64),
                 runtime.distribution_nu,
                 runtime.distribution_lam,
+                runtime.distribution_rho,
+                runtime.distribution_zeta,
+                runtime.distribution_shape_lambda,
             )[0]
 
         residuals[t] = np.sqrt(sigma2[t]) * innovations[t]
@@ -939,6 +948,9 @@ class _CorrelationResultMixin:
                     uniforms[:, i],
                     state.nu,
                     state.lam,
+                    state.rho,
+                    state.zeta,
+                    state.shape_lambda,
                 )
         else:
             for i, result in enumerate(marginals):

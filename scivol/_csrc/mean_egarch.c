@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "math_and_helpers.h"
+#include "gh_math.h"
 
 #if defined(__GNUC__) || defined(__clang__)
 #  define VLK_INLINE static inline __attribute__((always_inline))
@@ -1091,3 +1092,280 @@ DEFINE_LINEAR_MEAN_EGARCH_FNS(ged, LM_EGARCH_DIST_GED)
 DEFINE_LINEAR_MEAN_EGARCH_FNS(skewt, LM_EGARCH_DIST_SKEWT)
 
 #undef DEFINE_LINEAR_MEAN_EGARCH_FNS
+
+static double linear_mean_egarch_core_gh(
+    const double *params, const double *y, const double *features,
+    double *resid, double *sigma2, double *grad, double *hess,
+    size_t n, size_t n_mean, size_t p, size_t q, double fixed_lambda)
+{
+    const int estimate_lambda = isnan(fixed_lambda);
+    const size_t n_vol = 1 + 2 * p + q;
+    const size_t n_shape = estimate_lambda ? 3 : 2;
+    const size_t shape_start = n_mean + n_vol;
+    const size_t K = shape_start + n_shape;
+    const size_t omega_index = n_mean;
+    const size_t alpha_start = omega_index + 1;
+    const size_t gamma_start = alpha_start + p;
+    const size_t beta_start = gamma_start + p;
+    const size_t max_lag = MAX(MAX(p, q), (size_t)1);
+    const size_t ring = max_lag + 1;
+    const size_t shape_source[3] = {
+        GH_DERIV_RHO, GH_DERIV_ZETA, GH_DERIV_LAMBDA
+    };
+    const double *alpha = params + alpha_start;
+    const double *gamma = params + gamma_start;
+    const double *beta = params + beta_start;
+    gh_shape_cache_t cache;
+    double abs_moment;
+    double moment_grad[3];
+    double moment_hess[9];
+
+    if (grad) dzeros(grad, K);
+    if (hess) dzeros(hess, K * K);
+    if (!gh_family_cache_init(params, shape_start, fixed_lambda, &cache)
+        || !gh_abs_moment_derivatives(
+            &cache, &abs_moment, moment_grad, moment_hess)) return 1e12;
+    for (size_t i = 0; i < p; ++i) {
+        if (!isfinite(alpha[i]) || !isfinite(gamma[i])) return 1e12;
+    }
+    for (size_t i = 0; i < q; ++i) {
+        if (!isfinite(beta[i]) || fabs(beta[i]) >= 0.999) return 1e12;
+    }
+    if (!isfinite(params[omega_index]) || n == 0) return n == 0 ? 0.0 : 1e12;
+    if (!(sigma2[0] > H_FLOOR) || !isfinite(sigma2[0])) sigma2[0] = H_FLOOR;
+    const double h0 = sigma2[0];
+    const double x0 = log(h0);
+
+    const int want_derivatives = grad || hess;
+    double *d_buffer = want_derivatives ? calloc(ring * K, sizeof(double)) : NULL;
+    double *c_buffer = hess ? calloc(ring * K * K, sizeof(double)) : NULL;
+    if ((want_derivatives && !d_buffer) || (hess && !c_buffer)) {
+        free(d_buffer);
+        free(c_buffer);
+        return 1e12;
+    }
+
+    double nll = 0.0;
+    for (size_t t = 0; t < n; ++t) {
+        const double *feature_t = features + t * n_mean;
+        double *d_t = want_derivatives ? d_buffer + (t % ring) * K : NULL;
+        double *c_t = hess ? c_buffer + (t % ring) * K * K : NULL;
+        double h_t = h0;
+        resid[t] = y[t] - lmegarch_dot(feature_t, params, n_mean);
+        if (want_derivatives) dzeros(d_t, K);
+        if (hess) dzeros(c_t, K * K);
+
+        if (t > 0) {
+            const size_t p_terms = t < p ? t : p;
+            const size_t q_terms = t < q ? t : q;
+            double x_t = params[omega_index];
+            if (want_derivatives) d_t[omega_index] = 1.0;
+            for (size_t lag_index = 0; lag_index < p_terms; ++lag_index) {
+                const size_t lag = t - 1 - lag_index;
+                const double *feature_lag = features + lag * n_mean;
+                const double *d_lag = want_derivatives
+                    ? d_buffer + (lag % ring) * K : NULL;
+                const double *c_lag = hess
+                    ? c_buffer + (lag % ring) * K * K : NULL;
+                const double h_lag = MAX(sigma2[lag], H_FLOOR);
+                const double inv_sqrt_h = 1.0 / sqrt(h_lag);
+                const double z = resid[lag] * inv_sqrt_h;
+                const double abs_z = fabs(z);
+                const double sign_z = z >= 0.0 ? 1.0 : -1.0;
+                const size_t alpha_index = alpha_start + lag_index;
+                const size_t gamma_index = gamma_start + lag_index;
+                x_t += alpha[lag_index] * (abs_z - abs_moment)
+                     + gamma[lag_index] * z;
+
+                if (want_derivatives) {
+                    for (size_t i = 0; i < K; ++i) {
+                        const double de = i < n_mean ? -feature_lag[i] : 0.0;
+                        const double dz = inv_sqrt_h * de - 0.5 * z * d_lag[i];
+                        const double dm = i >= shape_start
+                            ? moment_grad[i - shape_start] : 0.0;
+                        d_t[i] += alpha[lag_index] * (sign_z * dz - dm)
+                                + gamma[lag_index] * dz;
+                    }
+                    d_t[alpha_index] += abs_z - abs_moment;
+                    d_t[gamma_index] += z;
+                }
+                if (hess) {
+                    for (size_t i = 0; i < K; ++i) {
+                        const double de_i = i < n_mean ? -feature_lag[i] : 0.0;
+                        const double dz_i = inv_sqrt_h * de_i - 0.5 * z * d_lag[i];
+                        const double dm_i = i >= shape_start
+                            ? moment_grad[i - shape_start] : 0.0;
+                        for (size_t j = 0; j < K; ++j) {
+                            const double de_j = j < n_mean ? -feature_lag[j] : 0.0;
+                            const double dz_j = inv_sqrt_h * de_j - 0.5 * z * d_lag[j];
+                            const double dm_j = j >= shape_start
+                                ? moment_grad[j - shape_start] : 0.0;
+                            const double d2m = i >= shape_start && j >= shape_start
+                                ? moment_hess[(i - shape_start) * 3 + (j - shape_start)]
+                                : 0.0;
+                            const size_t offset = i * K + j;
+                            const double d2z = -0.5 * inv_sqrt_h
+                                * (de_i * d_lag[j] + de_j * d_lag[i])
+                                + z * (0.25 * d_lag[i] * d_lag[j]
+                                       - 0.5 * c_lag[offset]);
+                            double value = alpha[lag_index]
+                                * (sign_z * d2z - d2m)
+                                + gamma[lag_index] * d2z;
+                            if (i == alpha_index) value += sign_z * dz_j - dm_j;
+                            if (j == alpha_index) value += sign_z * dz_i - dm_i;
+                            if (i == gamma_index) value += dz_j;
+                            if (j == gamma_index) value += dz_i;
+                            c_t[offset] += value;
+                        }
+                    }
+                }
+            }
+            for (size_t lag_index = 0; lag_index < q_terms; ++lag_index) {
+                const size_t lag = t - 1 - lag_index;
+                const size_t beta_index = beta_start + lag_index;
+                const double *d_lag = want_derivatives
+                    ? d_buffer + (lag % ring) * K : NULL;
+                const double *c_lag = hess
+                    ? c_buffer + (lag % ring) * K * K : NULL;
+                const double x_lag = log(MAX(sigma2[lag], H_FLOOR));
+                x_t += beta[lag_index] * x_lag;
+                if (want_derivatives) {
+                    for (size_t i = 0; i < K; ++i) {
+                        d_t[i] += beta[lag_index] * d_lag[i];
+                    }
+                    d_t[beta_index] += x_lag;
+                }
+                if (hess) {
+                    for (size_t i = 0; i < K; ++i) {
+                        for (size_t j = 0; j < K; ++j) {
+                            const size_t offset = i * K + j;
+                            double value = beta[lag_index] * c_lag[offset];
+                            if (i == beta_index) value += d_lag[j];
+                            if (j == beta_index) value += d_lag[i];
+                            c_t[offset] += value;
+                        }
+                    }
+                }
+            }
+            h_t = exp(x_t);
+            if (!(h_t > H_FLOOR) || !isfinite(h_t)) {
+                free(d_buffer);
+                free(c_buffer);
+                return 1e12;
+            }
+            sigma2[t] = h_t;
+        }
+
+        gh_obs_derivs_t obs;
+        gh_obs_gradient_t first_obs;
+        const double *obs_grad;
+        double obs_value;
+        if (hess) {
+            if (!gh_obs_derivatives(resid[t], h_t, &cache, &obs)) {
+                free(d_buffer);
+                free(c_buffer);
+                return 1e12;
+            }
+            obs_grad = obs.grad;
+            obs_value = obs.value;
+        } else if (!gh_obs_gradient(resid[t], h_t, &cache, &first_obs)) {
+            free(d_buffer);
+            free(c_buffer);
+            return 1e12;
+        } else {
+            obs_grad = first_obs.grad;
+            obs_value = first_obs.value;
+        }
+        nll += obs_value;
+        if (grad) {
+            for (size_t i = 0; i < K; ++i) {
+                const double de = i < n_mean ? -feature_t[i] : 0.0;
+                const double dh = t > 0 ? h_t * d_t[i] : 0.0;
+                grad[i] += obs_grad[GH_DERIV_E] * de
+                         + obs_grad[GH_DERIV_H] * dh;
+                if (i >= shape_start) {
+                    grad[i] += obs_grad[shape_source[i - shape_start]];
+                }
+            }
+        }
+        if (hess) {
+            for (size_t i = 0; i < K; ++i) {
+                const double de_i = i < n_mean ? -feature_t[i] : 0.0;
+                const double dh_i = t > 0 ? h_t * d_t[i] : 0.0;
+                for (size_t j = i; j < K; ++j) {
+                    const double de_j = j < n_mean ? -feature_t[j] : 0.0;
+                    const double dh_j = t > 0 ? h_t * d_t[j] : 0.0;
+                    const double d2h = t > 0
+                        ? h_t * (c_t[i * K + j] + d_t[i] * d_t[j]) : 0.0;
+                    double value = obs.hess[
+                        GH_DERIV_E * GH_DERIV_DIM + GH_DERIV_E
+                    ] * de_i * de_j
+                    + obs.hess[GH_DERIV_E * GH_DERIV_DIM + GH_DERIV_H]
+                      * (de_i * dh_j + dh_i * de_j)
+                    + obs.hess[GH_DERIV_H * GH_DERIV_DIM + GH_DERIV_H]
+                      * dh_i * dh_j
+                    + obs.grad[GH_DERIV_H] * d2h;
+                    if (j >= shape_start) {
+                        value += obs.hess[
+                            GH_DERIV_E * GH_DERIV_DIM + shape_source[j - shape_start]
+                        ] * de_i
+                        + obs.hess[
+                            GH_DERIV_H * GH_DERIV_DIM + shape_source[j - shape_start]
+                        ] * dh_i;
+                    }
+                    if (i >= shape_start) {
+                        value += obs.hess[
+                            GH_DERIV_E * GH_DERIV_DIM + shape_source[i - shape_start]
+                        ] * de_j
+                        + obs.hess[
+                            GH_DERIV_H * GH_DERIV_DIM + shape_source[i - shape_start]
+                        ] * dh_j;
+                    }
+                    if (i >= shape_start && j >= shape_start) {
+                        value += obs.hess[
+                            shape_source[i - shape_start] * GH_DERIV_DIM
+                            + shape_source[j - shape_start]
+                        ];
+                    }
+                    lmegarch_hess_accumulate(hess, i, j, K, value);
+                }
+            }
+        }
+    }
+    free(d_buffer);
+    free(c_buffer);
+    return isfinite(nll) ? nll : 1e12;
+}
+
+double linear_mean_egarch_nll_pq_gh(
+    const double *params, const double *y, const double *features,
+    double *resid, double *sigma2, size_t n, size_t n_mean,
+    size_t p, size_t q, double fixed_lambda)
+{
+    return linear_mean_egarch_core_gh(
+        params, y, features, resid, sigma2, NULL, NULL,
+        n, n_mean, p, q, fixed_lambda
+    );
+}
+
+void linear_mean_egarch_nll_grad_pq_gh(
+    const double *params, const double *y, const double *features,
+    double *resid, double *sigma2, double *grad, size_t n,
+    size_t n_mean, size_t p, size_t q, double fixed_lambda)
+{
+    (void)linear_mean_egarch_core_gh(
+        params, y, features, resid, sigma2, grad, NULL,
+        n, n_mean, p, q, fixed_lambda
+    );
+}
+
+void linear_mean_egarch_hess_pq_gh(
+    const double *params, const double *y, const double *features,
+    double *resid, double *sigma2, double *hess, size_t n,
+    size_t n_mean, size_t p, size_t q, double fixed_lambda)
+{
+    (void)linear_mean_egarch_core_gh(
+        params, y, features, resid, sigma2, NULL, hess,
+        n, n_mean, p, q, fixed_lambda
+    );
+}

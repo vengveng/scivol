@@ -1,7 +1,9 @@
 // // scivol/_core.c
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
+#include <math.h>
 #include "scivol_core.h"       /* prototypes */
+#include "gh_math.h"
 
 #define BAD_ARITY(fname, want, got)                                  \
     PyErr_Format(PyExc_TypeError, fname "() takes %d positional "    \
@@ -141,6 +143,653 @@ PyObject *const *args, Py_ssize_t nargs)
 
     double nll = ged_nll(resid, sigma2, n, nu);
     return PyFloat_FromDouble(nll);
+}
+
+static PyObject *
+py_gh_standardized_nll(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 3) { BAD_ARITY("gh_standardized_nll", 3, nargs); return NULL; }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *x = (const double *)PyLong_AsVoidPtr(args[1]);
+    size_t n = PyLong_AsSize_t(args[2]);
+    if (PyErr_Occurred()) return NULL;
+
+    return PyFloat_FromDouble(
+        gh_standardized_nll(x, n, params[0], params[1], params[2])
+    );
+}
+
+static PyObject *
+py_gh_standardized_nll_grad_hess(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 6) {
+        BAD_ARITY("gh_standardized_nll_grad_hess", 6, nargs);
+        return NULL;
+    }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *x = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *nll = (double *)PyLong_AsVoidPtr(args[2]);
+    double *grad = (double *)PyLong_AsVoidPtr(args[3]);
+    double *hess = (double *)PyLong_AsVoidPtr(args[4]);
+    size_t n = PyLong_AsSize_t(args[5]);
+    if (PyErr_Occurred()) return NULL;
+
+    gh_standardized_nll_grad_hess(
+        x, n, params[0], params[1], params[2], 1, nll, grad, hess
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_gh_abs_moment_grad_hess(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 5) { BAD_ARITY("gh_abs_moment_grad_hess", 5, nargs); return NULL; }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    double *moment = (double *)PyLong_AsVoidPtr(args[1]);
+    double *grad = (double *)PyLong_AsVoidPtr(args[2]);
+    double *hess = (double *)PyLong_AsVoidPtr(args[3]);
+    double fixed_lambda = PyFloat_AsDouble(args[4]);
+    if (PyErr_Occurred()) return NULL;
+
+    gh_shape_cache_t cache;
+    if (!gh_family_cache_init(params, 0, fixed_lambda, &cache)
+        || !gh_abs_moment_derivatives(&cache, moment, grad, hess)) {
+        PyErr_SetString(PyExc_ValueError, "invalid GH parameters for absolute moment");
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_nig_standardized_nll(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 3) { BAD_ARITY("nig_standardized_nll", 3, nargs); return NULL; }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *x = (const double *)PyLong_AsVoidPtr(args[1]);
+    size_t n = PyLong_AsSize_t(args[2]);
+    if (PyErr_Occurred()) return NULL;
+
+    return PyFloat_FromDouble(
+        gh_standardized_nll(x, n, params[0], params[1], -0.5)
+    );
+}
+
+static PyObject *
+py_nig_standardized_nll_grad_hess(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 6) {
+        BAD_ARITY("nig_standardized_nll_grad_hess", 6, nargs);
+        return NULL;
+    }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *x = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *nll = (double *)PyLong_AsVoidPtr(args[2]);
+    double *grad = (double *)PyLong_AsVoidPtr(args[3]);
+    double *hess = (double *)PyLong_AsVoidPtr(args[4]);
+    size_t n = PyLong_AsSize_t(args[5]);
+    if (PyErr_Occurred()) return NULL;
+
+    gh_standardized_nll_grad_hess(
+        x, n, params[0], params[1], -0.5, 0, nll, grad, hess
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_vg_standardized_nll(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 3) { BAD_ARITY("vg_standardized_nll", 3, nargs); return NULL; }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *x = (const double *)PyLong_AsVoidPtr(args[1]);
+    size_t n = PyLong_AsSize_t(args[2]);
+    if (PyErr_Occurred()) return NULL;
+
+    return PyFloat_FromDouble(
+        vg_standardized_nll(x, n, params[0], params[1])
+    );
+}
+
+static PyObject *
+py_vg_standardized_nll_grad_hess(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 6) {
+        BAD_ARITY("vg_standardized_nll_grad_hess", 6, nargs);
+        return NULL;
+    }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *x = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *nll = (double *)PyLong_AsVoidPtr(args[2]);
+    double *grad = (double *)PyLong_AsVoidPtr(args[3]);
+    double *hess = (double *)PyLong_AsVoidPtr(args[4]);
+    size_t n = PyLong_AsSize_t(args[5]);
+    if (PyErr_Occurred()) return NULL;
+
+    vg_standardized_nll_grad_hess(
+        x, n, params[0], params[1], nll, grad, hess
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_garch_gh_nll_pq(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 7) { BAD_ARITY("garch_gh_nll_pq", 7, nargs); return NULL; }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *residuals = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[2]);
+    size_t n = PyLong_AsSize_t(args[3]);
+    size_t p = PyLong_AsSize_t(args[4]);
+    size_t q = PyLong_AsSize_t(args[5]);
+    double fixed_lambda = PyFloat_AsDouble(args[6]);
+    if (PyErr_Occurred()) return NULL;
+
+    return PyFloat_FromDouble(garch_gh_nll_pq(
+        params, residuals, sigma2, n, p, q, fixed_lambda
+    ));
+}
+
+static PyObject *
+py_garch_gh_nll_grad_pq(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 8) { BAD_ARITY("garch_gh_nll_grad_pq", 8, nargs); return NULL; }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *residuals = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[2]);
+    double *grad = (double *)PyLong_AsVoidPtr(args[3]);
+    size_t n = PyLong_AsSize_t(args[4]);
+    size_t p = PyLong_AsSize_t(args[5]);
+    size_t q = PyLong_AsSize_t(args[6]);
+    double fixed_lambda = PyFloat_AsDouble(args[7]);
+    if (PyErr_Occurred()) return NULL;
+
+    garch_gh_nll_grad_pq(
+        params, residuals, sigma2, grad, n, p, q, fixed_lambda
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_garch_gh_nll_hess_pq(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 8) { BAD_ARITY("garch_gh_nll_hess_pq", 8, nargs); return NULL; }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *residuals = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[2]);
+    double *hess = (double *)PyLong_AsVoidPtr(args[3]);
+    size_t n = PyLong_AsSize_t(args[4]);
+    size_t p = PyLong_AsSize_t(args[5]);
+    size_t q = PyLong_AsSize_t(args[6]);
+    double fixed_lambda = PyFloat_AsDouble(args[7]);
+    if (PyErr_Occurred()) return NULL;
+
+    garch_gh_nll_hess_pq(
+        params, residuals, sigma2, hess, n, p, q, fixed_lambda
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_gjr_garch_gh_nll_pq(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 7) { BAD_ARITY("gjr_garch_gh_nll_pq", 7, nargs); return NULL; }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *residuals = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[2]);
+    size_t n = PyLong_AsSize_t(args[3]);
+    size_t p = PyLong_AsSize_t(args[4]);
+    size_t q = PyLong_AsSize_t(args[5]);
+    double fixed_lambda = PyFloat_AsDouble(args[6]);
+    if (PyErr_Occurred()) return NULL;
+
+    return PyFloat_FromDouble(gjr_garch_gh_nll_pq(
+        params, residuals, sigma2, n, p, q, fixed_lambda
+    ));
+}
+
+static PyObject *
+py_gjr_garch_gh_nll_grad_pq(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 8) {
+        BAD_ARITY("gjr_garch_gh_nll_grad_pq", 8, nargs);
+        return NULL;
+    }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *residuals = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[2]);
+    double *grad = (double *)PyLong_AsVoidPtr(args[3]);
+    size_t n = PyLong_AsSize_t(args[4]);
+    size_t p = PyLong_AsSize_t(args[5]);
+    size_t q = PyLong_AsSize_t(args[6]);
+    double fixed_lambda = PyFloat_AsDouble(args[7]);
+    if (PyErr_Occurred()) return NULL;
+
+    gjr_garch_gh_nll_grad_pq(
+        params, residuals, sigma2, grad, n, p, q, fixed_lambda
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_gjr_garch_gh_nll_hess_pq(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 8) {
+        BAD_ARITY("gjr_garch_gh_nll_hess_pq", 8, nargs);
+        return NULL;
+    }
+
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *residuals = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[2]);
+    double *hess = (double *)PyLong_AsVoidPtr(args[3]);
+    size_t n = PyLong_AsSize_t(args[4]);
+    size_t p = PyLong_AsSize_t(args[5]);
+    size_t q = PyLong_AsSize_t(args[6]);
+    double fixed_lambda = PyFloat_AsDouble(args[7]);
+    if (PyErr_Occurred()) return NULL;
+
+    gjr_garch_gh_nll_hess_pq(
+        params, residuals, sigma2, hess, n, p, q, fixed_lambda
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_egarch_gh_nll_pq(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 7) { BAD_ARITY("egarch_gh_nll_pq", 7, nargs); return NULL; }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *residuals = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[2]);
+    size_t n = PyLong_AsSize_t(args[3]);
+    size_t p = PyLong_AsSize_t(args[4]);
+    size_t q = PyLong_AsSize_t(args[5]);
+    double fixed_lambda = PyFloat_AsDouble(args[6]);
+    if (PyErr_Occurred()) return NULL;
+    return PyFloat_FromDouble(egarch_gh_nll_pq(
+        params, residuals, sigma2, n, p, q, fixed_lambda
+    ));
+}
+
+static PyObject *
+py_egarch_gh_nll_grad_pq(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 8) { BAD_ARITY("egarch_gh_nll_grad_pq", 8, nargs); return NULL; }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *residuals = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[2]);
+    double *grad = (double *)PyLong_AsVoidPtr(args[3]);
+    size_t n = PyLong_AsSize_t(args[4]);
+    size_t p = PyLong_AsSize_t(args[5]);
+    size_t q = PyLong_AsSize_t(args[6]);
+    double fixed_lambda = PyFloat_AsDouble(args[7]);
+    if (PyErr_Occurred()) return NULL;
+    egarch_gh_nll_grad_pq(
+        params, residuals, sigma2, grad, n, p, q, fixed_lambda
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_egarch_gh_nll_hess_pq(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 8) { BAD_ARITY("egarch_gh_nll_hess_pq", 8, nargs); return NULL; }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *residuals = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[2]);
+    double *hess = (double *)PyLong_AsVoidPtr(args[3]);
+    size_t n = PyLong_AsSize_t(args[4]);
+    size_t p = PyLong_AsSize_t(args[5]);
+    size_t q = PyLong_AsSize_t(args[6]);
+    double fixed_lambda = PyFloat_AsDouble(args[7]);
+    if (PyErr_Occurred()) return NULL;
+    egarch_gh_nll_hess_pq(
+        params, residuals, sigma2, hess, n, p, q, fixed_lambda
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_linear_mean_garch_nll_pq_gh(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 10) {
+        BAD_ARITY("linear_mean_garch_nll_pq_gh", 10, nargs);
+        return NULL;
+    }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y = (const double *)PyLong_AsVoidPtr(args[1]);
+    const double *features = (const double *)PyLong_AsVoidPtr(args[2]);
+    double *resid = (double *)PyLong_AsVoidPtr(args[3]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[4]);
+    size_t n = PyLong_AsSize_t(args[5]);
+    size_t n_mean = PyLong_AsSize_t(args[6]);
+    size_t p = PyLong_AsSize_t(args[7]);
+    size_t q = PyLong_AsSize_t(args[8]);
+    double fixed_lambda = PyFloat_AsDouble(args[9]);
+    if (PyErr_Occurred()) return NULL;
+    return PyFloat_FromDouble(linear_mean_garch_nll_pq_gh(
+        params, y, features, resid, sigma2, n, n_mean,
+        p, q, fixed_lambda
+    ));
+}
+
+static PyObject *
+py_linear_mean_garch_nll_grad_pq_gh(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 11) {
+        BAD_ARITY("linear_mean_garch_nll_grad_pq_gh", 11, nargs);
+        return NULL;
+    }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y = (const double *)PyLong_AsVoidPtr(args[1]);
+    const double *features = (const double *)PyLong_AsVoidPtr(args[2]);
+    double *resid = (double *)PyLong_AsVoidPtr(args[3]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[4]);
+    double *grad = (double *)PyLong_AsVoidPtr(args[5]);
+    size_t n = PyLong_AsSize_t(args[6]);
+    size_t n_mean = PyLong_AsSize_t(args[7]);
+    size_t p = PyLong_AsSize_t(args[8]);
+    size_t q = PyLong_AsSize_t(args[9]);
+    double fixed_lambda = PyFloat_AsDouble(args[10]);
+    if (PyErr_Occurred()) return NULL;
+    linear_mean_garch_nll_grad_pq_gh(
+        params, y, features, resid, sigma2, grad, n, n_mean,
+        p, q, fixed_lambda
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_linear_mean_garch_hess_pq_gh(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 11) {
+        BAD_ARITY("linear_mean_garch_hess_pq_gh", 11, nargs);
+        return NULL;
+    }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y = (const double *)PyLong_AsVoidPtr(args[1]);
+    const double *features = (const double *)PyLong_AsVoidPtr(args[2]);
+    double *resid = (double *)PyLong_AsVoidPtr(args[3]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[4]);
+    double *hess = (double *)PyLong_AsVoidPtr(args[5]);
+    size_t n = PyLong_AsSize_t(args[6]);
+    size_t n_mean = PyLong_AsSize_t(args[7]);
+    size_t p = PyLong_AsSize_t(args[8]);
+    size_t q = PyLong_AsSize_t(args[9]);
+    double fixed_lambda = PyFloat_AsDouble(args[10]);
+    if (PyErr_Occurred()) return NULL;
+    linear_mean_garch_hess_pq_gh(
+        params, y, features, resid, sigma2, hess, n, n_mean,
+        p, q, fixed_lambda
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_linear_mean_gjr_garch_nll_pq_gh(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 10) {
+        BAD_ARITY("linear_mean_gjr_garch_nll_pq_gh", 10, nargs);
+        return NULL;
+    }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y = (const double *)PyLong_AsVoidPtr(args[1]);
+    const double *features = (const double *)PyLong_AsVoidPtr(args[2]);
+    double *resid = (double *)PyLong_AsVoidPtr(args[3]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[4]);
+    size_t n = PyLong_AsSize_t(args[5]);
+    size_t n_mean = PyLong_AsSize_t(args[6]);
+    size_t p = PyLong_AsSize_t(args[7]);
+    size_t q = PyLong_AsSize_t(args[8]);
+    double fixed_lambda = PyFloat_AsDouble(args[9]);
+    if (PyErr_Occurred()) return NULL;
+    return PyFloat_FromDouble(linear_mean_gjr_garch_nll_pq_gh(
+        params, y, features, resid, sigma2, n, n_mean,
+        p, q, fixed_lambda
+    ));
+}
+
+static PyObject *
+py_linear_mean_gjr_garch_nll_grad_pq_gh(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 11) {
+        BAD_ARITY("linear_mean_gjr_garch_nll_grad_pq_gh", 11, nargs);
+        return NULL;
+    }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y = (const double *)PyLong_AsVoidPtr(args[1]);
+    const double *features = (const double *)PyLong_AsVoidPtr(args[2]);
+    double *resid = (double *)PyLong_AsVoidPtr(args[3]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[4]);
+    double *grad = (double *)PyLong_AsVoidPtr(args[5]);
+    size_t n = PyLong_AsSize_t(args[6]);
+    size_t n_mean = PyLong_AsSize_t(args[7]);
+    size_t p = PyLong_AsSize_t(args[8]);
+    size_t q = PyLong_AsSize_t(args[9]);
+    double fixed_lambda = PyFloat_AsDouble(args[10]);
+    if (PyErr_Occurred()) return NULL;
+    linear_mean_gjr_garch_nll_grad_pq_gh(
+        params, y, features, resid, sigma2, grad, n, n_mean,
+        p, q, fixed_lambda
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_linear_mean_gjr_garch_hess_pq_gh(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 11) {
+        BAD_ARITY("linear_mean_gjr_garch_hess_pq_gh", 11, nargs);
+        return NULL;
+    }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y = (const double *)PyLong_AsVoidPtr(args[1]);
+    const double *features = (const double *)PyLong_AsVoidPtr(args[2]);
+    double *resid = (double *)PyLong_AsVoidPtr(args[3]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[4]);
+    double *hess = (double *)PyLong_AsVoidPtr(args[5]);
+    size_t n = PyLong_AsSize_t(args[6]);
+    size_t n_mean = PyLong_AsSize_t(args[7]);
+    size_t p = PyLong_AsSize_t(args[8]);
+    size_t q = PyLong_AsSize_t(args[9]);
+    double fixed_lambda = PyFloat_AsDouble(args[10]);
+    if (PyErr_Occurred()) return NULL;
+    linear_mean_gjr_garch_hess_pq_gh(
+        params, y, features, resid, sigma2, hess, n, n_mean,
+        p, q, fixed_lambda
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_linear_mean_egarch_nll_pq_gh(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 10) {
+        BAD_ARITY("linear_mean_egarch_nll_pq_gh", 10, nargs);
+        return NULL;
+    }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y = (const double *)PyLong_AsVoidPtr(args[1]);
+    const double *features = (const double *)PyLong_AsVoidPtr(args[2]);
+    double *resid = (double *)PyLong_AsVoidPtr(args[3]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[4]);
+    size_t n = PyLong_AsSize_t(args[5]);
+    size_t n_mean = PyLong_AsSize_t(args[6]);
+    size_t p = PyLong_AsSize_t(args[7]);
+    size_t q = PyLong_AsSize_t(args[8]);
+    double fixed_lambda = PyFloat_AsDouble(args[9]);
+    if (PyErr_Occurred()) return NULL;
+    return PyFloat_FromDouble(linear_mean_egarch_nll_pq_gh(
+        params, y, features, resid, sigma2, n, n_mean,
+        p, q, fixed_lambda
+    ));
+}
+
+static PyObject *
+py_linear_mean_egarch_nll_grad_pq_gh(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 11) {
+        BAD_ARITY("linear_mean_egarch_nll_grad_pq_gh", 11, nargs);
+        return NULL;
+    }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y = (const double *)PyLong_AsVoidPtr(args[1]);
+    const double *features = (const double *)PyLong_AsVoidPtr(args[2]);
+    double *resid = (double *)PyLong_AsVoidPtr(args[3]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[4]);
+    double *grad = (double *)PyLong_AsVoidPtr(args[5]);
+    size_t n = PyLong_AsSize_t(args[6]);
+    size_t n_mean = PyLong_AsSize_t(args[7]);
+    size_t p = PyLong_AsSize_t(args[8]);
+    size_t q = PyLong_AsSize_t(args[9]);
+    double fixed_lambda = PyFloat_AsDouble(args[10]);
+    if (PyErr_Occurred()) return NULL;
+    linear_mean_egarch_nll_grad_pq_gh(
+        params, y, features, resid, sigma2, grad, n, n_mean,
+        p, q, fixed_lambda
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_linear_mean_egarch_hess_pq_gh(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 11) {
+        BAD_ARITY("linear_mean_egarch_hess_pq_gh", 11, nargs);
+        return NULL;
+    }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y = (const double *)PyLong_AsVoidPtr(args[1]);
+    const double *features = (const double *)PyLong_AsVoidPtr(args[2]);
+    double *resid = (double *)PyLong_AsVoidPtr(args[3]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[4]);
+    double *hess = (double *)PyLong_AsVoidPtr(args[5]);
+    size_t n = PyLong_AsSize_t(args[6]);
+    size_t n_mean = PyLong_AsSize_t(args[7]);
+    size_t p = PyLong_AsSize_t(args[8]);
+    size_t q = PyLong_AsSize_t(args[9]);
+    double fixed_lambda = PyFloat_AsDouble(args[10]);
+    if (PyErr_Occurred()) return NULL;
+    linear_mean_egarch_hess_pq_gh(
+        params, y, features, resid, sigma2, hess, n, n_mean,
+        p, q, fixed_lambda
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_arma_vol_gh_nll_pq(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 13) { BAD_ARITY("arma_vol_gh_nll_pq", 13, nargs); return NULL; }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *resid = (double *)PyLong_AsVoidPtr(args[2]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[3]);
+    const double *e0 = (const double *)PyLong_AsVoidPtr(args[4]);
+    const double *h0 = (const double *)PyLong_AsVoidPtr(args[5]);
+    size_t n = PyLong_AsSize_t(args[6]);
+    size_t p_ar = PyLong_AsSize_t(args[7]);
+    size_t q_ma = PyLong_AsSize_t(args[8]);
+    size_t p_vol = PyLong_AsSize_t(args[9]);
+    size_t q_vol = PyLong_AsSize_t(args[10]);
+    int volatility_kind = (int)PyLong_AsLong(args[11]);
+    double fixed_lambda = PyFloat_AsDouble(args[12]);
+    if (PyErr_Occurred()) return NULL;
+    return PyFloat_FromDouble(arma_vol_gh_nll_pq(
+        params, y, resid, sigma2, e0, h0, n, p_ar, q_ma,
+        p_vol, q_vol, volatility_kind, fixed_lambda
+    ));
+}
+
+static PyObject *
+py_arma_vol_gh_nll_grad_pq(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 14) { BAD_ARITY("arma_vol_gh_nll_grad_pq", 14, nargs); return NULL; }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *resid = (double *)PyLong_AsVoidPtr(args[2]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[3]);
+    const double *e0 = (const double *)PyLong_AsVoidPtr(args[4]);
+    const double *h0 = (const double *)PyLong_AsVoidPtr(args[5]);
+    double *grad = (double *)PyLong_AsVoidPtr(args[6]);
+    size_t n = PyLong_AsSize_t(args[7]);
+    size_t p_ar = PyLong_AsSize_t(args[8]);
+    size_t q_ma = PyLong_AsSize_t(args[9]);
+    size_t p_vol = PyLong_AsSize_t(args[10]);
+    size_t q_vol = PyLong_AsSize_t(args[11]);
+    int volatility_kind = (int)PyLong_AsLong(args[12]);
+    double fixed_lambda = PyFloat_AsDouble(args[13]);
+    if (PyErr_Occurred()) return NULL;
+    arma_vol_gh_nll_grad_pq(
+        params, y, resid, sigma2, e0, h0, grad, n, p_ar, q_ma,
+        p_vol, q_vol, volatility_kind, fixed_lambda
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_arma_vol_gh_nll_hess_pq(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 14) { BAD_ARITY("arma_vol_gh_nll_hess_pq", 14, nargs); return NULL; }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *y = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *resid = (double *)PyLong_AsVoidPtr(args[2]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[3]);
+    const double *e0 = (const double *)PyLong_AsVoidPtr(args[4]);
+    const double *h0 = (const double *)PyLong_AsVoidPtr(args[5]);
+    double *hess = (double *)PyLong_AsVoidPtr(args[6]);
+    size_t n = PyLong_AsSize_t(args[7]);
+    size_t p_ar = PyLong_AsSize_t(args[8]);
+    size_t q_ma = PyLong_AsSize_t(args[9]);
+    size_t p_vol = PyLong_AsSize_t(args[10]);
+    size_t q_vol = PyLong_AsSize_t(args[11]);
+    int volatility_kind = (int)PyLong_AsLong(args[12]);
+    double fixed_lambda = PyFloat_AsDouble(args[13]);
+    if (PyErr_Occurred()) return NULL;
+    arma_vol_gh_nll_hess_pq(
+        params, y, resid, sigma2, e0, h0, hess, n, p_ar, q_ma,
+        p_vol, q_vol, volatility_kind, fixed_lambda
+    );
+    Py_RETURN_NONE;
 }
 
 static PyObject *
@@ -4973,6 +5622,83 @@ py_log_arma_gjr_garch_nll_grad_pq_skewt(PyObject *self, PyObject *const *args, P
     Py_RETURN_NONE;
 }
 
+/* ======================== APARCH =========================================== */
+
+static PyObject *
+py_aparch_variance_pq(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 6) { BAD_ARITY("aparch_variance_pq", 6, nargs); return NULL; }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *residuals = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[2]);
+    size_t n = PyLong_AsSize_t(args[3]);
+    size_t p = PyLong_AsSize_t(args[4]);
+    size_t q = PyLong_AsSize_t(args[5]);
+    if (PyErr_Occurred()) return NULL;
+    aparch_variance_pq(params, residuals, sigma2, n, p, q);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_aparch_nll_pq(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 8) { BAD_ARITY("aparch_nll_pq", 8, nargs); return NULL; }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *residuals = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[2]);
+    size_t n = PyLong_AsSize_t(args[3]);
+    size_t p = PyLong_AsSize_t(args[4]);
+    size_t q = PyLong_AsSize_t(args[5]);
+    int distribution = (int)PyLong_AsLong(args[6]);
+    double fixed_lambda = PyFloat_AsDouble(args[7]);
+    if (PyErr_Occurred()) return NULL;
+    return PyFloat_FromDouble(aparch_nll_pq(
+        params, residuals, sigma2, n, p, q, distribution, fixed_lambda
+    ));
+}
+
+static PyObject *
+py_aparch_nll_grad_pq(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 9) { BAD_ARITY("aparch_nll_grad_pq", 9, nargs); return NULL; }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *residuals = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[2]);
+    double *gradient = (double *)PyLong_AsVoidPtr(args[3]);
+    size_t n = PyLong_AsSize_t(args[4]);
+    size_t p = PyLong_AsSize_t(args[5]);
+    size_t q = PyLong_AsSize_t(args[6]);
+    int distribution = (int)PyLong_AsLong(args[7]);
+    double fixed_lambda = PyFloat_AsDouble(args[8]);
+    if (PyErr_Occurred()) return NULL;
+    aparch_nll_grad_pq(
+        params, residuals, sigma2, gradient, n, p, q,
+        distribution, fixed_lambda
+    );
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+py_aparch_nll_hess_pq(PyObject *self, PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 9) { BAD_ARITY("aparch_nll_hess_pq", 9, nargs); return NULL; }
+    const double *params = (const double *)PyLong_AsVoidPtr(args[0]);
+    const double *residuals = (const double *)PyLong_AsVoidPtr(args[1]);
+    double *sigma2 = (double *)PyLong_AsVoidPtr(args[2]);
+    double *hessian = (double *)PyLong_AsVoidPtr(args[3]);
+    size_t n = PyLong_AsSize_t(args[4]);
+    size_t p = PyLong_AsSize_t(args[5]);
+    size_t q = PyLong_AsSize_t(args[6]);
+    int distribution = (int)PyLong_AsLong(args[7]);
+    double fixed_lambda = PyFloat_AsDouble(args[8]);
+    if (PyErr_Occurred()) return NULL;
+    aparch_nll_hess_pq(
+        params, residuals, sigma2, hessian, n, p, q,
+        distribution, fixed_lambda
+    );
+    Py_RETURN_NONE;
+}
+
 /* ======================== DCC Gaussian ===================================== */
 
 static PyObject *
@@ -5279,6 +6005,62 @@ static PyMethodDef Methods[] = {
                                   METH_FASTCALL, "Generalized Error log-likelihood"},
     {"_ged_nll",                 (PyCFunction)py_ged_nll,
                                   METH_FASTCALL, "Generalized Error negative log-likelihood"},
+    {"_gh_standardized_nll",     (PyCFunction)py_gh_standardized_nll,
+                                  METH_FASTCALL, "Standardized GH negative log-likelihood"},
+    {"_gh_standardized_nll_grad_hess", (PyCFunction)py_gh_standardized_nll_grad_hess,
+                                  METH_FASTCALL, "Standardized GH NLL derivatives"},
+    {"_gh_abs_moment_grad_hess", (PyCFunction)py_gh_abs_moment_grad_hess,
+                                  METH_FASTCALL, "Standardized GH absolute moment derivatives"},
+    {"_nig_standardized_nll",    (PyCFunction)py_nig_standardized_nll,
+                                  METH_FASTCALL, "Standardized NIG negative log-likelihood"},
+    {"_nig_standardized_nll_grad_hess", (PyCFunction)py_nig_standardized_nll_grad_hess,
+                                  METH_FASTCALL, "Standardized NIG NLL derivatives"},
+    {"_vg_standardized_nll",    (PyCFunction)py_vg_standardized_nll,
+                                  METH_FASTCALL, "Standardized Variance-Gamma negative log-likelihood"},
+    {"_vg_standardized_nll_grad_hess", (PyCFunction)py_vg_standardized_nll_grad_hess,
+                                  METH_FASTCALL, "Standardized Variance-Gamma NLL derivatives"},
+    {"_garch_gh_nll_pq",        (PyCFunction)py_garch_gh_nll_pq,
+                                  METH_FASTCALL, "GARCH with standardized GH NLL"},
+    {"_garch_gh_nll_grad_pq",   (PyCFunction)py_garch_gh_nll_grad_pq,
+                                  METH_FASTCALL, "GARCH with standardized GH gradient"},
+    {"_garch_gh_nll_hess_pq",   (PyCFunction)py_garch_gh_nll_hess_pq,
+                                  METH_FASTCALL, "GARCH with standardized GH Hessian"},
+    {"_gjr_garch_gh_nll_pq",    (PyCFunction)py_gjr_garch_gh_nll_pq,
+                                  METH_FASTCALL, "GJR-GARCH with standardized GH NLL"},
+    {"_gjr_garch_gh_nll_grad_pq", (PyCFunction)py_gjr_garch_gh_nll_grad_pq,
+                                  METH_FASTCALL, "GJR-GARCH with standardized GH gradient"},
+    {"_gjr_garch_gh_nll_hess_pq", (PyCFunction)py_gjr_garch_gh_nll_hess_pq,
+                                  METH_FASTCALL, "GJR-GARCH with standardized GH Hessian"},
+    {"_egarch_gh_nll_pq",       (PyCFunction)py_egarch_gh_nll_pq,
+                                  METH_FASTCALL, "EGARCH with standardized GH NLL"},
+    {"_egarch_gh_nll_grad_pq",  (PyCFunction)py_egarch_gh_nll_grad_pq,
+                                  METH_FASTCALL, "EGARCH with standardized GH gradient"},
+    {"_egarch_gh_nll_hess_pq",  (PyCFunction)py_egarch_gh_nll_hess_pq,
+                                  METH_FASTCALL, "EGARCH with standardized GH Hessian"},
+    {"_linear_mean_garch_nll_pq_gh", (PyCFunction)py_linear_mean_garch_nll_pq_gh,
+                                  METH_FASTCALL, "Linear mean GARCH with standardized GH NLL"},
+    {"_linear_mean_garch_nll_grad_pq_gh", (PyCFunction)py_linear_mean_garch_nll_grad_pq_gh,
+                                  METH_FASTCALL, "Linear mean GARCH with standardized GH gradient"},
+    {"_linear_mean_garch_hess_pq_gh", (PyCFunction)py_linear_mean_garch_hess_pq_gh,
+                                  METH_FASTCALL, "Linear mean GARCH with standardized GH Hessian"},
+    {"_linear_mean_gjr_garch_nll_pq_gh", (PyCFunction)py_linear_mean_gjr_garch_nll_pq_gh,
+                                  METH_FASTCALL, "Linear mean GJR-GARCH with standardized GH NLL"},
+    {"_linear_mean_gjr_garch_nll_grad_pq_gh", (PyCFunction)py_linear_mean_gjr_garch_nll_grad_pq_gh,
+                                  METH_FASTCALL, "Linear mean GJR-GARCH with standardized GH gradient"},
+    {"_linear_mean_gjr_garch_hess_pq_gh", (PyCFunction)py_linear_mean_gjr_garch_hess_pq_gh,
+                                  METH_FASTCALL, "Linear mean GJR-GARCH with standardized GH Hessian"},
+    {"_linear_mean_egarch_nll_pq_gh", (PyCFunction)py_linear_mean_egarch_nll_pq_gh,
+                                  METH_FASTCALL, "Linear mean EGARCH with standardized GH NLL"},
+    {"_linear_mean_egarch_nll_grad_pq_gh", (PyCFunction)py_linear_mean_egarch_nll_grad_pq_gh,
+                                  METH_FASTCALL, "Linear mean EGARCH with standardized GH gradient"},
+    {"_linear_mean_egarch_hess_pq_gh", (PyCFunction)py_linear_mean_egarch_hess_pq_gh,
+                                  METH_FASTCALL, "Linear mean EGARCH with standardized GH Hessian"},
+    {"_arma_vol_gh_nll_pq",     (PyCFunction)py_arma_vol_gh_nll_pq,
+                                  METH_FASTCALL, "ARMA volatility with standardized GH NLL"},
+    {"_arma_vol_gh_nll_grad_pq", (PyCFunction)py_arma_vol_gh_nll_grad_pq,
+                                  METH_FASTCALL, "ARMA volatility with standardized GH gradient"},
+    {"_arma_vol_gh_nll_hess_pq", (PyCFunction)py_arma_vol_gh_nll_hess_pq,
+                                  METH_FASTCALL, "ARMA volatility with standardized GH Hessian"},
     {"_arx_mean_resid",          (PyCFunction)py_arx_mean_resid,
                                   METH_FASTCALL, "Internal pointer API"},
     {"_harx_mean_resid",         (PyCFunction)py_harx_mean_resid,
@@ -5951,6 +6733,16 @@ static PyMethodDef Methods[] = {
                                                METH_FASTCALL, "Log-space ARMA-GJR-GARCH + Skew-t NLL"},
     {"_log_arma_gjr_garch_nll_grad_pq_skewt", (PyCFunction)py_log_arma_gjr_garch_nll_grad_pq_skewt,
                                                METH_FASTCALL, "Log-space ARMA-GJR-GARCH + Skew-t gradient"},
+
+    // APARCH
+    {"_aparch_variance_pq",      (PyCFunction)py_aparch_variance_pq,
+                                   METH_FASTCALL, "APARCH(p,q) variance recursion"},
+    {"_aparch_nll_pq",           (PyCFunction)py_aparch_nll_pq,
+                                   METH_FASTCALL, "APARCH(p,q) NLL"},
+    {"_aparch_nll_grad_pq",      (PyCFunction)py_aparch_nll_grad_pq,
+                                   METH_FASTCALL, "APARCH(p,q) exact gradient"},
+    {"_aparch_nll_hess_pq",      (PyCFunction)py_aparch_nll_hess_pq,
+                                   METH_FASTCALL, "APARCH(p,q) exact Hessian"},
 
     // DCC Gaussian
     {"_dcc_nll_11_gaussian",          (PyCFunction)py_dcc_nll_11_gaussian,

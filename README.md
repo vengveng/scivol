@@ -11,18 +11,18 @@ QMLE estimation, diagnostic tests and automatic model selection.
 
 ## Supported models
 
-- Univariate volatility models: `GARCH(p, q)`, `GJRGARCH(p, q)`, `EGARCH(p, q)` (`Normal`, `StudentT`, `SkewT`, and `GED` surfaces)
-- Conditional densities: `Normal()`, `StudentT()`, `SkewT()`, `GED()`
-- Mean model: `ARMA(p, q)` (standalone with `Normal()` and `GED()`)
+- Univariate volatility models: `GARCH(p, q)`, `GJRGARCH(p, q)`, `EGARCH(p, q)`, `APARCH(p, q)`
+- Conditional densities: `Normal()`, `StudentT()`, `SkewT()`, `GED()`,
+  `GeneralizedHyperbolic()`, `Hyperbolic()`, `NormalInverseGaussian()`, and
+  `VarianceGamma()`
+- Mean model: `ARMA(p, q)` (standalone with `Normal()`, `GED()`, and all GH-family densities)
 - Composite univariate specifications: volatility-only models and
   `ARMA(p, q) + GARCH(P, Q)` with any shipped linked density, plus
-  `ARMA(p, q) + EGARCH(P, Q)` for `Normal()`, `StudentT()`, `SkewT()`, and `GED()`
-- Exogenous-mean specifications: standalone `ARX/HARX` with `Normal()`,
-  `StudentT()`, `SkewT()`, and `GED()`, plus linked `ARX/HARX + GARCH(P, Q)`,
-  `ARX/HARX + GJRGARCH(P, Q)`, and `ARX/HARX + EGARCH(P, Q)` with the same
-  shipped densities
+  `ARMA(p, q) + EGARCH(P, Q)` with any shipped linked density
+- Exogenous-mean specifications: standalone and linked `ARX/HARX` surfaces with
+  all shipped densities
 - Multivariate correlation model: `DCC(p, q)` with Gaussian or common-df Student-t copula dynamics
-- Automatic model selection helpers: `AutoVol()` and `AutoDensity()`
+- Automatic model selection helpers: `AutoMean()`, `AutoVol()`, and `AutoDensity()`
 
 ## Performance
 
@@ -136,7 +136,8 @@ Half-life (periods):      106.3
 6. [Results](#results)
 7. [Display settings](#display-settings)
 8. [Diagnostics](#diagnostics)
-9. [API reference](#api-reference)
+9. [Method references](#method-references)
+10. [API reference](#api-reference)
 
 ---
 
@@ -145,14 +146,22 @@ Half-life (periods):      106.3
 Build models by combining components with `+`. scivol orders them automatically: MEAN, then VOLATILITY, then DENSITY.
 
 ```python
-from scivol import EGARCH, GARCH, GJRGARCH, ARMA, DCC, Normal, StudentT, SkewT
+from scivol import (
+    APARCH, ARMA, DCC, EGARCH, GARCH, GJRGARCH,
+    GeneralizedHyperbolic, Hyperbolic, Normal, StudentT, SkewT,
+    VarianceGamma,
+)
 
 spec = GARCH(1, 1)                          # Normal density by default
 spec = GARCH(1, 1) + StudentT()             # Explicit density
 spec = GJRGARCH(1, 1) + StudentT()          # Asymmetric volatility
 spec = EGARCH(2, 1) + Normal()              # Log-variance volatility model
+spec = APARCH(1, 1) + StudentT()            # Asymmetric power volatility
 spec = ARMA(1, 1) + GARCH(1, 1) + SkewT()  # Mean + volatility + density
 spec = ARMA(1, 1) + EGARCH(2, 1) + Normal() # Linked mean + EGARCH volatility
+spec = GARCH(1, 1) + GeneralizedHyperbolic()
+spec = GARCH(1, 1) + Hyperbolic()
+spec = GARCH(1, 1) + VarianceGamma()
 dcc = DCC(1, 1)                             # Dynamic correlations (multivariate)
 ```
 
@@ -173,6 +182,11 @@ spec = normal >> garch     # __rlshift__
 
 ### GARCH(p, q)
 
+`GARCH(p, q)` is [Bollerslev's (1986)](<https://doi.org/10.1016/0304-4076(86)90063-1>)
+generalization of [Engle's (1982)](<https://doi.org/10.2307/1912773>) ARCH
+process. It lets conditional variance depend on both squared past shocks and
+past conditional variances.
+
 Conditional variance:
 
 $$
@@ -190,7 +204,10 @@ Parameters: `omega` ($\omega > 0$), `alpha[1:p]` (ARCH terms), `beta[1:q]` (GARC
 
 ### GJRGARCH(p, q)
 
-Adds a leverage term so that negative shocks raise volatility more than positive shocks of the same size:
+The asymmetric specification of
+[Glosten, Jagannathan, and Runkle (1993)](<https://doi.org/10.1111/j.1540-6261.1993.tb05128.x>)
+adds a leverage term so that negative shocks raise volatility more than
+positive shocks of the same size:
 
 $$
 \sigma_t^2 = \omega + \sum_i \left(\alpha_i + \gamma_i I(\varepsilon_{t-i} < 0)\right)\varepsilon_{t-i}^2 + \sum_j \beta_j \sigma_{t-j}^2
@@ -208,7 +225,9 @@ spec = GJRGARCH(1, 1) + StudentT()
 
 ### EGARCH(p, q)
 
-Log-variance volatility dynamics:
+[Nelson's (1991)](<https://doi.org/10.2307/2938260>) exponential GARCH model
+specifies volatility in logs, so the recursion produces a positive variance
+without non-negativity constraints on every shock coefficient:
 
 $$
 \log h_t = \omega + \sum_{i=1}^{p}\alpha_i(|z_{t-i}| - \mathbb{E}|z|) + \sum_{i=1}^{p}\gamma_i z_{t-i} + \sum_{j=1}^{q}\beta_j \log h_{t-j}
@@ -219,13 +238,35 @@ spec = EGARCH(1, 1) + Normal()
 spec = EGARCH(2, 1) + StudentT()
 ```
 
-`EGARCH` is currently shipped for `Normal()`, `StudentT()`, `SkewT()`, and `GED()`.
+`EGARCH` is shipped with every conditional density listed below.
 
 Parameters: `omega`, `alpha[1:p]`, `gamma[1:p]` (leverage), `beta[1:q]`.
 
+### APARCH(p, q)
+
+The asymmetric power ARCH model of
+[Ding, Granger, and Engle (1993)](<https://doi.org/10.1016/0927-5398(93)90006-D>)
+estimates the power applied to volatility rather than fixing it at two:
+
+$$
+\sigma_t^\delta = \omega + \sum_i \alpha_i
+(|\varepsilon_{t-i}|-\gamma_i\varepsilon_{t-i})^\delta
++ \sum_j \beta_j\sigma_{t-j}^\delta
+$$
+
+```python
+spec = APARCH(1, 1) + Normal()
+spec = APARCH(2, 1) + GeneralizedHyperbolic()
+```
+
+`APARCH` supports orders up to 3 and every shipped density. Its first release is
+zero-mean and MLE-only. Parameters are `omega`, `alpha[1:p]`, `gamma[1:p]`,
+`beta[1:q]`, and `delta`.
+
 ### DCC(p, q)
 
-Dynamic Conditional Correlation for multivariate return series.
+Dynamic Conditional Correlation for multivariate return series, introduced by
+[Engle (2002)](<https://doi.org/10.1198/073500102288618487>).
 
 `DCC.fit()` uses a two-step workflow:
 1. Fit a univariate volatility model to each series.
@@ -275,11 +316,9 @@ rolling = dcc.fit_rolling(
 
 ### ARMA(p, q)
 
-Conditional mean. Standalone `ARMA(p, q)` is supported with `Normal()` and `GED()`.
-Linked composite mean-volatility fits currently ship for
-`ARMA(p, q) + GARCH(P, Q)` with `Normal()`, `StudentT()`, `SkewT()`, and `GED()`, and for
-`ARMA(p, q) + GJR-GARCH(P, Q)` with `Normal()`, `StudentT()`, `SkewT()`, and `GED()`, and for
-`ARMA(p, q) + EGARCH(P, Q)` with `Normal()`, `StudentT()`, `SkewT()`, and `GED()`.
+Conditional mean. Standalone `ARMA(p, q)` supports `Normal()`, `GED()`, GH,
+and NIG. Linked ARMA surfaces support every shipped density. Box and Jenkins
+(1970) is the standard reference for the ARMA model-building framework.
 
 ```python
 spec = ARMA(2, 1)                 # standalone ARMA with Normal errors
@@ -290,11 +329,10 @@ spec = ARMA(1, 1) + EGARCH(1, 1) + StudentT()
 ### ARX / HARX
 
 Array-based mean models with explicit regressors via `x=`.
-Standalone `ARX` and `HARX` now ship with public `fit()` under the default
-`Normal()` surface, and standalone `StudentT()`, `SkewT()`, and `GED()` fits
-now ship as well. Linked `ARX/HARX + GARCH(P, Q)`,
-`ARX/HARX + GJRGARCH(P, Q)`, and `ARX/HARX + EGARCH(P, Q)` fits ship for
-`Normal()`, `StudentT()`, `SkewT()`, and `GED()`.
+Standalone and linked `ARX`/`HARX` surfaces support every shipped density.
+`HARX` uses averages over the requested horizons, following the heterogeneous
+autoregressive structure associated with [Corsi's (2009)](<https://doi.org/10.1093/jjfinec/nbp001>)
+HAR model.
 
 ```python
 from scivol import ARX, HARX, EGARCH, GARCH, GED, StudentT
@@ -328,7 +366,39 @@ Heavier tails than Normal. One extra parameter: `nu` ($\nu > 2$). Lower $\nu$ me
 
 ### SkewT()
 
-Hansen's zero-mean, unit-variance skewed Student-t. Two extra parameters: `nu` ($\nu > 2$) and `lambda` ($-1 < \lambda < 1$). $\lambda = 0$ gives a symmetric Student-t; $\lambda < 0$ shifts weight to the left tail.
+[Hansen's (1994)](<https://doi.org/10.2307/2527081>) zero-mean, unit-variance
+skewed Student-t. Two extra parameters: `nu` ($\nu > 2$) and `lambda`
+($-1 < \lambda < 1$). $\lambda = 0$ gives a symmetric Student-t; $\lambda < 0$
+shifts weight to the left tail.
+
+### GED()
+
+Zero-mean, unit-variance generalized error density. One extra parameter: `nu`.
+
+### GeneralizedHyperbolic()
+
+Zero-mean, unit-variance generalized hyperbolic density from the family
+introduced by [Barndorff-Nielsen (1977)](<https://doi.org/10.1098/rspa.1977.0041>).
+It estimates `rho`, `zeta`, and `lambda`.
+
+### NormalInverseGaussian()
+
+A separate two-parameter density class developed by
+[Barndorff-Nielsen (1997)](<https://doi.org/10.1111/1467-9469.00045>) and backed
+by the shared GH core. It estimates `rho` and `zeta` and fixes the GH family
+index at `lambda=-0.5`.
+
+### Hyperbolic()
+
+A separate two-parameter density class backed by the shared GH core. It
+estimates `rho` and `zeta` and fixes the GH family index at `lambda=1`.
+
+### VarianceGamma()
+
+The standardized Variance-Gamma boundary of the GH family. Madan and Seneta
+[(1990)](<https://doi.org/10.1086/296519>) introduced the Variance-Gamma model
+for asset returns. scivol estimates `rho` and `lambda`, with `lambda > 1.5` so
+the observed Hessian remains finite at the density center.
 
 ---
 
@@ -383,7 +453,7 @@ lags they require; `hold_back=k` requests at least `k` leading observations be
 trimmed. Results preserve pandas alignment, and the effective sample is recorded
 in `result.fit_info`.
 
-Standalone GARCH, GJR-GARCH, and EGARCH fits accept constrained-space warm
+Standalone GARCH, GJR-GARCH, EGARCH, and APARCH fits accept constrained-space warm
 starts and explicit optimizer budgets. The same start works in theta- or
 z-space:
 
@@ -404,6 +474,7 @@ Current default path policy:
 | `EGARCH + StudentT` | `theta-space` |
 | `EGARCH + SkewT` | `theta-space` |
 | `EGARCH + GED` | `theta-space` |
+| `APARCH + any shipped density` | `theta-space` |
 | `ARMA + Normal / GED` | `theta-space` |
 | `ARX/HARX + Normal / StudentT / SkewT / GED` | `theta-space` |
 | `ARMA + GARCH + Normal / StudentT / SkewT / GED` | `theta-space` |
@@ -415,7 +486,11 @@ For `EGARCH + Normal`, the current SLSQP policy is based on targeted checks of t
 
 ### QMLE
 
-Quasi-maximum likelihood: fit under Normal likelihood, then compute sandwich standard errors valid under distributional misspecification. Pass `method='qmle'`:
+scivol follows the Gaussian quasi-maximum likelihood framework of
+[Bollerslev and Wooldridge (1992)](<https://doi.org/10.1080/07474939208800229>):
+fit under a Normal likelihood, then compute sandwich standard errors that remain
+valid under distributional misspecification when the conditional mean and
+variance are correctly specified. Pass `method='qmle'`:
 
 ```python
 spec = GARCH(1, 1) + Normal()
@@ -460,7 +535,8 @@ spec = GJRGARCH(p=1, q='auto') + StudentT()              # fix p, search q
 
 ### By volatility model
 
-`AutoVol` searches across both GARCH and GJRGARCH families:
+`AutoVol` defaults to GARCH and GJRGARCH. EGARCH and APARCH are available as
+explicit candidates:
 
 ```python
 from scivol import AutoVol
@@ -469,17 +545,35 @@ spec = AutoVol() + Normal()
 result = spec.fit(returns)
 
 spec = AutoVol(candidates=['GJRGARCH'], max_p=2, max_q=2) + StudentT()
+spec = AutoVol(candidates=['APARCH'], max_p=2, max_q=2) + Normal()
 ```
 
 ### By distribution
 
-`AutoDensity` searches across Normal, StudentT, and SkewT:
+`AutoDensity` defaults to Normal, StudentT, and SkewT. GH-family densities are
+available as explicit candidates:
 
 ```python
 from scivol import AutoDensity
 
 spec = GARCH(1, 1) + AutoDensity()
 spec = GARCH(1, 1) + AutoDensity(candidates=['Normal', 'StudentT'])
+spec = GARCH(1, 1) + AutoDensity(
+    candidates=['Normal', 'Hyperbolic', 'VarianceGamma']
+)
+```
+
+### By mean model
+
+`AutoMean` searches a zero mean and ARMA orders through `(2, 2)` by default.
+For large three-axis grids it screens every mean against
+`GARCH(1,1) + Normal()` and expands only the best mean finalists.
+
+```python
+from scivol import AutoMean
+
+spec = AutoMean() + GARCH(1, 1) + Normal()
+spec = AutoMean(max_p=3, max_q=2, candidate_budget=150, finalists=3) + AutoVol() + AutoDensity()
 ```
 
 ### Full search
@@ -504,10 +598,12 @@ df = result.selection.to_dataframe()
 The default score is:
 
 $$
-\mathrm{Score} = \mathrm{AIC} + \mathrm{diagnostic\_weight} \times n_{\mathrm{failed\_tests}}
+\mathrm{Score} = \mathrm{AIC} + \mathrm{diagnostic\ penalty} + \mathrm{degeneracy\ penalty}
 $$
 
-where `n_failed_tests` counts failures of the DGT and Ljung-Box tests. Default `diagnostic_weight` is 50.
+The degeneracy term flags boundary-hugging and near-integrated fits. Set
+`degeneracy_weight=0` to disable it. Candidate fits warm-start from lower-order
+neighbors and the Normal fit of the same volatility specification when available.
 
 Use a built-in criterion with `select_by`:
 
@@ -518,17 +614,33 @@ result = spec.fit(returns, select_by="bic")
 result = spec.fit(returns, select_by="hqic")
 ```
 
+The named information criteria refer to Akaike's AIC
+[(1974)](<https://doi.org/10.1109/TAC.1974.1100705>), Schwarz's BIC
+[(1978)](<https://doi.org/10.1214/aos/1176344136>), and the Hannan-Quinn
+criterion [(1979)](<https://doi.org/10.1111/j.2517-6161.1979.tb01072.x>).
+
 Use OOS selection to fit each candidate on the training portion, score the
 holdout, then refit the winner on the full sample:
 
 ```python
 result = spec.fit(returns, select_by="oos")  # log score, last 20%
 result = spec.fit(returns, select_by="oos", oos_test_size=500)
+result = spec.fit(returns, select_by="oos", oos_refit=20)  # expanding-window refits
 ```
 
 `oos_loss="qlike"` and `oos_loss="mse"` score variance forecasts, not the full
 predictive density. They are blocked with `AutoDensity` unless you pass
 `allow_density_blind_loss=True`.
+
+OOS candidates retain aligned per-observation losses. Use them for a bootstrap
+model confidence set based on the $T_{\max}$ elimination procedure of
+[Hansen, Lunde, and Nason (2011)](<https://doi.org/10.3982/ECTA5771>):
+
+```python
+mcs = result.selection.confidence_set(alpha=0.10, random_state=7)
+mcs.summary()
+mcs.to_dataframe()
+```
 
 For full control, pass a callable:
 
@@ -646,7 +758,13 @@ for c in result.selection.candidates[:5]:
 
 result.selection.best
 result.selection.to_dataframe()
+result.selection.decisive
 ```
+
+The candidate table includes convergence, fit time, warm-start provenance,
+diagnostics, boundary flags, persistence, OOS losses, and winner-comparison
+[Diebold-Mariano (1995)](<https://doi.org/10.1080/07350015.1995.10524599>)
+statistics where applicable.
 
 QMLE with AutoDensity is redundant (QMLE always uses Normal likelihood). scivol warns and fits Normal only.
 
@@ -778,7 +896,24 @@ Ljung-Box Tests on PIT Moments
 ======================================================================
 ```
 
-The DGT test checks whether PIT residuals are uniform -- "No" rejection means the distribution fits. Ljung-Box tests check for serial correlation in PIT moments: moment 1 targets the mean, moment 2 the variance, moments 3--4 skewness and kurtosis.
+The probability integral transform (PIT) maps each standardized residual through
+its fitted conditional CDF. If the conditional density is correctly specified,
+the resulting sequence should be independent and uniformly distributed on
+$[0,1]$, as described by
+[Diebold, Gunther, and Tay (1998)](<https://doi.org/10.2307/2527342>).
+
+scivol's DGT cell statistic divides $[0,1]$ into `n_cells` equal bins and applies
+[Pearson's (1900)](<https://doi.org/10.1080/14786440009463897>) chi-square
+goodness-of-fit statistic to their counts. It tests marginal uniformity only. A
+non-rejection means that the histogram provides no evidence against uniformity;
+it does not prove that the density is correctly specified.
+
+The companion [Ljung-Box (1978)](<https://doi.org/10.1093/biomet/65.2.297>)
+statistics test serial correlation through `lags` in the centered PIT powers
+$(u_t-0.5)^k$, for $k=1,2,3,4$. These transformations are sensitive, in order,
+to misspecification in location, dispersion, asymmetry, and tail shape. Read the
+DGT and Ljung-Box results together because a calibrated density needs both
+uniform PIT values and no remaining serial structure.
 
 ```python
 result.diagnostic_tests(alpha=0.01, n_cells=50, lags=20)
@@ -796,15 +931,47 @@ and current verification status live in [MODELS.md](MODELS.md).
 
 ---
 
+## Method references
+
+### Models and conditional densities
+
+- Barndorff-Nielsen, O. E. (1977). ["Exponentially decreasing distributions for the logarithm of particle size."](<https://doi.org/10.1098/rspa.1977.0041>) *Proceedings of the Royal Society A*, 353, 401-419.
+- Barndorff-Nielsen, O. E. (1997). ["Normal inverse Gaussian distributions and stochastic volatility modelling."](<https://doi.org/10.1111/1467-9469.00045>) *Scandinavian Journal of Statistics*, 24, 1-13.
+- Bollerslev, T. (1986). ["Generalized autoregressive conditional heteroskedasticity."](<https://doi.org/10.1016/0304-4076(86)90063-1>) *Journal of Econometrics*, 31, 307-327.
+- Box, G. E. P., and Jenkins, G. M. (1970). *Time Series Analysis: Forecasting and Control*. Holden-Day.
+- Corsi, F. (2009). ["A simple approximate long-memory model of realized volatility."](<https://doi.org/10.1093/jjfinec/nbp001>) *Journal of Financial Econometrics*, 7, 174-196.
+- Ding, Z., Granger, C. W. J., and Engle, R. F. (1993). ["A long memory property of stock market returns and a new model."](<https://doi.org/10.1016/0927-5398(93)90006-D>) *Journal of Empirical Finance*, 1, 83-106.
+- Engle, R. F. (1982). ["Autoregressive conditional heteroscedasticity with estimates of the variance of United Kingdom inflation."](<https://doi.org/10.2307/1912773>) *Econometrica*, 50, 987-1007.
+- Engle, R. F. (2002). ["Dynamic conditional correlation: A simple class of multivariate generalized autoregressive conditional heteroskedasticity models."](<https://doi.org/10.1198/073500102288618487>) *Journal of Business & Economic Statistics*, 20, 339-350.
+- Glosten, L. R., Jagannathan, R., and Runkle, D. E. (1993). ["On the relation between the expected value and the volatility of the nominal excess return on stocks."](<https://doi.org/10.1111/j.1540-6261.1993.tb05128.x>) *Journal of Finance*, 48, 1779-1801.
+- Hansen, B. E. (1994). ["Autoregressive conditional density estimation."](<https://doi.org/10.2307/2527081>) *International Economic Review*, 35, 705-730.
+- Madan, D. B., and Seneta, E. (1990). ["The Variance Gamma model for share market returns."](<https://doi.org/10.1086/296519>) *Journal of Business*, 63, 511-524.
+- Nelson, D. B. (1991). ["Conditional heteroskedasticity in asset returns: A new approach."](<https://doi.org/10.2307/2938260>) *Econometrica*, 59, 347-370.
+
+### Estimation and forecast evaluation
+
+- Akaike, H. (1974). ["A new look at the statistical model identification."](<https://doi.org/10.1109/TAC.1974.1100705>) *IEEE Transactions on Automatic Control*, 19, 716-723.
+- Bollerslev, T., and Wooldridge, J. M. (1992). ["Quasi-maximum likelihood estimation and inference in dynamic models with time-varying covariances."](<https://doi.org/10.1080/07474939208800229>) *Econometric Reviews*, 11, 143-172.
+- Diebold, F. X., Gunther, T. A., and Tay, A. S. (1998). ["Evaluating density forecasts, with applications to financial risk management."](<https://doi.org/10.2307/2527342>) *International Economic Review*, 39, 863-883.
+- Diebold, F. X., and Mariano, R. S. (1995). ["Comparing predictive accuracy."](<https://doi.org/10.1080/07350015.1995.10524599>) *Journal of Business & Economic Statistics*, 13, 253-263.
+- Hannan, E. J., and Quinn, B. G. (1979). ["The determination of the order of an autoregression."](<https://doi.org/10.1111/j.2517-6161.1979.tb01072.x>) *Journal of the Royal Statistical Society: Series B*, 41, 190-195.
+- Hansen, P. R., Lunde, A., and Nason, J. M. (2011). ["The model confidence set."](<https://doi.org/10.3982/ECTA5771>) *Econometrica*, 79, 453-497.
+- Ljung, G. M., and Box, G. E. P. (1978). ["On a measure of lack of fit in time series models."](<https://doi.org/10.1093/biomet/65.2.297>) *Biometrika*, 65, 297-303.
+- Pearson, K. (1900). ["On the criterion that a given system of deviations from the probable in the case of a correlated system of variables is such that it can be reasonably supposed to have arisen from random sampling."](<https://doi.org/10.1080/14786440009463897>) *Philosophical Magazine*, 50, 157-175.
+- Schwarz, G. (1978). ["Estimating the dimension of a model."](<https://doi.org/10.1214/aos/1176344136>) *Annals of Statistics*, 6, 461-464.
+
+---
+
 ## API reference
 
 ### Exports
 
 ```python
 from scivol import (
-    EGARCH, GARCH, GJRGARCH, ARMA, DCC,
-    Normal, StudentT, SkewT,
-    AutoDensity, AutoVol,
+    APARCH, EGARCH, GARCH, GJRGARCH, ARMA, DCC,
+    Normal, StudentT, SkewT, GED,
+    GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma,
+    AutoDensity, AutoMean, AutoVol,
     BatchFitResult, RollingFitResult,
     Component, CompositeSpec, Role,
     DCCParams, DCCResult, MultivariateScenarioResult,
@@ -834,6 +1001,11 @@ result = spec.fit(
     diagnostic_kwargs=None,    # forwarded to diagnostic_tests()
     oos_loss="logscore",       # for select_by="oos"
     oos_test_size=0.2,         # float fraction or int holdout count
+    oos_refit=None,            # expanding-window refit frequency
+    min_train_size=250,
+    min_test_size=50,
+    selection_warm_start=True,
+    degeneracy_weight=50.0,
 )
 ```
 
@@ -863,12 +1035,30 @@ gjr.persistence()         # alpha + 0.5*gamma + beta
 gjr.persistence(p_neg=0.6)
 ```
 
+### APARCH
+
+```python
+aparch = APARCH(1, 1)
+aparch.n_params            # 2 + 2p + q
+aparch.fitted_params       # includes gamma and delta
+aparch.persistence()       # alpha + beta proxy
+```
+
 ### AutoVol
 
 ```python
 av = AutoVol()
 av = AutoVol(candidates=['GJRGARCH'], max_p=2, max_q=2)
+av = AutoVol(candidates=['APARCH'], max_p=2, max_q=2)
 av.get_candidates()  # list of (model, p, q) tuples
+```
+
+### AutoMean
+
+```python
+am = AutoMean()
+am = AutoMean(max_p=3, max_q=2, candidate_budget=150, finalists=3)
+am.get_candidates()
 ```
 
 ### AutoDensity
@@ -900,6 +1090,7 @@ result.summary(), result.to_dict(), result.diagnostic_tests()
 result.selection_summary()
 result.selection.candidates   # list of all evaluated models
 result.selection.to_dataframe()
+result.selection.confidence_set(alpha=0.10)
 ```
 
 ### DCCResult

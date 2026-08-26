@@ -473,6 +473,11 @@ def fit_qmle(
             density_type = "studentt"
         elif sig == "SkewT":
             density_type = "skewt"
+        elif sig != "Normal":
+            raise NotImplementedError(
+                f"QMLE is not shipped for {sig}. Use method='mle'; robust "
+                "OPG/Hessian support currently covers Normal, StudentT, and SkewT."
+            )
 
     has_arma = mean is not None
     if has_arma:

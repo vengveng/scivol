@@ -99,6 +99,291 @@ def _ged_nll(
     """Compute GED negative log-likelihood given residuals and variances."""
     ...
 
+def _gh_standardized_nll(
+    params_ptr: _IntPtr,  # [rho, zeta, lambda]
+    x_ptr: _IntPtr,
+    n: _Size,
+) -> float:
+    """Compute standardized GH negative log-likelihood."""
+    ...
+
+def _gh_standardized_nll_grad_hess(
+    params_ptr: _IntPtr,  # [rho, zeta, lambda]
+    x_ptr: _IntPtr,
+    nll_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+) -> None:
+    """Compute standardized GH NLL, gradient, and Hessian."""
+    ...
+
+def _gh_abs_moment_grad_hess(
+    params_ptr: _IntPtr,
+    moment_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    fixed_lambda: float,
+) -> None:
+    """Compute standardized GH absolute moment and shape derivatives."""
+    ...
+
+def _nig_standardized_nll(
+    params_ptr: _IntPtr,  # [rho, zeta]
+    x_ptr: _IntPtr,
+    n: _Size,
+) -> float:
+    """Compute standardized NIG negative log-likelihood."""
+    ...
+
+def _nig_standardized_nll_grad_hess(
+    params_ptr: _IntPtr,  # [rho, zeta]
+    x_ptr: _IntPtr,
+    nll_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+) -> None:
+    """Compute standardized NIG NLL, gradient, and Hessian."""
+    ...
+
+def _vg_standardized_nll(
+    params_ptr: _IntPtr,  # [rho, lambda]
+    x_ptr: _IntPtr,
+    n: _Size,
+) -> float:
+    """Compute standardized Variance-Gamma negative log-likelihood."""
+    ...
+
+def _vg_standardized_nll_grad_hess(
+    params_ptr: _IntPtr,  # [rho, lambda]
+    x_ptr: _IntPtr,
+    nll_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+) -> None:
+    """Compute standardized Variance-Gamma NLL derivatives."""
+    ...
+
+def _garch_gh_nll_pq(
+    params_ptr: _IntPtr,
+    residuals_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+    fixed_lambda: float,
+) -> float:
+    """Compute GARCH(p,q) with standardized GH negative log-likelihood."""
+    ...
+
+def _garch_gh_nll_grad_pq(
+    params_ptr: _IntPtr,
+    residuals_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+    fixed_lambda: float,
+) -> None:
+    """Compute GARCH(p,q) with standardized GH gradient."""
+    ...
+
+def _garch_gh_nll_hess_pq(
+    params_ptr: _IntPtr,
+    residuals_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+    fixed_lambda: float,
+) -> None:
+    """Compute GARCH(p,q) with standardized GH Hessian."""
+    ...
+
+def _gjr_garch_gh_nll_pq(
+    params_ptr: _IntPtr,
+    residuals_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+    fixed_lambda: float,
+) -> float:
+    """Compute GJR-GARCH(p,q) with standardized GH negative log-likelihood."""
+    ...
+
+def _gjr_garch_gh_nll_grad_pq(
+    params_ptr: _IntPtr,
+    residuals_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+    fixed_lambda: float,
+) -> None:
+    """Compute GJR-GARCH(p,q) with standardized GH gradient."""
+    ...
+
+def _gjr_garch_gh_nll_hess_pq(
+    params_ptr: _IntPtr,
+    residuals_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+    fixed_lambda: float,
+) -> None:
+    """Compute GJR-GARCH(p,q) with standardized GH Hessian."""
+    ...
+
+def _egarch_gh_nll_pq(
+    params_ptr: _IntPtr,
+    residuals_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+    fixed_lambda: float,
+) -> float:
+    """Compute EGARCH(p,q) with standardized GH negative log-likelihood."""
+    ...
+
+def _egarch_gh_nll_grad_pq(
+    params_ptr: _IntPtr,
+    residuals_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+    fixed_lambda: float,
+) -> None:
+    """Compute EGARCH(p,q) with standardized GH gradient."""
+    ...
+
+def _egarch_gh_nll_hess_pq(
+    params_ptr: _IntPtr,
+    residuals_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+    fixed_lambda: float,
+) -> None:
+    """Compute EGARCH(p,q) with standardized GH Hessian."""
+    ...
+
+def _linear_mean_garch_nll_pq_gh(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+    fixed_lambda: float,
+) -> float: ...
+
+def _linear_mean_garch_nll_grad_pq_gh(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    grad_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+    fixed_lambda: float,
+) -> None: ...
+
+def _linear_mean_garch_hess_pq_gh(
+    params_ptr: _IntPtr,
+    y_ptr: _IntPtr,
+    features_ptr: _IntPtr,
+    resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hess_ptr: _IntPtr,
+    n: _Size,
+    n_mean: _Size,
+    p: _Size,
+    q: _Size,
+    fixed_lambda: float,
+) -> None: ...
+
+def _linear_mean_gjr_garch_nll_pq_gh(
+    params_ptr: _IntPtr, y_ptr: _IntPtr, features_ptr: _IntPtr,
+    resid_ptr: _IntPtr, sigma2_ptr: _IntPtr, n: _Size,
+    n_mean: _Size, p: _Size, q: _Size, fixed_lambda: float,
+) -> float: ...
+
+def _linear_mean_gjr_garch_nll_grad_pq_gh(
+    params_ptr: _IntPtr, y_ptr: _IntPtr, features_ptr: _IntPtr,
+    resid_ptr: _IntPtr, sigma2_ptr: _IntPtr, grad_ptr: _IntPtr,
+    n: _Size, n_mean: _Size, p: _Size, q: _Size,
+    fixed_lambda: float,
+) -> None: ...
+
+def _linear_mean_gjr_garch_hess_pq_gh(
+    params_ptr: _IntPtr, y_ptr: _IntPtr, features_ptr: _IntPtr,
+    resid_ptr: _IntPtr, sigma2_ptr: _IntPtr, hess_ptr: _IntPtr,
+    n: _Size, n_mean: _Size, p: _Size, q: _Size,
+    fixed_lambda: float,
+) -> None: ...
+
+def _linear_mean_egarch_nll_pq_gh(
+    params_ptr: _IntPtr, y_ptr: _IntPtr, features_ptr: _IntPtr,
+    resid_ptr: _IntPtr, sigma2_ptr: _IntPtr, n: _Size,
+    n_mean: _Size, p: _Size, q: _Size, fixed_lambda: float,
+) -> float: ...
+
+def _linear_mean_egarch_nll_grad_pq_gh(
+    params_ptr: _IntPtr, y_ptr: _IntPtr, features_ptr: _IntPtr,
+    resid_ptr: _IntPtr, sigma2_ptr: _IntPtr, grad_ptr: _IntPtr,
+    n: _Size, n_mean: _Size, p: _Size, q: _Size,
+    fixed_lambda: float,
+) -> None: ...
+
+def _linear_mean_egarch_hess_pq_gh(
+    params_ptr: _IntPtr, y_ptr: _IntPtr, features_ptr: _IntPtr,
+    resid_ptr: _IntPtr, sigma2_ptr: _IntPtr, hess_ptr: _IntPtr,
+    n: _Size, n_mean: _Size, p: _Size, q: _Size,
+    fixed_lambda: float,
+) -> None: ...
+
+def _arma_vol_gh_nll_pq(
+    params_ptr: _IntPtr, y_ptr: _IntPtr, resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr, e0_ptr: _IntPtr, h0_ptr: _IntPtr,
+    n: _Size, p_ar: _Size, q_ma: _Size, p_vol: _Size, q_vol: _Size,
+    volatility_kind: int, fixed_lambda: float,
+) -> float: ...
+
+def _arma_vol_gh_nll_grad_pq(
+    params_ptr: _IntPtr, y_ptr: _IntPtr, resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr, e0_ptr: _IntPtr, h0_ptr: _IntPtr,
+    grad_ptr: _IntPtr, n: _Size, p_ar: _Size, q_ma: _Size,
+    p_vol: _Size, q_vol: _Size, volatility_kind: int,
+    fixed_lambda: float,
+) -> None: ...
+
+def _arma_vol_gh_nll_hess_pq(
+    params_ptr: _IntPtr, y_ptr: _IntPtr, resid_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr, e0_ptr: _IntPtr, h0_ptr: _IntPtr,
+    hess_ptr: _IntPtr, n: _Size, p_ar: _Size, q_ma: _Size,
+    p_vol: _Size, q_vol: _Size, volatility_kind: int,
+    fixed_lambda: float,
+) -> None: ...
+
 def _arx_mean_resid(
     params_ptr: _IntPtr,   # [const?, phi_1..phi_p, beta_1..beta_k]
     y_ptr: _IntPtr,
@@ -4240,6 +4525,58 @@ def _dcc_nll_grad_hess_pq_studentt(
     q: _Size,
 ) -> None:
     """DCC(p,q) Student-t copula NLL, exact gradient, and Hessian."""
+    ...
+
+def _aparch_variance_pq(
+    params_ptr: _IntPtr,
+    residuals_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+) -> None:
+    """Compute the APARCH(p,q) conditional variance recursion."""
+    ...
+
+def _aparch_nll_pq(
+    params_ptr: _IntPtr,
+    residuals_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+    distribution: int,
+    fixed_lambda: float,
+) -> float:
+    """Compute the APARCH(p,q) negative log likelihood."""
+    ...
+
+def _aparch_nll_grad_pq(
+    params_ptr: _IntPtr,
+    residuals_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    gradient_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+    distribution: int,
+    fixed_lambda: float,
+) -> None:
+    """Compute the exact APARCH(p,q) NLL gradient."""
+    ...
+
+def _aparch_nll_hess_pq(
+    params_ptr: _IntPtr,
+    residuals_ptr: _IntPtr,
+    sigma2_ptr: _IntPtr,
+    hessian_ptr: _IntPtr,
+    n: _Size,
+    p: _Size,
+    q: _Size,
+    distribution: int,
+    fixed_lambda: float,
+) -> None:
+    """Compute the exact APARCH(p,q) observed Hessian."""
     ...
 
 # Nothing is meant for star-import; keep top-level clean

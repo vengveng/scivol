@@ -52,9 +52,12 @@ class FitsMixin:
         diagnostic_kwargs: Optional[Dict[str, Any]] = None,
         oos_loss: str = "logscore",
         oos_test_size: float | int = 0.2,
+        oos_refit: Optional[int] = None,
         min_train_size: int = 250,
         min_test_size: int = 50,
         allow_density_blind_loss: bool = False,
+        selection_warm_start: bool = True,
+        degeneracy_weight: float = 50.0,
         **kwargs: Any,
     ) -> Union[EstimationResult, Dict[str, EstimationResult]]:
         """
@@ -148,9 +151,12 @@ class FitsMixin:
                 diagnostic_kwargs=diagnostic_kwargs,
                 oos_loss=oos_loss,
                 oos_test_size=oos_test_size,
+                oos_refit=oos_refit,
                 min_train_size=min_train_size,
                 min_test_size=min_test_size,
                 allow_density_blind_loss=allow_density_blind_loss,
+                selection_warm_start=selection_warm_start,
+                degeneracy_weight=degeneracy_weight,
                 **kwargs,
             )
 
@@ -173,9 +179,12 @@ class FitsMixin:
             diagnostic_kwargs=diagnostic_kwargs,
             oos_loss=oos_loss,
             oos_test_size=oos_test_size,
+            oos_refit=oos_refit,
             min_train_size=min_train_size,
             min_test_size=min_test_size,
             allow_density_blind_loss=allow_density_blind_loss,
+            selection_warm_start=selection_warm_start,
+            degeneracy_weight=degeneracy_weight,
             **kwargs,
         )
 
@@ -407,25 +416,34 @@ class FitsMixin:
         diagnostic_kwargs: Optional[Dict[str, Any]] = None,
         oos_loss: str = "logscore",
         oos_test_size: float | int = 0.2,
+        oos_refit: Optional[int] = None,
         min_train_size: int = 250,
         min_test_size: int = 50,
         allow_density_blind_loss: bool = False,
+        selection_warm_start: bool = True,
+        degeneracy_weight: float = 50.0,
         **kwargs: Any,
     ) -> EstimationResult:
         """Fit a single time series."""
         from ._validation import prepare_series_input, validate_spec
 
         spec = validate_spec(self.spec)
+        from .components.vol import APARCH
+        from .roles import Role
+
+        if method.lower() == "qmle" and isinstance(
+            spec.get_component(Role.VOLATILITY), APARCH
+        ):
+            raise NotImplementedError("APARCH QMLE is not yet implemented; use method='mle'.")
         if any(key in kwargs for key in ("initial_params", "maxiter", "maxfev")):
             from .components.vol import EGARCH, GARCH, GJRGARCH
-            from .roles import Role
 
             mean = spec.get_component(Role.MEAN)
             vol = spec.get_component(Role.VOLATILITY)
-            if mean is not None or not isinstance(vol, (GARCH, GJRGARCH, EGARCH)):
+            if mean is not None or not isinstance(vol, (GARCH, GJRGARCH, EGARCH, APARCH)):
                 raise NotImplementedError(
                     "initial_params and optimizer budgets currently support fixed "
-                    "standalone GARCH, GJR-GARCH, and EGARCH specifications."
+                    "standalone GARCH, GJR-GARCH, EGARCH, and APARCH specifications."
                 )
             if method.lower() == "qmle" and "initial_params" in kwargs:
                 raise NotImplementedError("QMLE warm starts are not yet supported.")
@@ -446,9 +464,12 @@ class FitsMixin:
                 diagnostic_kwargs=diagnostic_kwargs,
                 oos_loss=oos_loss,
                 oos_test_size=oos_test_size,
+                oos_refit=oos_refit,
                 min_train_size=min_train_size,
                 min_test_size=min_test_size,
                 allow_density_blind_loss=allow_density_blind_loss,
+                selection_warm_start=selection_warm_start,
+                degeneracy_weight=degeneracy_weight,
                 **kwargs,
             )
         else:
@@ -522,7 +543,7 @@ class FitsMixin:
     def _get_vol_candidates(self) -> List[Tuple[str, int, int]]:
         """Get list of (vol_type, p, q) candidates from volatility component."""
         from .roles import Role
-        from .components.vol import AutoVol, EGARCH, GJRGARCH
+        from .components.vol import APARCH, AutoVol, EGARCH, GJRGARCH
 
         vol = self.spec.get_component(Role.VOLATILITY)
         if vol is None:
@@ -533,6 +554,8 @@ class FitsMixin:
 
         if isinstance(vol, GJRGARCH):
             vol_type = 'GJRGARCH'
+        elif isinstance(vol, APARCH):
+            vol_type = 'APARCH'
         elif isinstance(vol, EGARCH):
             vol_type = 'EGARCH'
         else:
@@ -555,25 +578,57 @@ class FitsMixin:
 
         return [density.signature]
 
+    def _get_mean_candidates(self) -> List[Tuple[str, Tuple[Any, ...]]]:
+        """Get serializable concrete mean candidates for auto selection."""
+        from .components.mean import ARMA, ARX, AutoMean, HARX
+        from .roles import Role
+
+        mean = self.spec.get_component(Role.MEAN)
+        if mean is None:
+            return [("Zero", ())]
+        if isinstance(mean, AutoMean):
+            return mean.get_candidates()
+        if isinstance(mean, ARMA):
+            return [("ARMA", (mean.p, mean.q))]
+        if isinstance(mean, ARX):
+            return [("ARX", (mean.lags, mean.constant))]
+        if isinstance(mean, HARX):
+            return [("HARX", (mean.horizons, mean.constant))]
+        raise ValueError(f"Unsupported mean component '{mean.signature}' in auto selection.")
+
     def preview_candidates(self) -> List["CompositeSpec"]:
         """Return concrete auto-selection candidate specs without fitting them."""
-        from ._autoselect import _get_density_map, _get_vol_map
+        from ._autoselect import _build_candidate_spec
 
-        vol_map = _get_vol_map()
-        density_map = _get_density_map()
+        mean_candidates = self._get_mean_candidates()
+        vol_candidates = self._get_vol_candidates()
+        self._validate_aparch_auto_scope(mean_candidates, vol_candidates)
         candidates = []
-        for vol_type, p, q in self._get_vol_candidates():
-            vol_cls = vol_map[vol_type]
-            for density_name in self._get_density_candidates():
-                density_cls = density_map[density_name]
-                candidates.append(vol_cls(p, q) + density_cls())
+        for mean_candidate in mean_candidates:
+            for vol_type, p, q in vol_candidates:
+                for density_name in self._get_density_candidates():
+                    candidates.append(_build_candidate_spec(
+                        mean_candidate, vol_type, p, q, density_name
+                    ))
         return candidates
+
+    @staticmethod
+    def _validate_aparch_auto_scope(
+        mean_candidates: List[Tuple[str, Tuple[Any, ...]]],
+        vol_candidates: List[Tuple[str, int, int]],
+    ) -> None:
+        if any(kind != "Zero" for kind, _ in mean_candidates) and any(
+            vol_type == "APARCH" for vol_type, _, _ in vol_candidates
+        ):
+            raise ValueError(
+                "APARCH auto candidates currently require a zero-mean specification."
+            )
 
     def _spec_to_params(self) -> Dict[str, Any]:
         """Serialize spec to dict for cross-process reconstruction."""
         from .roles import Role
         from .components.density import AutoDensity
-        from .components.vol import AutoVol, EGARCH, GJRGARCH
+        from .components.vol import APARCH, AutoVol, EGARCH, GJRGARCH
 
         vol = self.spec.get_component(Role.VOLATILITY)
         density = self.spec.get_component(Role.DENSITY)
@@ -585,6 +640,8 @@ class FitsMixin:
             vol_type = 'AutoVol'
         elif isinstance(vol, GJRGARCH):
             vol_type = 'GJRGARCH'
+        elif isinstance(vol, APARCH):
+            vol_type = 'APARCH'
         elif isinstance(vol, EGARCH):
             vol_type = 'EGARCH'
         else:
@@ -622,13 +679,21 @@ class FitsMixin:
         diagnostic_kwargs: Optional[Dict[str, Any]] = None,
         oos_loss: str = "logscore",
         oos_test_size: float | int = 0.2,
+        oos_refit: Optional[int] = None,
         min_train_size: int = 250,
         min_test_size: int = 50,
         allow_density_blind_loss: bool = False,
+        selection_warm_start: bool = True,
+        degeneracy_weight: float = 50.0,
         **kwargs: Any,
     ) -> Dict[str, EstimationResult]:
         """Fit multiple time series in parallel."""
-        from ._parallel import fit_multi_parallel, fit_multi_auto_parallel, get_default_workers
+        from ._parallel import (
+            fit_multi_auto_parallel,
+            fit_multi_auto_specs_parallel,
+            fit_multi_parallel,
+            get_default_workers,
+        )
         from ._autoselect import make_default_criterion
 
         if x is not None:
@@ -640,7 +705,10 @@ class FitsMixin:
         if self._has_auto_components():
             vol_candidates = self._get_vol_candidates()
             density_candidates = self._get_density_candidates()
+            mean_candidates = self._get_mean_candidates()
             from ._autoselect import _resolve_selection_mode
+            from .components.mean import AutoMean
+            from .roles import Role
 
             selection_mode, crit, _ = _resolve_selection_mode(
                 select_by=select_by,
@@ -649,6 +717,40 @@ class FitsMixin:
             )
             if selection_mode == "oos":
                 raise NotImplementedError("OOS auto-selection is currently supported for single-series fits only.")
+            if oos_refit is not None:
+                raise ValueError("oos_refit is only valid with select_by='oos'.")
+
+            mean_component = self.spec.get_component(Role.MEAN)
+            mean_auto = isinstance(mean_component, AutoMean)
+            if mean_candidates != [("Zero", ())]:
+                return fit_multi_auto_specs_parallel(
+                    data_dict=data_dict,
+                    index=index,
+                    mean_candidates=mean_candidates,
+                    vol_candidates=vol_candidates,
+                    density_candidates=density_candidates,
+                    select_by=("aic+diag" if selection_mode == "custom" else selection_mode),
+                    criterion=(crit if selection_mode == "custom" else None),
+                    diagnostic_kwargs=diagnostic_kwargs,
+                    diagnostic_weight=diagnostic_weight,
+                    degeneracy_weight=degeneracy_weight,
+                    selection_warm_start=selection_warm_start,
+                    mean_auto=mean_auto,
+                    candidate_budget=(
+                        mean_component.candidate_budget
+                        if mean_auto else len(mean_candidates) * len(vol_candidates) * len(density_candidates)
+                    ),
+                    mean_finalists=(
+                        mean_component.finalists if mean_auto else len(mean_candidates)
+                    ),
+                    n_jobs=n_jobs,
+                    show_progress=show_progress,
+                    method=method,
+                    hold_back=hold_back,
+                    scale=scale,
+                    common_sample=common_sample,
+                    **kwargs,
+                )
 
             return fit_multi_auto_parallel(
                 data_dict=data_dict,
@@ -659,6 +761,8 @@ class FitsMixin:
                 criterion=crit,
                 diagnostic_kwargs=diagnostic_kwargs,
                 diagnostic_weight=diagnostic_weight,
+                degeneracy_weight=degeneracy_weight,
+                selection_warm_start=selection_warm_start,
                 n_jobs=n_jobs,
                 selection_verbose=verbose_selection,
                 show_progress=show_progress,
@@ -710,9 +814,12 @@ class FitsMixin:
         diagnostic_kwargs: Optional[Dict[str, Any]] = None,
         oos_loss: str = "logscore",
         oos_test_size: float | int = 0.2,
+        oos_refit: Optional[int] = None,
         min_train_size: int = 250,
         min_test_size: int = 50,
         allow_density_blind_loss: bool = False,
+        selection_warm_start: bool = True,
+        degeneracy_weight: float = 50.0,
         **kwargs: Any,
     ) -> EstimationResult:
         """Perform automatic model selection."""
@@ -720,11 +827,24 @@ class FitsMixin:
 
         vol_candidates = self._get_vol_candidates()
         density_candidates = self._get_density_candidates()
+        mean_candidates = self._get_mean_candidates()
+        self._validate_aparch_auto_scope(mean_candidates, vol_candidates)
+        from .components.mean import AutoMean
+        from .roles import Role
+
+        mean_component = self.spec.get_component(Role.MEAN)
+        mean_auto = isinstance(mean_component, AutoMean)
 
         result, all_candidates = select_best_model(
             data,
             vol_candidates,
             density_candidates,
+            mean_candidates=mean_candidates,
+            mean_auto=mean_auto,
+            candidate_budget=(
+                mean_component.candidate_budget if mean_auto else len(mean_candidates) * len(vol_candidates) * len(density_candidates)
+            ),
+            mean_finalists=(mean_component.finalists if mean_auto else len(mean_candidates)),
             x=x,
             select_by=select_by,
             criterion=criterion,
@@ -735,9 +855,12 @@ class FitsMixin:
             n_jobs=n_jobs,
             oos_loss=oos_loss,
             oos_test_size=oos_test_size,
+            oos_refit=oos_refit,
             min_train_size=min_train_size,
             min_test_size=min_test_size,
             allow_density_blind_loss=allow_density_blind_loss,
+            selection_warm_start=selection_warm_start,
+            degeneracy_weight=degeneracy_weight,
             method=method,
             hold_back=hold_back,
             scale=scale,

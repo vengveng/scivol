@@ -5,6 +5,7 @@
 #include <float.h>
 
 #include "math_and_helpers.h"
+#include "gh_math.h"
 
 #if defined(__GNUC__) || defined(__clang__)
 #  define VLK_INLINE static inline __attribute__((always_inline))
@@ -1681,4 +1682,191 @@ void linear_mean_garch_hess_11_skewt(
     size_t n_mean
 ) {
     linear_mean_garch_hess_pq_skewt(params, y, features, resid, sigma2, hess, n, n_mean, 1, 1);
+}
+
+double linear_mean_garch_nll_pq_gh(
+    const double *params, const double *y, const double *features,
+    double *resid, double *sigma2, size_t n, size_t n_mean,
+    size_t p, size_t q, double fixed_lambda)
+{
+    const int estimate_lambda = isnan(fixed_lambda);
+    const size_t omega_index = n_mean;
+    const size_t alpha_index = omega_index + 1;
+    const size_t beta_index = alpha_index + p;
+    const size_t shape_index = beta_index + q;
+    const double omega = params[omega_index];
+    const double *alpha = params + alpha_index;
+    const double *beta = params + beta_index;
+    gh_shape_cache_t cache;
+    if (!lm_validate_garch(omega, alpha, beta, p, q)
+        || !gh_family_cache_init(
+            params, shape_index, fixed_lambda, &cache)) {
+        return 1e10;
+    }
+
+    double nll = 0.0;
+    for (size_t t = 0; t < n; ++t) {
+        const double *feature_t = features + t * n_mean;
+        resid[t] = y[t] - lm_dot(feature_t, params, n_mean);
+        if (p == 0 && q == 0) sigma2[t] = omega;
+        else if (t > 0) {
+            sigma2[t] = lm_sigma2_pq(
+                omega, alpha, beta, p, q, t, resid, sigma2
+            );
+        }
+        nll += gh_obs_nll_scalar(resid[t], sigma2[t], &cache);
+    }
+    return isfinite(nll) ? nll : 1e10;
+}
+
+void linear_mean_garch_nll_grad_pq_gh(
+    const double *params, const double *y, const double *features,
+    double *resid, double *sigma2, double *grad, size_t n,
+    size_t n_mean, size_t p, size_t q, double fixed_lambda)
+{
+    const int estimate_lambda = isnan(fixed_lambda);
+    const size_t ndyn = n_mean + 1 + p + q;
+    const size_t n_shape = estimate_lambda ? 3 : 2;
+    const size_t K = ndyn + n_shape;
+    const size_t omega_index = n_mean;
+    const size_t alpha_index = omega_index + 1;
+    const size_t beta_index = alpha_index + p;
+    const double omega = params[omega_index];
+    const double *alpha = params + alpha_index;
+    const double *beta = params + beta_index;
+    const size_t shape_source[3] = {
+        GH_DERIV_RHO, GH_DERIV_ZETA, GH_DERIV_LAMBDA
+    };
+    gh_shape_cache_t cache;
+
+    dzeros(grad, K);
+    if (!lm_validate_garch(omega, alpha, beta, p, q)
+        || !gh_family_cache_init(params, ndyn, fixed_lambda, &cache)) return;
+
+    const size_t ring = q + 1;
+    double *D_buffer = calloc(ring * ndyn, sizeof(double));
+    if (!D_buffer) return;
+    for (size_t t = 0; t < n; ++t) {
+        const double *feature_t = features + t * n_mean;
+        double *D_t = D_buffer + (t % ring) * ndyn;
+        resid[t] = y[t] - lm_dot(feature_t, params, n_mean);
+        if (p == 0 && q == 0) sigma2[t] = omega;
+        else if (t > 0) {
+            sigma2[t] = lm_sigma2_pq(
+                omega, alpha, beta, p, q, t, resid, sigma2
+            );
+        }
+        lm_update_dynamic_grad(
+            D_t, D_buffer, ring, features, resid, sigma2,
+            alpha, beta, t, n_mean, p, q, ndyn
+        );
+        gh_obs_gradient_t obs;
+        if (!gh_obs_gradient(resid[t], sigma2[t], &cache, &obs)) {
+            free(D_buffer);
+            dzeros(grad, K);
+            return;
+        }
+        for (size_t i = 0; i < n_mean; ++i) {
+            grad[i] -= obs.grad[GH_DERIV_E] * feature_t[i];
+        }
+        for (size_t i = 0; i < ndyn; ++i) {
+            grad[i] += obs.grad[GH_DERIV_H] * D_t[i];
+        }
+        for (size_t s = 0; s < n_shape; ++s) {
+            grad[ndyn + s] += obs.grad[shape_source[s]];
+        }
+    }
+    free(D_buffer);
+}
+
+void linear_mean_garch_hess_pq_gh(
+    const double *params, const double *y, const double *features,
+    double *resid, double *sigma2, double *hess, size_t n,
+    size_t n_mean, size_t p, size_t q, double fixed_lambda)
+{
+    const int estimate_lambda = isnan(fixed_lambda);
+    const size_t ndyn = n_mean + 1 + p + q;
+    const size_t n_shape = estimate_lambda ? 3 : 2;
+    const size_t K = ndyn + n_shape;
+    const size_t omega_index = n_mean;
+    const size_t alpha_index = omega_index + 1;
+    const size_t beta_index = alpha_index + p;
+    const double omega = params[omega_index];
+    const double *alpha = params + alpha_index;
+    const double *beta = params + beta_index;
+    const size_t shape_source[3] = {
+        GH_DERIV_RHO, GH_DERIV_ZETA, GH_DERIV_LAMBDA
+    };
+    gh_shape_cache_t cache;
+
+    dzeros(hess, K * K);
+    if (!lm_validate_garch(omega, alpha, beta, p, q)
+        || !gh_family_cache_init(params, ndyn, fixed_lambda, &cache)) return;
+
+    const size_t ring = q + 1;
+    double *D_buffer = calloc(ring * ndyn, sizeof(double));
+    double *C_buffer = calloc(ring * ndyn * ndyn, sizeof(double));
+    if (!D_buffer || !C_buffer) {
+        free(D_buffer);
+        free(C_buffer);
+        return;
+    }
+    for (size_t t = 0; t < n; ++t) {
+        const double *feature_t = features + t * n_mean;
+        double *D_t = D_buffer + (t % ring) * ndyn;
+        double *C_t = C_buffer + (t % ring) * ndyn * ndyn;
+        resid[t] = y[t] - lm_dot(feature_t, params, n_mean);
+        if (p == 0 && q == 0) sigma2[t] = omega;
+        else if (t > 0) {
+            sigma2[t] = lm_sigma2_pq(
+                omega, alpha, beta, p, q, t, resid, sigma2
+            );
+        }
+        lm_update_dynamic_hess(
+            D_t, C_t, D_buffer, C_buffer, ring, features, resid,
+            sigma2, alpha, beta, t, n_mean, p, q, ndyn
+        );
+        gh_obs_derivs_t obs;
+        if (!gh_obs_derivatives(resid[t], sigma2[t], &cache, &obs)) {
+            free(D_buffer);
+            free(C_buffer);
+            dzeros(hess, K * K);
+            return;
+        }
+        for (size_t i = 0; i < ndyn; ++i) {
+            const double e_i = i < n_mean ? -feature_t[i] : 0.0;
+            for (size_t j = i; j < ndyn; ++j) {
+                const double e_j = j < n_mean ? -feature_t[j] : 0.0;
+                lm_hess_accumulate(
+                    hess, i, j, K,
+                    obs.hess[GH_DERIV_E * GH_DERIV_DIM + GH_DERIV_E]
+                    * e_i * e_j
+                    + obs.hess[GH_DERIV_E * GH_DERIV_DIM + GH_DERIV_H]
+                    * (e_i * D_t[j] + D_t[i] * e_j)
+                    + obs.hess[GH_DERIV_H * GH_DERIV_DIM + GH_DERIV_H]
+                    * D_t[i] * D_t[j]
+                    + obs.grad[GH_DERIV_H] * C_t[i * ndyn + j]
+                );
+            }
+            for (size_t s = 0; s < n_shape; ++s) {
+                lm_hess_accumulate(
+                    hess, i, ndyn + s, K,
+                    obs.hess[GH_DERIV_E * GH_DERIV_DIM + shape_source[s]]
+                    * e_i
+                    + obs.hess[GH_DERIV_H * GH_DERIV_DIM + shape_source[s]]
+                    * D_t[i]
+                );
+            }
+        }
+        for (size_t s = 0; s < n_shape; ++s) {
+            for (size_t r = s; r < n_shape; ++r) {
+                lm_hess_accumulate(
+                    hess, ndyn + s, ndyn + r, K,
+                    obs.hess[shape_source[s] * GH_DERIV_DIM + shape_source[r]]
+                );
+            }
+        }
+    }
+    free(D_buffer);
+    free(C_buffer);
 }

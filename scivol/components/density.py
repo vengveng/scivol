@@ -121,6 +121,164 @@ class GED(Component):
         return self.fitted_params
 
 
+class GeneralizedHyperbolic(Component):
+    """Standardized Generalized Hyperbolic conditional density."""
+
+    role = Role.DENSITY
+
+    def __init__(self):
+        self.fitted_params = None
+
+    @property
+    def signature(self):
+        return "GeneralizedHyperbolic"
+
+    @property
+    def n_params(self):
+        return 3
+
+    def default_start(self, data):
+        return np.array([0.0, 1.0, 1.0], dtype=np.float64)
+
+    def bounds(self):
+        return [(-0.995, 0.995), (0.1, 25.0), (-6.0, 6.0)]
+
+    def pack(self, params_dict):
+        return np.array(
+            [params_dict["rho"], params_dict["zeta"], params_dict["lambda"]],
+            dtype=np.float64,
+        )
+
+    def unpack(self, flat_params):
+        if len(flat_params) >= 3:
+            self.fitted_params = {
+                "rho": flat_params[0],
+                "zeta": flat_params[1],
+                "lambda": flat_params[2],
+            }
+        else:
+            self.fitted_params = {}
+        return self.fitted_params
+
+
+class NormalInverseGaussian(Component):
+    """Standardized Normal Inverse Gaussian conditional density."""
+
+    role = Role.DENSITY
+
+    def __init__(self):
+        self.fitted_params = None
+
+    @property
+    def signature(self):
+        return "NormalInverseGaussian"
+
+    @property
+    def n_params(self):
+        return 2
+
+    def default_start(self, data):
+        return np.array([0.0, 1.0], dtype=np.float64)
+
+    def bounds(self):
+        return [(-0.995, 0.995), (0.1, 25.0)]
+
+    def pack(self, params_dict):
+        return np.array(
+            [params_dict["rho"], params_dict["zeta"]], dtype=np.float64
+        )
+
+    def unpack(self, flat_params):
+        if len(flat_params) >= 2:
+            self.fitted_params = {
+                "rho": flat_params[0],
+                "zeta": flat_params[1],
+            }
+        else:
+            self.fitted_params = {}
+        return self.fitted_params
+
+
+class Hyperbolic(Component):
+    """Standardized Hyperbolic conditional density."""
+
+    role = Role.DENSITY
+
+    def __init__(self):
+        self.fitted_params = None
+
+    @property
+    def signature(self):
+        return "Hyperbolic"
+
+    @property
+    def n_params(self):
+        return 2
+
+    def default_start(self, data):
+        return np.array([0.0, 1.0], dtype=np.float64)
+
+    def bounds(self):
+        return [(-0.995, 0.995), (0.1, 25.0)]
+
+    def pack(self, params_dict):
+        return np.array(
+            [params_dict["rho"], params_dict["zeta"]], dtype=np.float64
+        )
+
+    def unpack(self, flat_params):
+        if len(flat_params) >= 2:
+            self.fitted_params = {
+                "rho": flat_params[0],
+                "zeta": flat_params[1],
+            }
+        else:
+            self.fitted_params = {}
+        return self.fitted_params
+
+
+class VarianceGamma(Component):
+    """Standardized Variance-Gamma conditional density.
+
+    The GH boundary index ``lambda`` is restricted above 1.5 so the density
+    has a finite observed Hessian at its center.
+    """
+
+    role = Role.DENSITY
+
+    def __init__(self):
+        self.fitted_params = None
+
+    @property
+    def signature(self):
+        return "VarianceGamma"
+
+    @property
+    def n_params(self):
+        return 2
+
+    def default_start(self, data):
+        return np.array([0.0, 3.0], dtype=np.float64)
+
+    def bounds(self):
+        return [(-0.995, 0.995), (1.51, 50.0)]
+
+    def pack(self, params_dict):
+        return np.array(
+            [params_dict["rho"], params_dict["lambda"]], dtype=np.float64
+        )
+
+    def unpack(self, flat_params):
+        if len(flat_params) >= 2:
+            self.fitted_params = {
+                "rho": flat_params[0],
+                "lambda": flat_params[1],
+            }
+        else:
+            self.fitted_params = {}
+        return self.fitted_params
+
+
 class AutoDensity(Component):
     """
     Placeholder component for automatic density/distribution selection.
@@ -147,9 +305,8 @@ class AutoDensity(Component):
     """
     role = Role.DENSITY
     
-    # Keep the default auto-selection set aligned with families that expose
-    # a dedicated public fitting path. GED remains available for read-only
-    # evaluation/fixed-parameter workflows, but not for generic fitting.
+    # Keep the default grid inexpensive and backward compatible. Other shipped
+    # densities, including GED, GH, and NIG, remain available explicitly.
     CANDIDATES = ['Normal', 'StudentT', 'SkewT']
     
     def __init__(self, candidates: Optional[List[str]] = None):

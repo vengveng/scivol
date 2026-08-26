@@ -5,6 +5,95 @@ from ..roles import Role
 import numpy as np
 from ..components.base import Component
 
+
+class APARCH(Component):
+    """Asymmetric Power ARCH volatility component.
+
+    The conditional scale follows
+
+    ``sigma_t**delta = omega + sum(alpha_i * (|eps|-gamma_i*eps)**delta)
+    + sum(beta_j * sigma_{t-j}**delta)``.
+    """
+
+    role = Role.VOLATILITY
+
+    def __init__(self, p: int = 1, q: int = 1):
+        if not isinstance(p, int) or not isinstance(q, int) or p <= 0 or q <= 0:
+            raise ValueError("APARCH orders must be positive integers.")
+        if p > 3 or q > 3:
+            raise ValueError("APARCH currently supports orders up to 3.")
+        self.p = p
+        self.q = q
+        self.fitted_params = None
+        self.fitted_values = None
+        self._data = None
+        self._is_auto = False
+
+    def get_candidates(self) -> List[Tuple[int, int]]:
+        return [(self.p, self.q)]
+
+    @property
+    def signature(self) -> str:
+        return f"APARCH({self.p},{self.q})"
+
+    @property
+    def n_params(self) -> int:
+        return 2 + 2 * self.p + self.q
+
+    def default_start(self, data: np.ndarray) -> np.ndarray:
+        self._data = data
+        sample_var = max(float(np.var(data)), 1e-8)
+        alpha = np.full(self.p, 0.08 / self.p, dtype=np.float64)
+        gamma = np.zeros(self.p, dtype=np.float64)
+        beta = np.full(self.q, 0.85 / self.q, dtype=np.float64)
+        omega = max(1e-8, 0.07 * sample_var)
+        return np.concatenate(([omega], alpha, gamma, beta, [2.0]))
+
+    def bounds(self) -> List[Tuple[float, float]]:
+        return (
+            [(1e-8, 1.0)]
+            + [(1e-8, 0.99)] * self.p
+            + [(-0.999, 0.999)] * self.p
+            + [(1e-8, 0.99)] * self.q
+            + [(0.25, 4.0)]
+        )
+
+    def pack(self, params_dict: dict) -> np.ndarray:
+        return np.asarray(
+            [params_dict["omega"]]
+            + list(params_dict["alpha"])
+            + list(params_dict["gamma"])
+            + list(params_dict["beta"])
+            + [params_dict["delta"]],
+            dtype=np.float64,
+        )
+
+    def unpack(self, flat_params: np.ndarray) -> dict:
+        if len(flat_params) == 0:
+            self.fitted_params = {}
+            return {}
+        beta_start = 1 + 2 * self.p
+        self.fitted_params = {
+            "omega": float(flat_params[0]),
+            "alpha": [float(x) for x in flat_params[1 : 1 + self.p]],
+            "gamma": [float(x) for x in flat_params[1 + self.p : beta_start]],
+            "beta": [float(x) for x in flat_params[beta_start : beta_start + self.q]],
+            "delta": float(flat_params[beta_start + self.q]),
+        }
+        return self.fitted_params
+
+    def persistence(self) -> float:
+        """Return the alpha-plus-beta persistence proxy."""
+        if self.fitted_params is None:
+            raise RuntimeError("Model not fitted yet.")
+        return float(
+            sum(self.fitted_params["alpha"]) + sum(self.fitted_params["beta"])
+        )
+
+    def is_stationary(self) -> bool:
+        return self.persistence() < 1.0 if self.fitted_params else False
+
+
 class GJRGARCH(Component):
     """
     GJR-GARCH(p, q) asymmetric volatility component.
@@ -431,7 +520,7 @@ class AutoVol(Component):
     candidates : list of str, optional
         List of volatility model names to search over.
         Default is ``['GARCH', 'GJRGARCH']``.
-        Valid names: ``'GARCH'``, ``'GJRGARCH'``.
+        Valid names: ``'GARCH'``, ``'GJRGARCH'``, ``'EGARCH'``, ``'APARCH'``.
     max_p : int, default 3
         Maximum ARCH lag order to search (searches ``range(1, max_p + 1)``).
     max_q : int, default 3
@@ -453,6 +542,7 @@ class AutoVol(Component):
     role = Role.VOLATILITY
     
     CANDIDATES = ['GARCH', 'GJRGARCH']
+    VALID_CANDIDATES = {'GARCH', 'GJRGARCH', 'EGARCH', 'APARCH'}
     
     def __init__(
         self,
@@ -462,6 +552,12 @@ class AutoVol(Component):
         max_q: int = 3,
     ):
         self.candidates = candidates or self.CANDIDATES.copy()
+        unknown = sorted(set(self.candidates) - self.VALID_CANDIDATES)
+        if unknown:
+            raise ValueError(
+                f"Unknown volatility candidates: {unknown}. "
+                f"Choose from {sorted(self.VALID_CANDIDATES)}."
+            )
         self.max_p = max_p
         self.max_q = max_q
         self.fitted_params = {}

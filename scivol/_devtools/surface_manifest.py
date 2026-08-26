@@ -12,7 +12,23 @@ AD_PARTIAL = "AD partial"
 RUNTIME = "Runtime"
 NOT_APPLICABLE = "N/A"
 
-DENSITIES = ("Normal", "StudentT", "SkewT", "GED")
+DENSITIES = (
+    "Normal",
+    "StudentT",
+    "SkewT",
+    "GED",
+    "GeneralizedHyperbolic",
+    "Hyperbolic",
+    "NormalInverseGaussian",
+    "VarianceGamma",
+)
+FUSED_DENSITIES = ("Normal", "StudentT", "SkewT", "GED")
+GH_DENSITIES = (
+    "GeneralizedHyperbolic",
+    "Hyperbolic",
+    "NormalInverseGaussian",
+    "VarianceGamma",
+)
 ABSENT_SURFACE_IDS = (
     "mean:arma+vol:none+density:studentt",
     "mean:arma+vol:none+density:skewt",
@@ -42,7 +58,23 @@ class SurfaceContract:
         return " + ".join(parts)
 
     def build(self):
-        from ..components import ARMA, ARX, EGARCH, GARCH, GED, GJRGARCH, HARX, Normal, SkewT, StudentT
+        from ..components import (
+            APARCH,
+            ARMA,
+            ARX,
+            EGARCH,
+            GARCH,
+            GED,
+            GJRGARCH,
+            GeneralizedHyperbolic,
+            Hyperbolic,
+            HARX,
+            Normal,
+            NormalInverseGaussian,
+            SkewT,
+            StudentT,
+            VarianceGamma,
+        )
 
         mean_factories = {
             "ARMA": lambda: ARMA(1, 1),
@@ -50,6 +82,7 @@ class SurfaceContract:
             "HARX": lambda: _with_exog(HARX((1, 5))),
         }
         vol_factories = {
+            "APARCH": lambda: APARCH(1, 1),
             "GARCH": lambda: GARCH(1, 1),
             "GJR-GARCH": lambda: GJRGARCH(1, 1),
             "EGARCH": lambda: EGARCH(1, 1),
@@ -59,6 +92,10 @@ class SurfaceContract:
             "StudentT": StudentT,
             "SkewT": SkewT,
             "GED": GED,
+            "GeneralizedHyperbolic": GeneralizedHyperbolic,
+            "Hyperbolic": Hyperbolic,
+            "NormalInverseGaussian": NormalInverseGaussian,
+            "VarianceGamma": VarianceGamma,
         }
 
         components = []
@@ -185,8 +222,8 @@ def _extend(
                 volatility=volatility,
                 density=density,
                 kind=kind,
-                log_nll=log_nll if density in DENSITIES else PY_C,
-                log_grad=log_grad if density in DENSITIES else PY_C,
+                log_nll=log_nll if density in FUSED_DENSITIES else PY_C,
+                log_grad=log_grad if density in FUSED_DENSITIES else PY_C,
                 theta_validation=theta_validation(density),
                 log_validation=log_validation(density),
                 default_log_mode=default_for_density,
@@ -227,7 +264,7 @@ def _surfaces() -> tuple[SurfaceContract, ...]:
         log_grad=C_FUSED,
         theta_validation=lambda _density: AD_FULL,
         log_validation=lambda _density: AD_FULL,
-        default_log_mode=lambda density: False if density == "GED" else True,
+        default_log_mode=lambda density: density in ("Normal", "StudentT", "SkewT"),
     )
     _extend(
         surfaces,
@@ -252,6 +289,18 @@ def _surfaces() -> tuple[SurfaceContract, ...]:
             default_log_mode=False,
         )
     )
+    for density in GH_DENSITIES:
+        surfaces.append(
+            _make_surface(
+                mean=None,
+                volatility="GJR-GARCH",
+                density=density,
+                kind="vol only",
+                theta_validation=AD_FULL,
+                log_validation=AD_FULL,
+                default_log_mode=False,
+            )
+        )
     _extend(
         surfaces,
         mean=None,
@@ -264,16 +313,29 @@ def _surfaces() -> tuple[SurfaceContract, ...]:
         log_validation=_egarch_log_validation,
         default_log_mode=False,
     )
+    _extend(
+        surfaces,
+        mean=None,
+        volatility="APARCH",
+        kind="vol only",
+        densities=DENSITIES,
+        log_nll=PY_C,
+        log_grad=PY_C,
+        theta_validation=lambda _density: AD_FULL,
+        log_validation=lambda _density: AD_FULL,
+        default_log_mode=False,
+    )
 
-    for density in ("Normal", "GED"):
+    for density in ("Normal", "GED", *GH_DENSITIES):
+        log_path = C_FUSED if density in FUSED_DENSITIES else PY_C
         surfaces.append(
             _make_surface(
                 mean="ARMA",
                 volatility=None,
                 density=density,
                 kind="standalone mean",
-                log_nll=C_FUSED,
-                log_grad=C_FUSED,
+                log_nll=log_path,
+                log_grad=log_path,
                 theta_validation=AD_FULL,
                 log_validation=AD_FULL,
                 default_log_mode=False,
@@ -315,6 +377,18 @@ def _surfaces() -> tuple[SurfaceContract, ...]:
             default_log_mode=False,
         )
     )
+    for density in GH_DENSITIES:
+        surfaces.append(
+            _make_surface(
+                mean="ARMA",
+                volatility="GJR-GARCH",
+                density=density,
+                kind="linked joint",
+                theta_validation=AD_FULL,
+                log_validation=AD_FULL,
+                default_log_mode=False,
+            )
+        )
     _extend(
         surfaces,
         mean="ARMA",
@@ -401,6 +475,7 @@ def canonical_tensor_markdown() -> str:
         (None, "GARCH", "vol only"),
         (None, "GJR-GARCH", "vol only"),
         (None, "EGARCH", "vol only"),
+        (None, "APARCH", "vol only"),
         ("ARMA", None, "standalone mean"),
         ("ARMA", "GARCH", "linked joint"),
         ("ARMA", "GJR-GARCH", "linked joint"),
@@ -415,8 +490,8 @@ def canonical_tensor_markdown() -> str:
         ("HARX", "EGARCH", "linked joint"),
     ]
     lines = [
-        "| Mean | Volatility | Kind | Normal | StudentT | SkewT | GED |",
-        "|---|---|---|---|---|---|---|",
+        "| Mean | Volatility | Kind | Normal | StudentT | SkewT | GED | GeneralizedHyperbolic | Hyperbolic | NormalInverseGaussian | VarianceGamma |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for mean, volatility, kind in rows:
         values = []

@@ -101,6 +101,326 @@ def _jax_hansen_skewt_abs_moment(jnp, jsp, nu, lam, nodes, weights):
     return jnp.where(a >= 0.0, positive_a, negative_a) / b
 
 
+@lru_cache(maxsize=1)
+def _gh_quadrature_rules() -> tuple[
+    NDArray[np.float64],
+    NDArray[np.float64],
+    NDArray[np.float64],
+    NDArray[np.float64],
+]:
+    nodes, weights = np.polynomial.legendre.leggauss(128)
+    bessel_nodes = 8.0 * (nodes + 1.0)
+    bessel_log_weights = np.log(8.0 * weights)
+    unit_nodes = 0.5 * (nodes + 1.0)
+    unit_weights = 0.5 * weights
+    return (
+        bessel_nodes.astype(np.float64),
+        bessel_log_weights.astype(np.float64),
+        unit_nodes.astype(np.float64),
+        unit_weights.astype(np.float64),
+    )
+
+
+def _jax_gh_logpdf(jnp, jsp, values, rho, zeta, shape_lambda):
+    """Independent standardized GH log density using a Bessel-K integral."""
+    bessel_nodes, bessel_log_weights, _, _ = _gh_quadrature_rules()
+    t = jnp.asarray(bessel_nodes, dtype=values.dtype)
+    log_weights = jnp.asarray(bessel_log_weights, dtype=values.dtype)
+
+    def log_bessel_k(order, argument):
+        log_cosh = jnp.logaddexp(order * t, -order * t) - jnp.log(2.0)
+        return jsp.special.logsumexp(
+            log_weights - argument * jnp.cosh(t) + log_cosh
+        )
+
+    rho2 = 1.0 - rho * rho
+    log_k0 = log_bessel_k(shape_lambda, zeta)
+    log_k1 = log_bessel_k(shape_lambda + 1.0, zeta)
+    log_k2 = log_bessel_k(shape_lambda + 2.0, zeta)
+    kappa = jnp.exp(log_k1 - log_k0) / zeta
+    kappa_next = jnp.exp(log_k2 - log_k1) / zeta
+    alpha = zeta * jnp.sqrt(
+        kappa
+        * (1.0 + rho * rho * zeta * zeta * (kappa_next - kappa) / rho2)
+        / rho2
+    )
+    beta = alpha * rho
+    delta = zeta / (alpha * jnp.sqrt(rho2))
+    mu = -beta * delta * delta * kappa
+    gamma = jnp.sqrt(alpha * alpha - beta * beta)
+    centered = values - mu
+    radius = jnp.sqrt(delta * delta + centered * centered)
+    return (
+        shape_lambda * (jnp.log(gamma) - jnp.log(delta))
+        - 0.5 * jnp.log(2.0 * jnp.pi)
+        - log_bessel_k(shape_lambda, delta * gamma)
+        + beta * centered
+        + jax_vmap_log_bessel(jnp, log_bessel_k, shape_lambda - 0.5, alpha * radius)
+        - (0.5 - shape_lambda) * (jnp.log(radius) - jnp.log(alpha))
+    )
+
+
+def jax_vmap_log_bessel(jnp, log_bessel_k, order, arguments):
+    jax, _, _ = _jax_modules()
+    flat = jnp.ravel(arguments)
+    values = jax.vmap(lambda argument: log_bessel_k(order, argument))(flat)
+    return jnp.reshape(values, arguments.shape)
+
+
+def _jax_gh_abs_moment(jnp, jsp, rho, zeta, shape_lambda):
+    _, _, nodes, weights = _gh_quadrature_rules()
+    u = jnp.asarray(nodes, dtype=jnp.float64)
+    w = jnp.asarray(weights, dtype=jnp.float64)
+    angle = 0.5 * jnp.pi * u
+    x = jnp.tan(angle)
+    jacobian = 0.5 * jnp.pi / jnp.cos(angle) ** 2
+    positive = jnp.exp(_jax_gh_logpdf(jnp, jsp, x, rho, zeta, shape_lambda))
+    negative = jnp.exp(_jax_gh_logpdf(jnp, jsp, -x, rho, zeta, shape_lambda))
+    return jnp.sum(w * x * (positive + negative) * jacobian)
+
+
+def _jax_vg_logpdf(jnp, jsp, values, rho, shape_lambda):
+    """Independent standardized VG log density using a Bessel-K integral."""
+    bessel_nodes, bessel_log_weights, _, _ = _gh_quadrature_rules()
+    t = jnp.asarray(bessel_nodes, dtype=values.dtype)
+    log_weights = jnp.asarray(bessel_log_weights, dtype=values.dtype)
+
+    def log_bessel_k(order, argument):
+        log_cosh = jnp.logaddexp(order * t, -order * t) - jnp.log(2.0)
+        return jsp.special.logsumexp(
+            log_weights - argument * jnp.cosh(t) + log_cosh
+        )
+
+    theta = jnp.sqrt(2.0) * rho / jnp.sqrt(1.0 - rho * rho)
+    scale = jnp.sqrt(shape_lambda * (1.0 + theta * theta))
+    y = scale * values + theta * shape_lambda
+    order = shape_lambda - 0.5
+    argument_scale = jnp.sqrt(theta * theta + 2.0)
+    abs_y = jnp.abs(y)
+    return (
+        jnp.log(scale)
+        + jnp.log(2.0)
+        - 0.5 * jnp.log(2.0 * jnp.pi)
+        - jsp.special.gammaln(shape_lambda)
+        + theta * y
+        + order * (jnp.log(abs_y) - jnp.log(argument_scale))
+        + jax_vmap_log_bessel(jnp, log_bessel_k, order, argument_scale * abs_y)
+    )
+
+
+def _jax_vg_abs_moment(jnp, jsp, rho, shape_lambda):
+    _, _, nodes, weights = _gh_quadrature_rules()
+    u = jnp.asarray(nodes, dtype=jnp.float64)
+    w = jnp.asarray(weights, dtype=jnp.float64)
+    angle = 0.5 * jnp.pi * u
+    x = jnp.tan(angle)
+    jacobian = 0.5 * jnp.pi / jnp.cos(angle) ** 2
+    positive = jnp.exp(_jax_vg_logpdf(jnp, jsp, x, rho, shape_lambda))
+    negative = jnp.exp(_jax_vg_logpdf(jnp, jsp, -x, rho, shape_lambda))
+    return jnp.sum(w * x * (positive + negative) * jacobian)
+
+
+def gh_standardized_value_grad_hess(
+    params: NDArray[np.float64],
+    values: NDArray[np.float64],
+    *,
+    fixed_lambda: float | None = None,
+) -> Tuple[float, NDArray[np.float64], NDArray[np.float64]]:
+    """Independent AD oracle for estimated- or fixed-index GH derivatives."""
+    _, jnp, jsp = _jax_modules()
+    values_j = jnp.asarray(values, dtype=jnp.float64)
+
+    def objective(params_j):
+        shape_lambda = params_j[2] if fixed_lambda is None else fixed_lambda
+        return -jnp.sum(
+            _jax_gh_logpdf(
+                jnp, jsp, values_j, params_j[0], params_j[1], shape_lambda
+            )
+        )
+
+    return _value_grad_hess(objective, params)
+
+
+def vg_standardized_value_grad_hess(
+    params: NDArray[np.float64],
+    values: NDArray[np.float64],
+) -> Tuple[float, NDArray[np.float64], NDArray[np.float64]]:
+    """Independent AD oracle for standardized Variance-Gamma derivatives."""
+    _, jnp, jsp = _jax_modules()
+    values_j = jnp.asarray(values, dtype=jnp.float64)
+
+    def objective(params_j):
+        return -jnp.sum(
+            _jax_vg_logpdf(jnp, jsp, values_j, params_j[0], params_j[1])
+        )
+
+    return _value_grad_hess(objective, params)
+
+
+def gh_surface_value_grad_hess(
+    theta: NDArray[np.float64],
+    y: NDArray[np.float64],
+    *,
+    mean_kind: str = "none",
+    p_mean: int = 0,
+    q_mean: int = 0,
+    features: NDArray[np.float64] | None = None,
+    volatility_kind: str = "garch",
+    p_vol: int = 1,
+    q_vol: int = 1,
+    fixed_lambda: float | None = None,
+    variance_gamma: bool = False,
+) -> Tuple[float, NDArray[np.float64], NDArray[np.float64]]:
+    """AD oracle for the shared interior GH-family tensor cores."""
+    _, jnp, jsp = _jax_modules()
+    y_j = jnp.asarray(y, dtype=jnp.float64)
+    features_j = None if features is None else jnp.asarray(features, dtype=jnp.float64)
+    n = int(y.size)
+
+    def objective(theta_j):
+        if mean_kind == "none":
+            n_mean = 0
+            residuals = y_j
+            first = 0
+        elif mean_kind == "linear":
+            if features_j is None:
+                raise ValueError("Linear-mean GH oracle requires features.")
+            n_mean = int(features_j.shape[1])
+            residuals = y_j - features_j @ theta_j[:n_mean]
+            first = 0
+        elif mean_kind == "arma":
+            n_mean = 1 + p_mean + q_mean
+            first = max(p_mean, q_mean, p_vol, q_vol, 1)
+            residuals = jnp.zeros_like(y_j)
+            for t in range(first, n):
+                conditional_mean = theta_j[0]
+                for lag in range(p_mean):
+                    conditional_mean += theta_j[1 + lag] * y_j[t - 1 - lag]
+                for lag in range(q_mean):
+                    conditional_mean += (
+                        theta_j[1 + p_mean + lag] * residuals[t - 1 - lag]
+                    )
+                residuals = residuals.at[t].set(y_j[t] - conditional_mean)
+        else:
+            raise ValueError(f"Unsupported GH oracle mean kind: {mean_kind}")
+
+        if volatility_kind == "garch":
+            n_vol = 1 + p_vol + q_vol
+        elif volatility_kind in {"gjr", "egarch"}:
+            n_vol = 1 + 2 * p_vol + q_vol
+        elif volatility_kind == "aparch":
+            n_vol = 2 + 2 * p_vol + q_vol
+        elif volatility_kind == "constant":
+            n_vol = 1
+        else:
+            raise ValueError(f"Unsupported GH oracle volatility kind: {volatility_kind}")
+
+        vol = theta_j[n_mean:n_mean + n_vol]
+        shape = theta_j[n_mean + n_vol:]
+        shape_lambda = (
+            shape[1]
+            if variance_gamma
+            else shape[2] if fixed_lambda is None
+            else fixed_lambda
+        )
+        initial_variance = jnp.maximum(jnp.mean(y_j * y_j), 1e-8)
+        sigma2 = jnp.full((n,), initial_variance, dtype=theta_j.dtype)
+
+        if volatility_kind == "constant":
+            sigma2 = jnp.full((n,), vol[0], dtype=theta_j.dtype)
+        else:
+            start = max(first, 1)
+            if volatility_kind == "egarch":
+                abs_moment = (
+                    _jax_vg_abs_moment(jnp, jsp, shape[0], shape_lambda)
+                    if variance_gamma
+                    else _jax_gh_abs_moment(
+                        jnp, jsp, shape[0], shape[1], shape_lambda
+                    )
+                )
+            elif volatility_kind == "aparch":
+                delta = vol[1 + 2 * p_vol + q_vol]
+                power = jnp.full(
+                    (n,), initial_variance ** (0.5 * delta), dtype=theta_j.dtype
+                )
+                for t in range(start, n):
+                    value = vol[0]
+                    for lag in range(p_vol):
+                        if t <= lag:
+                            continue
+                        e_lag = residuals[t - 1 - lag]
+                        shock = jnp.abs(e_lag) - vol[1 + p_vol + lag] * e_lag
+                        value += vol[1 + lag] * shock ** delta
+                    for lag in range(q_vol):
+                        if t <= lag:
+                            continue
+                        value += vol[1 + 2 * p_vol + lag] * power[t - 1 - lag]
+                    power = power.at[t].set(value)
+                    sigma2 = sigma2.at[t].set(value ** (2.0 / delta))
+            else:
+                abs_moment = 0.0
+            for t in range(start, n) if volatility_kind != "aparch" else ():
+                value = vol[0]
+                if volatility_kind == "egarch":
+                    for lag in range(p_vol):
+                        if t <= lag:
+                            continue
+                        z_lag = residuals[t - 1 - lag] / jnp.sqrt(
+                            sigma2[t - 1 - lag]
+                        )
+                        value += vol[1 + lag] * (jnp.abs(z_lag) - abs_moment)
+                        value += vol[1 + p_vol + lag] * z_lag
+                    for lag in range(q_vol):
+                        if t <= lag:
+                            continue
+                        value += vol[1 + 2 * p_vol + lag] * jnp.log(
+                            sigma2[t - 1 - lag]
+                        )
+                    sigma2 = sigma2.at[t].set(jnp.exp(value))
+                else:
+                    for lag in range(p_vol):
+                        if t <= lag:
+                            continue
+                        e_lag = residuals[t - 1 - lag]
+                        value += vol[1 + lag] * e_lag * e_lag
+                        if volatility_kind == "gjr":
+                            value += (
+                                vol[1 + p_vol + lag]
+                                * jnp.where(e_lag < 0.0, 1.0, 0.0)
+                                * e_lag * e_lag
+                            )
+                    beta_start = 1 + (2 * p_vol if volatility_kind == "gjr" else p_vol)
+                    for lag in range(q_vol):
+                        if t <= lag:
+                            continue
+                        value += vol[beta_start + lag] * sigma2[t - 1 - lag]
+                    sigma2 = sigma2.at[t].set(value)
+
+        z = residuals[first:] / jnp.sqrt(sigma2[first:])
+        logpdf = (
+            _jax_vg_logpdf(jnp, jsp, z, shape[0], shape_lambda)
+            if variance_gamma
+            else _jax_gh_logpdf(
+                jnp, jsp, z, shape[0], shape[1], shape_lambda
+            )
+        )
+        nll = -jnp.sum(logpdf - 0.5 * jnp.log(sigma2[first:]))
+        return nll / (n - first) if mean_kind == "arma" else nll
+
+    return _value_grad_hess(objective, theta)
+
+
+def vg_surface_value_grad_hess(
+    theta: NDArray[np.float64],
+    y: NDArray[np.float64],
+    **kwargs,
+) -> Tuple[float, NDArray[np.float64], NDArray[np.float64]]:
+    """AD oracle for the shared Variance-Gamma univariate tensor cores."""
+    return gh_surface_value_grad_hess(
+        theta, y, variance_gamma=True, fixed_lambda=None, **kwargs
+    )
+
+
 def garch_value_grad_hess(
     theta: NDArray[np.float64],
     resid2: NDArray[np.float64],
@@ -182,6 +502,101 @@ def garch_value_grad_hess(
             return -ll
 
         raise ValueError(f"Unsupported GARCH distribution: {dist}")
+
+    return _value_grad_hess(objective, theta)
+
+
+def aparch_value_grad_hess(
+    theta: NDArray[np.float64],
+    residuals: NDArray[np.float64],
+    p: int,
+    q: int,
+    dist: str = "normal",
+) -> Tuple[float, NDArray[np.float64], NDArray[np.float64]]:
+    """Reference NLL, gradient, and Hessian for APARCH(p,q)."""
+    _, jnp, jsp = _jax_modules()
+    residuals_j = jnp.asarray(residuals, dtype=jnp.float64)
+    n = int(residuals.size)
+
+    def objective(theta_j):
+        omega = theta_j[0]
+        alpha = theta_j[1 : 1 + p]
+        gamma = theta_j[1 + p : 1 + 2 * p]
+        beta = theta_j[1 + 2 * p : 1 + 2 * p + q]
+        delta = theta_j[1 + 2 * p + q]
+        n_vol = 2 + 2 * p + q
+        sigma0 = jnp.maximum(jnp.mean(residuals_j * residuals_j), 1e-8)
+        sigma2 = jnp.full((n,), sigma0, dtype=theta_j.dtype)
+        power = jnp.full((n,), sigma0 ** (0.5 * delta), dtype=theta_j.dtype)
+        for t in range(1, n):
+            value = omega
+            for lag in range(p):
+                if t <= lag:
+                    continue
+                residual_lag = residuals_j[t - 1 - lag]
+                shock = jnp.abs(residual_lag) - gamma[lag] * residual_lag
+                value += alpha[lag] * shock ** delta
+            for lag in range(q):
+                if t <= lag:
+                    continue
+                value += beta[lag] * power[t - 1 - lag]
+            power = power.at[t].set(value)
+            sigma2 = sigma2.at[t].set(value ** (2.0 / delta))
+
+        residual2 = residuals_j * residuals_j
+        if dist == "normal":
+            return 0.5 * jnp.sum(
+                jnp.log(2.0 * jnp.pi) + jnp.log(sigma2) + residual2 / sigma2
+            )
+        if dist == "studentt":
+            nu = theta_j[n_vol]
+            constant = (
+                jsp.special.gammaln(0.5 * (nu + 1.0))
+                - jsp.special.gammaln(0.5 * nu)
+                - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
+            )
+            return jnp.sum(
+                -constant
+                + 0.5 * jnp.log(sigma2)
+                + 0.5 * (nu + 1.0)
+                * jnp.log1p(residual2 / (sigma2 * (nu - 2.0)))
+            )
+        if dist == "ged":
+            nu = theta_j[n_vol]
+            inv_nu = 1.0 / nu
+            log_scale = 0.5 * (
+                jsp.special.gammaln(inv_nu)
+                - jsp.special.gammaln(3.0 * inv_nu)
+            )
+            log_constant = (
+                jnp.log(nu) - jnp.log(2.0) - log_scale
+                - jsp.special.gammaln(inv_nu)
+            )
+            standardized = jnp.abs(residuals_j) / (
+                jnp.sqrt(sigma2) * jnp.exp(log_scale)
+            )
+            return jnp.sum(
+                -log_constant + 0.5 * jnp.log(sigma2) + standardized ** nu
+            )
+        if dist == "skewt":
+            nu = theta_j[n_vol]
+            lam = theta_j[n_vol + 1]
+            c_log = (
+                jsp.special.gammaln(0.5 * (nu + 1.0))
+                - jsp.special.gammaln(0.5 * nu)
+                - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
+            )
+            a = 4.0 * lam * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
+            b = jnp.sqrt(1.0 + 3.0 * lam * lam - a * a)
+            z = residuals_j / jnp.sqrt(sigma2)
+            u = b * z + a
+            adjusted = u / (1.0 + lam * jnp.where(u >= 0.0, 1.0, -1.0))
+            return jnp.sum(
+                -c_log - jnp.log(b) + 0.5 * jnp.log(sigma2)
+                + 0.5 * (nu + 1.0)
+                * jnp.log1p(adjusted * adjusted / (nu - 2.0))
+            )
+        raise ValueError(f"Unsupported APARCH distribution: {dist}")
 
     return _value_grad_hess(objective, theta)
 
@@ -1583,7 +1998,6 @@ def arma_garch_value_grad_hess(
                 h_t = h_t + alpha[i] * resid_hist[i] * resid_hist[i]
             for j in range(q_garch):
                 h_t = h_t + beta[j] * sigma_hist[j]
-            h_t = jnp.maximum(h_t, GJR_H_FLOOR)
 
             resid_hist_next = jnp.concatenate([e_t[None], resid_hist[:-1]])
             sigma_hist_next = jnp.concatenate([h_t[None], sigma_hist[:-1]])
@@ -1701,7 +2115,6 @@ def arma_garch_logspace_value_grad_hess(
                 h_t = h_t + alpha[i] * resid_hist[i] * resid_hist[i]
             for j in range(q_garch):
                 h_t = h_t + beta[j] * sigma_hist[j]
-            h_t = jnp.maximum(h_t, GJR_H_FLOOR)
 
             resid_hist_next = jnp.concatenate([e_t[None], resid_hist[:-1]])
             sigma_hist_next = jnp.concatenate([h_t[None], sigma_hist[:-1]])

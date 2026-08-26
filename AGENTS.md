@@ -1,6 +1,6 @@
 # scivol Library Guide for AI Agents
 
-**Last Updated:** 2026-05-05 
+**Last Updated:** 2026-08-26
 **Purpose:** Essential architectural rules, patterns, and constraints for developing the scivol time series volatility modeling library.
 
 **Reference implementations:** `localdev/arma_garch_estimator.py` contains verified Python+Numba implementations with analytical gradients/Hessians for ARMA-GARCH models (Normal, Student-t, Skew-t). `localdev/gjr_garch_estimator.py` contains the GJR-GARCH reference implementation. Use as ground truth when porting to C.
@@ -283,6 +283,11 @@ VLK_FORCE_INLINE double lgamma_approx(double x);    // log Γ(x)
 #define LAM_MAX   0.999   // Maximum skewness magnitude
 ```
 
+These are legacy kernel constants, not a license to define new model domains.
+New jets and optimizers must use the model-owned domain contract below. A floor
+inside a recursion is valid only when it is part of the declared numerical model;
+it must never be inserted merely to make an optimizer converge.
+
 #### 🔴 C Performance Rule: Precompute Constants
 
 **Never compute distribution constants inside the observation loop.**
@@ -384,6 +389,73 @@ Finite differences are still acceptable as a weak smoke test or temporary fallba
 **Test both**:
 - Correctness: Does it match the AD oracle?
 - Boundary cases: Does it handle constraints and transforms properly?
+
+### Model Mathematics and Optimizer Policy
+
+The mathematical kernel defines the model. An optimizer may change coordinates,
+scale an equivalent objective, choose an evaluation order, or change its search
+strategy. It must not change the likelihood or silently narrow the model's
+theoretical parameter domain to improve convergence.
+
+For covariance-stationary GARCH, the default domain is:
+
+```text
+omega > 0
+alpha_i >= 0
+beta_j >= 0
+sum(alpha) + sum(beta) < 1
+```
+
+Apply the same principle to every model family using its correct positivity,
+stationarity, invertibility, and density restrictions. Stronger restrictions are
+explicit user choices, not hidden defaults.
+
+- Keep theoretical restrictions in one model-owned parameter-domain contract.
+  Theta constraints, transformed coordinates, initialization, feasibility checks,
+  KKT checks, and result reporting must consume that contract.
+- Derive unavoidable numerical interiors from floating-point representation and
+  transform algebra. Do not use hand-tuned parameter floors or persistence margins
+  as convergence aids. Report the effective numerical domain in `result.fit_info`.
+- Prefer exact internal data scaling with exact parameter, likelihood, derivative,
+  and forecast back-transforms when parameter magnitudes depend on measurement
+  units. Scaling must not change the fitted statistical model. Benchmark transformed
+  coordinates after scaling because a nonlinear chart can change the optimizer path
+  even when the theta-space objective is equivalent.
+- Clip or reject every trial against hard parameter bounds before evaluating a jet.
+  In particular, the optimizer must never ask a likelihood to accept `omega <= 0`
+  or a Student-t density to accept `nu <= 2`. Do not pad the public domain to cover
+  for out-of-domain solver requests.
+- Diagnostics may warn about boundary estimates, near integration, weak
+  identification, or unreliable long-run moments. They must not repair parameters
+  or alter the objective.
+- `result.success` requires finite requested quantities, theoretical-domain
+  feasibility, solver termination, and an original-parameter scaled KKT check.
+  Keep the raw solver status separately for diagnosis.
+- Report the KKT residual and threshold separately. Unless the API exposes a
+  dedicated threshold, use
+  `max(sqrt(solver_accuracy), sqrt(machine_epsilon))`; this ties first-order
+  credibility to the requested solve accuracy without a model-specific magic
+  tolerance.
+
+Every native jet and optimizer path must pass three promotion gates:
+
+1. **Mathematical parity**: value, gradient, and Hessian match an independent AD
+   oracle and any established production kernel.
+2. **Domain and credibility parity**: all public solvers target the same declared
+   theoretical domain and pass matched-point feasibility and KKT checks.
+3. **Performance superiority**: sparse objective requests are at least as fast as
+   the production path they replace, and matched-domain solve benchmarks improve
+   convergence or throughput without weakening the first two gates.
+
+Complete-fit promotion also requires a matched solution-quality comparison. Rescore
+all candidates with one common theta-space likelihood and KKT assessor, compare
+objective values only among credible fits, and reject a new default that is worse
+than production beyond the requested numerical tolerance. Test matched starts to
+separate optimizer quality from basin coverage. Alternative starts, coordinate
+charts, and exact positive objective scalings are optimizer policies; keep their
+budgets and effective path visible. A high-reliability portfolio may be slower than
+the default, but it must select only from credible candidates and must not replace
+independent public fitting paths silently.
 
 ### Independent Public Solution Paths
 
@@ -818,6 +890,9 @@ from scivol.result import EstimationResult
 - ✅ Fused log-space C NLL/gradient wrappers for GARCH/GJR-GARCH + Skew-t
 - ✅ Fused log-space C NLL/gradient wrappers for ARMA-GARCH + Skew-t
 - ✅ ARMA-GARCH kernel files updated to use fused functions
+- ✅ APARCH(p,q) with exact C gradients/Hessians and all shipped densities
+- ✅ Warm-started automatic selection, rolling OOS evaluation, and model confidence sets
+- ✅ AutoMean screening and three-axis mean/volatility/density search
 
 ### Immediate Goals
 
@@ -872,15 +947,15 @@ The `GJRGARCH` component's `persistence()` method accepts a `p_neg` parameter (d
 New model families will follow the component pattern:
 
 ```python
-# Example: EGARCH (exponential GARCH)
-from scivol import EGARCH, StudentT
+# Example: a future long-memory volatility component
+from scivol import FIGARCH, StudentT
 
-spec = EGARCH(1, 1) + StudentT()
+spec = FIGARCH(1, 1) + StudentT()
 result = spec.fit(returns)
 ```
 
 Each model family will need:
-- Component class (e.g., `EGARCH(Component)`)
+- Component class (e.g., `FIGARCH(Component)`)
 - C implementations for performance-critical paths
 - Kernel routines for optimization
 - Comprehensive tests with derivative validation
@@ -894,7 +969,8 @@ following are true:
    - Supported orders are defined
    - Supported densities are defined
    - Constrained/log-mode support is defined
-   - Stationarity, positivity, and transform rules are written down before coding
+   - The theoretical parameter domain is written down before coding
+   - One domain contract supplies theta constraints, transforms, feasibility, KKT checks, and reporting
 
 2. **User-facing API fits the composition pattern**
    - The model is represented as a component with the correct `Role`
@@ -928,9 +1004,9 @@ following are true:
    - Update `README.md` if user-facing support changed
 
 8. **Defaults are earned, not assumed**
-   - Benchmark solver/log-mode choices on real data
+   - Benchmark solver/log-mode choices on the same parameter domain and real data
    - Run DGP recovery tests
-   - Confirm that chosen defaults are correct, stable, and still fast
+   - Require mathematical parity, domain/KKT credibility, and objective-level speed
 
 9. **Add one model family at a time**
    - Keep commits and validation isolated by model family/distribution

@@ -34,6 +34,9 @@ from numpy.typing import NDArray
 from scipy.special import gammaln
 from scipy.stats import gennorm
 
+from scivol._gh import standardized_gh_rvs
+from scivol._vg import standardized_vg_rvs
+
 from scivol._evaluation import _egarch_abs_moment, _hansen_skewt_ppf
 
 # -----------------------------------------------------------------------------
@@ -179,6 +182,53 @@ def simulate_garch_ged(
         sigma2[t] = omega + alpha * y[t - 1] ** 2 + beta * sigma2[t - 1]
         y[t] = np.sqrt(sigma2[t]) * z[t]
 
+    return y
+
+
+def simulate_garch_gh(
+    n: int,
+    omega: float,
+    alpha: float,
+    beta: float,
+    rho: float,
+    zeta: float,
+    shape_lambda: float,
+    seed: int = 42,
+) -> NDArray[np.float64]:
+    """Simulate GARCH(1,1) with standardized GH-family innovations."""
+    rng = np.random.default_rng(seed)
+    innovations = standardized_gh_rvs(
+        rng, n, rho, zeta, shape_lambda
+    )
+    y = np.zeros(n, dtype=np.float64)
+    sigma2 = np.zeros(n, dtype=np.float64)
+    sigma2[0] = omega / (1.0 - alpha - beta)
+    y[0] = np.sqrt(sigma2[0]) * innovations[0]
+    for t in range(1, n):
+        sigma2[t] = omega + alpha * y[t - 1] ** 2 + beta * sigma2[t - 1]
+        y[t] = np.sqrt(sigma2[t]) * innovations[t]
+    return y
+
+
+def simulate_garch_vg(
+    n: int,
+    omega: float,
+    alpha: float,
+    beta: float,
+    rho: float,
+    shape_lambda: float,
+    seed: int = 42,
+) -> NDArray[np.float64]:
+    """Simulate GARCH(1,1) with standardized Variance-Gamma innovations."""
+    rng = np.random.default_rng(seed)
+    innovations = standardized_vg_rvs(rng, n, rho, shape_lambda)
+    y = np.zeros(n, dtype=np.float64)
+    sigma2 = np.zeros(n, dtype=np.float64)
+    sigma2[0] = omega / (1.0 - alpha - beta)
+    y[0] = np.sqrt(sigma2[0]) * innovations[0]
+    for t in range(1, n):
+        sigma2[t] = omega + alpha * y[t - 1] ** 2 + beta * sigma2[t - 1]
+        y[t] = np.sqrt(sigma2[t]) * innovations[t]
     return y
 
 
@@ -625,6 +675,41 @@ def simulate_egarch_normal(
     return y
 
 
+def simulate_aparch_normal(
+    n: int,
+    omega: float,
+    alpha: float,
+    gamma: float,
+    beta: float,
+    delta: float,
+    seed: int = 42,
+) -> NDArray[np.float64]:
+    """Simulate APARCH(1,1) with standardized Normal innovations."""
+    rng = np.random.default_rng(seed)
+    innovations = rng.standard_normal(n)
+    absolute_moment = np.exp(
+        0.5 * delta * np.log(2.0)
+        + gammaln(0.5 * (delta + 1.0))
+        - 0.5 * np.log(np.pi)
+    )
+    shock_moment = 0.5 * absolute_moment * (
+        (1.0 - gamma) ** delta + (1.0 + gamma) ** delta
+    )
+    persistence = alpha * shock_moment + beta
+    power = np.empty(n, dtype=np.float64)
+    sigma2 = np.empty(n, dtype=np.float64)
+    y = np.empty(n, dtype=np.float64)
+    power[0] = omega / (1.0 - persistence)
+    sigma2[0] = power[0] ** (2.0 / delta)
+    y[0] = np.sqrt(sigma2[0]) * innovations[0]
+    for t in range(1, n):
+        shock = abs(y[t - 1]) - gamma * y[t - 1]
+        power[t] = omega + alpha * shock ** delta + beta * power[t - 1]
+        sigma2[t] = power[t] ** (2.0 / delta)
+        y[t] = np.sqrt(sigma2[t]) * innovations[t]
+    return y
+
+
 def simulate_egarch_studentt(
     n: int,
     omega: float,
@@ -758,6 +843,13 @@ MEANX_OBS = 2500  # Keep mean+exog recovery coverage targeted and fast.
 
 # True parameters for each model
 TRUE_PARAMS = {
+    "aparch_normal": {
+        "omega": 0.04,
+        "alpha": 0.08,
+        "gamma": 0.20,
+        "beta": 0.86,
+        "delta": 1.50,
+    },
     "garch_normal": {
         "omega": 1e-6,
         "alpha": 0.08,
@@ -781,6 +873,35 @@ TRUE_PARAMS = {
         "alpha": 0.08,
         "beta": 0.90,
         "nu": 1.7,
+    },
+    "garch_gh": {
+        "omega": 1e-6,
+        "alpha": 0.08,
+        "beta": 0.90,
+        "rho": -0.25,
+        "zeta": 2.5,
+        "lambda": 1.0,
+    },
+    "garch_nig": {
+        "omega": 1e-6,
+        "alpha": 0.08,
+        "beta": 0.90,
+        "rho": -0.25,
+        "zeta": 2.5,
+    },
+    "garch_hyperbolic": {
+        "omega": 1e-6,
+        "alpha": 0.08,
+        "beta": 0.90,
+        "rho": -0.25,
+        "zeta": 2.5,
+    },
+    "garch_vg": {
+        "omega": 1e-6,
+        "alpha": 0.08,
+        "beta": 0.90,
+        "rho": -0.25,
+        "lambda": 3.0,
     },
     "garch_21_normal": {
         "omega": 1e-6,
@@ -1134,6 +1255,138 @@ class TestGARCHGED:
             f"Persistence: true={true_persistence:.4f}, est={est_persistence:.4f}"
         )
         assert 1.1 < nu_hat < 5.0, f"GED nu out of reasonable range: {nu_hat:.2f}"
+
+
+class TestGARCHGeneralizedHyperbolic:
+    """DGP recovery for GARCH(1,1) with standardized GH innovations."""
+
+    @pytest.fixture(scope="class")
+    def result(self):
+        from scivol import GARCH, GeneralizedHyperbolic
+
+        p = TRUE_PARAMS["garch_gh"]
+        data = simulate_garch_gh(
+            N_OBS,
+            p["omega"],
+            p["alpha"],
+            p["beta"],
+            p["rho"],
+            p["zeta"],
+            p["lambda"],
+        )
+        return (GARCH(1, 1) + GeneralizedHyperbolic()).fit(
+            data, solver="slsqp", log_mode=False
+        )
+
+    def test_convergence(self, result) -> None:
+        assert result.converged
+        assert result.params.shape == (6,)
+        assert np.all(np.isfinite(result.params))
+
+    def test_parameter_recovery(self, result) -> None:
+        true = TRUE_PARAMS["garch_gh"]
+        assert abs(result.params[1] + result.params[2] - true["alpha"] - true["beta"]) < 0.06
+        assert abs(result.params[3] - true["rho"]) < 0.15
+        assert 1.0 < result.params[4] < 6.0
+        assert -1.5 < result.params[5] < 3.0
+
+
+class TestGARCHNormalInverseGaussian:
+    """DGP recovery for GARCH(1,1) with standardized NIG innovations."""
+
+    @pytest.fixture(scope="class")
+    def result(self):
+        from scivol import GARCH, NormalInverseGaussian
+
+        p = TRUE_PARAMS["garch_nig"]
+        data = simulate_garch_gh(
+            N_OBS,
+            p["omega"],
+            p["alpha"],
+            p["beta"],
+            p["rho"],
+            p["zeta"],
+            -0.5,
+        )
+        return (GARCH(1, 1) + NormalInverseGaussian()).fit(
+            data, solver="slsqp", log_mode=False
+        )
+
+    def test_convergence(self, result) -> None:
+        assert result.converged
+        assert result.params.shape == (5,)
+        assert np.all(np.isfinite(result.params))
+
+    def test_parameter_recovery(self, result) -> None:
+        true = TRUE_PARAMS["garch_nig"]
+        assert abs(result.params[1] + result.params[2] - true["alpha"] - true["beta"]) < 0.06
+        assert abs(result.params[3] - true["rho"]) < 0.15
+        assert 1.0 < result.params[4] < 6.0
+
+
+class TestGARCHHyperbolic:
+    """DGP recovery for GARCH(1,1) with standardized Hyperbolic innovations."""
+
+    @pytest.fixture(scope="class")
+    def result(self):
+        from scivol import GARCH, Hyperbolic
+
+        p = TRUE_PARAMS["garch_hyperbolic"]
+        data = simulate_garch_gh(
+            N_OBS,
+            p["omega"],
+            p["alpha"],
+            p["beta"],
+            p["rho"],
+            p["zeta"],
+            1.0,
+        )
+        return (GARCH(1, 1) + Hyperbolic()).fit(
+            data, solver="slsqp", log_mode=False
+        )
+
+    def test_convergence(self, result) -> None:
+        assert result.converged
+        assert result.params.shape == (5,)
+        assert np.all(np.isfinite(result.params))
+
+    def test_parameter_recovery(self, result) -> None:
+        true = TRUE_PARAMS["garch_hyperbolic"]
+        assert abs(result.params[1] + result.params[2] - true["alpha"] - true["beta"]) < 0.06
+        assert abs(result.params[3] - true["rho"]) < 0.15
+        assert 1.0 < result.params[4] < 6.0
+
+
+class TestGARCHVarianceGamma:
+    """DGP recovery for GARCH(1,1) with standardized VG innovations."""
+
+    @pytest.fixture(scope="class")
+    def result(self):
+        from scivol import GARCH, VarianceGamma
+
+        p = TRUE_PARAMS["garch_vg"]
+        data = simulate_garch_vg(
+            N_OBS,
+            p["omega"],
+            p["alpha"],
+            p["beta"],
+            p["rho"],
+            p["lambda"],
+        )
+        return (GARCH(1, 1) + VarianceGamma()).fit(
+            data, solver="slsqp", log_mode=False
+        )
+
+    def test_convergence(self, result) -> None:
+        assert result.converged
+        assert result.params.shape == (5,)
+        assert np.all(np.isfinite(result.params))
+
+    def test_parameter_recovery(self, result) -> None:
+        true = TRUE_PARAMS["garch_vg"]
+        assert abs(result.params[1] + result.params[2] - true["alpha"] - true["beta"]) < 0.06
+        assert abs(result.params[3] - true["rho"]) < 0.15
+        assert abs(result.params[4] - true["lambda"]) < 1.5
 
 
 # -----------------------------------------------------------------------------
@@ -1713,6 +1966,33 @@ class TestGJRGARCHSkewT:
         # Skewness parameter should have correct sign
         assert lam_hat * true["lam"] > 0 or abs(lam_hat) < 0.1, \
             f"Lambda sign mismatch: true={true['lam']:.3f}, est={lam_hat:.3f}"
+
+
+# -----------------------------------------------------------------------------
+# Tests: APARCH
+# -----------------------------------------------------------------------------
+
+class TestAPARCHNormal:
+    @pytest.fixture(scope="class")
+    def result(self):
+        from scivol import APARCH, Normal
+
+        true = TRUE_PARAMS["aparch_normal"]
+        data = simulate_aparch_normal(N_OBS, **true)
+        return (APARCH(1, 1) + Normal()).fit(data, maxiter=3000)
+
+    def test_convergence(self, result) -> None:
+        assert result.converged, result.optimization_result.message
+        assert np.all(np.isfinite(result.params))
+
+    def test_parameter_recovery(self, result) -> None:
+        true = TRUE_PARAMS["aparch_normal"]
+        omega, alpha, gamma, beta, delta = result.params
+        assert abs(omega - true["omega"]) < 0.04
+        assert abs(alpha - true["alpha"]) < 0.04
+        assert abs(gamma - true["gamma"]) < 0.15
+        assert abs(beta - true["beta"]) < 0.06
+        assert abs(delta - true["delta"]) < 0.35
 
 
 # -----------------------------------------------------------------------------

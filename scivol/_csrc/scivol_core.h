@@ -53,6 +53,147 @@ double ged_nll(const double* resid,
                const size_t n,
                const double nu);
 
+double garch_gh_nll_pq(const double *params,
+                       const double *residuals,
+                       double *sigma2,
+                       size_t n,
+                       size_t p,
+                       size_t q,
+                       double fixed_lambda);
+
+void garch_gh_nll_grad_pq(const double *params,
+                          const double *residuals,
+                          double *sigma2,
+                          double *grad,
+                          size_t n,
+                          size_t p,
+                          size_t q,
+                          double fixed_lambda);
+
+void garch_gh_nll_hess_pq(const double *params,
+                          const double *residuals,
+                          double *sigma2,
+                          double *hess,
+                          size_t n,
+                          size_t p,
+                          size_t q,
+                          double fixed_lambda);
+
+double gjr_garch_gh_nll_pq(const double *params,
+                           const double *residuals,
+                           double *sigma2,
+                           size_t n,
+                           size_t p,
+                           size_t q,
+                           double fixed_lambda);
+
+void gjr_garch_gh_nll_grad_pq(const double *params,
+                              const double *residuals,
+                              double *sigma2,
+                              double *grad,
+                              size_t n,
+                              size_t p,
+                              size_t q,
+                              double fixed_lambda);
+
+void gjr_garch_gh_nll_hess_pq(const double *params,
+                              const double *residuals,
+                              double *sigma2,
+                              double *hess,
+                              size_t n,
+                              size_t p,
+                              size_t q,
+                              double fixed_lambda);
+
+double egarch_gh_nll_pq(const double *params,
+                        const double *residuals,
+                        double *sigma2,
+                        size_t n,
+                        size_t p,
+                        size_t q,
+                        double fixed_lambda);
+
+void egarch_gh_nll_grad_pq(const double *params,
+                           const double *residuals,
+                           double *sigma2,
+                           double *grad,
+                           size_t n,
+                           size_t p,
+                           size_t q,
+                           double fixed_lambda);
+
+void egarch_gh_nll_hess_pq(const double *params,
+                           const double *residuals,
+                           double *sigma2,
+                           double *hess,
+                           size_t n,
+                           size_t p,
+                           size_t q,
+                           double fixed_lambda);
+
+double linear_mean_garch_nll_pq_gh(
+    const double *params, const double *y, const double *features,
+    double *resid, double *sigma2, size_t n, size_t n_mean,
+    size_t p, size_t q, double fixed_lambda);
+
+void linear_mean_garch_nll_grad_pq_gh(
+    const double *params, const double *y, const double *features,
+    double *resid, double *sigma2, double *grad, size_t n,
+    size_t n_mean, size_t p, size_t q, double fixed_lambda);
+
+void linear_mean_garch_hess_pq_gh(
+    const double *params, const double *y, const double *features,
+    double *resid, double *sigma2, double *hess, size_t n,
+    size_t n_mean, size_t p, size_t q, double fixed_lambda);
+
+double linear_mean_gjr_garch_nll_pq_gh(
+    const double *params, const double *y, const double *features,
+    double *resid, double *sigma2, size_t n, size_t n_mean,
+    size_t p, size_t q, double fixed_lambda);
+
+void linear_mean_gjr_garch_nll_grad_pq_gh(
+    const double *params, const double *y, const double *features,
+    double *resid, double *sigma2, double *grad, size_t n,
+    size_t n_mean, size_t p, size_t q, double fixed_lambda);
+
+void linear_mean_gjr_garch_hess_pq_gh(
+    const double *params, const double *y, const double *features,
+    double *resid, double *sigma2, double *hess, size_t n,
+    size_t n_mean, size_t p, size_t q, double fixed_lambda);
+
+double linear_mean_egarch_nll_pq_gh(
+    const double *params, const double *y, const double *features,
+    double *resid, double *sigma2, size_t n, size_t n_mean,
+    size_t p, size_t q, double fixed_lambda);
+
+void linear_mean_egarch_nll_grad_pq_gh(
+    const double *params, const double *y, const double *features,
+    double *resid, double *sigma2, double *grad, size_t n,
+    size_t n_mean, size_t p, size_t q, double fixed_lambda);
+
+void linear_mean_egarch_hess_pq_gh(
+    const double *params, const double *y, const double *features,
+    double *resid, double *sigma2, double *hess, size_t n,
+    size_t n_mean, size_t p, size_t q, double fixed_lambda);
+
+double arma_vol_gh_nll_pq(
+    const double *params, const double *y, double *resid, double *sigma2,
+    const double *e0, const double *h0, size_t n,
+    size_t p_ar, size_t q_ma, size_t p_vol, size_t q_vol,
+    int volatility_kind, double fixed_lambda);
+
+void arma_vol_gh_nll_grad_pq(
+    const double *params, const double *y, double *resid, double *sigma2,
+    const double *e0, const double *h0, double *grad, size_t n,
+    size_t p_ar, size_t q_ma, size_t p_vol, size_t q_vol,
+    int volatility_kind, double fixed_lambda);
+
+void arma_vol_gh_nll_hess_pq(
+    const double *params, const double *y, double *resid, double *sigma2,
+    const double *e0, const double *h0, double *hess, size_t n,
+    size_t p_ar, size_t q_ma, size_t p_vol, size_t q_vol,
+    int volatility_kind, double fixed_lambda);
+
 void arx_mean_resid(const double *params,
                     const double *y,
                     const double *x,
@@ -2535,6 +2676,25 @@ void log_arma_egarch_nll_grad_pq_skewt(const double *z, const double *y,
                                         double *grad_z,
                                         size_t n, size_t p_ar, size_t q_ma,
                                         size_t P, size_t Q);
+
+/* ======================== APARCH Functions ================================== */
+
+void aparch_variance_pq(const double *params, const double *residuals,
+                        double *sigma2, size_t n, size_t p, size_t q);
+
+double aparch_nll_pq(const double *params, const double *residuals,
+                     double *sigma2, size_t n, size_t p, size_t q,
+                     int distribution, double fixed_lambda);
+
+void aparch_nll_grad_pq(const double *params, const double *residuals,
+                        double *sigma2, double *gradient, size_t n,
+                        size_t p, size_t q, int distribution,
+                        double fixed_lambda);
+
+void aparch_nll_hess_pq(const double *params, const double *residuals,
+                        double *sigma2, double *hessian, size_t n,
+                        size_t p, size_t q, int distribution,
+                        double fixed_lambda);
 
 /* ======================== DCC Gaussian Functions ============================ */
 
