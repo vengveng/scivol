@@ -37,6 +37,9 @@ def monkeypatched_routine(monkeypatch):
     returns a DummyResult instance.
     """
     calls = {}
+    monkeypatch.setattr(
+        "scivol._native_fit._uses_native_by_default", lambda _spec: False
+    )
 
     def fake_fit(y, **kw):
         calls["y"] = y

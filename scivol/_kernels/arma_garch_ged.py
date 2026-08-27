@@ -8,6 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .. import _core
+from .._optimizer import resolve_optimizer_budget
 from ..components.density import GED
 from ..components.mean import ARMA
 from ..components.vol import GARCH
@@ -53,10 +54,14 @@ def _build(p_ar: int, q_ma: int, p_arch: int, q_garch: int) -> Routine:
         from scipy.optimize import LinearConstraint, minimize
 
         t_start = time.perf_counter()
+        maxiter, maxfev = resolve_optimizer_budget(
+            _.get("maxiter"), _.get("maxfev")
+        )
         fit_info = {
             "solver": solver.lower(),
             "log_mode": bool(log_mode),
             "optimization_space": "z-space" if log_mode else "theta-space",
+            "maxiter": maxiter,
         }
 
         y = np.ascontiguousarray(y, dtype=np.float64)
@@ -146,7 +151,7 @@ def _build(p_ar: int, q_ma: int, p_arch: int, q_garch: int) -> Routine:
                     start,
                     method="Nelder-Mead",
                     bounds=bounds,
-                    options={"maxfev": 50000, "disp": verbose, "fatol": 1e-10},
+                    options={"maxfev": maxfev, "disp": verbose, "fatol": 1e-10},
                 )
             elif solver.lower() == "slsqp":
                 res = minimize(
@@ -156,7 +161,7 @@ def _build(p_ar: int, q_ma: int, p_arch: int, q_garch: int) -> Routine:
                     jac=gradient,
                     bounds=bounds,
                     constraints=lc,
-                    options={"disp": verbose, "maxiter": 5000, "ftol": 1e-12},
+                    options={"disp": verbose, "maxiter": maxiter, "ftol": 1e-12},
                 )
             elif solver.lower() in ["trust", "trust-constr"]:
                 res = minimize(
@@ -166,7 +171,7 @@ def _build(p_ar: int, q_ma: int, p_arch: int, q_garch: int) -> Routine:
                     jac=gradient,
                     bounds=bounds,
                     constraints=lc,
-                    options={"disp": verbose, "maxiter": 5000},
+                    options={"disp": verbose, "maxiter": maxiter},
                 )
             else:
                 raise ValueError(f"Unknown solver: {solver}")
@@ -204,8 +209,8 @@ def _build(p_ar: int, q_ma: int, p_arch: int, q_garch: int) -> Routine:
                     tol=1e-12,
                     options={
                         "disp": verbose,
-                        "maxiter": 5000,
-                        "maxfev": 50000,
+                        "maxiter": maxiter,
+                        "maxfev": maxfev,
                         "xatol": 1e-8,
                         "fatol": 1e-12,
                         "adaptive": True,
@@ -218,7 +223,7 @@ def _build(p_ar: int, q_ma: int, p_arch: int, q_garch: int) -> Routine:
                     method="SLSQP",
                     jac=lambda z: jac_log(z) / n,
                     tol=1e-16,
-                    options={"disp": verbose, "ftol": 1e-16, "maxiter": 5000},
+                    options={"disp": verbose, "ftol": 1e-16, "maxiter": maxiter},
                 )
                 res.fun *= n
             elif solver.lower() in ["trust", "trust-constr", "trust-exact"]:
@@ -229,7 +234,7 @@ def _build(p_ar: int, q_ma: int, p_arch: int, q_garch: int) -> Routine:
                     jac=lambda z: jac_log(z) / n,
                     hess=lambda z: analytical_hess_z(z) / n,
                     tol=1e-12,
-                    options={"disp": verbose, "maxiter": 5000},
+                    options={"disp": verbose, "maxiter": maxiter},
                 )
                 res.fun *= n
             else:

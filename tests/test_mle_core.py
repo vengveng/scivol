@@ -45,6 +45,9 @@ def _make_dummy(uid: str, calls: Dict[str, dict]) -> Routine:
 @pytest.fixture
 def dummy_routines(monkeypatch):
     calls: Dict[str, dict] = {}
+    monkeypatch.setattr(
+        "scivol._native_fit._uses_native_by_default", lambda _spec: False
+    )
 
     import scivol._kernels as _k
     monkeypatch.setitem(

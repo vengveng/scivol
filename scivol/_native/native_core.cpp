@@ -867,6 +867,7 @@ kraft::Result minimize_objective(
         && result.iterations < static_cast<std::size_t>(maximum_iterations)
         && (!credible(result, scientific_kkt_residual)
             || kkt_residual > curvature_tolerance)) {
+        std::copy_n(coordinates, dimension, pre_polish_coordinates);
         const double accepted_value = result.value;
         const double accepted_kkt = kkt_residual;
         const double accepted_scientific_kkt = scientific_kkt_residual;

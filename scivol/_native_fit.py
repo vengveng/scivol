@@ -286,6 +286,14 @@ def _describe_model(spec: Any) -> NativeModel:
     )
 
 
+def _uses_native_by_default(spec: Any) -> bool:
+    try:
+        model = _describe_model(spec)
+    except NotImplementedError:
+        return False
+    return model.kind == "garch" and model.density_code in (0, 1, 2, 3)
+
+
 def _initial_theta(
     spec: Any,
     model: NativeModel,

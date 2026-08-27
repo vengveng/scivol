@@ -7,6 +7,8 @@ from scivol._devtools.surface_manifest import (
     ABSENT_SURFACE_IDS,
     AD_FULL,
     C_FUSED,
+    LEGACY_ENGINE,
+    NATIVE_ENGINE,
     PY_C,
     SURFACE_BY_ID,
     SURFACES,
@@ -68,6 +70,7 @@ def test_fused_log_claims_have_core_wrappers() -> None:
 def test_specific_log_path_regressions_are_encoded() -> None:
     garch_normal = SURFACE_BY_ID["mean:none+vol:garch+density:normal"]
     garch_ged = SURFACE_BY_ID["mean:none+vol:garch+density:ged"]
+    arma_garch_ged = SURFACE_BY_ID["mean:arma+vol:garch+density:ged"]
     gjr_normal = SURFACE_BY_ID["mean:none+vol:gjr-garch+density:normal"]
     gjr_studentt = SURFACE_BY_ID["mean:none+vol:gjr-garch+density:studentt"]
     gjr_ged = SURFACE_BY_ID["mean:none+vol:gjr-garch+density:ged"]
@@ -77,9 +80,31 @@ def test_specific_log_path_regressions_are_encoded() -> None:
     assert gjr_ged.log_nll == PY_C
     assert gjr_ged.log_grad == PY_C
     assert garch_normal.default_log_mode is True
-    assert garch_ged.default_log_mode is False
+    assert garch_ged.default_log_mode is True
+    assert garch_normal.default_engine == NATIVE_ENGINE
+    assert garch_ged.default_engine == NATIVE_ENGINE
+    assert arma_garch_ged.default_engine == LEGACY_ENGINE
+    assert arma_garch_ged.default_log_mode is False
     assert gjr_normal.default_log_mode is True
     assert gjr_studentt.default_log_mode is False
+    assert gjr_studentt.default_engine == LEGACY_ENGINE
+
+
+def test_native_defaults_cover_only_the_promoted_fixed_mle_rows() -> None:
+    native_defaults = {
+        surface.surface_id
+        for surface in SURFACES
+        if surface.default_engine == NATIVE_ENGINE
+    }
+    expected = {
+        surface.surface_id
+        for surface in SURFACES
+        if surface.volatility == "GARCH"
+        and surface.mean is None
+        and surface.density in ("Normal", "StudentT", "SkewT", "GED")
+    }
+
+    assert native_defaults == expected
 
 
 def test_verification_exceptions_cover_non_full_validation() -> None:

@@ -423,7 +423,9 @@ Solvers:
 
 | Solver | Method | Notes |
 |--------|--------|-------|
-| `"slsqp"` | Sequential quadratic programming | Default; fast and reliable |
+| `"native"` | C++ function-jet SLSQP | Default for fixed MLE GARCH with Normal, Student-t, Skew-t, or GED |
+| `"slsqp"` | SciPy SLSQP over the established C kernels | Explicit independent legacy path |
+| `"legacy"` | Alias for `"slsqp"` | Keeps the established engine easy to request |
 | `"nelder-mead"` | Derivative-free simplex | Slow but dependable |
 | `"trust"` | Trust-region (gradient + Hessian) | Fast when it converges |
 | `"trust-exact"` | Trust-region in log-space | Most stable for difficult data |
@@ -433,19 +435,28 @@ Solvers:
 | Parameter | Constraint | Transform |
 |-----------|------------|-----------|
 | $\omega$ | $\omega > 0$ | `softplus(z)` |
-| $\alpha, \beta$ | $> 0$, sum $< 1$ | `softmax` |
+| $\alpha, \beta$ | $\ge 0$, sum $< 1$ | `softmax` interior chart |
 | $\gamma$ (GJR) | $\gamma > 0$ | `4-class softmax` |
 | $\nu$ | $\nu > 2$ | `2 + softplus(z)` |
 | $\lambda$ | $-1 < \lambda < 1$ | `tanh(z)` |
 
 This guarantees stationarity by construction and avoids boundary problems during optimization.
 
-Default `log_mode` is benchmark-driven and may differ across model families and densities. If you do not pass `log_mode`, the effective path is exposed on the fitted result:
+Fixed MLE GARCH models use the native transformed engine by default with Normal,
+Student-t, Skew-t, or GED density. Pass `solver="native"` to use it explicitly
+for GH-family GARCH or genuine joint ARMA-GARCH models. Pass `solver="slsqp"` or
+`solver="legacy"` to run the independent SciPy path. Passing `log_mode=False`
+without a solver also selects the legacy theta-space path. Joint ARMA-GARCH,
+GH-family GARCH, QMLE, and auto-selection retain legacy defaults pending their
+own promotion gates.
+
+Other model families retain their benchmark-driven `log_mode` defaults. Every
+fit reports the effective path:
 
 ```python
 result = spec.fit(data)
 result.fit_info.to_dict()
-# solver='slsqp', log_mode=True/False, optimization_space='z-space'/'theta-space'
+# solver='native-slsqp'/'slsqp', optimization_space='native-z-space'/'z-space'/'theta-space'
 ```
 
 Volatility orders do not implicitly remove observations. Mean models apply the
@@ -453,9 +464,9 @@ lags they require; `hold_back=k` requests at least `k` leading observations be
 trimmed. Results preserve pandas alignment, and the effective sample is recorded
 in `result.fit_info`.
 
-Standalone GARCH, GJR-GARCH, EGARCH, and APARCH fits accept constrained-space warm
-starts and explicit optimizer budgets. The same start works in theta- or
-z-space:
+Standalone volatility fits and native joint ARMA-GARCH fits accept
+constrained-space warm starts and explicit optimizer budgets. The same start
+works in theta- or z-space:
 
 ```python
 first = spec.fit(returns, maxiter=500)
@@ -467,7 +478,8 @@ Current default path policy:
 
 | Family | Default path |
 |--------|--------------|
-| `GARCH + Normal / StudentT / SkewT` | `z-space` |
+| `GARCH + Normal / StudentT / SkewT / GED` | native `z-space` |
+| `GARCH + GH / NIG / Hyperbolic / VarianceGamma` | `theta-space` |
 | `GJRGARCH + Normal` | `z-space` |
 | `GJRGARCH + StudentT / SkewT` | `theta-space` |
 | `EGARCH + Normal` | `theta-space` |
@@ -477,7 +489,7 @@ Current default path policy:
 | `APARCH + any shipped density` | `theta-space` |
 | `ARMA + Normal / GED` | `theta-space` |
 | `ARX/HARX + Normal / StudentT / SkewT / GED` | `theta-space` |
-| `ARMA + GARCH + Normal / StudentT / SkewT / GED` | `theta-space` |
+| `ARMA + GARCH + any shipped density` | `theta-space` |
 | `ARMA + EGARCH + Normal / StudentT / SkewT / GED` | `theta-space` |
 | `ARX/HARX + GARCH + Normal / StudentT / SkewT / GED` | `theta-space` |
 | `ARX/HARX + EGARCH + Normal / StudentT / SkewT / GED` | `theta-space` |

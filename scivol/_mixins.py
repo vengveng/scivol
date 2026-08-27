@@ -430,13 +430,26 @@ class FitsMixin:
         spec = validate_spec(self.spec)
         from .components.vol import APARCH
         from .roles import Role
+        force_legacy_engine = bool(kwargs.pop("_force_legacy_engine", False))
+        has_auto_components = self._has_auto_components()
         native_requested = str(kwargs.get("solver", "")).lower() == "native"
+        native_engine = self._should_use_native_engine(
+            spec,
+            method=method,
+            has_auto_components=has_auto_components,
+            has_exogenous_data=x is not None,
+            force_legacy_engine=force_legacy_engine,
+            kwargs=kwargs,
+        )
+        fit_kwargs = dict(kwargs)
+        if str(fit_kwargs.get("solver", "")).lower() == "legacy":
+            fit_kwargs["solver"] = "slsqp"
 
         if native_requested and method.lower() == "qmle":
             raise NotImplementedError(
-                "solver='native' is currently an MLE-only internal promotion path."
+                "solver='native' supports MLE only; omit solver='native' for QMLE."
             )
-        if native_requested and self._has_auto_components():
+        if native_requested and has_auto_components:
             raise NotImplementedError(
                 "solver='native' currently requires a fixed model specification."
             )
@@ -446,21 +459,30 @@ class FitsMixin:
         ):
             raise NotImplementedError("APARCH QMLE is not yet implemented; use method='mle'.")
         if (
-            not native_requested
-            and any(key in kwargs for key in ("initial_params", "maxiter", "maxfev"))
+            not native_engine
+            and any(key in fit_kwargs for key in ("initial_params", "maxiter", "maxfev"))
         ):
+            from .components.mean import ARMA
             from .components.vol import EGARCH, GARCH, GJRGARCH
 
             mean = spec.get_component(Role.MEAN)
             vol = spec.get_component(Role.VOLATILITY)
-            if mean is not None or not isinstance(vol, (GARCH, GJRGARCH, EGARCH, APARCH)):
+            standalone_supported = mean is None and isinstance(
+                vol, (GARCH, GJRGARCH, EGARCH, APARCH)
+            )
+            joint_budget_supported = (
+                "initial_params" not in fit_kwargs
+                and isinstance(mean, ARMA)
+                and isinstance(vol, GARCH)
+            )
+            if not (standalone_supported or joint_budget_supported):
                 raise NotImplementedError(
-                    "initial_params and optimizer budgets currently support fixed "
-                    "standalone GARCH, GJR-GARCH, EGARCH, and APARCH specifications."
+                    "initial_params currently supports fixed standalone volatility "
+                    "models; optimizer budgets also support fixed joint ARMA-GARCH."
                 )
-            if method.lower() == "qmle" and "initial_params" in kwargs:
+            if method.lower() == "qmle" and "initial_params" in fit_kwargs:
                 raise NotImplementedError("QMLE warm starts are not yet supported.")
-        if self._has_auto_components():
+        if has_auto_components:
             result = self._auto_fit(
                 data,
                 x=x,
@@ -483,7 +505,7 @@ class FitsMixin:
                 allow_density_blind_loss=allow_density_blind_loss,
                 selection_warm_start=selection_warm_start,
                 degeneracy_weight=degeneracy_weight,
-                **kwargs,
+                **fit_kwargs,
             )
         else:
             # Direct (non-auto) fit
@@ -494,19 +516,19 @@ class FitsMixin:
             fit_warning = small_sample_warning(spec, prepared.data)
             if method_lower == "qmle":
                 from ._qmle import fit_qmle
-                result = fit_qmle(spec, prepared.data, x=prepared.x, **kwargs)
-            elif native_requested:
+                result = fit_qmle(spec, prepared.data, x=prepared.x, **fit_kwargs)
+            elif native_engine:
                 from ._native_fit import fit_native_spec
 
                 result = fit_native_spec(
-                    spec, prepared.data, x=prepared.x, **kwargs
+                    spec, prepared.data, x=prepared.x, **fit_kwargs
                 )
                 result._fit_x = prepared.x
             else:
                 from ._kernels import get_routine
 
                 routine = get_routine(str(spec))
-                result = routine.fit(prepared.data, x=prepared.x, **kwargs)
+                result = routine.fit(prepared.data, x=prepared.x, **fit_kwargs)
                 result._fit_x = prepared.x
 
             if fit_warning is not None:
@@ -528,6 +550,32 @@ class FitsMixin:
         result._name = name
 
         return result
+
+    @staticmethod
+    def _should_use_native_engine(
+        spec: "CompositeSpec",
+        *,
+        method: str,
+        has_auto_components: bool,
+        has_exogenous_data: bool,
+        force_legacy_engine: bool,
+        kwargs: Dict[str, Any],
+    ) -> bool:
+        requested_solver = kwargs.get("solver")
+        if requested_solver is not None:
+            return str(requested_solver).lower() == "native"
+        if (
+            force_legacy_engine
+            or has_auto_components
+            or has_exogenous_data
+            or method.lower() != "mle"
+            or kwargs.get("log_mode") is False
+        ):
+            return False
+
+        from ._native_fit import _uses_native_by_default
+
+        return _uses_native_by_default(spec)
 
     @staticmethod
     def _annotate_fit_request_metadata(result: "EstimationResult", kwargs: Dict[str, Any]) -> None:
@@ -723,6 +771,12 @@ class FitsMixin:
         data_dict = {col: data[:, i] for i, col in enumerate(columns)}
 
         if self._has_auto_components():
+            if str(kwargs.get("solver", "")).lower() == "native":
+                raise NotImplementedError(
+                    "solver='native' currently requires a fixed model specification."
+                )
+            candidate_kwargs = dict(kwargs)
+            candidate_kwargs["_force_legacy_engine"] = True
             vol_candidates = self._get_vol_candidates()
             density_candidates = self._get_density_candidates()
             mean_candidates = self._get_mean_candidates()
@@ -769,7 +823,7 @@ class FitsMixin:
                     hold_back=hold_back,
                     scale=scale,
                     common_sample=common_sample,
-                    **kwargs,
+                    **candidate_kwargs,
                 )
 
             return fit_multi_auto_parallel(
@@ -790,7 +844,7 @@ class FitsMixin:
                 hold_back=hold_back,
                 scale=scale,
                 common_sample=common_sample,
-                **kwargs,
+                **candidate_kwargs,
             )
 
         # Non-auto: parallelize across series
@@ -854,6 +908,8 @@ class FitsMixin:
 
         mean_component = self.spec.get_component(Role.MEAN)
         mean_auto = isinstance(mean_component, AutoMean)
+        candidate_kwargs = dict(kwargs)
+        candidate_kwargs["_force_legacy_engine"] = True
 
         result, all_candidates = select_best_model(
             data,
@@ -885,7 +941,7 @@ class FitsMixin:
             hold_back=hold_back,
             scale=scale,
             common_sample=common_sample,
-            **kwargs,
+            **candidate_kwargs,
         )
 
         result._selection_candidates = all_candidates

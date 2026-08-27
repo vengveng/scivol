@@ -39,6 +39,10 @@ class DummyBatchResult:
 def _install_dummy_garch_normal(monkeypatch: pytest.MonkeyPatch) -> None:
     import scivol._kernels as _k
 
+    monkeypatch.setattr(
+        "scivol._native_fit._uses_native_by_default", lambda _spec: False
+    )
+
     def fake_fit(y, **_kw):
         return DummyBatchResult(len(y))
 

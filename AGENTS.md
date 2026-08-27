@@ -7,7 +7,7 @@
 
 **Derivative validation:** Use AD-based development oracles as the primary validation path. Prefer `scivol._devtools.ad_oracle` and the shipped AD-backed tests over finite differences. Keep finite differences only as a coarse backup smoke test when an AD oracle is not yet available.
 
-**Benchmarking:** `benchmark_optimizers.py` tests all optimizer configurations on real data. Run periodically to validate/update default settings.
+**Benchmarking:** Routine development benchmarks should finish within 60 seconds and must stop at 120 seconds. Use the smallest representative panel that answers the question. Reserve full CRSP runs for explicit whole-engine or tensor-scale replacements and release gates, never ordinary code changes. `benchmark_optimizers.py` remains the solver-policy benchmark.
 
 **Local development:** All development scripts, experiments, and analysis code should go in `localdev/`. This folder is git-ignored. Directories prefixed with `localdev_*` are also ignored (e.g., `localdev_data/`, `localdev_results/`).
 
@@ -1093,26 +1093,32 @@ from scivol.result import EstimationResult
 ### Immediate Goals
 
 1. Extend the native tensor one complete volatility family at a time
-2. Run the fixed CRSP promotion panel before changing any default engine
-3. Add native QMLE and auto-selection only after their inference and failure
+2. Add native QMLE and auto-selection only after their inference and failure
    contracts are explicit
+3. Use a bounded representative panel for each default-family promotion; reserve
+   the full CRSP panel for whole-engine, tensor-scale, and release gates
 
 ### Native Engine Promotion Status
 
-`solver="native"` is an explicit MLE path for fixed GARCH and joint ARMA-GARCH
-specifications. It supports every shipped univariate density and arbitrary declared
-orders through one C++ extension. The established solver remains the default.
+The native C++ function-jet engine is the default MLE path for fixed standalone
+GARCH with Normal, Student-t, Skew-t, or GED density. It is available explicitly
+through `solver="native"` for every shipped univariate density and genuine joint
+ARMA-GARCH specifications at arbitrary declared orders. `solver="slsqp"` and
+`solver="legacy"` retain the independent established path, while
+`log_mode=False` selects its theta-space formulation when no solver is supplied.
 
 The native path stays quiet during fitting. It records historical Kraft mode,
 strict KKT residual and tolerance, maximum violation, refinement restarts, request
 plan, and matched production-objective error in `result.fit_info`. A failed strict
-check returns a normal result with a persistent warning. QMLE and auto-selection
-remain unsupported on this path until their native contracts are promoted.
+check returns a normal result with a persistent warning. Joint ARMA-GARCH,
+GH-family GARCH, QMLE, and auto-selection remain on the established default
+engine until their native performance and inference contracts are promoted.
 
 Files under `scivol/_native/` marked `SCIVOL-NATIVE: CORE` are production sources.
 The SciPy SLSQP translation under `third_party/` is pinned upstream code.
-Benchmarks, duplicate ABIs, prototype solvers, and exploratory adapters remain in
-`localdev/native_optimizer_experiment/` and must not be copied into the package.
+`localdev/native_optimizer_experiment/` retains only the unpromoted
+ARMA-APARCH-GH stress model and its minimum C++ test dependencies. Do not copy
+that directory wholesale during promotion.
 
 ### Fused Log-Space Wrappers
 

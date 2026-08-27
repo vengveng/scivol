@@ -11,6 +11,9 @@ AD_FULL = "AD full"
 AD_PARTIAL = "AD partial"
 RUNTIME = "Runtime"
 NOT_APPLICABLE = "N/A"
+NATIVE_ENGINE = "native"
+LEGACY_ENGINE = "legacy"
+NATIVE_DEFAULT_DENSITIES = ("Normal", "StudentT", "SkewT", "GED")
 
 DENSITIES = (
     "Normal",
@@ -48,6 +51,7 @@ class SurfaceContract:
     log_hess: str
     theta_validation: str
     log_validation: str
+    default_engine: str
     default_log_mode: Optional[bool]
     log_nll_wrapper: Optional[str] = None
     log_grad_wrapper: Optional[str] = None
@@ -178,6 +182,7 @@ def _make_surface(
     log_hess: str = PY_C,
     theta_validation: str,
     log_validation: str,
+    default_engine: str = LEGACY_ENGINE,
     default_log_mode: Optional[bool] = False,
 ) -> SurfaceContract:
     log_nll_wrapper, log_grad_wrapper = _log_wrappers(mean, volatility, density, log_nll)
@@ -193,6 +198,7 @@ def _make_surface(
         log_hess=log_hess,
         theta_validation=theta_validation,
         log_validation=log_validation,
+        default_engine=default_engine,
         default_log_mode=default_log_mode,
         log_nll_wrapper=log_nll_wrapper,
         log_grad_wrapper=log_grad_wrapper,
@@ -210,9 +216,13 @@ def _extend(
     log_grad: str,
     theta_validation: Callable[[str], str],
     log_validation: Callable[[str], str],
+    default_engine: str | Callable[[str], str] = LEGACY_ENGINE,
     default_log_mode: Optional[bool] | Callable[[str], Optional[bool]] = False,
 ) -> None:
     for density in densities:
+        default_engine_for_density = (
+            default_engine(density) if callable(default_engine) else default_engine
+        )
         default_for_density = (
             default_log_mode(density) if callable(default_log_mode) else default_log_mode
         )
@@ -226,6 +236,7 @@ def _extend(
                 log_grad=log_grad if density in FUSED_DENSITIES else PY_C,
                 theta_validation=theta_validation(density),
                 log_validation=log_validation(density),
+                default_engine=default_engine_for_density,
                 default_log_mode=default_for_density,
             )
         )
@@ -264,7 +275,12 @@ def _surfaces() -> tuple[SurfaceContract, ...]:
         log_grad=C_FUSED,
         theta_validation=lambda _density: AD_FULL,
         log_validation=lambda _density: AD_FULL,
-        default_log_mode=lambda density: density in ("Normal", "StudentT", "SkewT"),
+        default_engine=lambda density: (
+            NATIVE_ENGINE
+            if density in NATIVE_DEFAULT_DENSITIES
+            else LEGACY_ENGINE
+        ),
+        default_log_mode=lambda density: density in NATIVE_DEFAULT_DENSITIES,
     )
     _extend(
         surfaces,

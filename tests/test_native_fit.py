@@ -9,6 +9,7 @@ from numpy.testing import assert_allclose
 
 from scivol import (
     ARMA,
+    AutoVol,
     GED,
     GARCH,
     GeneralizedHyperbolic,
@@ -363,7 +364,7 @@ def test_legacy_joint_results_report_the_complete_likelihood(
 ) -> None:
     data = _returns(seed=400, n=450)
     spec = ARMA(1, 1) + GARCH(1, 1) + density_factory()
-    result = spec.fit(data, log_mode=True)
+    result = spec.fit(data, solver="slsqp", log_mode=True)
     filtered = filter_spec(spec, result.data, result.params)
 
     assert result.log_likelihood == pytest.approx(
@@ -372,10 +373,24 @@ def test_legacy_joint_results_report_the_complete_likelihood(
     assert abs(result.log_likelihood) > 100.0
 
 
+@pytest.mark.parametrize("density_factory", (Normal, StudentT, SkewT, GED))
+def test_legacy_joint_fit_honors_the_shared_iteration_budget(
+    density_factory: DensityFactory,
+) -> None:
+    result = (ARMA(1, 1) + GARCH(1, 1) + density_factory()).fit(
+        _joint_returns(n=350, p_ar=1, q_ma=1, p_vol=1, q_vol=1),
+        solver="slsqp",
+        maxiter=1,
+    )
+
+    assert result.fit_info.maxiter == 1
+    assert result.n_iter <= 1
+
+
 def test_native_solver_retains_a_legacy_variance_gamma_optimum() -> None:
     data = _returns()
     legacy = (ARMA(1, 1) + GARCH(2, 1) + VarianceGamma()).fit(
-        data, log_mode=True
+        data, solver="slsqp", log_mode=True
     )
     native = (ARMA(1, 1) + GARCH(2, 1) + VarianceGamma()).fit(
         data,
@@ -447,8 +462,117 @@ def test_native_fits_are_reentrant_across_threads() -> None:
         assert_allclose(actual, expected, rtol=0.0, atol=0.0)
 
 
-def test_existing_default_engine_is_unchanged() -> None:
-    result = (GARCH(1, 1) + Normal()).fit(_returns(n=400))
+def test_rejected_curvature_polish_restores_the_sqp_point() -> None:
+    data = _joint_returns(
+        seed=11,
+        n=350,
+        p_ar=2,
+        q_ma=2,
+        p_vol=3,
+        q_vol=2,
+    )
+    expected = np.array(
+        [
+            -5.44738324e-4,
+            6.25850478e-2,
+            3.40852054e-1,
+            -8.55877305e-2,
+            2.69470762e-4,
+            5.05091464e-2,
+            1.13079489e-9,
+            6.90973746e-14,
+        ],
+        dtype=np.float64,
+    )
+
+    def fit() -> np.ndarray:
+        result = (ARMA(1, 2) + GARCH(1, 2) + Normal()).fit(
+            data, solver="native", maxiter=700
+        )
+        assert result.fit_info.curvature_refinement_steps == 0
+        return result.params
+
+    sequential = [fit() for _ in range(2)]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        concurrent = list(pool.map(lambda _: fit(), range(2)))
+
+    for actual in sequential + concurrent:
+        assert_allclose(actual, expected, rtol=1e-8, atol=1e-12)
+        assert_allclose(actual, sequential[0], rtol=0.0, atol=0.0)
+
+
+@pytest.mark.parametrize(
+    "spec,data",
+    (
+        (GARCH(1, 1) + Normal(), _returns(n=400)),
+        (GARCH(1, 1) + GED(), _returns(n=400)),
+    ),
+    ids=("normal", "ged"),
+)
+def test_supported_fixed_mle_defaults_to_native(
+    spec: object, data: np.ndarray
+) -> None:
+    result = spec.fit(data)
+
+    assert result.fit_info.engine == "cpp-function-jet"
+    assert result.fit_info.solver == "native-slsqp"
+    assert result.fit_info.requested_solver is None
+    assert result.fit_info.used_default_solver
+
+
+@pytest.mark.parametrize(
+    "spec,data",
+    (
+        (GARCH(1, 1) + NormalInverseGaussian(), _returns(n=400)),
+        (
+            ARMA(1, 1) + GARCH(1, 1) + StudentT(),
+            _joint_returns(n=500, p_ar=1, q_ma=1, p_vol=1, q_vol=1),
+        ),
+    ),
+    ids=("garch-nig", "joint-arma-garch"),
+)
+def test_unpromoted_native_surfaces_retain_the_legacy_default(
+    spec: object, data: np.ndarray
+) -> None:
+    result = spec.fit(data)
 
     assert result.fit_info.engine is None
     assert result.fit_info.solver != "native-slsqp"
+    assert result.fit_info.requested_solver is None
+    assert result.fit_info.used_default_solver
+
+
+@pytest.mark.parametrize(
+    "fit_kwargs,requested_solver,optimization_space",
+    (
+        ({"solver": "slsqp"}, "slsqp", "z-space"),
+        ({"solver": "legacy"}, "legacy", "z-space"),
+        ({"log_mode": False}, None, "theta-space"),
+    ),
+)
+def test_explicit_legacy_paths_remain_independent(
+    fit_kwargs: dict[str, object],
+    requested_solver: str | None,
+    optimization_space: str,
+) -> None:
+    result = (GARCH(1, 1) + Normal()).fit(_returns(n=400), **fit_kwargs)
+
+    assert result.fit_info.engine is None
+    assert result.fit_info.solver != "native-slsqp"
+    assert result.fit_info.requested_solver == requested_solver
+    assert result.fit_info.optimization_space == optimization_space
+
+
+def test_qmle_and_auto_selection_retain_the_legacy_engine() -> None:
+    data = _returns(n=400)
+    qmle = (GARCH(1, 1) + Normal()).fit(data, method="qmle")
+    selected = (
+        AutoVol(candidates=["GARCH"], max_p=1, max_q=1) + Normal()
+    ).fit(data, n_jobs=1)
+
+    assert qmle.fit_info.engine is None
+    assert selected.fit_info.engine is None
+    assert all(
+        candidate.result is None or candidate.result.fit_info.engine is None
+        for candidate in selected.selection.candidates
+    )
