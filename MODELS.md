@@ -1,6 +1,6 @@
 # scivol Model Surface Contract
 
-**Last Updated:** 2026-08-20
+**Last Updated:** 2026-08-27
 
 `MODELS.md` is a readable projection of the machine-checked contract in
 `scivol._devtools.surface_manifest`. The manifest is the source of truth for
@@ -122,6 +122,13 @@ validation uses independent JAX objectives in `scivol._devtools.ad_oracle`.
 Optimization defaults are benchmark policy, not surface-availability policy.
 They are maintained through `benchmark_optimizers.py` and exposed on
 `result.fit_info`, including the effective optimization space.
+
+The staged native C++ engine is available explicitly as `solver="native"` for
+fixed MLE GARCH and genuine joint ARMA-GARCH specifications across all eight
+densities. Both entries support arbitrary declared orders, complete additive
+`F/G/H` jets, and transformed-coordinate optimization. The established engine
+remains the default while broader tensor and release benchmark gates are still
+in progress. Native QMLE and auto-selection are not yet declared support.
 
 ---
 

@@ -1,6 +1,6 @@
 # scivol Library Guide for AI Agents
 
-**Last Updated:** 2026-08-26
+**Last Updated:** 2026-08-27
 **Purpose:** Essential architectural rules, patterns, and constraints for developing the scivol time series volatility modeling library.
 
 **Reference implementations:** `localdev/arma_garch_estimator.py` contains verified Python+Numba implementations with analytical gradients/Hessians for ARMA-GARCH models (Normal, Student-t, Skew-t). `localdev/gjr_garch_estimator.py` contains the GJR-GARCH reference implementation. Use as ground truth when porting to C.
@@ -250,13 +250,183 @@ def _garch_variance_11(
 - `__restrict` - Pointer aliasing hints
 - `VLK_FORCE_INLINE` - Force inline small helpers
 
-**Specialized vs Generic**:
+**Legacy specialized vs generic kernels**:
 - Provide specialized `_11` functions for GARCH(1,1) (most common)
 - Provide generic `_pq` functions for arbitrary orders
 - Python code tries specialized first, falls back to generic
 
-**Build flags** (`pyproject.toml`):
+### Native Tensor-Jet Completion Contract
+
+This is a release gate, not a design suggestion. A jet is **incomplete** unless it
+satisfies every rule below. Here, "general order" or `_pq` means every declared
+order axis of the model, such as `(p, q)` for GARCH and
+`(p_ar, q_ma, p_vol, q_vol)` for a joint mean-volatility model.
+
+1. **One general-order source of mathematical truth**
+   - Implement and validate a runtime general-order jet before calling any fixed
+     order complete. A finite set such as 11, 12, 21, and 22 is not `_pq` support.
+   - The same model policies must be instantiable with compile-time orders. Fixed
+     kernels are generated specializations of the general mathematics, not separate
+     handwritten recursions or likelihoods.
+   - Fixed/runtime parity is evidence, not permission to duplicate equations.
+     Their recursion and observation assembly must have one shared policy owner;
+     traversal and storage adapters may differ around that owner.
+   - Precompile only measured common orders. Dispatch once at the outer ABI to a
+     fixed specialization when available and otherwise use the runtime jet.
+   - A runtime-only prototype is also incomplete until the same policy composition
+     can compile a fixed order. "Supports specialization" means build-time
+     instantiation for any valid order tuple, not a hard-coded 11 implementation.
+
+2. **One canonical jet shape**
+   - Every tensor entry separates parameter layout, sample/conditioning plan,
+     parameter domain, prepared point state, mean-volatility recursion, local
+     density derivatives, theta-space assembly, and any coordinate-map pullback.
+   - The local density contract consumes the model's local sufficient state, such
+     as residual and variance. Compile-time dependency masks may remove inactive
+     sensitivities for zero-mean or otherwise simpler models; they may not create a
+     second copy of the density mathematics.
+   - Density and recursion policies may vary; the request and assembly contract may
+     not. All seven nonempty `F`/`G`/`H` request masks must work without changing
+     the mathematical result.
+   - Fixed and runtime paths may differ in traversal, indexing, and storage only.
+     They must share the objective, constants, scored observations, conditioning,
+     domain, parameter order, and derivatives.
+   - A declared joint model must be jointly estimated in the mathematics, not only
+     composed in its name or API. Mean parameters affect residuals; those residuals
+     affect the variance recursion and density; and exact derivatives include every
+     cross block among mean, volatility, and density-shape parameters. A staged or
+     fixed-residual fit must be labeled as such and may not satisfy a joint surface.
+
+3. **Exact additive likelihood**
+   - `F` is the complete additive negative log-likelihood on the declared scored
+     sample. It includes every parameter-independent and parameter-dependent
+     normalization constant. Constants may never be omitted merely because they do
+     not change the minimizer.
+   - The jet does not divide by `n_eff`. Exact positive scaling, normally
+     `1 / n_eff`, belongs in a typed optimizer adapter and must be reversed in
+     likelihood reporting, inference, and matched-objective comparisons.
+   - The sample plan owns initial histories, the first scored index, `n_eff`, and
+     hold-back rules. Every request, order path, oracle, and production comparison
+     uses that same plan.
+
+4. **Request-minimal preparation and reuse**
+   - Prepare expensive point-dependent primitives once per parameter point and
+     reuse them across observations and all consumers at that point. Examples
+     include `lgamma`, digamma/trigamma, Bessel ratios, GH moments, powers, and
+     transform state.
+   - Compute only the constants and derivatives required by the request. A pure
+     `G` or `H` request need not form an unused value constant, but it must compute
+     every derivative of that constant required by the requested output.
+   - A combined request specifies outputs, not traversal count. A typed objective
+     may map `F|G` or another mask to fused or separate specialized passes. Choose
+     that request plan from objective and complete-solve measurements, preserve
+     identical outputs, and keep the unchosen plan only as measured development
+     debt rather than assuming one traversal is faster.
+   - Preparation must have an explicit derivative order. Value and first-order
+     requests may not construct, copy, or downgrade a second-order point cache.
+   - Parameter-independent sample constants are formed once per solve or added once
+     per request as an `n_eff` multiple. No distribution constant or other
+     point-invariant primitive is recomputed in the observation loop.
+
+5. **Exact sparse derivatives**
+   - The theta jet provides exact analytical `F`, `G`, and `H`. An `H` path may
+     internally require first-order state, but it must not compute or write an
+     unrequested public output.
+   - Every shipped transformed path differentiates the complete function
+     `L(theta(z))`. Its Hessian includes transform curvature, not only
+     `J' H_theta J`.
+   - Non-differentiable points have explicit request-specific validity semantics.
+     Never return a convenient derivative for a nearby smoothed, clipped, or floored
+     model.
+
+6. **Explicit mathematical and numerical domains**
+   - Keep the theoretical parameter domain, floating-point representability domain,
+     and differentiability domain distinct. A likelihood jet may reject a request
+     outside the relevant domain; it may not silently narrow the statistical model.
+   - Variance floors, parameter clipping, hidden persistence margins, and density
+     padding are forbidden unless they are part of the declared model itself.
+     Prefer stable algebra or a generic optimizer rejection over modified math.
+   - One model-owned domain contract supplies constraints, coordinate maps,
+     initialization, feasibility, KKT assessment, and result reporting.
+   - Every validated floating-point support bound has one named model-owned
+     definition used by cache preparation, coordinate maps, bounds, and validation.
+
+7. **Planned memory and dispatch**
+   - Runtime iterations perform no heap allocation. Dynamically sized scratch uses
+     checked caller-owned workspaces; size them with checked arithmetic and reject
+     invalid orders or short arenas before entering the recursion.
+   - Compile-time fixed scratch may use bounded stack storage only when the binary
+     audit records its frame and enforces a documented per-kernel budget. Larger or
+     data-dependent scratch belongs in a caller-owned arena.
+   - A pure `F` request streams the minimum state. Add derivative rings for `G` and
+     `H` only as needed, and materialize sample-length paths only for an explicit
+     evidence request.
+   - Do not branch on fixed model orders inside the observation loop. Inspect fixed
+     specialization assembly to verify that runtime order checks and ring indexing
+     disappear where expected. Audit binary text size and stack frames as well as
+     timing.
+
+8. **Completion evidence**
+   - Validate local density derivatives, recursive state derivatives, the complete
+     theta jet, and every shipped transformed jet against independent AD oracles.
+   - Verify that every sparse request equals the corresponding projection of a full
+     `F|G|H` request, and that runtime and fixed paths agree at shared points.
+   - Encode exact distribution reductions as direct cross-density invariants. For
+     example, Hansen Skew-t at zero skew must equal the variance-standardized
+     Student-t value and all derivatives with respect to common parameters.
+   - Test arbitrary orders beyond the precompiled set, zero orders where the model
+     declares them valid, constants, conditioning boundaries, theoretical-domain
+     boundaries, and request-specific failures.
+   - Match the established production likelihood at identical points and benchmark
+     objective requests separately from complete solves. Python-boundary savings do
+     not excuse a slower objective kernel.
+   - Until all clauses pass, label the surface **prototype/incomplete** with its
+     blocking clauses. Do not mark it complete in `MODELS.md`, a manifest, a README,
+     or a promotion ledger.
+
+9. **Replacement likelihood optimality**
+   - Mathematical jet completion and optimizer replacement readiness are separate
+     claims. Exact derivatives do not prove that a solver reaches an equally good
+     estimate.
+   - On deterministic representative samples, fit the established and replacement
+     paths from matched starts and evaluate both estimates with both evaluators.
+     Record all four values. Differences in additive constants or scaling may be
+     normalized explicitly; an unexplained ranking reversal or material loss blocks
+     replacement promotion.
+   - Require external feasibility and KKT credibility at the returned theta point.
+     A historical solver success code is evidence, not a substitute for this gate.
+   - When no established implementation exists, compare the native optimizer with
+     a trusted independent optimizer on the identical jet and parameterization.
+   - Use a tiered cadence: pointwise and tiny seeded tests after kernel changes; a
+     small deterministic cross-fit matrix after optimizer, map, or domain changes;
+     and full empirical panels only at promotion, default-policy, or release
+     milestones. Do not rerun a full panel for ordinary line-level edits.
+
+Additional optimizer-interface rules:
+
+- Validate immutable observations and conditioning seeds once when a native solve
+  begins. Each jet request still validates its parameters and requested outputs;
+  standalone public jet calls validate all inputs.
+- Checked standalone entries and prevalidated optimizer entries wrap the same
+  mathematical kernel. Do not encode validation state as a template parameter when
+  that would instantiate duplicate recursions.
+- Coordinate maps expose value-only and value-plus-Jacobian intentions. Line-search
+  `F` trials must not construct a dense transform Jacobian.
+- Constraint evaluators should return finite violated constraints for infeasible
+  optimizer trials whenever the mathematics permits it. A line-search domain
+  failure is handled by a generic finite rejection policy in the optimizer; never
+  alter the likelihood or insert a hidden model restriction to make the trial fit.
+- Assess transformed solutions in the original parameter domain. Reconstruct active
+  theta-constraint and bound multipliers from the returned point, theta gradient,
+  and constraint Jacobian; do not substitute zero multipliers or reuse multipliers
+  from an unrelated coordinate-space problem.
+- Keep independent theta and coordinate solvers independently callable. A policy
+  that conditionally polishes one with the other is a third, explicitly named path
+  whose result records every formulation it evaluated and which one it selected.
+
+**Build flags** (`setup.py`):
 ```python
+# Legacy C extension only
 extra-compile-args = [
     "-O3",              # Maximum optimization
     "-ffast-math",      # Fast floating point
@@ -265,6 +435,11 @@ extra-compile-args = [
     "-funroll-loops"
 ]
 ```
+
+Compile the native C++ optimizer extension with C++20 and IEEE-safe
+floating-point semantics. Do not add `-ffast-math`: the optimizer uses NaN
+bound sentinels and non-finite checks as part of its control contract. Portable
+wheels also omit `-march=native`.
 
 #### Shared Math Functions
 
@@ -304,10 +479,12 @@ double cnst = lgamma_approx(0.5*(nu+1)) - lgamma_approx(0.5*nu) - 0.5*log(nu*M_P
 for (size_t t = 1; t < n; t++) {
     sum_nll += studentt_nll_var(e, h, nu);  // Only h-varying part
 }
-return (sum_nll - n_eff * cnst) / n_eff;
+return sum_nll - n_eff * cnst;  // Additive jet total
 ```
 
-This applies to Student-t (`lgamma` terms) and Skew-t (`a`, `b` constants).
+This applies to Student-t (`lgamma` terms), Skew-t (`a`, `b` constants), GH
+(`Bessel` terms), and every future density. If an optimizer needs the sample mean,
+its typed scaling adapter applies `1 / n_eff`; the mathematical jet does not.
 
 ---
 
@@ -410,6 +587,11 @@ Apply the same principle to every model family using its correct positivity,
 stationarity, invertibility, and density restrictions. Stronger restrictions are
 explicit user choices, not hidden defaults.
 
+When stationarity depends on density or shape parameters, the domain contract must
+evaluate the exact distribution-dependent moment and its derivatives. A transformed
+chart should parameterize persistence contributions such as `alpha_i * moment_i`,
+not raw coefficients whose feasible range silently changes when the density changes.
+
 - Keep theoretical restrictions in one model-owned parameter-domain contract.
   Theta constraints, transformed coordinates, initialization, feasibility checks,
   KKT checks, and result reporting must consume that contract.
@@ -490,12 +672,22 @@ This is a library philosophy rule, not just a testing preference:
 
 ### Model Reference (Keep Evergreen)
 
-**`MODELS.md`** lists every available model with its analytical/numerical kernel coverage.
+`scivol/_devtools/surface_manifest.py` is the machine-readable source of truth for
+the public tensor. Generated blocks in **`MODELS.md`** present that contract to
+humans, and `tests/test_surface_manifest_contract.py` prevents the two from drifting.
 
-**Keep this file updated** when adding or modifying models:
-- Add new model rows when a new model family or distribution is implemented
-- Update the constrained/log columns when analytical gradients or Hessians are added
-- Update the "Gaps" section as gaps are closed
+Before the first native jet is promoted, extend the manifest with machine-checked
+jet-completion fields for general-order support, fixed-order generation, objective
+convention, sparse requests, transformed derivatives, domain semantics, and evidence
+level. CI must reject a `complete` native-jet status when any required field is
+missing or weaker than the completion contract above. Do not maintain a second
+handwritten jet-coverage table in `MODELS.md`.
+
+**Keep the contract current** when adding or modifying models:
+- Add or change surfaces in the manifest first
+- Update implementation and validation evidence at the same time
+- Refresh the generated `MODELS.md` blocks in the same change
+- Keep explicit verification exceptions until their machine-checked gaps close
 
 ### Master DGP Test File (Keep Evergreen)
 
@@ -893,11 +1085,34 @@ from scivol.result import EstimationResult
 - ✅ APARCH(p,q) with exact C gradients/Hessians and all shipped densities
 - ✅ Warm-started automatic selection, rolling OOS evaluation, and model confidence sets
 - ✅ AutoMean screening and three-axis mean/volatility/density search
+- ✅ Native C++ function-jet optimizer foundation with caller-owned workspaces,
+  typed objectives, strict KKT reporting, and generic credibility refinement
+- ✅ Native GARCH(p,q) and genuine joint ARMA(p,q)-GARCH(P,Q) matrices for all
+  eight shipped univariate densities
 
 ### Immediate Goals
 
-1. Continue tightening unconstrained/log-mode defaults where benchmarks justify promotion
-2. Keep simplifying Python kernels once fused paths fully cover the hot log-mode operations
+1. Extend the native tensor one complete volatility family at a time
+2. Run the fixed CRSP promotion panel before changing any default engine
+3. Add native QMLE and auto-selection only after their inference and failure
+   contracts are explicit
+
+### Native Engine Promotion Status
+
+`solver="native"` is an explicit MLE path for fixed GARCH and joint ARMA-GARCH
+specifications. It supports every shipped univariate density and arbitrary declared
+orders through one C++ extension. The established solver remains the default.
+
+The native path stays quiet during fitting. It records historical Kraft mode,
+strict KKT residual and tolerance, maximum violation, refinement restarts, request
+plan, and matched production-objective error in `result.fit_info`. A failed strict
+check returns a normal result with a persistent warning. QMLE and auto-selection
+remain unsupported on this path until their native contracts are promoted.
+
+Files under `scivol/_native/` marked `SCIVOL-NATIVE: CORE` are production sources.
+The SciPy SLSQP translation under `third_party/` is pinned upstream code.
+Benchmarks, duplicate ABIs, prototype solvers, and exploratory adapters remain in
+`localdev/native_optimizer_experiment/` and must not be copied into the package.
 
 ### Fused Log-Space Wrappers
 
@@ -987,28 +1202,36 @@ following are true:
    - Finite differences may be used only as a coarse backup smoke test
    - Do not ship a derivative path that has not been independently validated
 
-5. **C remains the shipped source of truth**
-   - Performance-critical computations are implemented in C
-   - Python pre-allocates buffers and passes contiguous `float64` pointers
-   - New C symbols are declared in `scivol/_csrc/scivol_core.h`, wrapped in `scivol/_core.c`, and stubbed in `scivol/_core.pyi`
+5. **A native jet passes the completion contract**
+   - A runtime general-order path exists for every declared order axis
+   - The same policies can generate compile-time fixed-order specializations
+   - The jet returns the exact additive likelihood, including all constants
+   - All sparse `F`/`G`/`H` requests and every shipped coordinate path are validated
+   - Any missing clause keeps the surface labeled prototype/incomplete
 
-6. **Both optimization formulations are treated deliberately**
+6. **Native code remains the shipped source of truth**
+   - Performance-critical computations are implemented in the production C/C++ core
+   - Python pre-allocates buffers and passes contiguous `float64` pointers
+   - Legacy C symbols are declared in `scivol/_csrc/scivol_core.h`, wrapped in `scivol/_core.c`, and stubbed in `scivol/_core.pyi`
+   - Function-jet and optimizer entries use the single pointer-level `scivol._native_core` binding and are stubbed in `scivol/_native_core.pyi`
+
+7. **Both optimization formulations are treated deliberately**
    - Theta-space and log-space behavior are both considered
    - Public solution paths remain genuinely independent where they are meant to cross-check stability
    - If one path is approximate or unsupported, document that explicitly
 
-7. **Coverage files are updated immediately**
+8. **Coverage files are updated immediately**
    - Update `MODELS.md`
    - Update `tests/test_dgp_estimation.py`
    - Update `benchmark_optimizers.py`
    - Update `README.md` if user-facing support changed
 
-8. **Defaults are earned, not assumed**
+9. **Defaults are earned, not assumed**
    - Benchmark solver/log-mode choices on the same parameter domain and real data
    - Run DGP recovery tests
    - Require mathematical parity, domain/KKT credibility, and objective-level speed
 
-9. **Add one model family at a time**
+10. **Add one model family at a time**
    - Keep commits and validation isolated by model family/distribution
    - Preserve a clear known-good baseline before starting the next model
    - Do not batch unrelated model additions into one verification step

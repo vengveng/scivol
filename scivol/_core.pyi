@@ -81,6 +81,14 @@ def _studentt_ll(
     """Compute Student-t log-likelihood given variances"""
     ...
 
+def _studentt_shape_hessian(
+    r2os2_ptr: _IntPtr,   # Residuals squared over sigma squared (eps2/sigma2)
+    n: _Size,
+    nu: float,
+) -> float:
+    """Compute the exact observed Hessian for the Student-t shape NLL."""
+    ...
+
 def _ged_ll(
     resid_ptr: _IntPtr,   # Residuals (not squared)
     sigma2_ptr: _IntPtr,  # Conditional variances

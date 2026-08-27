@@ -28,14 +28,13 @@ static inline double normal_nll_var(double e, double h) {
     return 0.5 * (log(h) + e * e / h);
 }
 
-/* Student-t: variable part only
- * Full NLL = -cnst + 0.5*log(h) + 0.5*(nu+1)*log(1 + z²/nu)
- * where cnst = lgamma((nu+1)/2) - lgamma(nu/2) - 0.5*log(nu*π)
- * Here we return only the h-dependent part: 0.5*log(h) + 0.5*(nu+1)*log(1+z²/nu) 
+/* Variance-standardized Student-t: variable part only.
+ * Full NLL = -cnst + 0.5*log(h) + 0.5*(nu+1)*log(1 + z²/(nu-2))
+ * where cnst = lgamma((nu+1)/2) - lgamma(nu/2) - 0.5*log((nu-2)*π)
  */
 static inline double studentt_nll_var(double e, double h, double nu) {
     double z2 = e * e / h;
-    return 0.5 * log(h) + 0.5 * (nu + 1) * log(1.0 + z2 / nu);
+    return 0.5 * log(h) + 0.5 * (nu + 1) * log(1.0 + z2 / (nu - 2.0));
 }
 
 /* Skew-t: variable part only (Hansen 1994)
@@ -43,12 +42,10 @@ static inline double studentt_nll_var(double e, double h, double nu) {
  * Returns only observation-varying part
  * 
  * Full NLL = -const + 0.5*log(h) + 0.5*(nu+1)*log(1+z²_adj/(nu-2))
- * where const = log(b) - log(scale) + lgamma_c - 0.5*log((nu-2)*π)
- * So NLL = -log(b) + log(scale) - lgamma_c + 0.5*log((nu-2)*π) + 0.5*log(h) + ...
- * 
- * Here we return: log(scale) + 0.5*log(h) + 0.5*(nu+1)*log(1+z²_adj/(nu-2))
+ * where const = log(b) + lgamma_c - 0.5*log((nu-2)*π)
+ *
+ * Here we return: 0.5*log(h) + 0.5*(nu+1)*log(1+z²_adj/(nu-2))
  * And base_cnst = log(b) + lgamma_c - 0.5*log((nu-2)*π)
- * Then total = var - base_cnst = log(scale) - log(b) - lgamma_c + 0.5*log((nu-2)*π) + 0.5*log(h) + ...
  */
 static inline double skewt_nll_var(double e, double h, double nu, double a, double b, double lam) {
     double sqrth = sqrt(h);
@@ -58,14 +55,13 @@ static inline double skewt_nll_var(double e, double h, double nu, double a, doub
     double zstar_adj = zstar / scale;
     double z2_adj = zstar_adj * zstar_adj;
     
-    /* Variable part: +log(scale) + 0.5*log(h) + 0.5*(nu+1)*log(1 + z²_adj/(nu-2)) */
-    return log(scale) + 0.5 * log(h) + 0.5 * (nu + 1) * log(1.0 + z2_adj / (nu - 2));
+    return 0.5 * log(h) + 0.5 * (nu + 1) * log(1.0 + z2_adj / (nu - 2));
 }
 
 /* Precompute Skew-t constants a, b from nu, lam */
 static inline void skewt_precompute(double nu, double lam, double *a_out, double *b_out) {
     double c = lgamma_approx(0.5 * (nu + 1)) - lgamma_approx(0.5 * nu);
-    double a = 4.0 * lam * exp(c) * ((nu - 2.0) / (nu - 1.0)) / sqrt((nu - 2.0) / M_PI);
+    double a = 4.0 * lam * exp(c) * ((nu - 2.0) / (nu - 1.0)) / sqrt(M_PI * (nu - 2.0));
     double b2 = 1.0 + 3.0 * lam * lam - a * a;
     *a_out = a;
     *b_out = sqrt(b2 > 0 ? b2 : 1e-10);
@@ -115,7 +111,7 @@ static inline int skewt_precompute_full(double nu, double lam, skewt_cache_t *ca
     const double lgamma_c = lgamma_approx(0.5 * (nu + 1.0)) - lgamma_approx(0.5 * nu);
     const double c_nu = 0.5 * digamma_approx(0.5 * (nu + 1.0)) - 0.5 * digamma_approx(0.5 * nu);
     const double c_nunu = 0.25 * trigamma_approx(0.5 * (nu + 1.0)) - 0.25 * trigamma_approx(0.5 * nu);
-    const double a_core = 4.0 * exp(lgamma_c) * sqrt(M_PI * nu_m2) / nu_m1;
+    const double a_core = 4.0 * exp(lgamma_c) * sqrt(nu_m2 / M_PI) / nu_m1;
     const double a = lam * a_core;
     const double g1 = c_nu + 0.5 / nu_m2 - 1.0 / nu_m1;
     const double g1_nu = c_nunu - 0.5 / (nu_m2 * nu_m2) + 1.0 / (nu_m1 * nu_m1);
@@ -248,11 +244,11 @@ static inline int skewt_obs_derivs(
     const double R_nu_lam = 2.0 * (v_nu * v_lam + v * v_nu_lam);
     const double R_lam_lam = 2.0 * (v_lam * v_lam + v * v_lam_lam);
 
-    out->value = log(scale) + 0.5 * log(h) + q * (log(R) - log(nu_m2));
+    out->value = 0.5 * log(h) + q * (log(R) - log(nu_m2));
     out->ell_e = q * R_e * inv_R;
     out->ell_h = 0.5 * inv_h + q * R_h * inv_R;
     out->ell_nu = 0.5 * (log(R) - log(nu_m2)) + q * (R_nu * inv_R - 1.0 / nu_m2);
-    out->ell_lam = scale_lam * inv_scale + q * R_lam * inv_R;
+    out->ell_lam = q * R_lam * inv_R;
     out->ell_ee = q * (R_ee * inv_R - R_e * R_e * inv_R2);
     out->ell_eh = q * (R_eh * inv_R - R_e * R_h * inv_R2);
     out->ell_hh = -0.5 * inv_h2 + q * (R_hh * inv_R - R_h * R_h * inv_R2);
@@ -262,7 +258,7 @@ static inline int skewt_obs_derivs(
     out->ell_h_lam = q * (R_h_lam * inv_R - R_h * R_lam * inv_R2);
     out->ell_nu_nu = (R_nu * inv_R - 1.0 / nu_m2) + q * (R_nu_nu * inv_R - R_nu * R_nu * inv_R2 + 1.0 / (nu_m2 * nu_m2));
     out->ell_nu_lam = 0.5 * R_lam * inv_R + q * (R_nu_lam * inv_R - R_nu * R_lam * inv_R2);
-    out->ell_lam_lam = -(scale_lam * scale_lam) * inv_scale2 + q * (R_lam_lam * inv_R - R_lam * R_lam * inv_R2);
+    out->ell_lam_lam = q * (R_lam_lam * inv_R - R_lam * R_lam * inv_R2);
     return 1;
 }
 
@@ -290,7 +286,7 @@ typedef struct {
 } ged_obs_derivs_t;
 
 static inline int ged_precompute_full(double nu, ged_cache_t *cache) {
-    if (nu <= GED_NU_MIN || !isfinite(nu)) {
+    if (nu <= 0.0 || !isfinite(nu)) {
         return 0;
     }
 
@@ -315,7 +311,12 @@ static inline int ged_precompute_full(double nu, ged_cache_t *cache) {
     cache->dlog_const = inv_nu - cache->dlog_scale + psi_1 * inv_nu2;
     cache->d2log_const =
         -inv_nu2 - cache->d2log_scale - tri_1 * inv_nu4 - 2.0 * psi_1 * inv_nu3;
-    return 1;
+    return isfinite(cache->log_scale)
+        && isfinite(cache->dlog_scale)
+        && isfinite(cache->d2log_scale)
+        && isfinite(cache->log_const)
+        && isfinite(cache->dlog_const)
+        && isfinite(cache->d2log_const);
 }
 
 static inline int ged_obs_derivs(
@@ -733,7 +734,7 @@ double arma_garch_nll_11_studentt(
     if (sigma2[0] < H_FLOOR) return 1e10;
     
     /* Precompute constant (computed once, not per-obs) */
-    double cnst = lgamma_approx(0.5 * (nu + 1)) - lgamma_approx(0.5 * nu) - 0.5 * log(nu * M_PI);
+    double cnst = lgamma_approx(0.5 * (nu + 1)) - lgamma_approx(0.5 * nu) - 0.5 * log((nu - 2.0) * M_PI);
     
     double sum_nll = 0.0;
     
@@ -789,10 +790,10 @@ double arma_garch_nll_grad_11_studentt(
     size_t n_eff = n - 1;
     
     /* Precompute Student-t constants */
-    double inv_nu = 1.0 / nu;
+    double inv_nu_m2 = 1.0 / (nu - 2.0);
     double psi_half_nu_plus_1 = digamma_approx(0.5 * (nu + 1));
     double psi_half_nu = digamma_approx(0.5 * nu);
-    double cnst = lgamma_approx(0.5 * (nu + 1)) - lgamma_approx(0.5 * nu) - 0.5 * log(nu * M_PI);
+    double cnst = lgamma_approx(0.5 * (nu + 1)) - lgamma_approx(0.5 * nu) - 0.5 * log((nu - 2.0) * M_PI);
     
     /* Sensitivity arrays */
     double de_prev[6] = {0};  /* ∂e_{t-1}/∂θ (only mean/variance params, not nu) */
@@ -855,27 +856,22 @@ double arma_garch_nll_grad_11_studentt(
         dh_curr[5] = h_prev + alpha * de2_prev[5] + beta * dh_prev[5];  /* beta */
         
         /* Student-t specific gradient terms */
-        double z2 = e_t * e_t / h_t;
-        double one_plus_z2_over_nu = 1.0 + z2 * inv_nu;
-        
-        /* ∂ℓ/∂e = (ν+1) * e / (h * (ν + e²/h)) = (ν+1) * z² / (e * (ν + z²)) */
-        /* For NLL: change sign */
-        double ell_e = (nu + 1) * e_t / (h_t * (nu + z2));
-        
-        /* ∂ℓ/∂h = 0.5/h - 0.5*(ν+1)*z² / (h*(ν+z²)) */
-        /* For NLL: change sign */
-        double ell_h = 0.5 / h_t - 0.5 * (nu + 1) * z2 / (h_t * (nu + z2));
+        double e2 = e_t * e_t;
+        double nu_m2 = nu - 2.0;
+        double B = h_t * nu_m2 + e2;
+        double one_plus = 1.0 + e2 * inv_nu_m2 / h_t;
+        double ell_e = (nu + 1.0) * e_t / B;
+        double ell_h = 0.5 / h_t - 0.5 * (nu + 1.0) * e2 / (h_t * B);
         
         /* Gradient w.r.t. mean/variance params */
         for (size_t k = 0; k < 6; k++) {
             grad[k] += ell_e * de_curr[k] + ell_h * dh_curr[k];
         }
         
-        /* ∂NLL/∂ν = -0.5 ψ((ν+1)/2) + 0.5 ψ(ν/2) + 0.5/ν + 0.5 log(1+z²/ν) - 0.5(ν+1)*z²/(ν*(ν+z²)) */
         double grad_nu = -0.5 * psi_half_nu_plus_1 + 0.5 * psi_half_nu 
-                        + 0.5 * inv_nu 
-                        + 0.5 * log(one_plus_z2_over_nu)
-                        - 0.5 * (nu + 1) * z2 * inv_nu / (nu + z2);
+                        + 0.5 * inv_nu_m2
+                        + 0.5 * log(one_plus)
+                        - 0.5 * (nu + 1.0) * e2 * inv_nu_m2 / B;
         grad[6] += grad_nu;
         
         sum_nll += studentt_nll_var(e_t, h_t, nu);
@@ -936,7 +932,9 @@ void arma_garch_hess_11_studentt(
     }
 
     const size_t n_eff = n - 1;
-    const double inv_nu = 1.0 / nu;
+    const double inv_nu_m2 = 1.0 / (nu - 2.0);
+    const double inv_nu_m2_2 = inv_nu_m2 * inv_nu_m2;
+    const double inv_nu_m2_3 = inv_nu_m2_2 * inv_nu_m2;
     const double trigamma_half_nu_plus_1 = trigamma_approx(0.5 * (nu + 1.0));
     const double trigamma_half_nu = trigamma_approx(0.5 * nu);
 
@@ -1018,24 +1016,32 @@ void arma_garch_hess_11_studentt(
 
         {
             const double e2 = e_t * e_t;
-            const double z2 = e2 / h_t;
-            const double den = nu + z2;
-            const double den2 = den * den;
-            const double h2 = h_t * h_t;
-            const double h3 = h2 * h_t;
-            const double nu2 = nu * nu;
-            const double ell_e = (nu + 1.0) * e_t / (h_t * den);
-            const double ell_h = 0.5 / h_t - 0.5 * (nu + 1.0) * z2 / (h_t * den);
-            const double ell_ee = (nu + 1.0) * (nu - z2) / (h_t * den2);
-            const double ell_hh = 0.5 * (-1.0 / h2 + (nu + 1.0) * z2 * (2.0 * nu + z2) / (h2 * den2));
-            const double ell_eh = -e_t * nu * (nu + 1.0) / (h2 * den2);
-            const double ell_enu = e_t * (z2 - 1.0) / (h_t * den2);
-            const double ell_hnu = z2 * (1.0 - z2) / (2.0 * h_t * den2);
+            const double nu_m2 = nu - 2.0;
+            const double B = h_t * nu_m2 + e2;
+            const double inv_h = 1.0 / h_t;
+            const double inv_h2 = inv_h * inv_h;
+            const double inv_B = 1.0 / B;
+            const double inv_B2 = inv_B * inv_B;
+            const double one_plus = 1.0 + e2 * inv_h * inv_nu_m2;
+            const double one_plus2 = one_plus * one_plus;
+            const double density_q = nu + 1.0;
+            const double tmp = e2 * inv_h;
+            const double ell_e = density_q * e_t * inv_B;
+            const double ell_h = 0.5 * inv_h - 0.5 * density_q * e2 * inv_nu_m2 * inv_h2 / one_plus;
+            const double ell_ee = density_q * (B - 2.0 * e2) * inv_B2;
+            const double ell_eh = -density_q * e_t * nu_m2 * inv_B2;
+            const double ell_hh = -0.5 * inv_h2
+                                + density_q * tmp * inv_nu_m2 * inv_h2 / one_plus
+                                - 0.5 * density_q * tmp * tmp * inv_nu_m2_2 * inv_h2 / one_plus2;
+            const double ell_enu = e_t * inv_B - density_q * e_t * h_t * inv_B2;
+            const double ell_hnu = -0.5 * e2 * inv_h2 / one_plus
+                                  * (inv_nu_m2 - density_q * inv_nu_m2_2 / one_plus);
             const double ell_nunu =
                 -0.25 * trigamma_half_nu_plus_1
                 + 0.25 * trigamma_half_nu
-                - 0.5 * inv_nu * inv_nu
-                + z2 * (nu * (2.0 - z2) + z2) / (2.0 * nu2 * den2);
+                - 0.5 * inv_nu_m2_2
+                - e2 * inv_nu_m2_2 * inv_h / one_plus
+                + 0.5 * density_q * e2 * inv_nu_m2_3 * inv_h * (1.0 + one_plus) / one_plus2;
 
             for (size_t i = 0; i < K_base; ++i) {
                 for (size_t j = 0; j < K_base; ++j) {
@@ -2018,7 +2024,7 @@ double arma_garch_nll_pq_studentt(
     }
     
     /* Precompute Student-t constant (computed once, not per-obs) */
-    double cnst = lgamma_approx(0.5 * (nu + 1)) - lgamma_approx(0.5 * nu) - 0.5 * log(nu * M_PI);
+    double cnst = lgamma_approx(0.5 * (nu + 1)) - lgamma_approx(0.5 * nu) - 0.5 * log((nu - 2.0) * M_PI);
     
     double sum_nll = 0.0;
     
@@ -2154,10 +2160,10 @@ double arma_garch_nll_grad_pq_studentt(
         return 1e10;
     }
 
-    double inv_nu = 1.0 / nu;
+    double inv_nu_m2 = 1.0 / (nu - 2.0);
     double psi_half_nu_plus_1 = digamma_approx(0.5 * (nu + 1.0));
     double psi_half_nu = digamma_approx(0.5 * nu);
-    double cnst = lgamma_approx(0.5 * (nu + 1.0)) - lgamma_approx(0.5 * nu) - 0.5 * log(nu * M_PI);
+    double cnst = lgamma_approx(0.5 * (nu + 1.0)) - lgamma_approx(0.5 * nu) - 0.5 * log((nu - 2.0) * M_PI);
     double sum_nll = 0.0;
 
     for (size_t t = max_lag; t < n; t++) {
@@ -2242,14 +2248,16 @@ double arma_garch_nll_grad_pq_studentt(
 
             {
                 double e_t = resid[t];
-                double z2 = e_t * e_t / h_t;
-                double one_plus_z2_over_nu = 1.0 + z2 * inv_nu;
-                double ell_e = (nu + 1.0) * e_t / (h_t * (nu + z2));
-                double ell_h = 0.5 / h_t - 0.5 * (nu + 1.0) * z2 / (h_t * (nu + z2));
+                double e2 = e_t * e_t;
+                double nu_m2 = nu - 2.0;
+                double B = h_t * nu_m2 + e2;
+                double one_plus = 1.0 + e2 * inv_nu_m2 / h_t;
+                double ell_e = (nu + 1.0) * e_t / B;
+                double ell_h = 0.5 / h_t - 0.5 * (nu + 1.0) * e2 / (h_t * B);
                 double grad_nu = -0.5 * psi_half_nu_plus_1 + 0.5 * psi_half_nu
-                               + 0.5 * inv_nu
-                               + 0.5 * log(one_plus_z2_over_nu)
-                               - 0.5 * (nu + 1.0) * z2 * inv_nu / (nu + z2);
+                               + 0.5 * inv_nu_m2
+                               + 0.5 * log(one_plus)
+                               - 0.5 * (nu + 1.0) * e2 * inv_nu_m2 / B;
 
                 for (size_t k = 0; k < K_base; k++) {
                     grad[k] += ell_e * de_curr[k] + ell_h * dh_curr[k];
@@ -2385,7 +2393,9 @@ void arma_garch_hess_pq_studentt(
         return;
     }
 
-    const double inv_nu = 1.0 / nu;
+    const double inv_nu_m2 = 1.0 / (nu - 2.0);
+    const double inv_nu_m2_2 = inv_nu_m2 * inv_nu_m2;
+    const double inv_nu_m2_3 = inv_nu_m2_2 * inv_nu_m2;
     const double trigamma_half_nu_plus_1 = trigamma_approx(0.5 * (nu + 1.0));
     const double trigamma_half_nu = trigamma_approx(0.5 * nu);
 
@@ -2528,23 +2538,32 @@ void arma_garch_hess_pq_studentt(
         {
             const double e_t = resid[t];
             const double e2 = e_t * e_t;
-            const double z2 = e2 / h_t;
-            const double den = nu + z2;
-            const double den2 = den * den;
-            const double h2 = h_t * h_t;
-            const double nu2 = nu * nu;
-            const double ell_e = (nu + 1.0) * e_t / (h_t * den);
-            const double ell_h = 0.5 / h_t - 0.5 * (nu + 1.0) * z2 / (h_t * den);
-            const double ell_ee = (nu + 1.0) * (nu - z2) / (h_t * den2);
-            const double ell_hh = 0.5 * (-1.0 / h2 + (nu + 1.0) * z2 * (2.0 * nu + z2) / (h2 * den2));
-            const double ell_eh = -e_t * nu * (nu + 1.0) / (h2 * den2);
-            const double ell_enu = e_t * (z2 - 1.0) / (h_t * den2);
-            const double ell_hnu = z2 * (1.0 - z2) / (2.0 * h_t * den2);
+            const double nu_m2 = nu - 2.0;
+            const double B = h_t * nu_m2 + e2;
+            const double inv_h = 1.0 / h_t;
+            const double inv_h2 = inv_h * inv_h;
+            const double inv_B = 1.0 / B;
+            const double inv_B2 = inv_B * inv_B;
+            const double one_plus = 1.0 + e2 * inv_h * inv_nu_m2;
+            const double one_plus2 = one_plus * one_plus;
+            const double density_q = nu + 1.0;
+            const double tmp = e2 * inv_h;
+            const double ell_e = density_q * e_t * inv_B;
+            const double ell_h = 0.5 * inv_h - 0.5 * density_q * e2 * inv_nu_m2 * inv_h2 / one_plus;
+            const double ell_ee = density_q * (B - 2.0 * e2) * inv_B2;
+            const double ell_eh = -density_q * e_t * nu_m2 * inv_B2;
+            const double ell_hh = -0.5 * inv_h2
+                                + density_q * tmp * inv_nu_m2 * inv_h2 / one_plus
+                                - 0.5 * density_q * tmp * tmp * inv_nu_m2_2 * inv_h2 / one_plus2;
+            const double ell_enu = e_t * inv_B - density_q * e_t * h_t * inv_B2;
+            const double ell_hnu = -0.5 * e2 * inv_h2 / one_plus
+                                  * (inv_nu_m2 - density_q * inv_nu_m2_2 / one_plus);
             const double ell_nunu =
                 -0.25 * trigamma_half_nu_plus_1
                 + 0.25 * trigamma_half_nu
-                - 0.5 * inv_nu * inv_nu
-                + z2 * (nu * (2.0 - z2) + z2) / (2.0 * nu2 * den2);
+                - 0.5 * inv_nu_m2_2
+                - e2 * inv_nu_m2_2 * inv_h / one_plus
+                + 0.5 * density_q * e2 * inv_nu_m2_3 * inv_h * (1.0 + one_plus) / one_plus2;
 
             for (size_t i = 0; i < K_base; ++i) {
                 for (size_t j = 0; j < K_base; ++j) {

@@ -66,6 +66,93 @@ def _as_cptr(arr: np.ndarray) -> int:
     return np.ascontiguousarray(arr, dtype=np.float64).ctypes.data
 
 
+def _evaluate_joint_density_surface(
+    family: str,
+    vol_order: int,
+    dist: str,
+    params: np.ndarray,
+    y: np.ndarray,
+) -> tuple[float, np.ndarray, np.ndarray]:
+    """Evaluate a joint ARMA-volatility C surface at one fixed parameter vector."""
+    prefix = f"_arma_{family}"
+    order = "11" if vol_order == 1 else "pq"
+    resid = np.zeros_like(y)
+    sigma2 = np.zeros_like(y)
+    grad = np.zeros_like(params)
+    hess = np.zeros((params.size, params.size), dtype=np.float64)
+
+    value_fn = getattr(_core, f"{prefix}_nll_{order}_{dist}")
+    grad_fn = getattr(_core, f"{prefix}_nll_grad_{order}_{dist}")
+    hess_fn = getattr(_core, f"{prefix}_hess_{order}_{dist}")
+
+    if vol_order == 1:
+        h0 = float(np.mean(y * y))
+        common = (_as_cptr(params), _as_cptr(y), _as_cptr(resid), _as_cptr(sigma2))
+        value = value_fn(*common, h0, y.size)
+        grad_fn(*common, _as_cptr(grad), h0, y.size)
+        hess_fn(*common, _as_cptr(hess), h0, y.size)
+        return value, grad, hess
+
+    e0 = np.zeros(vol_order, dtype=np.float64)
+    h0 = np.full(vol_order, np.mean(y * y), dtype=np.float64)
+    common = (
+        _as_cptr(params),
+        _as_cptr(y),
+        _as_cptr(resid),
+        _as_cptr(sigma2),
+        _as_cptr(e0),
+        _as_cptr(h0),
+    )
+    orders = (y.size, 1, 1, vol_order, vol_order)
+    value = value_fn(*common, *orders)
+    grad_fn(*common, _as_cptr(grad), *orders)
+    hess_fn(*common, _as_cptr(hess), *orders)
+    return value, grad, hess
+
+
+def _evaluate_joint_value_path(
+    family: str,
+    vol_order: int,
+    params: np.ndarray,
+    y: np.ndarray,
+) -> tuple[float, np.ndarray, np.ndarray]:
+    """Return the joint Skew-t value and its scored residual/variance path."""
+    order = "11" if vol_order == 1 else "pq"
+    value_fn = getattr(_core, f"_arma_{family}_nll_{order}_skewt")
+    resid = np.zeros_like(y)
+    sigma2 = np.zeros_like(y)
+
+    if vol_order == 1:
+        h0 = float(np.mean(y * y))
+        value = value_fn(
+            _as_cptr(params),
+            _as_cptr(y),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            h0,
+            y.size,
+        )
+    else:
+        e0 = np.zeros(vol_order, dtype=np.float64)
+        h0 = np.full(vol_order, np.mean(y * y), dtype=np.float64)
+        value = value_fn(
+            _as_cptr(params),
+            _as_cptr(y),
+            _as_cptr(resid),
+            _as_cptr(sigma2),
+            _as_cptr(e0),
+            _as_cptr(h0),
+            y.size,
+            1,
+            1,
+            vol_order,
+            vol_order,
+        )
+
+    first = vol_order
+    return value, np.ascontiguousarray(resid[first:]), np.ascontiguousarray(sigma2[first:])
+
+
 OMEGA_Z_CASES = (-25.0, 0.5)
 GJR_THETA_Z_DIAGNOSTIC_CASES = (
     pytest.param(
@@ -222,6 +309,92 @@ def garch_skewt_series() -> np.ndarray:
         y[t] = np.sqrt(sigma2[t]) * z
 
     return y
+
+
+JOINT_DENSITY_SURFACES = (
+    pytest.param(
+        "garch",
+        1,
+        np.array([0.0, 0.18, -0.12, 2e-6, 0.04, 0.88]),
+        id="arma-garch11",
+    ),
+    pytest.param(
+        "garch",
+        2,
+        np.array([0.0, 0.12, -0.08, 2e-6, 0.04, 0.02, 0.65, 0.15]),
+        id="arma-garch22",
+    ),
+    pytest.param(
+        "gjr_garch",
+        1,
+        np.array([0.0, 0.18, -0.12, 2e-6, 0.04, 0.05, 0.83]),
+        id="arma-gjr-garch11",
+    ),
+    pytest.param(
+        "gjr_garch",
+        2,
+        np.array([0.0, 0.12, -0.08, 2e-6, 0.04, 0.02, 0.03, 0.01, 0.65, 0.15]),
+        id="arma-gjr-garch22",
+    ),
+)
+
+
+class TestJointDensityReductions:
+    @pytest.mark.parametrize(
+        ("family", "vol_order", "base_params"),
+        JOINT_DENSITY_SURFACES,
+    )
+    def test_zero_skew_reduces_to_standardized_studentt(
+        self,
+        arma_gjr_garch_series: np.ndarray,
+        family: str,
+        vol_order: int,
+        base_params: np.ndarray,
+    ) -> None:
+        nu = 8.5
+        student = _evaluate_joint_density_surface(
+            family,
+            vol_order,
+            "studentt",
+            np.append(base_params, nu),
+            arma_gjr_garch_series,
+        )
+        skew = _evaluate_joint_density_surface(
+            family,
+            vol_order,
+            "skewt",
+            np.append(base_params, [nu, 0.0]),
+            arma_gjr_garch_series,
+        )
+
+        np.testing.assert_allclose(skew[0], student[0], rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(skew[1][:-1], student[1], rtol=2e-9, atol=2e-8)
+        np.testing.assert_allclose(skew[2][:-1, :-1], student[2], rtol=2e-9, atol=2e-8)
+
+    @pytest.mark.parametrize(
+        ("family", "vol_order", "base_params"),
+        JOINT_DENSITY_SURFACES,
+    )
+    def test_joint_skewt_matches_standalone_hansen_density(
+        self,
+        arma_gjr_garch_series: np.ndarray,
+        family: str,
+        vol_order: int,
+        base_params: np.ndarray,
+    ) -> None:
+        nu = 8.5
+        lam = 0.23
+        joint_value, resid, sigma2 = _evaluate_joint_value_path(
+            family,
+            vol_order,
+            np.append(base_params, [nu, lam]),
+            arma_gjr_garch_series,
+        )
+        standalone_value = -_core._skewt_ll(
+            _as_cptr(resid), _as_cptr(sigma2), resid.size, nu, lam
+        ) / resid.size
+
+        np.testing.assert_allclose(joint_value, standalone_value, rtol=1e-12, atol=1e-12)
 
 
 class TestOmegaTransformRegression:

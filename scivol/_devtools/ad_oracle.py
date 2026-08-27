@@ -1972,7 +1972,7 @@ def arma_garch_value_grad_hess(
             invalid = jnp.logical_or(invalid, nu <= 2.001)
         elif dist == "ged":
             nu = theta_j[idx]
-            invalid = jnp.logical_or(invalid, nu <= 1.01)
+            invalid = jnp.logical_or(invalid, nu <= 0.0)
         elif dist == "skewt":
             nu = theta_j[idx]
             lam = theta_j[idx + 1]
@@ -2015,15 +2015,15 @@ def arma_garch_value_grad_hess(
             constant = n_eff * (
                 jsp.special.gammaln(0.5 * (nu + 1.0))
                 - jsp.special.gammaln(0.5 * nu)
-                - 0.5 * jnp.log(nu * jnp.pi)
+                - 0.5 * jnp.log((nu - 2.0) * jnp.pi)
             )
-            tail = jnp.log1p((resid_tail * resid_tail / sigma_tail) / nu)
+            tail = jnp.log1p((resid_tail * resid_tail / sigma_tail) / (nu - 2.0))
             nll = (0.5 * (jnp.sum(jnp.log(sigma_tail)) + (nu + 1.0) * jnp.sum(tail)) - constant) / n_eff
         elif dist == "skewt":
             assert nu is not None
             assert lam is not None
             lgamma_c = jsp.special.gammaln(0.5 * (nu + 1.0)) - jsp.special.gammaln(0.5 * nu)
-            a = 4.0 * lam * jnp.exp(lgamma_c) * ((nu - 2.0) / (nu - 1.0)) / jnp.sqrt((nu - 2.0) / jnp.pi)
+            a = 4.0 * lam * jnp.exp(lgamma_c) * ((nu - 2.0) / (nu - 1.0)) / jnp.sqrt(jnp.pi * (nu - 2.0))
             b2 = 1.0 + 3.0 * lam * lam - a * a
             invalid = jnp.logical_or(invalid, b2 <= 1e-12)
             b = jnp.sqrt(jnp.maximum(b2, 1e-12))
@@ -2033,8 +2033,7 @@ def arma_garch_value_grad_hess(
             base_cnst = jnp.log(b) + lgamma_c - 0.5 * jnp.log((nu - 2.0) * jnp.pi)
             nll = (
                 jnp.sum(
-                    jnp.log(scale)
-                    + 0.5 * jnp.log(sigma_tail)
+                    0.5 * jnp.log(sigma_tail)
                     + 0.5 * (nu + 1.0) * jnp.log1p((z_adj * z_adj) / (nu - 2.0))
                 )
                 - n_eff * base_cnst
@@ -2133,16 +2132,16 @@ def arma_garch_logspace_value_grad_hess(
             constant = n_eff * (
                 jsp.special.gammaln(0.5 * (nu + 1.0))
                 - jsp.special.gammaln(0.5 * nu)
-                - 0.5 * jnp.log(nu * jnp.pi)
+                - 0.5 * jnp.log((nu - 2.0) * jnp.pi)
             )
-            tail = jnp.log1p((resid_tail * resid_tail / sigma_tail) / nu)
+            tail = jnp.log1p((resid_tail * resid_tail / sigma_tail) / (nu - 2.0))
             return (0.5 * (jnp.sum(jnp.log(sigma_tail)) + (nu + 1.0) * jnp.sum(tail)) - constant) / n_eff
 
         if dist == "skewt":
             assert nu is not None
             assert lam is not None
             lgamma_c = jsp.special.gammaln(0.5 * (nu + 1.0)) - jsp.special.gammaln(0.5 * nu)
-            a = 4.0 * lam * jnp.exp(lgamma_c) * ((nu - 2.0) / (nu - 1.0)) / jnp.sqrt((nu - 2.0) / jnp.pi)
+            a = 4.0 * lam * jnp.exp(lgamma_c) * ((nu - 2.0) / (nu - 1.0)) / jnp.sqrt(jnp.pi * (nu - 2.0))
             b2 = 1.0 + 3.0 * lam * lam - a * a
             b = jnp.sqrt(jnp.maximum(b2, 1e-12))
             zstar = b * resid_tail / jnp.sqrt(sigma_tail) + a
@@ -2151,8 +2150,7 @@ def arma_garch_logspace_value_grad_hess(
             base_cnst = jnp.log(b) + lgamma_c - 0.5 * jnp.log((nu - 2.0) * jnp.pi)
             return (
                 jnp.sum(
-                    jnp.log(scale)
-                    + 0.5 * jnp.log(sigma_tail)
+                    0.5 * jnp.log(sigma_tail)
                     + 0.5 * (nu + 1.0) * jnp.log1p((z_adj * z_adj) / (nu - 2.0))
                 )
                 - n_eff * base_cnst
@@ -2270,15 +2268,15 @@ def arma_gjr_garch_value_grad_hess(
             constant = n_eff * (
                 jsp.special.gammaln(0.5 * (nu + 1.0))
                 - jsp.special.gammaln(0.5 * nu)
-                - 0.5 * jnp.log(nu * jnp.pi)
+                - 0.5 * jnp.log((nu - 2.0) * jnp.pi)
             )
-            tail = jnp.log1p((resid_tail * resid_tail / sigma_tail) / nu)
+            tail = jnp.log1p((resid_tail * resid_tail / sigma_tail) / (nu - 2.0))
             nll = (0.5 * (jnp.sum(jnp.log(sigma_tail)) + (nu + 1.0) * jnp.sum(tail)) - constant) / n_eff
         elif dist == "skewt":
             assert nu is not None
             assert lam is not None
             lgamma_c = jsp.special.gammaln(0.5 * (nu + 1.0)) - jsp.special.gammaln(0.5 * nu)
-            a = 4.0 * lam * jnp.exp(lgamma_c) * ((nu - 2.0) / (nu - 1.0)) / jnp.sqrt((nu - 2.0) / jnp.pi)
+            a = 4.0 * lam * jnp.exp(lgamma_c) * ((nu - 2.0) / (nu - 1.0)) / jnp.sqrt(jnp.pi * (nu - 2.0))
             b2 = 1.0 + 3.0 * lam * lam - a * a
             invalid = jnp.logical_or(invalid, b2 <= 1e-12)
             b = jnp.sqrt(jnp.maximum(b2, 1e-12))
@@ -2288,8 +2286,7 @@ def arma_gjr_garch_value_grad_hess(
             base_cnst = jnp.log(b) + lgamma_c - 0.5 * jnp.log((nu - 2.0) * jnp.pi)
             nll = (
                 jnp.sum(
-                    jnp.log(scale)
-                    + 0.5 * jnp.log(sigma_tail)
+                    0.5 * jnp.log(sigma_tail)
                     + 0.5 * (nu + 1.0) * jnp.log1p((z_adj * z_adj) / (nu - 2.0))
                 )
                 - n_eff * base_cnst
@@ -2392,9 +2389,9 @@ def arma_gjr_garch_logspace_value_grad_hess(
             constant = n_eff * (
                 jsp.special.gammaln(0.5 * (nu + 1.0))
                 - jsp.special.gammaln(0.5 * nu)
-                - 0.5 * jnp.log(nu * jnp.pi)
+                - 0.5 * jnp.log((nu - 2.0) * jnp.pi)
             )
-            tail = jnp.log1p((resid_tail * resid_tail / sigma_tail) / nu)
+            tail = jnp.log1p((resid_tail * resid_tail / sigma_tail) / (nu - 2.0))
             return (0.5 * (jnp.sum(jnp.log(sigma_tail)) + (nu + 1.0) * jnp.sum(tail)) - constant) / n_eff
 
         if dist == "ged":
@@ -2408,7 +2405,7 @@ def arma_gjr_garch_logspace_value_grad_hess(
             assert nu is not None
             assert lam is not None
             lgamma_c = jsp.special.gammaln(0.5 * (nu + 1.0)) - jsp.special.gammaln(0.5 * nu)
-            a = 4.0 * lam * jnp.exp(lgamma_c) * ((nu - 2.0) / (nu - 1.0)) / jnp.sqrt((nu - 2.0) / jnp.pi)
+            a = 4.0 * lam * jnp.exp(lgamma_c) * ((nu - 2.0) / (nu - 1.0)) / jnp.sqrt(jnp.pi * (nu - 2.0))
             b = jnp.sqrt(jnp.maximum(1.0 + 3.0 * lam * lam - a * a, 1e-12))
             zstar = b * resid_tail / jnp.sqrt(sigma_tail) + a
             scale = jnp.where(zstar < 0.0, 1.0 - lam, 1.0 + lam)
@@ -2416,8 +2413,7 @@ def arma_gjr_garch_logspace_value_grad_hess(
             base_cnst = jnp.log(b) + lgamma_c - 0.5 * jnp.log((nu - 2.0) * jnp.pi)
             return (
                 jnp.sum(
-                    jnp.log(scale)
-                    + 0.5 * jnp.log(sigma_tail)
+                    0.5 * jnp.log(sigma_tail)
                     + 0.5 * (nu + 1.0) * jnp.log1p((z_adj * z_adj) / (nu - 2.0))
                 )
                 - n_eff * base_cnst

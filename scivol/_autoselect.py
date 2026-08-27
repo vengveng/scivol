@@ -751,19 +751,59 @@ def _compute_rolling_oos_losses(
         ))
         if chunk_stop >= stop:
             continue
-        refit_kwargs = fit_kwargs.copy()
-        refit_kwargs["n_jobs"] = 1
-        if "x" in refit_kwargs:
-            refit_kwargs["x"] = x_through_chunk
-        method = str(refit_kwargs.get("method", "mle")).lower()
-        if method != "qmle":
-            refit_kwargs["initial_params"] = current_result.params
-        current_result = spec.fit(data_through_chunk, **refit_kwargs)
-        if not current_result.converged:
-            raise RuntimeError(
-                f"Rolling OOS refit failed to converge at observation {chunk_stop}."
-            )
+        current_result = _refit_rolling_window(
+            spec,
+            data_through_chunk,
+            x_through_chunk=x_through_chunk,
+            fit_kwargs=fit_kwargs,
+            previous_result=current_result,
+            observation=chunk_stop,
+        )
     return np.ascontiguousarray(np.concatenate(chunks), dtype=np.float64)
+
+
+def _refit_rolling_window(
+    spec: CompositeSpec,
+    data: np.ndarray,
+    *,
+    x_through_chunk: Any,
+    fit_kwargs: Dict[str, Any],
+    previous_result: EstimationResult,
+    observation: int,
+) -> EstimationResult:
+    """Refit one expanding window, retrying a failed warm start from defaults."""
+    refit_kwargs = fit_kwargs.copy()
+    refit_kwargs["n_jobs"] = 1
+    if "x" in refit_kwargs:
+        refit_kwargs["x"] = x_through_chunk
+
+    method = str(refit_kwargs.get("method", "mle")).lower()
+    if method == "qmle":
+        result = spec.fit(data, **refit_kwargs)
+        if result.converged:
+            return result
+        raise RuntimeError(
+            f"Rolling OOS refit failed to converge at observation {observation}."
+        )
+
+    refit_kwargs["initial_params"] = previous_result.params
+    warm_result = spec.fit(data, **refit_kwargs)
+    if warm_result.converged:
+        return warm_result
+
+    refit_kwargs.pop("initial_params")
+    cold_result = spec.fit(data, **refit_kwargs)
+    if cold_result.converged:
+        cold_result.fit_info.add_warning(
+            f"Rolling OOS warm start failed at observation {observation}; "
+            "the refit converged from the model's default initialization."
+        )
+        return cold_result
+
+    raise RuntimeError(
+        f"Rolling OOS refit failed to converge at observation {observation} "
+        "from both warm and default initializations."
+    )
 
 
 def _circular_block_indices(

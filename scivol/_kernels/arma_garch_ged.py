@@ -239,19 +239,21 @@ def _build(p_ar: int, q_ma: int, p_arch: int, q_garch: int) -> Routine:
             res.x = theta_hat
             nll_final = float(res.fun) / p_scaler
 
+        average_nll = call_nll(theta_hat)
+        n_eff = n - max_lag
+        nll_final = n_eff * average_nll
         t_elapsed = time.perf_counter() - t_start
-        _ = call_nll(theta_hat)
 
         hessian = None
         cov_matrix = None
         if log_mode:
             hessian, cov_matrix = compute_se_via_logspace(
                 theta_hat=theta_hat,
-                nll_theta=lambda th: call_nll(th),
+                nll_theta=lambda th: n_eff * call_nll(th),
                 unpack_fn=lambda th: unpack_arma_garch_ged(th, p_ar, q_ma, p_arch, q_garch),
                 jacobian_fn=lambda th: jacobian_arma_garch_ged(th, p_ar, q_ma, p_arch, q_garch),
                 pack_fn=lambda z: pack_arma_garch_ged(z, p_ar, q_ma, p_arch, q_garch),
-                hess_z_fn=lambda z: log_hessian_arma_garch_ged(
+                hess_z_fn=lambda z: (n_eff / p_scaler) * log_hessian_arma_garch_ged(
                     pack_arma_garch_ged(z, p_ar, q_ma, p_arch, q_garch),
                     call_grad(pack_arma_garch_ged(z, p_ar, q_ma, p_arch, q_garch)) * 2.0,
                     call_hess(pack_arma_garch_ged(z, p_ar, q_ma, p_arch, q_garch)) * 2.0,

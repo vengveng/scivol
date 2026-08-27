@@ -262,7 +262,9 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
             res.x = theta_hat
             nll_final = res.fun / p_scaler
 
-        _ = call_nll(theta_hat)
+        average_nll = call_nll(theta_hat)
+        n_eff = n - max_lag
+        nll_final = n_eff * average_nll
         mean.unpack(theta_hat[:n_mean])
         vol.unpack(theta_hat[n_mean:n_mean + n_vol])
         dens.unpack(theta_hat[n_mean + n_vol:])
@@ -270,14 +272,14 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
         if log_mode:
             hessian_theta, cov_matrix = compute_se_via_logspace(
                 theta_hat=theta_hat,
-                nll_theta=lambda theta: call_nll(theta),
+                nll_theta=lambda theta: n_eff * call_nll(theta),
                 unpack_fn=lambda theta: unpack_arma_gjr_garch_ged(theta, p_ar, q_ma, P_arch, Q_garch),
                 jacobian_fn=lambda theta: jacobian_arma_gjr_garch_ged(theta, p_ar, q_ma, P_arch, Q_garch),
                 pack_fn=lambda z: pack_arma_gjr_garch_ged(z, p_ar, q_ma, P_arch, Q_garch),
-                hess_z_fn=hess_log,
+                hess_z_fn=lambda z: (n_eff / p_scaler) * hess_log(z),
             )
         else:
-            hessian_theta = call_hess(theta_hat)
+            hessian_theta = n_eff * call_hess(theta_hat)
             try:
                 cov_matrix = np.linalg.inv(hessian_theta)
             except np.linalg.LinAlgError:
@@ -288,7 +290,7 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
         return EstimationResult(
             spec,
             res,
-            resid.copy(),
+            y,
             sigma2=sigma2.copy(),
             hessian=hessian_theta,
             cov_matrix=cov_matrix,

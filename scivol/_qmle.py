@@ -314,7 +314,10 @@ def _fit_studentt_shape(
     )
     nu_hat = result.x[0]
     nll = result.fun * n
-    hess = _numerical_hessian(nll_nu, result.x, eps=1e-5) * n
+    hess = np.array(
+        [[_core._studentt_shape_hessian(z2_ptr, n, nu_hat)]],
+        dtype=np.float64,
+    )
     return nu_hat, nll, hess
 
 

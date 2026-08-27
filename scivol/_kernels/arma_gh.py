@@ -227,15 +227,18 @@ def _build(uid: str) -> Routine:
                 raise ValueError(f"Unknown solver '{solver}'")
             theta_hat = np.asarray(result.x, dtype=np.float64)
 
-        objective_theta(theta_hat)
+        average_nll = objective_theta(theta_hat)
+        n_eff = n - max_lag
+        result.fun = n_eff * average_nll
         mean.unpack(theta_hat[:n_mean])
         if vol is not None:
             vol.unpack(theta_hat[n_mean:n_mean + n_vol])
         density.unpack(theta_hat[n_mean + n_vol:])
         hessian, covariance = compute_se_via_logspace(
-            theta_hat=theta_hat, nll_theta=objective_theta,
+            theta_hat=theta_hat,
+            nll_theta=lambda theta: n_eff * objective_theta(theta),
             unpack_fn=unpack, jacobian_fn=jacobian, pack_fn=pack,
-            hess_z_fn=lambda z: log_hessian(
+            hess_z_fn=lambda z: n_eff * log_hessian(
                 pack(z), gradient_theta(pack(z)), hessian_theta(pack(z))
             ),
         )

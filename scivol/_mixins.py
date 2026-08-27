@@ -430,12 +430,25 @@ class FitsMixin:
         spec = validate_spec(self.spec)
         from .components.vol import APARCH
         from .roles import Role
+        native_requested = str(kwargs.get("solver", "")).lower() == "native"
+
+        if native_requested and method.lower() == "qmle":
+            raise NotImplementedError(
+                "solver='native' is currently an MLE-only internal promotion path."
+            )
+        if native_requested and self._has_auto_components():
+            raise NotImplementedError(
+                "solver='native' currently requires a fixed model specification."
+            )
 
         if method.lower() == "qmle" and isinstance(
             spec.get_component(Role.VOLATILITY), APARCH
         ):
             raise NotImplementedError("APARCH QMLE is not yet implemented; use method='mle'.")
-        if any(key in kwargs for key in ("initial_params", "maxiter", "maxfev")):
+        if (
+            not native_requested
+            and any(key in kwargs for key in ("initial_params", "maxiter", "maxfev"))
+        ):
             from .components.vol import EGARCH, GARCH, GJRGARCH
 
             mean = spec.get_component(Role.MEAN)
@@ -482,6 +495,13 @@ class FitsMixin:
             if method_lower == "qmle":
                 from ._qmle import fit_qmle
                 result = fit_qmle(spec, prepared.data, x=prepared.x, **kwargs)
+            elif native_requested:
+                from ._native_fit import fit_native_spec
+
+                result = fit_native_spec(
+                    spec, prepared.data, x=prepared.x, **kwargs
+                )
+                result._fit_x = prepared.x
             else:
                 from ._kernels import get_routine
 

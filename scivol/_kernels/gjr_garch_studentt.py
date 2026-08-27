@@ -139,7 +139,7 @@ def _build(p: int, q: int) -> Routine:
 
             start, warm_started = resolve_initial_params(
                 _.get("initial_params"),
-                np.concatenate((vol.default_start(resid) / 2, dens.default_start(resid))),
+                np.concatenate((vol.default_start(resid), dens.default_start(resid))),
                 vol.n_params + dens.n_params,
                 uid,
             )
@@ -151,15 +151,11 @@ def _build(p: int, q: int) -> Routine:
             lc = LinearConstraint(A, lb=1e-12, ub=1.0 - 1e-8)
 
             if solver.lower() == "nelder-mead":
-                if not warm_started:
-                    start[0] = 0.025
                 res = minimize(obj, start, method="Nelder-Mead",
                               bounds=bounds, tol=1e-12,
                               options={"maxfev": maxfev, "disp": verbose})
 
             elif solver.lower() == "slsqp":
-                if not warm_started:
-                    start[0] = 0.025
                 res = minimize(obj, start, method="SLSQP",
                               jac=jac, bounds=bounds, constraints=lc,
                               tol=1e-12,

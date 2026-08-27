@@ -1,7 +1,9 @@
 include scivol/_csrc/*.h
+recursive-include scivol/_native *.cpp *.hpp *.c *.h *.txt *.md
 include LICENSE
 include README.md
 include scivol/_core.pyi
+include scivol/_native_core.pyi
 include scivol/py.typed
 exclude benchmark_optimizers.py
 exclude next_steps.md

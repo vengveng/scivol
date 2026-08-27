@@ -297,19 +297,24 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
             res.x = theta_hat
             nll_final = res.fun / p_scaler
 
+        average_nll = call_nll(theta_hat)
+        n_eff = n - max_lag
+        nll_final = n_eff * average_nll
         t_elapsed = time.perf_counter() - t_start
-        _ = call_nll(theta_hat)
 
         hessian = None
         cov_matrix = None
         if log_mode:
+            def nll_theta(theta: NDArray[np.float64]) -> float:
+                return n_eff * call_nll(theta)
+
             hessian, cov_matrix = compute_se_via_logspace(
                 theta_hat=theta_hat,
-                nll_theta=call_nll,
+                nll_theta=nll_theta,
                 unpack_fn=lambda th: unpack_arma_gjr_garch_skewt(th, p_ar, q_ma, P_arch, Q_garch),
                 jacobian_fn=lambda th: jacobian_arma_gjr_garch_skewt(th, p_ar, q_ma, P_arch, Q_garch),
                 pack_fn=lambda z: pack_arma_gjr_garch_skewt(z, p_ar, q_ma, P_arch, Q_garch),
-                hess_z_fn=analytical_hess_z,
+                hess_z_fn=lambda z: (n_eff / p_scaler) * analytical_hess_z(z),
             )
 
         class ScaledResult:

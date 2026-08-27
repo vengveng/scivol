@@ -21,7 +21,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Financial and Insurance Industry",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
@@ -29,6 +28,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: C",
+    "Programming Language :: C++",
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Mathematics",
     "Topic :: Office/Business :: Financial",
@@ -43,6 +43,7 @@ Issues = "https://github.com/vengveng/scivol/issues"
 dev = ["jax"]
 
 [tool.setuptools]
+include-package-data = false
 packages = [
   "scivol",
   "scivol.components",
@@ -52,7 +53,13 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-scivol = ["_core.pyi", "py.typed"]
+scivol = [
+  "_core.pyi",
+  "_native_core.pyi",
+  "py.typed",
+  "_native/third_party/scipy_slsqp/LICENSE.txt",
+  "_native/third_party/scipy_slsqp/UPSTREAM.md",
+]
 
 [tool.setuptools.dynamic]
 version = { attr = "scivol._version.__version__" }
@@ -60,4 +67,4 @@ version = { attr = "scivol._version.__version__" }
 [tool.cibuildwheel]
 build = "cp310-* cp311-* cp312-*"
 skip = "*-win32 *-manylinux_i686 *-musllinux_i686"
-test-command = 'python -c "import numpy as np; import scivol; import scivol._core; from scivol import GARCH, GJRGARCH, Normal, StudentT; data = np.random.default_rng(0).standard_normal(500).astype(np.float64) * 0.01; r1 = (GARCH(1, 1) + Normal()).fit(data, solver=\"slsqp\", verbose=False, n_jobs=1); assert r1.converged; r2 = (GJRGARCH(1, 1) + StudentT()).fit(data, solver=\"slsqp\", log_mode=True, verbose=False, n_jobs=1); assert r2.params is not None; assert np.all(np.isfinite(r2.params))"'
+test-command = 'python -c "import numpy as np; import scivol; import scivol._core; import scivol._native_core; from scivol import GARCH, GJRGARCH, Normal, StudentT; data = np.random.default_rng(0).standard_normal(500).astype(np.float64) * 0.01; r1 = (GARCH(1, 1) + Normal()).fit(data, solver=\"slsqp\", verbose=False, n_jobs=1); assert r1.converged; r2 = (GJRGARCH(1, 1) + StudentT()).fit(data, solver=\"slsqp\", log_mode=True, verbose=False, n_jobs=1); assert r2.params is not None; assert np.all(np.isfinite(r2.params)); r3 = (GARCH(1, 1) + StudentT()).fit(data, solver=\"native\", maxiter=700); assert r3.converged; assert r3.fit_info.engine == \"cpp-function-jet\""'

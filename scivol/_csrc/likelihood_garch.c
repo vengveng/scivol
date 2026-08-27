@@ -106,7 +106,7 @@ typedef struct {
 
 VLK_INLINE int garch_ged_precompute(double nu, garch_ged_cache_t *cache)
 {
-    if (nu <= 1.01 || !isfinite(nu)) {
+    if (nu <= 0.0 || !isfinite(nu)) {
         return 0;
     }
 
@@ -132,7 +132,12 @@ VLK_INLINE int garch_ged_precompute(double nu, garch_ged_cache_t *cache)
     cache->nll_const = -log(nu) + log(2.0) + log_scale + lgamma_approx(inv_nu);
     cache->nll_const_nu = -inv_nu + log_scale_nu - digamma_inv * inv_nu2;
     cache->nll_const_nunu = inv_nu2 + log_scale_nunu + trigamma_inv * inv_nu4 + 2.0 * digamma_inv * inv_nu3;
-    return 1;
+    return isfinite(cache->log_scale)
+        && isfinite(cache->log_scale_nu)
+        && isfinite(cache->log_scale_nunu)
+        && isfinite(cache->nll_const)
+        && isfinite(cache->nll_const_nu)
+        && isfinite(cache->nll_const_nunu);
 }
 
 VLK_INLINE int garch_ged_obs_derivs(

@@ -9,11 +9,8 @@
 
 #define GH_QUAD_HALF 64
 #define GH_QUAD_MIDPOINT 8.0
-#define GH_LOG_2 0.69314718055994530942
 #define GH_LOG_PI_OVER_2 0.45158270528945486473
 #define GH_HALF_PI 1.57079632679489661923
-#define VG_LAMBDA_MIN 1.51
-#define VG_LAMBDA_MAX 50.0
 
 static const double GH_NODES[GH_QUAD_HALF] = {
     1.222369896061576387e-02, 3.666379096873349785e-02, 6.108196960413957155e-02, 8.546364050451549232e-02,
@@ -502,8 +499,11 @@ static gh_jet_t jet_log_bessel_k(gh_jet_t order, gh_jet_t argument)
 static int valid_shapes(double rho, double zeta, double lambda)
 {
     return isfinite(rho) && isfinite(zeta) && isfinite(lambda)
-        && fabs(rho) < 0.995 && zeta >= 0.1 && zeta <= 25.0
-        && lambda >= -6.0 && lambda <= 6.0;
+        && fabs(rho) < GH_NUMERICAL_RHO_LIMIT
+        && zeta >= GH_NUMERICAL_ZETA_MIN
+        && zeta <= GH_NUMERICAL_ZETA_MAX
+        && lambda >= GH_NUMERICAL_LAMBDA_MIN
+        && lambda <= GH_NUMERICAL_LAMBDA_MAX;
 }
 
 static int scalar_standardized_parameters(double rho, double zeta, double lambda,
@@ -529,16 +529,47 @@ static int scalar_standardized_parameters(double rho, double zeta, double lambda
     return isfinite(*alpha) && isfinite(*beta) && isfinite(*delta) && isfinite(*mu);
 }
 
-int gh_shape_cache_init(double rho, double zeta, double lambda,
-                        int estimate_lambda, gh_shape_cache_t *cache)
+int gh_shape_value_cache_init(double rho, double zeta, double lambda,
+                              gh_shape_value_cache_t *cache)
+{
+    if (!cache || !valid_shapes(rho, zeta, lambda)) return 0;
+    memset(cache, 0, sizeof(*cache));
+    cache->rho = rho;
+    cache->zeta = zeta;
+    cache->lambda = lambda;
+    if (!scalar_standardized_parameters(
+            rho, zeta, lambda,
+            &cache->alpha, &cache->beta,
+            &cache->delta, &cache->mu)) return 0;
+    const double gamma_sq = cache->alpha * cache->alpha
+                          - cache->beta * cache->beta;
+    if (!(gamma_sq > 0.0) || !isfinite(gamma_sq)) return 0;
+    const double gamma = sqrt(gamma_sq);
+    cache->log_normalizer = lambda * (log(gamma) - log(cache->delta))
+                          - 0.5 * LOG_2PI
+                          - log_bessel_k_scalar(
+                              lambda, cache->delta * gamma);
+    return isfinite(cache->log_normalizer);
+}
+
+static int gh_shape_cache_init_order(
+    double rho, double zeta, double lambda,
+    int estimate_lambda, int second_order,
+    gh_shape_cache_t *cache)
 {
     if (!cache || !valid_shapes(rho, zeta, lambda)) return 0;
     memset(cache, 0, sizeof(*cache));
     cache->family_kind = GH_FAMILY_INTERIOR;
-    cache->rho = jet_variable(rho, GH_DERIV_RHO);
-    cache->zeta = jet_variable(zeta, GH_DERIV_ZETA);
+    cache->rho = second_order
+        ? jet_variable(rho, GH_DERIV_RHO)
+        : jet_first_variable(rho, GH_DERIV_RHO);
+    cache->zeta = second_order
+        ? jet_variable(zeta, GH_DERIV_ZETA)
+        : jet_first_variable(zeta, GH_DERIV_ZETA);
     cache->lambda = estimate_lambda
-        ? jet_variable(lambda, GH_DERIV_LAMBDA)
+        ? (second_order
+            ? jet_variable(lambda, GH_DERIV_LAMBDA)
+            : jet_first_variable(lambda, GH_DERIV_LAMBDA))
         : jet_constant(lambda);
     cache->estimate_lambda = estimate_lambda;
 
@@ -586,15 +617,36 @@ int gh_shape_cache_init(double rho, double zeta, double lambda,
     return isfinite(cache->log_normalizer.value);
 }
 
-int vg_shape_cache_init(double rho, double lambda, gh_shape_cache_t *cache)
+int gh_shape_cache_init(double rho, double zeta, double lambda,
+                        int estimate_lambda, gh_shape_cache_t *cache)
 {
-    if (!cache || !isfinite(rho) || fabs(rho) >= 0.995
+    return gh_shape_cache_init_order(
+        rho, zeta, lambda, estimate_lambda, 1, cache);
+}
+
+int gh_shape_cache_init_gradient(double rho, double zeta, double lambda,
+                                 int estimate_lambda,
+                                 gh_shape_cache_t *cache)
+{
+    return gh_shape_cache_init_order(
+        rho, zeta, lambda, estimate_lambda, 0, cache);
+}
+
+static int vg_shape_cache_init_order(
+    double rho, double lambda, int second_order,
+    gh_shape_cache_t *cache)
+{
+    if (!cache || !isfinite(rho) || fabs(rho) >= GH_NUMERICAL_RHO_LIMIT
         || !isfinite(lambda) || lambda < VG_LAMBDA_MIN
         || lambda > VG_LAMBDA_MAX) return 0;
     memset(cache, 0, sizeof(*cache));
     cache->family_kind = GH_FAMILY_VARIANCE_GAMMA;
-    cache->rho = jet_variable(rho, GH_DERIV_RHO);
-    cache->zeta = jet_variable(lambda, GH_DERIV_ZETA);
+    cache->rho = second_order
+        ? jet_variable(rho, GH_DERIV_RHO)
+        : jet_first_variable(rho, GH_DERIV_RHO);
+    cache->zeta = second_order
+        ? jet_variable(lambda, GH_DERIV_ZETA)
+        : jet_first_variable(lambda, GH_DERIV_ZETA);
 
     const gh_jet_t one = jet_constant(1.0);
     const gh_jet_t rho2 = jet_sub(one, jet_mul(cache->rho, cache->rho));
@@ -610,6 +662,35 @@ int vg_shape_cache_init(double rho, double lambda, gh_shape_cache_t *cache)
     );
     return isfinite(cache->vg_scale.value)
         && isfinite(cache->vg_argument_scale.value);
+}
+
+int vg_shape_cache_init(double rho, double lambda, gh_shape_cache_t *cache)
+{
+    return vg_shape_cache_init_order(rho, lambda, 1, cache);
+}
+
+int vg_shape_cache_init_gradient(double rho, double lambda,
+                                 gh_shape_cache_t *cache)
+{
+    return vg_shape_cache_init_order(rho, lambda, 0, cache);
+}
+
+int vg_shape_value_cache_init(double rho, double lambda,
+                              vg_shape_value_cache_t *cache)
+{
+    if (!cache || !isfinite(rho) || fabs(rho) >= GH_NUMERICAL_RHO_LIMIT
+        || !isfinite(lambda) || lambda < VG_LAMBDA_MIN
+        || lambda > VG_LAMBDA_MAX) return 0;
+    memset(cache, 0, sizeof(*cache));
+    cache->rho = rho;
+    cache->lambda = lambda;
+    const double rho2 = 1.0 - rho * rho;
+    if (!(rho2 > 0.0)) return 0;
+    cache->theta = rho * sqrt(2.0 / rho2);
+    const double theta2 = cache->theta * cache->theta;
+    cache->scale = sqrt(lambda * (1.0 + theta2));
+    cache->argument_scale = sqrt(theta2 + 2.0);
+    return isfinite(cache->scale) && isfinite(cache->argument_scale);
 }
 
 int gh_family_cache_init(const double *params, size_t shape_start,
@@ -691,59 +772,64 @@ static void shape_cache_use_first_order(gh_shape_cache_t *cache)
     }
 }
 
-static int gh_obs_jet(double residual, double variance,
-                      const gh_shape_cache_t *cache,
-                      int second_order, gh_jet_t *out)
+static int gh_obs_jet_active(double residual, double variance,
+                             const gh_shape_cache_t *cache,
+                             int second_order, gh_jet_t *out)
 {
     if (!cache || !out || !isfinite(residual) || !isfinite(variance)) return 0;
-    gh_shape_cache_t first_cache;
-    const gh_shape_cache_t *active_cache = cache;
-    if (!second_order) {
-        first_cache = *cache;
-        shape_cache_use_first_order(&first_cache);
-        active_cache = &first_cache;
-    }
-    const double h_safe = variance > H_FLOOR ? variance : H_FLOOR;
+    if (!(variance > 0.0)) return 0;
     const gh_jet_t e = second_order
         ? jet_variable(residual, GH_DERIV_E)
         : jet_first_variable(residual, GH_DERIV_E);
     const gh_jet_t h = second_order
-        ? jet_variable(h_safe, GH_DERIV_H)
-        : jet_first_variable(h_safe, GH_DERIV_H);
+        ? jet_variable(variance, GH_DERIV_H)
+        : jet_first_variable(variance, GH_DERIV_H);
     const gh_jet_t z = jet_div(e, jet_sqrt(h));
-    if (active_cache->family_kind == GH_FAMILY_VARIANCE_GAMMA) {
+    if (cache->family_kind == GH_FAMILY_VARIANCE_GAMMA) {
         const gh_jet_t nll = jet_sub(
-            jet_scale(jet_log(h), 0.5), vg_logpdf_jet(z, active_cache)
+            jet_scale(jet_log(h), 0.5), vg_logpdf_jet(z, cache)
         );
         if (!isfinite(nll.value)) return 0;
         *out = nll;
         return 1;
     }
-    const gh_jet_t centered = jet_sub(z, active_cache->mu);
+    const gh_jet_t centered = jet_sub(z, cache->mu);
     const gh_jet_t radius = jet_sqrt(jet_add(
-        jet_mul(active_cache->delta, active_cache->delta),
+        jet_mul(cache->delta, cache->delta),
         jet_mul(centered, centered)
     ));
-    const gh_jet_t argument = jet_mul(active_cache->alpha, radius);
+    const gh_jet_t argument = jet_mul(cache->alpha, radius);
     const gh_jet_t log_kernel = jet_sub(
         jet_add(
-            jet_mul(active_cache->beta, centered),
+            jet_mul(cache->beta, centered),
             jet_log_bessel_k(
-                jet_sub(active_cache->lambda, jet_constant(0.5)), argument
+                jet_sub(cache->lambda, jet_constant(0.5)), argument
             )
         ),
         jet_mul(
-            jet_sub(jet_constant(0.5), active_cache->lambda),
-            jet_sub(jet_log(radius), jet_log(active_cache->alpha))
+            jet_sub(jet_constant(0.5), cache->lambda),
+            jet_sub(jet_log(radius), jet_log(cache->alpha))
         )
     );
     const gh_jet_t nll = jet_sub(
         jet_scale(jet_log(h), 0.5),
-        jet_add(active_cache->log_normalizer, log_kernel)
+        jet_add(cache->log_normalizer, log_kernel)
     );
     if (!isfinite(nll.value)) return 0;
     *out = nll;
     return 1;
+}
+
+static int gh_obs_jet(double residual, double variance,
+                      const gh_shape_cache_t *cache,
+                      int second_order, gh_jet_t *out)
+{
+    if (second_order)
+        return gh_obs_jet_active(residual, variance, cache, 1, out);
+    if (!cache) return 0;
+    gh_shape_cache_t first_cache = *cache;
+    shape_cache_use_first_order(&first_cache);
+    return gh_obs_jet_active(residual, variance, &first_cache, 0, out);
 }
 
 int gh_obs_derivatives(double residual, double variance,
@@ -769,11 +855,26 @@ int gh_obs_gradient(double residual, double variance,
     return 1;
 }
 
+int gh_obs_gradient_prepared(double residual, double variance,
+                             const gh_shape_cache_t *cache,
+                             gh_obs_gradient_t *out)
+{
+    if (!cache || cache->rho.second_order || cache->zeta.second_order
+        || cache->lambda.second_order) return 0;
+    gh_jet_t nll;
+    if (!out || !gh_obs_jet_active(
+            residual, variance, cache, 0, &nll)) return 0;
+    out->value = nll.value;
+    memcpy(out->grad, nll.grad, sizeof(out->grad));
+    return 1;
+}
+
 double gh_obs_nll_scalar(double residual, double variance,
                          const gh_shape_cache_t *cache)
 {
-    if (!cache || !isfinite(residual) || !isfinite(variance)) return INFINITY;
-    const double h = variance > H_FLOOR ? variance : H_FLOOR;
+    if (!cache || !isfinite(residual) || !isfinite(variance)
+        || !(variance > 0.0)) return INFINITY;
+    const double h = variance;
     const double z = residual / sqrt(h);
     if (cache->family_kind == GH_FAMILY_VARIANCE_GAMMA) {
         return 0.5 * log(h) - vg_standardized_logpdf_scalar(
@@ -788,6 +889,49 @@ double gh_obs_nll_scalar(double residual, double variance,
         - (0.5 - cache->lambda.value)
           * (log(radius) - log(cache->alpha.value));
     return 0.5 * log(h) - cache->log_normalizer.value - log_kernel;
+}
+
+double gh_obs_nll_value(double residual, double variance,
+                        const gh_shape_value_cache_t *cache)
+{
+    if (!cache || !isfinite(residual) || !isfinite(variance)
+        || !(variance > 0.0)) return INFINITY;
+    const double z = residual / sqrt(variance);
+    const double centered = z - cache->mu;
+    const double radius = hypot(cache->delta, centered);
+    const double argument = cache->alpha * radius;
+    const double log_kernel = cache->beta * centered
+        + log_bessel_k_scalar(cache->lambda - 0.5, argument)
+        - (0.5 - cache->lambda)
+          * (log(radius) - log(cache->alpha));
+    return 0.5 * log(variance) - cache->log_normalizer - log_kernel;
+}
+
+double vg_obs_nll_value(double residual, double variance,
+                        const vg_shape_value_cache_t *cache)
+{
+    if (!cache || !isfinite(residual) || !isfinite(variance)
+        || !(variance > 0.0)) return INFINITY;
+    const double standardized = residual / sqrt(variance);
+    const double order = cache->lambda - 0.5;
+    const double y = cache->scale * standardized
+        + cache->theta * cache->lambda;
+    double logpdf = log(cache->scale) + GH_LOG_2 - 0.5 * LOG_2PI
+        - lgamma(cache->lambda) + cache->theta * y;
+    if (cache->argument_scale * fabs(y) < 1e-4) {
+        const double center = (order - 1.0) * GH_LOG_2 + lgamma(order)
+            - 2.0 * order * log(cache->argument_scale);
+        const double curvature = cache->argument_scale
+            * cache->argument_scale / (2.0 * (1.0 - order));
+        logpdf += center + 0.5 * curvature * y * y;
+    } else {
+        const double absolute_y = fabs(y);
+        const double argument = cache->argument_scale * absolute_y;
+        logpdf += order * (
+            log(absolute_y) - log(cache->argument_scale))
+            + log_bessel_k_scalar(order, argument);
+    }
+    return 0.5 * log(variance) - logpdf;
 }
 
 int gh_abs_moment_derivatives(const gh_shape_cache_t *cache,

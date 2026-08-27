@@ -45,8 +45,42 @@ from .result import EstimationResult
 from .roles import Role
 
 
+_HALF_LOG_2PI = 0.9189385332046727
+
+
 def _as_cptr(arr: NDArray[np.float64]) -> int:
     return np.ascontiguousarray(arr, dtype=np.float64).ctypes.data
+
+
+def _arma_volatility_total_nll(
+    average_nll: float,
+    n: int,
+    p_ar: int,
+    q_ma: int,
+    p_vol: int,
+    q_vol: int,
+    *,
+    normal_constant_omitted: bool,
+) -> float:
+    """Restore the complete additive objective returned by ARMA-volatility cores."""
+    n_eff = n - max(p_ar, q_ma, p_vol, q_vol, 1)
+    per_observation = average_nll
+    if normal_constant_omitted:
+        per_observation += _HALF_LOG_2PI
+    return float(n_eff) * per_observation
+
+
+def _arma_volatility_total_derivative(
+    average_derivative: NDArray[np.float64],
+    n: int,
+    p_ar: int,
+    q_ma: int,
+    p_vol: int,
+    q_vol: int,
+) -> NDArray[np.float64]:
+    """Restore derivatives of the complete additive ARMA-volatility objective."""
+    n_eff = n - max(p_ar, q_ma, p_vol, q_vol, 1)
+    return float(n_eff) * average_derivative
 
 
 def _std_t_cdf(x: NDArray[np.float64], nu: float) -> NDArray[np.float64]:
@@ -1448,7 +1482,9 @@ def _filter_arma_garch(spec: Any, data: NDArray[np.float64], theta: NDArray[np.f
                 p_arch,
                 q_garch,
             )
-        score = -grad
+        score = -_arma_volatility_total_derivative(
+            grad, n, p_ar, q_ma, p_arch, q_garch
+        )
 
     hess = None
     if compute_hessian:
@@ -1470,12 +1506,23 @@ def _filter_arma_garch(spec: Any, data: NDArray[np.float64], theta: NDArray[np.f
                 p_arch,
                 q_garch,
             )
-        hess = -hess_mat
+        hess = -_arma_volatility_total_derivative(
+            hess_mat, n, p_ar, q_ma, p_arch, q_garch
+        )
 
     mean = y - resid
     nu = float(theta[-1]) if isinstance(dens, (StudentT, GED)) else (float(theta[-2]) if isinstance(dens, SkewT) else None)
     lam = float(theta[-1]) if isinstance(dens, SkewT) else None
-    return FilteredState(y, mean, resid, sigma2, -nll, score, hess, dens.signature, nu=nu, lam=lam)
+    nll_total = _arma_volatility_total_nll(
+        nll,
+        n,
+        p_ar,
+        q_ma,
+        p_arch,
+        q_garch,
+        normal_constant_omitted=isinstance(dens, Normal),
+    )
+    return FilteredState(y, mean, resid, sigma2, -nll_total, score, hess, dens.signature, nu=nu, lam=lam)
 
 
 def _filter_arma_gjr(spec: Any, data: NDArray[np.float64], theta: NDArray[np.float64], *, compute_score: bool, compute_hessian: bool) -> FilteredState:
@@ -1556,7 +1603,9 @@ def _filter_arma_gjr(spec: Any, data: NDArray[np.float64], theta: NDArray[np.flo
                 p_arch,
                 q_garch,
             )
-        score = -grad
+        score = -_arma_volatility_total_derivative(
+            grad, n, p_ar, q_ma, p_arch, q_garch
+        )
 
     hess = None
     if compute_hessian:
@@ -1578,12 +1627,23 @@ def _filter_arma_gjr(spec: Any, data: NDArray[np.float64], theta: NDArray[np.flo
                 p_arch,
                 q_garch,
             )
-        hess = -hess_mat
+        hess = -_arma_volatility_total_derivative(
+            hess_mat, n, p_ar, q_ma, p_arch, q_garch
+        )
 
     mean = y - resid
     nu = float(theta[-1]) if isinstance(dens, (StudentT, GED)) else (float(theta[-2]) if isinstance(dens, SkewT) else None)
     lam = float(theta[-1]) if isinstance(dens, SkewT) else None
-    return FilteredState(y, mean, resid, sigma2, -nll, score, hess, dens.signature, nu=nu, lam=lam)
+    nll_total = _arma_volatility_total_nll(
+        nll,
+        n,
+        p_ar,
+        q_ma,
+        p_arch,
+        q_garch,
+        normal_constant_omitted=isinstance(dens, Normal),
+    )
+    return FilteredState(y, mean, resid, sigma2, -nll_total, score, hess, dens.signature, nu=nu, lam=lam)
 
 
 def _filter_meanx_garch(
@@ -2176,16 +2236,22 @@ def _filter_gh(
             )
 
     nll = objective()
+    arma_scale = 1.0
+    if isinstance(mean_comp, ARMA):
+        arma_scale = float(
+            y.size - max(mean_comp.p, mean_comp.q, p_vol, q_vol, 1)
+        )
+        nll *= arma_scale
     score = None
     if compute_score:
         grad = np.empty(theta.size, dtype=np.float64)
         gradient(grad)
-        score = -grad
+        score = -(arma_scale * grad)
     observed_hessian = None
     if compute_hessian:
         hess = np.empty((theta.size, theta.size), dtype=np.float64)
         hessian(hess)
-        observed_hessian = -hess
+        observed_hessian = -(arma_scale * hess)
 
     mean = y - resid
     rho = float(theta[-3] if estimate_lambda else theta[-2])

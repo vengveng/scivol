@@ -5,6 +5,7 @@ import pytest
 
 import scivol
 import scivol.components as components
+from scivol._evaluation import filter_spec
 from scivol.components.vol import EGARCH
 
 
@@ -49,9 +50,13 @@ def test_arma_egarch_family_surfaces_are_shipped(density: object) -> None:
 def test_arma_gjr_garch_family_surfaces_are_shipped(density: object) -> None:
     spec = scivol.ARMA(1, 1) + scivol.GJRGARCH(1, 1) + density
     result = spec.fit(np.random.default_rng(1).standard_normal(300), solver="slsqp", log_mode=True)
+    filtered = filter_spec(result.spec, result.data, result.params)
 
     assert result.params is not None
     assert np.all(np.isfinite(result.params))
+    assert result.log_likelihood == pytest.approx(
+        filtered.log_likelihood, rel=2e-11, abs=2e-9
+    )
 
 
 @pytest.mark.parametrize(

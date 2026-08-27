@@ -114,6 +114,20 @@ PyObject *const *args, Py_ssize_t nargs)
 }
 
 static PyObject *
+py_studentt_shape_hessian(PyObject *self,
+PyObject *const *args, Py_ssize_t nargs)
+{
+    if (nargs != 3) { BAD_ARITY("studentt_shape_hessian", 3, nargs); return NULL; }
+
+    const double *r2os2 = (const double *)PyLong_AsVoidPtr(args[0]);
+    size_t n = PyLong_AsSize_t(args[1]);
+    const double nu = PyFloat_AsDouble(args[2]);
+    if (PyErr_Occurred()) return NULL;
+
+    return PyFloat_FromDouble(studentt_shape_hessian(r2os2, n, nu));
+}
+
+static PyObject *
 py_ged_ll(PyObject *self,
 PyObject *const *args, Py_ssize_t nargs)
 {
@@ -6001,6 +6015,8 @@ static PyMethodDef Methods[] = {
                                   METH_FASTCALL, "Internal pointer API"},
     {"_studentt_ll",             (PyCFunction)py_studentt_ll,
                                   METH_FASTCALL, "Internal pointer API"},
+    {"_studentt_shape_hessian",  (PyCFunction)py_studentt_shape_hessian,
+                                  METH_FASTCALL, "Student-t shape observed Hessian"},
     {"_ged_ll",                  (PyCFunction)py_ged_ll,
                                   METH_FASTCALL, "Generalized Error log-likelihood"},
     {"_ged_nll",                 (PyCFunction)py_ged_nll,

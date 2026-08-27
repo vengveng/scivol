@@ -17,6 +17,7 @@ import numpy as np
 from numpy.testing import assert_allclose, assert_array_less
 
 from scivol import ARMA, EGARCH, GARCH, GJRGARCH, Normal, StudentT, SkewT
+from scivol import _core
 
 
 # =============================================================================
@@ -368,6 +369,35 @@ class TestARMAGARCHQMLE:
         assert result.std_errors_robust is not None
         assert len(result.std_errors_robust) == 9
         assert np.all(np.isfinite(result.std_errors_robust))
+
+    def test_studentt_shape_hessian_matches_ad(self):
+        jax = pytest.importorskip("jax")
+        jax.config.update("jax_enable_x64", True)
+        import jax.numpy as jnp
+        from jax.scipy.special import gammaln
+
+        z2 = np.array([0.01, 0.2, 0.8, 1.5, 3.0, 8.0], dtype=np.float64)
+        nu = 8.3
+
+        def nll_shape(nu_value):
+            nu_m2 = nu_value - 2.0
+            constant = (
+                gammaln(0.5 * (nu_value + 1.0))
+                - gammaln(0.5 * nu_value)
+                - 0.5 * jnp.log(jnp.pi * nu_m2)
+            )
+            return (
+                -z2.size * constant
+                + 0.5 * (nu_value + 1.0)
+                * jnp.sum(jnp.log1p(jnp.asarray(z2) / nu_m2))
+            )
+
+        oracle = float(jax.hessian(nll_shape)(nu))
+        analytical = _core._studentt_shape_hessian(
+            z2.ctypes.data, z2.size, nu
+        )
+
+        assert analytical == pytest.approx(oracle, rel=1e-8, abs=1e-11)
 
     def test_generic_order_skewt_qmle_two_step(self, arma_garch_data):
         spec = ARMA(2, 1) + GARCH(1, 2) + SkewT()

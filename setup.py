@@ -16,6 +16,16 @@ def _compile_args() -> list[str]:
     return ["-O3", "-ffast-math", "-ffp-contract=fast", "-funroll-loops", "-march=native"]
 
 
+def _native_compile_args() -> list[str]:
+    if sys.platform.startswith("win"):
+        return ["/std:c++20", "/O2", "/fp:precise", "/EHs-c-", "/GR-"]
+
+    base = ["-std=c++20", "-O3", "-fno-exceptions", "-fno-rtti"]
+    if os.environ.get("SCIVOL_PORTABLE_BUILD") == "1":
+        return base
+    return [*base, "-ffp-contract=fast", "-funroll-loops", "-march=native"]
+
+
 def _libraries() -> list[str]:
     if sys.platform.startswith("win"):
         return []
@@ -57,7 +67,25 @@ ext_modules = [
         include_dirs=["scivol/_csrc"],
         extra_compile_args=_compile_args(),
         libraries=_libraries(),
-    )
+    ),
+    Extension(
+        "scivol._native_core",
+        sources=[
+            "scivol/_native/native_core.cpp",
+            "scivol/_native/garch_generated_api.cpp",
+            "scivol/_native/garch_runtime.cpp",
+            "scivol/_native/arma_garch_runtime.cpp",
+            "scivol/_native/arma_garch_runtime_reformulation.cpp",
+            "scivol/_native/portable_linalg.cpp",
+            "scivol/_native/portable_nnls.cpp",
+            "scivol/_native/slsqp_translation.cpp",
+            "scivol/_native/gh_math_translation.cpp",
+        ],
+        include_dirs=["scivol/_native", "scivol/_csrc"],
+        extra_compile_args=_native_compile_args(),
+        libraries=_libraries(),
+        language="c++",
+    ),
 ]
 
 

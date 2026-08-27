@@ -299,6 +299,19 @@ class FitMetadata:
     warm_started: Optional[bool] = None
     maxiter: Optional[int] = None
     timeout: Optional[float] = None
+    engine: Optional[str] = None
+    optimizer_mode: Optional[int] = None
+    kkt_residual: Optional[float] = None
+    coordinate_kkt_residual: Optional[float] = None
+    kkt_tolerance: Optional[float] = None
+    maximum_constraint_violation: Optional[float] = None
+    function_evaluations: Optional[int] = None
+    gradient_evaluations: Optional[int] = None
+    refinement_restarts: Optional[int] = None
+    curvature_refinement_steps: Optional[int] = None
+    objective_parity_error: Optional[float] = None
+    jet_request_plan: Optional[str] = None
+    boundary_reached: Optional[bool] = None
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -335,6 +348,19 @@ class FitMetadata:
             "warm_started": self.warm_started,
             "maxiter": self.maxiter,
             "timeout": self.timeout,
+            "engine": self.engine,
+            "optimizer_mode": self.optimizer_mode,
+            "kkt_residual": self.kkt_residual,
+            "coordinate_kkt_residual": self.coordinate_kkt_residual,
+            "kkt_tolerance": self.kkt_tolerance,
+            "maximum_constraint_violation": self.maximum_constraint_violation,
+            "function_evaluations": self.function_evaluations,
+            "gradient_evaluations": self.gradient_evaluations,
+            "refinement_restarts": self.refinement_restarts,
+            "curvature_refinement_steps": self.curvature_refinement_steps,
+            "objective_parity_error": self.objective_parity_error,
+            "jet_request_plan": self.jet_request_plan,
+            "boundary_reached": self.boundary_reached,
             "warnings": list(self.warnings),
         }
 

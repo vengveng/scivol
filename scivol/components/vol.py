@@ -184,12 +184,13 @@ class GJRGARCH(Component):
         persist_target = 0.90
         beta_share     = 0.80
 
-        sample_var = np.var(data)
-        omega = max(min_positive, 0.05 * sample_var * (1 - persist_target))
-
         total_beta  = persist_target * beta_share
         total_alpha = persist_target * (1.0 - beta_share) * 0.6  # 60% to alpha
         total_gamma = persist_target * (1.0 - beta_share) * 0.4  # 40% to gamma
+
+        sample_var = np.var(data)
+        start_persistence = total_alpha + 0.5 * total_gamma + total_beta
+        omega = max(min_positive, sample_var * (1.0 - start_persistence))
 
         alpha = ([max(min_positive, total_alpha / self.p)] * self.p) if self.p else []
         gamma = ([max(min_positive, total_gamma / self.p)] * self.p) if self.p else []

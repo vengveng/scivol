@@ -43,6 +43,10 @@ double studentt_ll(const double* sigma2,
                    const size_t n,
                    const double nu);
 
+double studentt_shape_hessian(const double* r2os2,
+                              const size_t n,
+                              const double nu);
+
 double ged_ll(const double* resid,
               const double* sigma2,
               const size_t n,
