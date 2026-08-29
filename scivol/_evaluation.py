@@ -13,6 +13,7 @@ from scipy.special import gammaln
 from scipy.stats import gennorm, norm, t as t_dist
 
 from . import _core
+from ._distribution_moments import negative_half_second_moment
 from ._validation import validate_data, validate_spec
 from .components.density import (
     GED,
@@ -194,39 +195,6 @@ def _distribution_quantile(
             raise ValueError("VarianceGamma forecast quantiles require `rho` and `lambda`.")
         return standardized_vg_ppf(levels, rho, shape_lambda)
     raise ValueError(f"Unsupported distribution '{distribution}'.")
-
-
-def _negative_probability(
-    distribution: str,
-    nu: Optional[float],
-    lam: Optional[float],
-    rho: Optional[float] = None,
-    zeta: Optional[float] = None,
-    shape_lambda: Optional[float] = None,
-) -> float:
-    if distribution in {"Normal", "StudentT", "GED"}:
-        return 0.5
-    if distribution == "SkewT":
-        if nu is None or lam is None:
-            raise ValueError("SkewT negative-tail probability requires `nu` and `lam`.")
-        return float(_hansen_skewt_cdf(np.array([0.0]), nu, lam)[0])
-    if distribution in {"GeneralizedHyperbolic", "Hyperbolic", "NormalInverseGaussian"}:
-        if rho is None or zeta is None or shape_lambda is None:
-            raise ValueError(f"{distribution} negative-tail probability requires GH shape parameters.")
-        return float(
-            standardized_gh_cdf(
-                np.array([0.0], dtype=np.float64), rho, zeta, shape_lambda
-            )[0]
-        )
-    if distribution == "VarianceGamma":
-        if rho is None or shape_lambda is None:
-            raise ValueError("VarianceGamma negative-tail probability requires `rho` and `lambda`.")
-        return float(
-            standardized_vg_cdf(
-                np.array([0.0], dtype=np.float64), rho, shape_lambda
-            )[0]
-        )
-    return 0.5
 
 
 @dataclass(slots=True)
@@ -960,82 +928,56 @@ def _filter_aparch(
     compute_score: bool,
     compute_hessian: bool,
 ) -> FilteredState:
+    from ._native_fit import (
+        _aparch_volatility_domain,
+        _describe_model,
+        _evaluate_theta_request,
+        _materialize_native_aparch_state,
+    )
+
     vol = spec.get_component(Role.VOLATILITY)
     dens = spec.get_component(Role.DENSITY)
     assert isinstance(vol, APARCH)
-    p, q = vol.p, vol.q
+    model = _describe_model(spec)
+    request = 1 | (2 if compute_score else 0) | (4 if compute_hessian else 0)
+    nll, gradient, hessian = _evaluate_theta_request(
+        model, data, theta, request=request
+    )
+    residuals, sigma2 = _materialize_native_aparch_state(
+        model, data, theta
+    )
+    if vol.fitted_params is not None:
+        _, _, persistence = _aparch_volatility_domain(model, theta)
+        vol.fitted_params["persistence"] = persistence
+    score = -gradient if compute_score else None
+    observed_hessian = -hessian if compute_hessian else None
 
-    density_info = {
-        Normal: (0, np.nan),
-        StudentT: (1, np.nan),
-        SkewT: (2, np.nan),
-        GED: (3, np.nan),
-        GeneralizedHyperbolic: (4, np.nan),
-        NormalInverseGaussian: (4, -0.5),
-        Hyperbolic: (4, 1.0),
-        VarianceGamma: (4, np.inf),
-    }
-    try:
-        distribution_code, native_fixed_lambda = next(
-            value for density_type, value in density_info.items()
-            if isinstance(dens, density_type)
-        )
-    except StopIteration as exc:
-        raise NotImplementedError(
-            f"Unsupported density for APARCH filtering: {dens}"
-        ) from exc
-
-    residuals = np.ascontiguousarray(data, dtype=np.float64)
-    sigma2 = np.empty_like(residuals)
-    sigma2[0] = max(float(np.mean(residuals * residuals)), 1e-8)
-    params_ptr = _as_cptr(theta)
-    residuals_ptr = _as_cptr(residuals)
-    sigma2_ptr = _as_cptr(sigma2)
-    nll = float(_core._aparch_nll_pq(
-        params_ptr, residuals_ptr, sigma2_ptr, residuals.size, p, q,
-        distribution_code, native_fixed_lambda,
-    ))
-
-    score = None
-    if compute_score:
-        gradient = np.empty(theta.size, dtype=np.float64)
-        _core._aparch_nll_grad_pq(
-            params_ptr, residuals_ptr, sigma2_ptr, _as_cptr(gradient),
-            residuals.size, p, q, distribution_code, native_fixed_lambda,
-        )
-        score = -gradient
-
-    observed_hessian = None
-    if compute_hessian:
-        hessian = np.empty((theta.size, theta.size), dtype=np.float64)
-        _core._aparch_nll_hess_pq(
-            params_ptr, residuals_ptr, sigma2_ptr, _as_cptr(hessian),
-            residuals.size, p, q, distribution_code, native_fixed_lambda,
-        )
-        observed_hessian = -hessian
-
-    n_vol = vol.n_params
+    shape_start = model.n_mean + model.n_vol
     kwargs: dict[str, float] = {}
     if isinstance(dens, (StudentT, GED)):
-        kwargs["nu"] = float(theta[n_vol])
+        kwargs["nu"] = float(theta[shape_start])
     elif isinstance(dens, SkewT):
-        kwargs["nu"] = float(theta[n_vol])
-        kwargs["lam"] = float(theta[n_vol + 1])
+        kwargs["nu"] = float(theta[shape_start])
+        kwargs["lam"] = float(theta[shape_start + 1])
     elif isinstance(dens, GeneralizedHyperbolic):
-        kwargs["rho"] = float(theta[n_vol])
-        kwargs["zeta"] = float(theta[n_vol + 1])
-        kwargs["shape_lambda"] = float(theta[n_vol + 2])
-    elif isinstance(dens, (NormalInverseGaussian, Hyperbolic)):
-        kwargs["rho"] = float(theta[n_vol])
-        kwargs["zeta"] = float(theta[n_vol + 1])
-        kwargs["shape_lambda"] = float(native_fixed_lambda)
+        kwargs["rho"] = float(theta[shape_start])
+        kwargs["zeta"] = float(theta[shape_start + 1])
+        kwargs["shape_lambda"] = float(theta[shape_start + 2])
+    elif isinstance(dens, NormalInverseGaussian):
+        kwargs["rho"] = float(theta[shape_start])
+        kwargs["zeta"] = float(theta[shape_start + 1])
+        kwargs["shape_lambda"] = -0.5
+    elif isinstance(dens, Hyperbolic):
+        kwargs["rho"] = float(theta[shape_start])
+        kwargs["zeta"] = float(theta[shape_start + 1])
+        kwargs["shape_lambda"] = 1.0
     elif isinstance(dens, VarianceGamma):
-        kwargs["rho"] = float(theta[n_vol])
-        kwargs["shape_lambda"] = float(theta[n_vol + 1])
+        kwargs["rho"] = float(theta[shape_start])
+        kwargs["shape_lambda"] = float(theta[shape_start + 1])
 
     return FilteredState(
         data,
-        np.zeros_like(residuals),
+        data - residuals,
         residuals,
         sigma2,
         -nll,
@@ -1237,86 +1179,74 @@ def _filter_gjr(spec: Any, data: NDArray[np.float64], theta: NDArray[np.float64]
     raise NotImplementedError(f"Unsupported density for GJR-GARCH filtering: {dens}")
 
 
-def _filter_egarch(spec: Any, data: NDArray[np.float64], theta: NDArray[np.float64], *, compute_score: bool, compute_hessian: bool) -> FilteredState:
+def _egarch_density_metadata(
+    dens: Any,
+    shape: NDArray[np.float64],
+) -> dict[str, Optional[float]]:
+    if isinstance(dens, Normal):
+        return {}
+    if isinstance(dens, (StudentT, GED)):
+        return {"nu": float(shape[0])}
+    if isinstance(dens, SkewT):
+        return {"nu": float(shape[0]), "lam": float(shape[1])}
+    if isinstance(dens, GeneralizedHyperbolic):
+        return {
+            "rho": float(shape[0]),
+            "zeta": float(shape[1]),
+            "shape_lambda": float(shape[2]),
+        }
+    if isinstance(dens, (NormalInverseGaussian, Hyperbolic)):
+        fixed_lambda = fixed_gh_lambda(dens.signature)
+        assert fixed_lambda is not None
+        return {
+            "rho": float(shape[0]),
+            "zeta": float(shape[1]),
+            "shape_lambda": float(fixed_lambda),
+        }
+    if isinstance(dens, VarianceGamma):
+        return {
+            "rho": float(shape[0]),
+            "shape_lambda": float(shape[1]),
+        }
+    raise NotImplementedError(f"Unsupported density for EGARCH filtering: {dens}")
+
+
+def _filter_egarch(
+    spec: Any,
+    data: NDArray[np.float64],
+    theta: NDArray[np.float64],
+    *,
+    compute_score: bool,
+    compute_hessian: bool,
+) -> FilteredState:
+    from ._native_fit import (
+        _describe_model,
+        _evaluate_theta_request,
+        _materialize_native_egarch_variance,
+    )
+
     vol = spec.get_component(Role.VOLATILITY)
     dens = spec.get_component(Role.DENSITY)
     assert isinstance(vol, EGARCH)
-    p, q = vol.p, vol.q
-
     resid = np.ascontiguousarray(data, dtype=np.float64)
-    sigma2 = np.empty_like(resid)
-    sigma2[0] = float(np.mean(resid ** 2))
-    mean = np.zeros_like(resid)
-
-    if isinstance(dens, Normal):
-        nll_var, score, hess = _eval_garch_like_core(
-            "egarch",
-            theta,
-            resid,
-            sigma2,
-            p,
-            q,
-            "normal",
-            compute_score=compute_score,
-            compute_hessian=compute_hessian,
-        )
-        nll = nll_var + 0.5 * resid.size * np.log(2.0 * np.pi)
-        return FilteredState(data, mean, resid, sigma2, -nll, score, hess, "Normal")
-
-    if isinstance(dens, StudentT):
-        nll, score, hess = _eval_garch_like_core(
-            "egarch",
-            theta,
-            resid,
-            sigma2,
-            p,
-            q,
-            "studentt",
-            compute_score=compute_score,
-            compute_hessian=compute_hessian,
-        )
-        return FilteredState(data, mean, resid, sigma2, -nll, score, hess, "StudentT", nu=float(theta[-1]))
-
-    if isinstance(dens, SkewT):
-        nll, score, hess = _eval_garch_like_core(
-            "egarch",
-            theta,
-            resid,
-            sigma2,
-            p,
-            q,
-            "skewt",
-            compute_score=compute_score,
-            compute_hessian=compute_hessian,
-        )
-        return FilteredState(
-            data,
-            mean,
-            resid,
-            sigma2,
-            -nll,
-            score,
-            hess,
-            "SkewT",
-            nu=float(theta[-2]),
-            lam=float(theta[-1]),
-        )
-
-    if isinstance(dens, GED):
-        nll, score, hess = _eval_garch_like_core(
-            "egarch",
-            theta,
-            resid,
-            sigma2,
-            p,
-            q,
-            "ged",
-            compute_score=compute_score,
-            compute_hessian=compute_hessian,
-        )
-        return FilteredState(data, mean, resid, sigma2, -nll, score, hess, "GED", nu=float(theta[-1]))
-
-    raise NotImplementedError(f"Unsupported density for EGARCH filtering: {dens}")
+    model = _describe_model(spec)
+    request = 1 | (2 if compute_score else 0) | (4 if compute_hessian else 0)
+    nll, gradient, hessian = _evaluate_theta_request(
+        model, resid, np.ascontiguousarray(theta), request=request
+    )
+    sigma2 = _materialize_native_egarch_variance(model, resid, theta)
+    metadata = _egarch_density_metadata(dens, theta[model.n_vol :])
+    return FilteredState(
+        data=data,
+        mean=np.zeros_like(resid),
+        residuals=resid,
+        sigma2=sigma2,
+        log_likelihood=-nll,
+        score=-gradient if compute_score else None,
+        hessian=-hessian if compute_hessian else None,
+        distribution=dens.signature,
+        **metadata,
+    )
 
 
 def _filter_arma(spec: Any, data: NDArray[np.float64], theta: NDArray[np.float64], *, compute_score: bool, compute_hessian: bool) -> FilteredState:
@@ -1900,112 +1830,38 @@ def _filter_meanx_gjr(
 
 
 def _filter_arma_egarch(spec: Any, data: NDArray[np.float64], theta: NDArray[np.float64], *, compute_score: bool, compute_hessian: bool) -> FilteredState:
-    mean_comp = spec.get_component(Role.MEAN)
-    vol = spec.get_component(Role.VOLATILITY)
+    from ._native_fit import (
+        _describe_model,
+        _evaluate_theta_request,
+        _materialize_native_arma_egarch_state,
+    )
+
     dens = spec.get_component(Role.DENSITY)
-    assert isinstance(mean_comp, ARMA)
-    assert isinstance(vol, EGARCH)
-
-    p_ar, q_ma = mean_comp.p, mean_comp.q
-    p_arch, q_egarch = vol.p, vol.q
     y = np.ascontiguousarray(data, dtype=np.float64)
-    resid = np.zeros_like(y)
-    sigma2 = np.zeros_like(y)
-    h0 = float(np.mean(y ** 2))
-    max_lag = max(p_ar, q_ma, p_arch, q_egarch, 1)
-    e0 = np.zeros(max_lag, dtype=np.float64)
-    h0_arr = np.full(max_lag, h0, dtype=np.float64)
-    n = y.size
-    special = p_ar == 1 and q_ma == 1 and p_arch == 1 and q_egarch == 1
-
-    if isinstance(dens, Normal):
-        suffix = "normal"
-    elif isinstance(dens, StudentT):
-        suffix = "studentt"
-    elif isinstance(dens, SkewT):
-        suffix = "skewt"
-    elif isinstance(dens, GED):
-        suffix = "ged"
-    else:
-        raise NotImplementedError(f"Unsupported density for ARMA-EGARCH filtering: {dens}")
-
-    infix = "11" if special else "pq"
-    nll_fn = getattr(_core, f"_arma_egarch_nll_{infix}_{suffix}")
-    grad_fn = getattr(_core, f"_arma_egarch_nll_grad_{infix}_{suffix}")
-    hess_fn = getattr(_core, f"_arma_egarch_hess_{infix}_{suffix}")
-
-    params_c = _as_cptr(theta)
-    y_c = _as_cptr(y)
-    resid_c = _as_cptr(resid)
-    sigma2_c = _as_cptr(sigma2)
-    if special:
-        nll = float(nll_fn(params_c, y_c, resid_c, sigma2_c, h0, n))
-    else:
-        nll = float(
-            nll_fn(
-                params_c,
-                y_c,
-                resid_c,
-                sigma2_c,
-                _as_cptr(e0),
-                _as_cptr(h0_arr),
-                n,
-                p_ar,
-                q_ma,
-                p_arch,
-                q_egarch,
-            )
-        )
-
-    score = None
-    if compute_score:
-        grad = np.empty(theta.size, dtype=np.float64)
-        if special:
-            grad_fn(params_c, y_c, resid_c, sigma2_c, _as_cptr(grad), h0, n)
-        else:
-            grad_fn(
-                params_c,
-                y_c,
-                resid_c,
-                sigma2_c,
-                _as_cptr(e0),
-                _as_cptr(h0_arr),
-                _as_cptr(grad),
-                n,
-                p_ar,
-                q_ma,
-                p_arch,
-                q_egarch,
-            )
-        score = -arma_egarch_total_derivative(grad, n, p_ar, q_ma, p_arch, q_egarch)
-
-    hess = None
-    if compute_hessian:
-        hess_mat = np.empty((theta.size, theta.size), dtype=np.float64)
-        if special:
-            hess_fn(params_c, y_c, resid_c, sigma2_c, _as_cptr(hess_mat), h0, n)
-        else:
-            hess_fn(
-                params_c,
-                y_c,
-                resid_c,
-                sigma2_c,
-                _as_cptr(e0),
-                _as_cptr(h0_arr),
-                _as_cptr(hess_mat),
-                n,
-                p_ar,
-                q_ma,
-                p_arch,
-                q_egarch,
-            )
-        hess = -arma_egarch_total_derivative(hess_mat, n, p_ar, q_ma, p_arch, q_egarch)
-
+    theta_c = np.ascontiguousarray(theta, dtype=np.float64)
+    model = _describe_model(spec)
+    request = 1 | (2 if compute_score else 0) | (4 if compute_hessian else 0)
+    nll, gradient, hessian = _evaluate_theta_request(
+        model, y, theta_c, request=request
+    )
+    resid, sigma2 = _materialize_native_arma_egarch_state(
+        model, y, theta_c
+    )
     mean = y - resid
-    nu = float(theta[-1]) if isinstance(dens, (StudentT, GED)) else (float(theta[-2]) if isinstance(dens, SkewT) else None)
-    lam = float(theta[-1]) if isinstance(dens, SkewT) else None
-    nll_total = arma_egarch_total_nll(nll, n, p_ar, q_ma, p_arch, q_egarch, dist=suffix)
-    return FilteredState(y, mean, resid, sigma2, -nll_total, score, hess, dens.signature, nu=nu, lam=lam)
+    metadata = _egarch_density_metadata(
+        dens, theta_c[model.n_mean + model.n_vol :]
+    )
+    return FilteredState(
+        data=y,
+        mean=mean,
+        residuals=resid,
+        sigma2=sigma2,
+        log_likelihood=-nll,
+        score=-gradient if compute_score else None,
+        hessian=-hessian if compute_hessian else None,
+        distribution=dens.signature,
+        **metadata,
+    )
 
 
 def _filter_meanx_egarch(
@@ -2104,7 +1960,9 @@ def _filter_gh(
     y = np.ascontiguousarray(data, dtype=np.float64)
     resid = np.empty_like(y)
     sigma2 = np.empty_like(y)
-    initial_variance = max(float(np.mean(y * y)), 1e-8)
+    initial_variance = max(
+        float(np.mean(y * y)), np.finfo(np.float64).tiny
+    )
     variance_gamma = isinstance(dens, VarianceGamma)
     fixed_lambda = fixed_gh_lambda(dens.signature)
     estimate_lambda = fixed_lambda is None and not variance_gamma
@@ -2297,19 +2155,40 @@ def filter_spec(
             x_arr = x_arr[:, None]
         x_np = np.ascontiguousarray(x_arr, dtype=np.float64)
 
-    # Reuse the routine registry as the single support matrix.
-    from ._kernels import get_routine
-
-    get_routine(str(spec))
-
     mean_comp = spec.get_component(Role.MEAN)
     vol = spec.get_component(Role.VOLATILITY)
     dens = spec.get_component(Role.DENSITY)
 
     if isinstance(vol, APARCH):
-        if mean_comp is not None:
-            raise NotImplementedError("APARCH currently supports zero-mean specifications.")
+        if mean_comp is not None and not isinstance(mean_comp, ARMA):
+            raise NotImplementedError(
+                "APARCH filtering currently supports zero mean or a genuine "
+                "joint ARMA mean."
+            )
         return _filter_aparch(
+            spec,
+            data_np,
+            theta,
+            compute_score=compute_score,
+            compute_hessian=compute_hessian,
+        )
+
+    # Reuse the routine registry as the support matrix for historical kernels.
+    from ._kernels import get_routine
+
+    get_routine(str(spec))
+
+    if mean_comp is None and isinstance(vol, EGARCH):
+        return _filter_egarch(
+            spec,
+            data_np,
+            theta,
+            compute_score=compute_score,
+            compute_hessian=compute_hessian,
+        )
+
+    if isinstance(mean_comp, ARMA) and isinstance(vol, EGARCH):
+        return _filter_arma_egarch(
             spec,
             data_np,
             theta,
@@ -2388,12 +2267,8 @@ def filter_spec(
         return _filter_arma_gjr(spec, data_np, theta, compute_score=compute_score, compute_hessian=compute_hessian)
     if isinstance(dens, GED) and vol is None:
         return _filter_generic(spec, data_np, theta, x=x_np, compute_score=compute_score, compute_hessian=compute_hessian)
-    if isinstance(mean_comp, ARMA) and isinstance(vol, EGARCH):
-        return _filter_arma_egarch(spec, data_np, theta, compute_score=compute_score, compute_hessian=compute_hessian)
     if isinstance(mean_comp, ARMA) and vol is None:
         return _filter_arma(spec, data_np, theta, compute_score=compute_score, compute_hessian=compute_hessian)
-    if isinstance(vol, EGARCH):
-        return _filter_egarch(spec, data_np, theta, compute_score=compute_score, compute_hessian=compute_hessian)
     if isinstance(vol, GJRGARCH):
         return _filter_gjr(spec, data_np, theta, compute_score=compute_score, compute_hessian=compute_hessian)
     if isinstance(vol, GARCH):
@@ -2528,7 +2403,7 @@ def _variance_forecast(
     rho: Optional[float],
     zeta: Optional[float],
     shape_lambda: Optional[float],
-    p_neg: float,
+    negative_second_moment: float,
 ) -> NDArray[np.float64]:
     if isinstance(vol, APARCH):
         omega = float(vol.fitted_params["omega"])  # type: ignore[index]
@@ -2666,7 +2541,11 @@ def _variance_forecast(
             idx = h - 1 - i
             if idx >= 0:
                 eps2 = forecasts[idx]
-                leverage = p_neg * forecasts[idx] if gamma is not None else 0.0
+                leverage = (
+                    negative_second_moment * forecasts[idx]
+                    if gamma is not None
+                    else 0.0
+                )
             else:
                 resid_lag = float(residuals[idx])
                 eps2 = resid_lag * resid_lag
@@ -2703,7 +2582,7 @@ def forecast_from_state(
     if vol is None:
         residual_variance = np.full(horizon, float(state.sigma2[-1]), dtype=np.float64)
     else:
-        p_neg = _negative_probability(
+        negative_second_moment = negative_half_second_moment(
             state.distribution,
             state.nu,
             state.lam,
@@ -2722,7 +2601,7 @@ def forecast_from_state(
             rho=state.rho,
             zeta=state.zeta,
             shape_lambda=state.shape_lambda,
-            p_neg=p_neg,
+            negative_second_moment=negative_second_moment,
         )
 
     if isinstance(mean_comp, ARMA):
@@ -2936,16 +2815,21 @@ def simulate_spec(
     delta = 2.0
     aparch_power = np.ones(total, dtype=np.float64)
     if isinstance(vol, APARCH):
+        from ._native_fit import _aparch_volatility_domain, _describe_model
+
         omega = float(vol.fitted_params["omega"])  # type: ignore[index]
         alpha = np.asarray(vol.fitted_params["alpha"], dtype=np.float64)  # type: ignore[index]
         beta = np.asarray(vol.fitted_params["beta"], dtype=np.float64)  # type: ignore[index]
         gamma = np.asarray(vol.fitted_params["gamma"], dtype=np.float64)  # type: ignore[index]
         delta = float(vol.fitted_params["delta"])  # type: ignore[index]
-        shock_moments = np.array([
-            np.mean((np.abs(innovations) - gamma_i * innovations) ** delta)
-            for gamma_i in gamma
-        ])
-        persistence = float(alpha @ shock_moments + beta.sum())
+        violation, feasible, persistence = _aparch_volatility_domain(
+            _describe_model(sim_spec), theta
+        )
+        if not feasible:
+            raise ValueError(
+                "APARCH simulation requires parameters in the exact stationary "
+                f"domain; maximum violation={violation:.3e}."
+            )
     elif isinstance(vol, EGARCH):
         omega = float(vol.fitted_params["omega"])  # type: ignore[index]
         alpha = np.asarray(vol.fitted_params["alpha"], dtype=np.float64)  # type: ignore[index]
@@ -2963,10 +2847,12 @@ def simulate_spec(
         alpha = np.asarray(vol.fitted_params["alpha"], dtype=np.float64)  # type: ignore[index]
         beta = np.asarray(vol.fitted_params["beta"], dtype=np.float64)  # type: ignore[index]
         gamma = np.asarray(vol.fitted_params["gamma"], dtype=np.float64)  # type: ignore[index]
-        p_neg = _negative_probability(
+        negative_second_moment = negative_half_second_moment(
             distribution, nu, lam, rho, zeta, shape_lambda
         )
-        persistence = float(alpha.sum() + beta.sum() + p_neg * gamma.sum())
+        persistence = float(
+            alpha.sum() + beta.sum() + negative_second_moment * gamma.sum()
+        )
     else:
         omega = explicit_constant_sigma2 if explicit_constant_sigma2 is not None else float(np.var(data[:1]) if total == 1 else 1.0)
         alpha = np.zeros(0, dtype=np.float64)
@@ -2975,9 +2861,9 @@ def simulate_spec(
         persistence = 0.0
 
     if isinstance(vol, APARCH):
-        unconditional_power = omega / (1.0 - persistence) if persistence < 1.0 else 1.0
-        unconditional_variance = max(unconditional_power, 1e-12) ** (2.0 / delta)
-        aparch_power[:] = max(unconditional_power, 1e-12)
+        unconditional_power = omega / (1.0 - persistence)
+        unconditional_variance = unconditional_power ** (2.0 / delta)
+        aparch_power[:] = unconditional_power
     elif isinstance(vol, EGARCH):
         unconditional_variance = float(np.exp(omega / (1.0 - persistence))) if persistence < 1.0 else 1.0
     else:
@@ -2992,7 +2878,11 @@ def simulate_spec(
         if vol is None:
             sigma2[t] = unconditional_variance
         elif t == 0:
-            sigma2[t] = max(unconditional_variance, 1e-12)
+            sigma2[t] = (
+                unconditional_variance
+                if isinstance(vol, APARCH)
+                else max(unconditional_variance, 1e-12)
+            )
         elif isinstance(vol, APARCH):
             value = omega
             for i, alpha_i in enumerate(alpha, start=1):
@@ -3005,8 +2895,8 @@ def simulate_spec(
                 value += float(beta_j) * float(
                     aparch_power[idx] if idx >= 0 else unconditional_power
                 )
-            aparch_power[t] = max(value, 1e-16)
-            sigma2[t] = max(aparch_power[t] ** (2.0 / delta), 1e-12)
+            aparch_power[t] = value
+            sigma2[t] = aparch_power[t] ** (2.0 / delta)
         elif isinstance(vol, EGARCH):
             value = omega
             for i, alpha_i in enumerate(alpha, start=1):

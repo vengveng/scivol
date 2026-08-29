@@ -81,6 +81,14 @@ VLK_ARMA_RECURSION_INLINE void add_arch_first(
     current[alpha_index] += lagged_residual * lagged_residual;
 }
 
+VLK_ARMA_RECURSION_INLINE void add_shock_coefficient_first(
+    double* current,
+    std::size_t coefficient_index,
+    double lagged_residual)
+{
+    current[coefficient_index] += lagged_residual * lagged_residual;
+}
+
 VLK_ARMA_RECURSION_INLINE void add_garch_first(
     double* current,
     std::size_t width,
@@ -143,6 +151,24 @@ VLK_ARMA_RECURSION_INLINE void add_arch_second(
     }
 }
 
+VLK_ARMA_RECURSION_INLINE void add_shock_coefficient_second(
+    double* current,
+    std::size_t width,
+    std::size_t coefficient_index,
+    double lagged_residual,
+    const double* residual_first)
+{
+    for (std::size_t row = 0; row < width; ++row) {
+        for (std::size_t column = row; column < width; ++column) {
+            const std::size_t packed = packed_index(width, row, column);
+            if (row == coefficient_index)
+                current[packed] += 2.0 * lagged_residual * residual_first[column];
+            if (column == coefficient_index)
+                current[packed] += 2.0 * lagged_residual * residual_first[row];
+        }
+    }
+}
+
 VLK_ARMA_RECURSION_INLINE void add_garch_second(
     double* current,
     std::size_t width,
@@ -166,12 +192,14 @@ VLK_ARMA_RECURSION_INLINE void add_garch_second(
 }  // namespace arma_garch_equation
 
 template<std::size_t PAr, std::size_t QMa,
-         std::size_t PVol, std::size_t QVol>
+         std::size_t PVol, std::size_t QVol, bool Leverage = false>
 struct ArmaGarchRecursion {
     static_assert(PVol > 0u && QVol > 0u);
 
     static constexpr std::size_t mean_parameters = 1u + PAr + QMa;
-    static constexpr std::size_t K = mean_parameters + 1u + PVol + QVol;
+    static constexpr bool leverage = Leverage;
+    static constexpr std::size_t K =
+        mean_parameters + 1u + PVol + (Leverage ? PVol : 0u) + QVol;
     static constexpr std::size_t K2 = K * (K + 1u) / 2u;
     static constexpr std::size_t maximum_lag = std::max(
         std::max(PAr, QMa), std::max(PVol, QVol));
@@ -180,7 +208,9 @@ struct ArmaGarchRecursion {
     static constexpr std::size_t ma_start = ar_start + PAr;
     static constexpr std::size_t omega_index = mean_parameters;
     static constexpr std::size_t alpha_start = omega_index + 1u;
-    static constexpr std::size_t beta_start = alpha_start + PVol;
+    static constexpr std::size_t gamma_start = alpha_start + PVol;
+    static constexpr std::size_t beta_start =
+        gamma_start + (Leverage ? PVol : 0u);
 
     using ValueHistory = std::array<double, maximum_lag>;
     using First = std::array<double, K>;
@@ -224,8 +254,16 @@ struct ArmaGarchRecursion {
         for (std::size_t lag = 0; lag < PVol; ++lag) {
             const double residual =
                 residual_history[(time - 1u - lag) % maximum_lag];
-            arma_garch_equation::add_squared_product(
-                variance, theta[alpha_start + lag], residual);
+            if constexpr (Leverage) {
+                const double coefficient = theta[alpha_start + lag]
+                    + (residual < 0.0
+                        ? theta[gamma_start + lag] : 0.0);
+                arma_garch_equation::add_squared_product(
+                    variance, coefficient, residual);
+            } else {
+                arma_garch_equation::add_squared_product(
+                    variance, theta[alpha_start + lag], residual);
+            }
         }
         for (std::size_t lag = 0; lag < QVol; ++lag) {
             arma_garch_equation::add_product(
@@ -269,9 +307,16 @@ struct ArmaGarchRecursion {
             const double residual = residual_history[slot];
             const auto& previous = residual_first_history[slot];
             const std::size_t alpha = alpha_start + lag;
+            const bool negative = Leverage && residual < 0.0;
+            const double coefficient = theta[alpha]
+                + (negative ? theta[gamma_start + lag] : 0.0);
             arma_garch_equation::add_arch_first(
-                variance_first.data(), K, alpha, theta[alpha], residual,
+                variance_first.data(), K, alpha, coefficient, residual,
                 previous.data());
+            if (negative) {
+                arma_garch_equation::add_shock_coefficient_first(
+                    variance_first.data(), gamma_start + lag, residual);
+            }
         }
         for (std::size_t lag = 0; lag < QVol; ++lag) {
             const std::size_t slot = (time - 1u - lag) % maximum_lag;
@@ -312,9 +357,17 @@ struct ArmaGarchRecursion {
             const auto& first = residual_first_history[slot];
             const auto& second = residual_second_history[slot];
             const std::size_t alpha = alpha_start + lag;
+            const bool negative = Leverage && residual < 0.0;
+            const double coefficient = theta[alpha]
+                + (negative ? theta[gamma_start + lag] : 0.0);
             arma_garch_equation::add_arch_second(
-                variance_second.data(), K, alpha, theta[alpha], residual,
+                variance_second.data(), K, alpha, coefficient, residual,
                 first.data(), second.data());
+            if (negative) {
+                arma_garch_equation::add_shock_coefficient_second(
+                    variance_second.data(), K, gamma_start + lag,
+                    residual, first.data());
+            }
         }
         for (std::size_t lag = 0; lag < QVol; ++lag) {
             const std::size_t slot = (time - 1u - lag) % maximum_lag;
@@ -326,9 +379,30 @@ struct ArmaGarchRecursion {
                 previous_first.data(), previous_second.data());
         }
     }
+
+    VLK_ARMA_RECURSION_INLINE static bool differentiable(
+        std::size_t time,
+        const ValueHistory& residual_history,
+        const FirstHistory& residual_first_history)
+    {
+        if constexpr (!Leverage)
+            return true;
+        for (std::size_t lag = 0; lag < PVol; ++lag) {
+            const std::size_t slot = (time - 1u - lag) % maximum_lag;
+            if (residual_history[slot] != 0.0)
+                continue;
+            for (double derivative : residual_first_history[slot]) {
+                if (derivative != 0.0)
+                    return false;
+            }
+        }
+        return true;
+    }
 };
 
 using Arma11Garch11Recursion = ArmaGarchRecursion<1u, 1u, 1u, 1u>;
+using Arma11GjrGarch11Recursion =
+    ArmaGarchRecursion<1u, 1u, 1u, 1u, true>;
 
 #undef VLK_ARMA_RECURSION_INLINE
 

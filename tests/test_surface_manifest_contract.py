@@ -9,11 +9,13 @@ from scivol._devtools.surface_manifest import (
     C_FUSED,
     LEGACY_ENGINE,
     NATIVE_ENGINE,
+    NATIVE_JETS,
     PY_C,
     SURFACE_BY_ID,
     SURFACES,
     VERIFICATION_EXCEPTIONS,
     canonical_tensor_markdown,
+    native_jet_markdown,
     verification_exceptions_markdown,
 )
 from scivol.roles import Role
@@ -32,9 +34,9 @@ def _generated_block(text: str, name: str) -> str:
 def test_manifest_declares_current_univariate_surface_tensor() -> None:
     surface_ids = [surface.surface_id for surface in SURFACES]
 
-    assert len(SURFACES) == 126
+    assert len(SURFACES) == 134
     assert len(surface_ids) == len(set(surface_ids))
-    assert len(SURFACES) + len(ABSENT_SURFACE_IDS) == 128
+    assert len(SURFACES) + len(ABSENT_SURFACE_IDS) == 136
     assert set(ABSENT_SURFACE_IDS).isdisjoint(surface_ids)
 
 
@@ -74,6 +76,8 @@ def test_specific_log_path_regressions_are_encoded() -> None:
     gjr_normal = SURFACE_BY_ID["mean:none+vol:gjr-garch+density:normal"]
     gjr_studentt = SURFACE_BY_ID["mean:none+vol:gjr-garch+density:studentt"]
     gjr_ged = SURFACE_BY_ID["mean:none+vol:gjr-garch+density:ged"]
+    egarch_normal = SURFACE_BY_ID["mean:none+vol:egarch+density:normal"]
+    arma_egarch_ged = SURFACE_BY_ID["mean:arma+vol:egarch+density:ged"]
 
     assert garch_ged.log_nll == C_FUSED
     assert garch_ged.log_grad == C_FUSED
@@ -83,14 +87,18 @@ def test_specific_log_path_regressions_are_encoded() -> None:
     assert garch_ged.default_log_mode is True
     assert garch_normal.default_engine == NATIVE_ENGINE
     assert garch_ged.default_engine == NATIVE_ENGINE
-    assert arma_garch_ged.default_engine == LEGACY_ENGINE
-    assert arma_garch_ged.default_log_mode is False
+    assert arma_garch_ged.default_engine == NATIVE_ENGINE
+    assert arma_garch_ged.default_log_mode is True
     assert gjr_normal.default_log_mode is True
-    assert gjr_studentt.default_log_mode is False
-    assert gjr_studentt.default_engine == LEGACY_ENGINE
+    assert gjr_studentt.default_log_mode is True
+    assert gjr_studentt.default_engine == NATIVE_ENGINE
+    assert egarch_normal.default_log_mode is True
+    assert egarch_normal.default_engine == NATIVE_ENGINE
+    assert arma_egarch_ged.default_log_mode is True
+    assert arma_egarch_ged.default_engine == NATIVE_ENGINE
 
 
-def test_native_defaults_cover_only_the_promoted_fixed_mle_rows() -> None:
+def test_native_defaults_cover_the_promoted_fixed_mle_rows() -> None:
     native_defaults = {
         surface.surface_id
         for surface in SURFACES
@@ -99,12 +107,43 @@ def test_native_defaults_cover_only_the_promoted_fixed_mle_rows() -> None:
     expected = {
         surface.surface_id
         for surface in SURFACES
-        if surface.volatility == "GARCH"
-        and surface.mean is None
-        and surface.density in ("Normal", "StudentT", "SkewT", "GED")
+        if (
+            surface.mean in (None, "ARMA")
+            and surface.volatility in ("GARCH", "GJR-GARCH", "APARCH")
+        ) or surface.volatility == "EGARCH" and surface.mean in (None, "ARMA")
     }
 
     assert native_defaults == expected
+
+
+def test_complete_native_jets_have_machine_checked_completion_evidence() -> None:
+    expected = {
+        surface.surface_id
+        for surface in SURFACES
+        if (
+            surface.volatility in ("GARCH", "GJR-GARCH", "APARCH")
+            and surface.mean in (None, "ARMA")
+        ) or surface.volatility == "EGARCH" and surface.mean in (None, "ARMA")
+    }
+    assert {contract.surface_id for contract in NATIVE_JETS} == expected
+
+    for contract in NATIVE_JETS:
+        assert contract.status == "complete"
+        assert contract.order_axes
+        assert contract.general_order
+        assert contract.generated_fixed_orders
+        assert contract.precompiled_orders
+        assert contract.additive_objective
+        assert contract.sparse_requests
+        assert contract.transformed_hessian
+        assert contract.model_domain
+        assert contract.theta_ad
+        assert contract.transformed_ad
+        assert contract.sparse_projection
+        assert contract.fixed_runtime_parity
+        assert Path(contract.ad_evidence).is_file()
+        assert Path(contract.dispatch_evidence).is_file()
+        assert Path(contract.performance_evidence).is_file()
 
 
 def test_verification_exceptions_cover_non_full_validation() -> None:
@@ -129,3 +168,4 @@ def test_models_md_generated_blocks_match_manifest() -> None:
 
     assert _generated_block(text, "tensor") == canonical_tensor_markdown()
     assert _generated_block(text, "verification-exceptions") == verification_exceptions_markdown()
+    assert _generated_block(text, "native-jets") == native_jet_markdown()

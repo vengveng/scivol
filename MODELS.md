@@ -1,6 +1,6 @@
 # scivol Model Surface Contract
 
-**Last Updated:** 2026-08-27
+**Last Updated:** 2026-08-29
 
 `MODELS.md` is a readable projection of the machine-checked contract in
 `scivol._devtools.surface_manifest`. The manifest is the source of truth for
@@ -63,6 +63,7 @@ A surface is a mean model × volatility model × distribution combination.
 | `ARMA` | `GARCH` | linked joint | `F` | `F` | `F` | `F` | `F` | `F` | `F` | `F` |
 | `ARMA` | `GJR-GARCH` | linked joint | `F` | `F` | `F` | `F` | `F` | `F` | `F` | `F` |
 | `ARMA` | `EGARCH` | linked joint | `F` | `F` | `F` | `F` | `F` | `F` | `F` | `F` |
+| `ARMA` | `APARCH` | linked joint | `F` | `F` | `F` | `F` | `F` | `F` | `F` | `F` |
 | `ARX` | `—` | standalone mean | `F` | `F` | `F` | `F` | `F` | `F` | `F` | `F` |
 | `ARX` | `GARCH` | linked joint | `F` | `F` | `F` | `F` | `F` | `F` | `F` | `F` |
 | `ARX` | `GJR-GARCH` | linked joint | `F` | `F` | `F` | `F` | `F` | `F` | `F` | `F` |
@@ -86,9 +87,10 @@ zero and variance one.
 
 `APARCH` uses the asymmetric-power recursion of
 [Ding, Granger, and Engle (1993)](<https://doi.org/10.1016/0927-5398(93)90006-D>)
-and supports orders up to 3. Its current tensor row is zero-mean and MLE-only;
-theta-space is the default, with the same public transformed optimization option
-as other volatility models.
+at arbitrary positive ARCH and GARCH orders. Zero-mean and genuine joint ARMA
+surfaces are MLE-only and use the native transformed jet by default. Their exact
+stationarity condition weights each alpha by the fitted density's asymmetric
+power moment; Student-t and Skew-t additionally enforce `delta < nu`.
 
 ---
 
@@ -123,15 +125,29 @@ Optimization defaults are benchmark policy, not surface-availability policy.
 They are maintained through `benchmark_optimizers.py` and exposed on
 `result.fit_info`, including the effective optimization space.
 
-The staged native C++ engine is the default for fixed MLE GARCH with Normal,
-Student-t, Skew-t, or GED density. It is available explicitly as
-`solver="native"` for fixed GARCH and genuine joint ARMA-GARCH specifications
-across all eight densities. Both entries support arbitrary declared orders,
-complete additive `F/G/H` jets, and transformed-coordinate optimization.
+The staged native C++ engine is the default for fixed MLE GARCH, GJR-GARCH,
+EGARCH, APARCH, and their genuine joint ARMA forms across all eight densities.
+These eight families support arbitrary declared orders, complete additive
+`F/G/H` jets, and transformed-coordinate optimization.
 `solver="slsqp"` and `solver="legacy"` select the independent established
-engine; `log_mode=False` selects its theta-space path when no solver is supplied.
-Joint ARMA-GARCH, GH-family GARCH, QMLE, and auto-selection retain established
-defaults pending their own promotion gates.
+solver on the same canonical jet for EGARCH and APARCH; other historical
+families retain their established adapters.
+QMLE retains the established engine. Auto-selection uses each fixed candidate's
+canonical default engine, so promoted GARCH, GJR-GARCH, EGARCH, APARCH, and
+their ARMA forms use the native path.
+
+<!-- surface-manifest:native-jets:start -->
+| Jet family | Densities | Status | General order | Generated fixed path | Evidence | Default |
+|---|---|---|---|---|---|---|
+| GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_vol,q_vol)` runtime | template-generated; precompiled 11, 12, 21, 22 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| GJR-GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_vol,q_vol)` runtime | template-generated; precompiled 11, 12, 21, 22 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| EGARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_vol,q_vol)` runtime | template-generated; precompiled 11, 12, 21, 22 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| APARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_vol,q_vol)` runtime | template-generated; precompiled 11, 12, 21, 22 | AD full; dispatch and `benchmark_native_aparch.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| ARMA + GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_ar,q_ma,p_vol,q_vol)` runtime | template-generated; precompiled 1111 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| ARMA + GJR-GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_ar,q_ma,p_vol,q_vol)` runtime | template-generated; precompiled 1111 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| ARMA + EGARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_ar,q_ma,p_vol,q_vol)` runtime | template-generated; precompiled 1111 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| ARMA + APARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_ar,q_ma,p_vol,q_vol)` runtime | template-generated; precompiled 1111 | AD full; dispatch and `benchmark_native_aparch.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+<!-- surface-manifest:native-jets:end -->
 
 ---
 

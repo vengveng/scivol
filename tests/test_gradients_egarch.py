@@ -16,19 +16,8 @@ import pytest
 from numpy.typing import NDArray
 
 import scivol._core as _c
-from scivol._devtools.ad_oracle import egarch_logspace_value_grad_hess, egarch_value_grad_hess
+from scivol._devtools.ad_oracle import egarch_value_grad_hess
 from scivol._evaluation import _egarch_abs_moment, _hansen_skewt_ppf
-from scivol._kernels.transforms import (
-    log_hessian_egarch,
-    pack_egarch,
-    pack_egarch_ged,
-    pack_egarch_skewt,
-    pack_egarch_studentt,
-    unpack_egarch,
-    unpack_egarch_ged,
-    unpack_egarch_skewt,
-    unpack_egarch_studentt,
-)
 
 
 if importlib.util.find_spec("jax") is None:
@@ -296,67 +285,3 @@ class TestEGARCHGEDAD:
         np.testing.assert_allclose(value_c, value_ref, rtol=3e-6, atol=3e-6)
         np.testing.assert_allclose(grad_c, grad_ref, rtol=7e-5, atol=1e-5)
         np.testing.assert_allclose(hess_c, hess_ref, rtol=2e-3, atol=3e-2)
-
-
-@pytest.mark.parametrize(
-    ("dist", "params", "unpack_fn", "pack_fn", "resid_fixture"),
-    [
-        (
-            "normal",
-            np.array([-0.45, 0.08, 0.04, -0.06, 0.02, 0.95], dtype=np.float64),
-            unpack_egarch,
-            pack_egarch,
-            "normal",
-        ),
-        (
-            "studentt",
-            np.array([-0.45, 0.08, 0.04, -0.06, 0.02, 0.95, 8.0], dtype=np.float64),
-            unpack_egarch_studentt,
-            pack_egarch_studentt,
-            "studentt",
-        ),
-        (
-            "ged",
-            np.array([-0.45, 0.08, 0.04, -0.06, 0.02, 0.95, 1.7], dtype=np.float64),
-            unpack_egarch_ged,
-            pack_egarch_ged,
-            "normal",
-        ),
-        (
-            "skewt",
-            np.array([-0.45, 0.08, 0.04, -0.06, 0.02, 0.95, 8.0, -0.15], dtype=np.float64),
-            unpack_egarch_skewt,
-            pack_egarch_skewt,
-            "skewt",
-        ),
-    ],
-)
-def test_egarch_pq_logspace_grad_hess_match_ad(
-    request,
-    dist: str,
-    params: NDArray[np.float64],
-    unpack_fn,
-    pack_fn,
-    resid_fixture: str,
-) -> None:
-    resid = request.getfixturevalue(f"resid_{resid_fixture}_pq")
-    z = unpack_fn(params, 2, 1)
-    theta = pack_fn(z, 2, 1)
-    sigma_grad = _sigma_seed(resid)
-
-    log_value_fn = getattr(_c, f"_log_egarch_ll_pq_{dist}")
-    log_grad_fn = getattr(_c, f"_log_egarch_ll_grad_pq_{dist}")
-    value_c = float(log_value_fn(_as_cptr(z), _as_cptr(resid), _as_cptr(_sigma_seed(resid)), resid.size, 2, 1))
-    grad_z = np.zeros_like(z)
-    log_grad_fn(_as_cptr(z), _as_cptr(resid), _as_cptr(sigma_grad), _as_cptr(grad_z), resid.size, 2, 1)
-    grad_theta, hess_theta = _c_egarch_grad_hess(theta, resid, dist, p=2, q=1)
-    hess_z = log_hessian_egarch(theta, grad_theta, hess_theta, 2, 1, dist=dist)
-    value_ref, grad_ref, hess_ref = egarch_logspace_value_grad_hess(z, resid, dist=dist, p=2, q=1)
-
-    value_rtol = 5e-6 if dist != "skewt" else 2e-5
-    grad_rtol = 1e-4 if dist != "skewt" else 6e-3
-    hess_rtol = 3e-3 if dist != "skewt" else 3e-2
-    hess_atol = 3e-2 if dist != "skewt" else 6e-2
-    np.testing.assert_allclose(value_c, value_ref, rtol=value_rtol, atol=5e-6)
-    np.testing.assert_allclose(grad_z, grad_ref, rtol=grad_rtol, atol=1e-5)
-    np.testing.assert_allclose(hess_z, hess_ref, rtol=hess_rtol, atol=hess_atol)

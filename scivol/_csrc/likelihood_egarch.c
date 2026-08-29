@@ -1,3 +1,8 @@
+/*
+ * SCIVOL-LEGACY: Zero-mean EGARCH entry points in this file remain only as
+ * internal benchmark comparators. Public MLE and fixed-parameter evaluation
+ * use the floor-free native jet and shared result filter.
+ */
 #include <stddef.h>
 #include <math.h>
 #include <stdlib.h>

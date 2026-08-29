@@ -39,6 +39,43 @@ namespace vlk::experiment::runtime {
     std::size_t workspace_bytes,
     double* coordinate_hessian) noexcept;
 
+[[nodiscard]] std::size_t arma_gjr_garch_map_workspace_bytes(
+    const ArmaGarchLayout& layout,
+    std::uint32_t density) noexcept;
+
+[[nodiscard]] bool arma_gjr_garch_coordinate_forward(
+    const ArmaGarchLayout& layout,
+    std::uint32_t density,
+    const double* coordinates,
+    bool need_jacobian,
+    void* workspace,
+    std::size_t workspace_bytes,
+    double* parameters,
+    double* jacobian) noexcept;
+
+[[nodiscard]] bool arma_gjr_garch_coordinate_inverse(
+    const ArmaGarchLayout& layout,
+    std::uint32_t density,
+    const double* parameters,
+    void* workspace,
+    std::size_t workspace_bytes,
+    double* coordinates) noexcept;
+
+[[nodiscard]] std::size_t arma_gjr_garch_curvature_workspace_bytes(
+    const ArmaGarchLayout& layout,
+    std::uint32_t density) noexcept;
+
+[[nodiscard]] bool add_arma_gjr_garch_coordinate_curvature(
+    const ArmaGarchLayout& layout,
+    std::uint32_t density,
+    const double* coordinates,
+    const double* parameters,
+    const double* theta_gradient,
+    const double* jacobian,
+    void* workspace,
+    std::size_t workspace_bytes,
+    double* coordinate_hessian) noexcept;
+
 }  // namespace vlk::experiment::runtime
 
 #endif

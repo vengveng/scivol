@@ -10,8 +10,7 @@
 #include <float.h>
 #include "math_and_helpers.h"
 
-/* lgamma_approx, digamma_approx, and constants (H_FLOOR, LOG_2PI, etc.) 
- * are defined in math_and_helpers.h */
+/* Shared special functions and constants are defined in math_and_helpers.h. */
 
 /* ========================================================================== */
 /* Per-observation NLL: VARIABLE PARTS ONLY (no constants)                    */
@@ -319,7 +318,7 @@ static inline int ged_obs_derivs(
     double *ell_nu_nu
 )
 {
-    const double h_safe = h > H_FLOOR ? h : H_FLOOR;
+    const double h_safe = h;
     const double abs_e = MAX(fabs(e), DBL_MIN);
     const double sign_e = (e >= 0.0) ? 1.0 : -1.0;
     const double inv_h = 1.0 / h_safe;
@@ -394,17 +393,12 @@ double arma_gjr_garch_nll_pq_normal(
 
     if (omega <= 0.0) return 1e10;
 
-    double alpha_sum = 0.0, gamma_sum = 0.0, beta_sum = 0.0;
     for (size_t i = 0; i < P_arch; ++i) {
-        if (alpha[i] < 0.0 || gamma[i] < 0.0) return 1e10;
-        alpha_sum += alpha[i];
-        gamma_sum += gamma[i];
+        if (alpha[i] < 0.0 || alpha[i] + gamma[i] < 0.0) return 1e10;
     }
     for (size_t j = 0; j < Q_garch; ++j) {
         if (beta[j] < 0.0) return 1e10;
-        beta_sum += beta[j];
     }
-    if (alpha_sum + gamma_sum + beta_sum >= 1.0) return 1e10;
 
     for (size_t i = 0; i < max_lag; ++i) {
         resid[i] = e0[i];
@@ -428,7 +422,7 @@ double arma_gjr_garch_nll_pq_normal(
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
 
-        if (h_t < H_FLOOR || !isfinite(h_t)) return 1e10;
+        if (!(h_t > 0.0) || !isfinite(h_t)) return 1e10;
         sum_nll += normal_nll_var(resid[t], h_t);
     }
 
@@ -475,17 +469,12 @@ double arma_gjr_garch_nll_grad_pq_normal(
     const double *beta = params + idx;
 
     if (omega <= 0.0) return 1e10;
-    double alpha_sum = 0.0, gamma_sum = 0.0, beta_sum = 0.0;
     for (size_t i = 0; i < P_arch; ++i) {
-        if (alpha[i] < 0.0 || gamma[i] < 0.0) return 1e10;
-        alpha_sum += alpha[i];
-        gamma_sum += gamma[i];
+        if (alpha[i] < 0.0 || alpha[i] + gamma[i] < 0.0) return 1e10;
     }
     for (size_t j = 0; j < Q_garch; ++j) {
         if (beta[j] < 0.0) return 1e10;
-        beta_sum += beta[j];
     }
-    if (alpha_sum + gamma_sum + beta_sum >= 1.0) return 1e10;
 
     for (size_t i = 0; i < max_lag; ++i) {
         resid[i] = e0[i];
@@ -543,7 +532,7 @@ double arma_gjr_garch_nll_grad_pq_normal(
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
-        if (h_t < H_FLOOR || !isfinite(h_t)) {
+        if (!(h_t > 0.0) || !isfinite(h_t)) {
             free(de_hist); free(dh_hist); free(de_curr); free(dh_curr);
             dzeros(grad, K);
             return 1e10;
@@ -629,22 +618,17 @@ void arma_gjr_garch_hess_pq_normal(
     const double *beta = params + idx;
 
     if (omega <= 0.0) return;
-    double alpha_sum = 0.0, gamma_sum = 0.0, beta_sum = 0.0;
     for (size_t i = 0; i < P_arch; ++i) {
-        if (alpha[i] < 0.0 || gamma[i] < 0.0) return;
-        alpha_sum += alpha[i];
-        gamma_sum += gamma[i];
+        if (alpha[i] < 0.0 || alpha[i] + gamma[i] < 0.0) return;
     }
     for (size_t j = 0; j < Q_garch; ++j) {
         if (beta[j] < 0.0) return;
-        beta_sum += beta[j];
     }
-    if (alpha_sum + gamma_sum + beta_sum >= 1.0) return;
 
     for (size_t i = 0; i < max_lag; ++i) {
         resid[i] = e0[i];
         sigma2[i] = h0[i];
-        if (sigma2[i] < H_FLOOR || !isfinite(sigma2[i])) {
+        if (!(sigma2[i] > 0.0) || !isfinite(sigma2[i])) {
             dzeros(hess, K * K);
             return;
         }
@@ -716,7 +700,7 @@ void arma_gjr_garch_hess_pq_normal(
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
-        if (h_t < H_FLOOR || !isfinite(h_t)) {
+        if (!(h_t > 0.0) || !isfinite(h_t)) {
             dzeros(hess, K * K);
             free(de_hist); free(dh_hist); free(d2e_hist); free(d2h_hist);
             free(de_curr); free(dh_curr); free(d2e_curr); free(d2h_curr);
@@ -856,17 +840,12 @@ double arma_gjr_garch_nll_pq_studentt(
     const double *beta = params + idx;
 
     if (omega <= 0.0) return 1e10;
-    double alpha_sum = 0.0, gamma_sum = 0.0, beta_sum = 0.0;
     for (size_t i = 0; i < P_arch; ++i) {
-        if (alpha[i] < 0.0 || gamma[i] < 0.0) return 1e10;
-        alpha_sum += alpha[i];
-        gamma_sum += gamma[i];
+        if (alpha[i] < 0.0 || alpha[i] + gamma[i] < 0.0) return 1e10;
     }
     for (size_t j = 0; j < Q_garch; ++j) {
         if (beta[j] < 0.0) return 1e10;
-        beta_sum += beta[j];
     }
-    if (alpha_sum + gamma_sum + beta_sum >= 1.0) return 1e10;
 
     for (size_t i = 0; i < max_lag; ++i) {
         resid[i] = e0[i];
@@ -890,7 +869,7 @@ double arma_gjr_garch_nll_pq_studentt(
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
-        if (h_t < H_FLOOR || !isfinite(h_t)) return 1e10;
+        if (!(h_t > 0.0) || !isfinite(h_t)) return 1e10;
         sum_nll += studentt_nll_var(resid[t], h_t, nu);
     }
 
@@ -940,17 +919,12 @@ double arma_gjr_garch_nll_grad_pq_studentt(
     const double nu = params[K_base];
 
     if (omega <= 0.0 || nu <= NU_MIN) return 1e10;
-    double alpha_sum = 0.0, gamma_sum = 0.0, beta_sum = 0.0;
     for (size_t i = 0; i < P_arch; ++i) {
-        if (alpha[i] < 0.0 || gamma[i] < 0.0) return 1e10;
-        alpha_sum += alpha[i];
-        gamma_sum += gamma[i];
+        if (alpha[i] < 0.0 || alpha[i] + gamma[i] < 0.0) return 1e10;
     }
     for (size_t j = 0; j < Q_garch; ++j) {
         if (beta[j] < 0.0) return 1e10;
-        beta_sum += beta[j];
     }
-    if (alpha_sum + gamma_sum + beta_sum >= 1.0) return 1e10;
 
     for (size_t i = 0; i < max_lag; ++i) {
         resid[i] = e0[i];
@@ -1004,7 +978,7 @@ double arma_gjr_garch_nll_grad_pq_studentt(
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
-        if (h_t < H_FLOOR || !isfinite(h_t)) {
+        if (!(h_t > 0.0) || !isfinite(h_t)) {
             free(de_hist); free(dh_hist); free(de_curr); free(dh_curr);
             dzeros(grad, K);
             return 1e10;
@@ -1101,22 +1075,17 @@ void arma_gjr_garch_hess_pq_studentt(
     const double nu = params[K_base];
 
     if (omega <= 0.0 || nu <= NU_MIN) return;
-    double alpha_sum = 0.0, gamma_sum = 0.0, beta_sum = 0.0;
     for (size_t i = 0; i < P_arch; ++i) {
-        if (alpha[i] < 0.0 || gamma[i] < 0.0) return;
-        alpha_sum += alpha[i];
-        gamma_sum += gamma[i];
+        if (alpha[i] < 0.0 || alpha[i] + gamma[i] < 0.0) return;
     }
     for (size_t j = 0; j < Q_garch; ++j) {
         if (beta[j] < 0.0) return;
-        beta_sum += beta[j];
     }
-    if (alpha_sum + gamma_sum + beta_sum >= 1.0) return;
 
     for (size_t i = 0; i < max_lag; ++i) {
         resid[i] = e0[i];
         sigma2[i] = h0[i];
-        if (sigma2[i] < H_FLOOR || !isfinite(sigma2[i])) {
+        if (!(sigma2[i] > 0.0) || !isfinite(sigma2[i])) {
             dzeros(hess, K * K);
             return;
         }
@@ -1191,7 +1160,7 @@ void arma_gjr_garch_hess_pq_studentt(
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
-        if (h_t < H_FLOOR || !isfinite(h_t)) {
+        if (!(h_t > 0.0) || !isfinite(h_t)) {
             dzeros(hess, K * K);
             free(de_hist); free(dh_hist); free(d2e_hist); free(d2h_hist);
             free(de_curr); free(dh_curr); free(d2e_curr); free(d2h_curr);
@@ -1350,17 +1319,12 @@ double arma_gjr_garch_nll_pq_ged(
 
     ged_cache_t cache;
     if (omega <= 0.0 || !ged_precompute_full(nu, &cache)) return 1e10;
-    double alpha_sum = 0.0, gamma_sum = 0.0, beta_sum = 0.0;
     for (size_t i = 0; i < P_arch; ++i) {
-        if (alpha[i] < 0.0 || gamma[i] < 0.0) return 1e10;
-        alpha_sum += alpha[i];
-        gamma_sum += gamma[i];
+        if (alpha[i] < 0.0 || alpha[i] + gamma[i] < 0.0) return 1e10;
     }
     for (size_t j = 0; j < Q_garch; ++j) {
         if (beta[j] < 0.0) return 1e10;
-        beta_sum += beta[j];
     }
-    if (alpha_sum + gamma_sum + beta_sum >= 1.0) return 1e10;
 
     for (size_t i = 0; i < max_lag; ++i) {
         resid[i] = e0[i];
@@ -1383,7 +1347,7 @@ double arma_gjr_garch_nll_pq_ged(
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
-        if (h_t < H_FLOOR || !isfinite(h_t)) return 1e10;
+        if (!(h_t > 0.0) || !isfinite(h_t)) return 1e10;
 
         double value, ell_e, ell_h, ell_nu, ell_ee, ell_eh, ell_hh, ell_e_nu, ell_h_nu, ell_nu_nu;
         if (!ged_obs_derivs(resid[t], h_t, &cache, &value, &ell_e, &ell_h, &ell_nu, &ell_ee, &ell_eh, &ell_hh, &ell_e_nu, &ell_h_nu, &ell_nu_nu)) {
@@ -1439,17 +1403,12 @@ double arma_gjr_garch_nll_grad_pq_ged(
 
     ged_cache_t cache;
     if (omega <= 0.0 || !ged_precompute_full(nu, &cache)) return 1e10;
-    double alpha_sum = 0.0, gamma_sum = 0.0, beta_sum = 0.0;
     for (size_t i = 0; i < P_arch; ++i) {
-        if (alpha[i] < 0.0 || gamma[i] < 0.0) return 1e10;
-        alpha_sum += alpha[i];
-        gamma_sum += gamma[i];
+        if (alpha[i] < 0.0 || alpha[i] + gamma[i] < 0.0) return 1e10;
     }
     for (size_t j = 0; j < Q_garch; ++j) {
         if (beta[j] < 0.0) return 1e10;
-        beta_sum += beta[j];
     }
-    if (alpha_sum + gamma_sum + beta_sum >= 1.0) return 1e10;
 
     for (size_t i = 0; i < max_lag; ++i) {
         resid[i] = e0[i];
@@ -1498,7 +1457,7 @@ double arma_gjr_garch_nll_grad_pq_ged(
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
-        if (h_t < H_FLOOR || !isfinite(h_t)) {
+        if (!(h_t > 0.0) || !isfinite(h_t)) {
             free(de_hist); free(dh_hist); free(de_curr); free(dh_curr);
             dzeros(grad, K);
             return 1e10;
@@ -1591,22 +1550,17 @@ void arma_gjr_garch_hess_pq_ged(
 
     ged_cache_t cache;
     if (omega <= 0.0 || !ged_precompute_full(nu, &cache)) return;
-    double alpha_sum = 0.0, gamma_sum = 0.0, beta_sum = 0.0;
     for (size_t i = 0; i < P_arch; ++i) {
-        if (alpha[i] < 0.0 || gamma[i] < 0.0) return;
-        alpha_sum += alpha[i];
-        gamma_sum += gamma[i];
+        if (alpha[i] < 0.0 || alpha[i] + gamma[i] < 0.0) return;
     }
     for (size_t j = 0; j < Q_garch; ++j) {
         if (beta[j] < 0.0) return;
-        beta_sum += beta[j];
     }
-    if (alpha_sum + gamma_sum + beta_sum >= 1.0) return;
 
     for (size_t i = 0; i < max_lag; ++i) {
         resid[i] = e0[i];
         sigma2[i] = h0[i];
-        if (sigma2[i] < H_FLOOR || !isfinite(sigma2[i])) {
+        if (!(sigma2[i] > 0.0) || !isfinite(sigma2[i])) {
             dzeros(hess, K * K);
             return;
         }
@@ -1675,7 +1629,7 @@ void arma_gjr_garch_hess_pq_ged(
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
-        if (h_t < H_FLOOR || !isfinite(h_t)) {
+        if (!(h_t > 0.0) || !isfinite(h_t)) {
             dzeros(hess, K * K);
             free(de_hist); free(dh_hist); free(d2e_hist); free(d2h_hist);
             free(de_curr); free(dh_curr); free(d2e_curr); free(d2h_curr);
@@ -1815,17 +1769,12 @@ double arma_gjr_garch_nll_pq_skewt(
     const double *beta = params + idx;
 
     if (omega <= 0.0) return 1e10;
-    double alpha_sum = 0.0, gamma_sum = 0.0, beta_sum = 0.0;
     for (size_t i = 0; i < P_arch; ++i) {
-        if (alpha[i] < 0.0 || gamma[i] < 0.0) return 1e10;
-        alpha_sum += alpha[i];
-        gamma_sum += gamma[i];
+        if (alpha[i] < 0.0 || alpha[i] + gamma[i] < 0.0) return 1e10;
     }
     for (size_t j = 0; j < Q_garch; ++j) {
         if (beta[j] < 0.0) return 1e10;
-        beta_sum += beta[j];
     }
-    if (alpha_sum + gamma_sum + beta_sum >= 1.0) return 1e10;
 
     for (size_t i = 0; i < max_lag; ++i) {
         resid[i] = e0[i];
@@ -1853,7 +1802,7 @@ double arma_gjr_garch_nll_pq_skewt(
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
-        if (h_t < H_FLOOR || !isfinite(h_t)) return 1e10;
+        if (!(h_t > 0.0) || !isfinite(h_t)) return 1e10;
         sum_nll += skewt_nll_var(resid[t], h_t, nu, a, b, lam);
     }
 
@@ -1905,17 +1854,12 @@ double arma_gjr_garch_nll_grad_pq_skewt(
     const double lam = params[K_base + 1];
 
     if (omega <= 0.0 || nu <= NU_MIN || fabs(lam) >= LAM_MAX) return 1e10;
-    double alpha_sum = 0.0, gamma_sum = 0.0, beta_sum = 0.0;
     for (size_t i = 0; i < P_arch; ++i) {
-        if (alpha[i] < 0.0 || gamma[i] < 0.0) return 1e10;
-        alpha_sum += alpha[i];
-        gamma_sum += gamma[i];
+        if (alpha[i] < 0.0 || alpha[i] + gamma[i] < 0.0) return 1e10;
     }
     for (size_t j = 0; j < Q_garch; ++j) {
         if (beta[j] < 0.0) return 1e10;
-        beta_sum += beta[j];
     }
-    if (alpha_sum + gamma_sum + beta_sum >= 1.0) return 1e10;
 
     skewt_cache_t cache;
     if (!skewt_precompute_full(nu, lam, &cache)) return 1e10;
@@ -1923,7 +1867,7 @@ double arma_gjr_garch_nll_grad_pq_skewt(
     for (size_t i = 0; i < max_lag; ++i) {
         resid[i] = e0[i];
         sigma2[i] = h0[i];
-        if (sigma2[i] < H_FLOOR || !isfinite(sigma2[i])) {
+        if (!(sigma2[i] > 0.0) || !isfinite(sigma2[i])) {
             dzeros(grad, K);
             return 1e10;
         }
@@ -1975,7 +1919,7 @@ double arma_gjr_garch_nll_grad_pq_skewt(
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
-        if (h_t < H_FLOOR || !isfinite(h_t)) {
+        if (!(h_t > 0.0) || !isfinite(h_t)) {
             free(de_hist); free(dh_hist); free(de_curr); free(dh_curr);
             dzeros(grad, K);
             return 1e10;
@@ -2070,17 +2014,12 @@ void arma_gjr_garch_hess_pq_skewt(
     const double lam = params[K_base + 1];
 
     if (omega <= 0.0 || nu <= NU_MIN || fabs(lam) >= LAM_MAX) return;
-    double alpha_sum = 0.0, gamma_sum = 0.0, beta_sum = 0.0;
     for (size_t i = 0; i < P_arch; ++i) {
-        if (alpha[i] < 0.0 || gamma[i] < 0.0) return;
-        alpha_sum += alpha[i];
-        gamma_sum += gamma[i];
+        if (alpha[i] < 0.0 || alpha[i] + gamma[i] < 0.0) return;
     }
     for (size_t j = 0; j < Q_garch; ++j) {
         if (beta[j] < 0.0) return;
-        beta_sum += beta[j];
     }
-    if (alpha_sum + gamma_sum + beta_sum >= 1.0) return;
 
     skewt_cache_t cache;
     if (!skewt_precompute_full(nu, lam, &cache)) return;
@@ -2088,7 +2027,7 @@ void arma_gjr_garch_hess_pq_skewt(
     for (size_t i = 0; i < max_lag; ++i) {
         resid[i] = e0[i];
         sigma2[i] = h0[i];
-        if (sigma2[i] < H_FLOOR || !isfinite(sigma2[i])) {
+        if (!(sigma2[i] > 0.0) || !isfinite(sigma2[i])) {
             dzeros(hess, K * K);
             return;
         }
@@ -2162,7 +2101,7 @@ void arma_gjr_garch_hess_pq_skewt(
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
-        if (h_t < H_FLOOR || !isfinite(h_t)) {
+        if (!(h_t > 0.0) || !isfinite(h_t)) {
             dzeros(hess, K * K);
             free(de_hist); free(dh_hist); free(d2e_hist); free(d2h_hist);
             free(de_curr); free(dh_curr); free(d2e_curr); free(d2h_curr);

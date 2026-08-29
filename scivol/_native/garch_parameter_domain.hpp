@@ -9,6 +9,23 @@
 
 namespace vlk::experiment::domain {
 
+[[nodiscard]] inline constexpr double stationary_machine_margin(
+    std::size_t coefficients) noexcept
+{
+    return 8.0 * static_cast<double>(coefficients + 1u)
+        * std::numeric_limits<double>::epsilon();
+}
+
+[[nodiscard]] inline constexpr double stationary_persistence_limit(
+    std::size_t coefficients, double requested_margin = 0.0) noexcept
+{
+    const double machine_margin = stationary_machine_margin(coefficients);
+    const double effective_margin = requested_margin > machine_margin
+        ? requested_margin
+        : machine_margin;
+    return 1.0 - effective_margin;
+}
+
 /*
  * The GED domain is nu > 0.  The transformed optimizer still needs a finite
  * coordinate edge because the exact Hessian forms terms of order nu^-3.
@@ -39,8 +56,7 @@ struct StationaryGarchDomain {
     static constexpr double positive_floor =
         std::numeric_limits<double>::min();
     static constexpr double machine_margin =
-        8.0 * static_cast<double>(Coefficients + 1u)
-        * std::numeric_limits<double>::epsilon();
+        stationary_machine_margin(Coefficients);
     static constexpr double student_t_floor =
         2.0 + 8.0 * std::numeric_limits<double>::epsilon();
 
@@ -52,10 +68,7 @@ struct StationaryGarchDomain {
     [[nodiscard]] static constexpr double persistence_limit(
         double requested_margin = 0.0)
     {
-        const double effective_margin = requested_margin > machine_margin
-            ? requested_margin
-            : machine_margin;
-        return 1.0 - effective_margin;
+        return stationary_persistence_limit(Coefficients, requested_margin);
     }
 
     template<class Bounds>

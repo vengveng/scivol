@@ -250,6 +250,8 @@ def _build(uid: str) -> Routine:
                 "solver": solver.lower(), "log_mode": bool(log_mode),
                 "optimization_space": "z-space" if log_mode else "theta-space",
                 "warm_started": warm_started, "maxiter": maxiter,
+                "function_evaluations": int(getattr(result, "nfev", 0)),
+                "gradient_evaluations": int(getattr(result, "njev", 0)),
             },
         )
         estimation._resid = residuals.copy()

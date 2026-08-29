@@ -4,6 +4,7 @@
 
 #include "arma_garch_recursion_policy.hpp"
 #include "garch_extended_density_policy.hpp"
+#include "gjr_moment_policy.hpp"
 #include "jet_contract.hpp"
 #include "location_scale_observation_assembly.hpp"
 
@@ -25,9 +26,11 @@ namespace vlk::experiment::generated {
 #endif
 
 template<std::size_t PAr, std::size_t QMa,
-         std::size_t PVol, std::size_t QVol, class Density>
+         std::size_t PVol, std::size_t QVol, class Density,
+         class RecursionPolicy =
+             ArmaGarchRecursion<PAr, QMa, PVol, QVol>>
 struct ArmaGarchJet {
-    using Recursion = ArmaGarchRecursion<PAr, QMa, PVol, QVol>;
+    using Recursion = RecursionPolicy;
     using DensityPolicy = Density;
     static constexpr std::size_t model_parameters = Recursion::K;
     static constexpr std::size_t shape_parameters = Density::shape_parameters;
@@ -39,6 +42,7 @@ struct ArmaGarchJet {
     static constexpr std::size_t ma_start = Recursion::ma_start;
     static constexpr std::size_t omega_index = Recursion::omega_index;
     static constexpr std::size_t alpha_start = Recursion::alpha_start;
+    static constexpr std::size_t gamma_start = Recursion::gamma_start;
     static constexpr std::size_t beta_start = Recursion::beta_start;
 
     VLK_ARMA_JET_ENTRY static bool value(
@@ -157,6 +161,10 @@ struct ArmaGarchJet {
         if (!density.valid)
             return false;
         auto accumulated_value = Density::initial_value(density);
+        model::initialize_density_shape_derivatives<
+            true, false, false, Density>(
+                density, model_parameters,
+                accumulated_gradient.data(), nullptr);
 
         for (std::size_t time = maximum_lag; time < n; ++time) {
             const double residual = Recursion::advance_residual(
@@ -172,6 +180,10 @@ struct ArmaGarchJet {
                         density, variance, residual, residual * residual);
                 Density::accumulate_value(
                     accumulated_value, value_observation);
+            }
+            if (!Recursion::differentiable(
+                    time, residual_history, residual_first_history)) {
+                return false;
             }
             typename Recursion::First residual_first;
             typename Recursion::First variance_first;
@@ -278,6 +290,10 @@ struct ArmaGarchJet {
         if (!density.valid)
             return false;
         auto accumulated_value = Density::initial_value(density);
+        model::initialize_density_shape_derivatives<
+            EmitGradient, true, false, Density>(
+                density, model_parameters,
+                accumulated_gradient.data(), accumulated_hessian.data());
 
         for (std::size_t time = maximum_lag; time < n; ++time) {
             const double residual = Recursion::advance_residual(
@@ -286,6 +302,10 @@ struct ArmaGarchJet {
                 theta, time, residual_history, variance_history);
             if (!valid_variance(variance))
                 return false;
+            if (!Recursion::differentiable(
+                    time, residual_history, residual_first_history)) {
+                return false;
+            }
             const auto observation = Density::template observe<
                 EmitValue, EmitGradient, true, true>(
                     density, variance, residual, residual * residual);
@@ -371,6 +391,48 @@ struct ArmaGarchJet {
         }
     }
 
+    static bool evaluate_prevalidated_planned(
+        const double* theta,
+        const double* observations,
+        std::size_t n,
+        double initial_variance,
+        std::uint32_t request,
+        double* objective,
+        double* gradient,
+        double* hessian)
+    {
+        switch (request) {
+        case VLK_JET_F:
+            return value_prevalidated(
+                theta, observations, n, initial_variance, objective);
+        case VLK_JET_G:
+            return first_prevalidated<false>(
+                theta, observations, n, initial_variance, nullptr, gradient);
+        case VLK_JET_H:
+            return second_prevalidated<false, false>(
+                theta, observations, n, initial_variance,
+                nullptr, nullptr, hessian);
+        case VLK_JET_F | VLK_JET_G:
+            return first_prevalidated<true>(
+                theta, observations, n, initial_variance,
+                objective, gradient);
+        case VLK_JET_F | VLK_JET_H:
+            return second_prevalidated<true, false>(
+                theta, observations, n, initial_variance,
+                objective, nullptr, hessian);
+        case VLK_JET_G | VLK_JET_H:
+            return second_prevalidated<false, true>(
+                theta, observations, n, initial_variance,
+                nullptr, gradient, hessian);
+        case VLK_JET_F | VLK_JET_G | VLK_JET_H:
+            return second_prevalidated<true, true>(
+                theta, observations, n, initial_variance,
+                objective, gradient, hessian);
+        default:
+            return false;
+        }
+    }
+
     [[nodiscard]] static bool valid_data(
         const double* observations,
         std::size_t n,
@@ -440,6 +502,12 @@ private:
         }
         if (theta[Recursion::omega_index] <= 0.0)
             return false;
+        if constexpr (Recursion::leverage) {
+            return valid_gjr_coefficients_and_persistence<Density>(
+                theta, PVol, QVol,
+                Recursion::alpha_start, Recursion::gamma_start,
+                Recursion::beta_start, theta + model_parameters);
+        }
         double persistence = 0.0;
         for (std::size_t lag = 0; lag < PVol; ++lag) {
             const double alpha = theta[Recursion::alpha_start + lag];
@@ -491,6 +559,12 @@ template<std::size_t PAr, std::size_t QMa,
          std::size_t PVol, std::size_t QVol>
 using ArmaGarchNormalJet =
     ArmaGarchJet<PAr, QMa, PVol, QVol, NormalDensity>;
+
+template<std::size_t PAr, std::size_t QMa,
+         std::size_t PVol, std::size_t QVol, class Density>
+using ArmaGjrGarchJet = ArmaGarchJet<
+    PAr, QMa, PVol, QVol, Density,
+    ArmaGarchRecursion<PAr, QMa, PVol, QVol, true>>;
 
 using Arma11Garch11NormalJet = ArmaGarchNormalJet<1u, 1u, 1u, 1u>;
 

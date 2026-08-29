@@ -205,9 +205,14 @@ def test_component_contract_and_auto_preview() -> None:
     assert [str(spec) for spec in previews] == ["APARCH(1,1)+Normal"]
 
 
-def test_aparch_auto_rejects_mean_cross_product() -> None:
+def test_aparch_auto_includes_genuine_arma_cross_product() -> None:
     from scivol import AutoMean, AutoVol
 
-    spec = AutoMean() + AutoVol(candidates=["APARCH"]) + Normal()
-    with pytest.raises(ValueError, match="zero-mean"):
-        spec.preview_candidates()
+    spec = (
+        AutoMean(max_p=1, max_q=0)
+        + AutoVol(candidates=["APARCH"], max_p=1, max_q=1)
+        + Normal()
+    )
+    previews = [str(candidate) for candidate in spec.preview_candidates()]
+    assert "APARCH(1,1)+Normal" in previews
+    assert "ARMA(1,0)+APARCH(1,1)+Normal" in previews

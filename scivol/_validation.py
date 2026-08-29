@@ -112,9 +112,7 @@ def validate_regressors(x: Any, n_obs: int) -> np.ndarray:
 def infer_required_hold_back(spec: CompositeSpec) -> int:
     hold_back = 0
     mean = spec.get_component(Role.MEAN)
-    if isinstance(mean, ARMA):
-        hold_back = max(hold_back, mean.p, mean.q)
-    elif isinstance(mean, ARX):
+    if isinstance(mean, ARX):
         hold_back = max(hold_back, mean.required_hold_back)
     elif isinstance(mean, HARX):
         hold_back = max(hold_back, mean.required_hold_back)

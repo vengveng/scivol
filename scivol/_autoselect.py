@@ -517,8 +517,13 @@ def _assess_candidate_quality(
     pinned = []
     for index, (value, bound) in enumerate(zip(params, bounds)):
         lower, upper = bound
-        span = upper - lower
-        tolerance = boundary_tolerance * max(abs(span), 1.0)
+        finite_scale = max(
+            1.0,
+            abs(float(value)),
+            abs(float(lower)) if np.isfinite(lower) else 0.0,
+            abs(float(upper)) if np.isfinite(upper) else 0.0,
+        )
+        tolerance = boundary_tolerance * finite_scale
         if (np.isfinite(lower) and value - lower <= tolerance) or (
             np.isfinite(upper) and upper - value <= tolerance
         ):

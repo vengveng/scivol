@@ -6,6 +6,7 @@
 #define GH_DERIV_DIM 5
 #define GH_FAMILY_INTERIOR 0
 #define GH_FAMILY_VARIANCE_GAMMA 1
+#define GH_BESSEL_PLAN_MAX_TERMS 224
 
 /* Validated floating-point support; the theoretical GH domain is wider. */
 #define GH_NUMERICAL_RHO_LIMIT 0.995
@@ -78,6 +79,24 @@ typedef struct {
     double grad[GH_DERIV_DIM];
 } gh_obs_gradient_t;
 
+typedef struct {
+    double base[GH_BESSEL_PLAN_MAX_TERMS];
+    double cosh_t[GH_BESSEL_PLAN_MAX_TERMS];
+    size_t count;
+    int fixed_kind;
+} gh_bessel_value_plan_t;
+
+typedef struct {
+    gh_bessel_value_plan_t value;
+    double order_score[GH_BESSEL_PLAN_MAX_TERMS];
+} gh_bessel_first_plan_t;
+
+typedef struct {
+    gh_bessel_first_plan_t first;
+    double order_curvature[GH_BESSEL_PLAN_MAX_TERMS];
+    int differentiate_order;
+} gh_bessel_second_plan_t;
+
 int gh_shape_cache_init(double rho, double zeta, double lambda,
                         int estimate_lambda, gh_shape_cache_t *cache);
 
@@ -104,6 +123,12 @@ int gh_obs_derivatives(double residual, double variance,
                        const gh_shape_cache_t *cache,
                        gh_obs_derivs_t *out);
 
+int gh_obs_derivatives_planned(
+    double residual, double variance,
+    const gh_shape_cache_t *cache,
+    const gh_bessel_second_plan_t *plan,
+    gh_obs_derivs_t *out);
+
 int gh_obs_gradient(double residual, double variance,
                     const gh_shape_cache_t *cache,
                     gh_obs_gradient_t *out);
@@ -112,14 +137,54 @@ int gh_obs_gradient_prepared(double residual, double variance,
                              const gh_shape_cache_t *cache,
                              gh_obs_gradient_t *out);
 
+int gh_log_bessel_k_first(double order, double argument,
+                          int differentiate_order,
+                          double *value, double *d_order,
+                          double *d_argument);
+
+int gh_bessel_value_plan_init(double order,
+                              gh_bessel_value_plan_t *plan);
+
+int gh_log_bessel_k_value_planned(const gh_bessel_value_plan_t *plan,
+                                  double argument, double *value);
+
+int gh_bessel_first_plan_init(double order, int differentiate_order,
+                              gh_bessel_first_plan_t *plan);
+
+int gh_log_bessel_k_first_planned(const gh_bessel_first_plan_t *plan,
+                                  double argument,
+                                  double *value, double *d_order,
+                                  double *d_argument);
+
+int gh_bessel_second_plan_init(double order, int differentiate_order,
+                               gh_bessel_second_plan_t *plan);
+
+int gh_log_bessel_k_second_planned(
+    const gh_bessel_second_plan_t *plan,
+    double argument,
+    double *value,
+    double *d_order,
+    double *d_argument,
+    double *d_order_order,
+    double *d_order_argument,
+    double *d_argument_argument);
+
 double gh_obs_nll_scalar(double residual, double variance,
                          const gh_shape_cache_t *cache);
 
 double gh_obs_nll_value(double residual, double variance,
                         const gh_shape_value_cache_t *cache);
 
+double gh_obs_nll_value_planned(double residual, double variance,
+                                const gh_shape_value_cache_t *cache,
+                                const gh_bessel_value_plan_t *plan);
+
 double vg_obs_nll_value(double residual, double variance,
                         const vg_shape_value_cache_t *cache);
+
+double vg_obs_nll_value_planned(double residual, double variance,
+                                const vg_shape_value_cache_t *cache,
+                                const gh_bessel_value_plan_t *plan);
 
 int gh_abs_moment_derivatives(const gh_shape_cache_t *cache,
                               double *moment, double *grad, double *hess);

@@ -40,6 +40,7 @@ struct RuntimeKraftWorkspace {
     double* constraint_values = nullptr;
     double* accepted_parameters = nullptr;
     double* accepted_gradient = nullptr;
+    double* trial_gradient = nullptr;
 };
 
 [[nodiscard]] inline bool runtime_kraft_multiplier_count(
@@ -119,6 +120,7 @@ struct RuntimeKraftWorkspace {
     sizer.add<double>(std::max(constraints, std::size_t {1}));
     sizer.add<double>(dimension);
     sizer.add<double>(dimension);
+    sizer.add<double>(dimension);
     return sizer.size();
 }
 
@@ -159,11 +161,13 @@ struct RuntimeKraftWorkspace {
         std::max(constraints, std::size_t {1}));
     result.accepted_parameters = arena.take<double>(dimension);
     result.accepted_gradient = arena.take<double>(dimension);
+    result.trial_gradient = arena.take<double>(dimension);
     return result.buffer != nullptr && result.indices != nullptr
         && result.multipliers != nullptr && result.gradient != nullptr
         && result.jacobian != nullptr && result.constraint_values != nullptr
         && result.accepted_parameters != nullptr
-        && result.accepted_gradient != nullptr;
+        && result.accepted_gradient != nullptr
+        && result.trial_gradient != nullptr;
 }
 
 struct RuntimeBounds {
@@ -352,6 +356,7 @@ template<class Objective, class Constraints>
 
     bool derivatives_current = true;
     bool last_value_point_current = false;
+    bool trial_gradient_current = false;
     while (true) {
         __slsqp_body(
             &state, &value, workspace.gradient, workspace.jacobian,
@@ -361,7 +366,22 @@ template<class Objective, class Constraints>
             workspace.indices);
         if (state.mode == 1) {
             runtime_kraft_detail::clip_to_bounds(parameters, dimension, bounds);
-            last_trial_value_valid = runtime_kraft_detail::evaluate_objective(
+            if constexpr (requires {
+                objective.speculate_trial_gradient(state.iter);
+            }) {
+                if (objective.speculate_trial_gradient(state.iter)) {
+                    trial_gradient_current =
+                        runtime_kraft_detail::evaluate_objective(
+                            objective,
+                            kraft::ObjectiveRequest::value_gradient,
+                            parameters, &value, workspace.trial_gradient,
+                            false);
+                    if (trial_gradient_current)
+                        ++result.gradient_evaluations;
+                }
+            }
+            last_trial_value_valid = trial_gradient_current
+                || runtime_kraft_detail::evaluate_objective(
                     objective, kraft::ObjectiveRequest::value,
                     parameters, &value, workspace.gradient, false);
             if (!last_trial_value_valid) {
@@ -385,15 +405,23 @@ template<class Objective, class Constraints>
             continue;
         }
         if (state.mode == -1) {
-            if (!last_trial_value_valid
-                || !runtime_kraft_detail::evaluate_objective(
-                    objective, kraft::ObjectiveRequest::gradient,
-                    parameters, &value, workspace.gradient,
-                    last_value_point_current)) {
+            if (!last_trial_value_valid) {
                 state.mode = -101;
                 break;
             }
-            ++result.gradient_evaluations;
+            if (trial_gradient_current) {
+                std::copy_n(
+                    workspace.trial_gradient, dimension, workspace.gradient);
+            } else {
+                if (!runtime_kraft_detail::evaluate_objective(
+                        objective, kraft::ObjectiveRequest::gradient,
+                        parameters, &value, workspace.gradient,
+                        last_value_point_current)) {
+                    state.mode = -101;
+                    break;
+                }
+                ++result.gradient_evaluations;
+            }
             if (!runtime_kraft_detail::evaluate_constraints(
                     constraints, kraft::ConstraintRequest::jacobian,
                     parameters, workspace.constraint_values,
@@ -409,18 +437,26 @@ template<class Objective, class Constraints>
             accepted_value = value;
             derivatives_current = true;
             last_value_point_current = false;
+            trial_gradient_current = false;
             continue;
         }
         break;
     }
     if (state.mode == 0 && !derivatives_current) {
-        if (!runtime_kraft_detail::evaluate_objective(
-                objective, kraft::ObjectiveRequest::gradient,
-                parameters, &value, workspace.gradient,
-                last_value_point_current)) {
-            state.mode = -101;
+        if (trial_gradient_current) {
+            std::copy_n(
+                workspace.trial_gradient, dimension, workspace.gradient);
         } else {
-            ++result.gradient_evaluations;
+            if (!runtime_kraft_detail::evaluate_objective(
+                    objective, kraft::ObjectiveRequest::gradient,
+                    parameters, &value, workspace.gradient,
+                    last_value_point_current)) {
+                state.mode = -101;
+            } else {
+                ++result.gradient_evaluations;
+            }
+        }
+        if (state.mode == 0) {
             if (!runtime_kraft_detail::evaluate_constraints(
                     constraints, kraft::ConstraintRequest::jacobian,
                     parameters, workspace.constraint_values,

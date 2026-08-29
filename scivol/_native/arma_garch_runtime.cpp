@@ -6,14 +6,18 @@
 #include "fixed_order_dispatch.hpp"
 #include "garch_extended_density_policy.hpp"
 #include "garch_transform_policy.hpp"
+#include "gjr_moment_policy.hpp"
 #include "location_scale_observation_assembly.hpp"
+#include "runtime_reflection.hpp"
 #include "runtime_workspace.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 
 namespace vlk::experiment::runtime {
 
@@ -21,13 +25,15 @@ ArmaGarchLayout arma_garch_layout(
     std::size_t p_ar,
     std::size_t q_ma,
     std::size_t p_vol,
-    std::size_t q_vol) noexcept
+    std::size_t q_vol,
+    bool leverage) noexcept
 {
     ArmaGarchLayout layout;
     layout.p_ar = p_ar;
     layout.q_ma = q_ma;
     layout.p_vol = p_vol;
     layout.q_vol = q_vol;
+    layout.leverage = leverage;
     if (p_vol == 0u || q_vol == 0u)
         return layout;
     layout.maximum_lag = std::max(
@@ -38,7 +44,9 @@ ArmaGarchLayout arma_garch_layout(
     }
     layout.omega_index = layout.mean_parameters;
     if (!checked_sum(layout.omega_index, 1u, layout.alpha_start)
-        || !checked_sum(layout.alpha_start, p_vol, layout.beta_start)
+        || !checked_sum(layout.alpha_start, p_vol, layout.gamma_start)
+        || !checked_sum(
+            layout.gamma_start, leverage ? p_vol : 0u, layout.beta_start)
         || !checked_sum(layout.beta_start, q_vol, layout.parameter_count)) {
         return layout;
     }
@@ -51,6 +59,14 @@ ArmaGarchLayout arma_garch_layout(
     layout.packed_count = square_sum / 2u;
     layout.valid = true;
     return layout;
+}
+
+bool uses_fixed_arma_garch_kernel(
+    const ArmaGarchLayout& layout) noexcept
+{
+    return layout.valid
+        && layout.p_ar == 1u && layout.q_ma == 1u
+        && layout.p_vol == 1u && layout.q_vol == 1u;
 }
 
 namespace {
@@ -143,19 +159,33 @@ struct Scratch {
                 && scratch.variance_second != nullptr));
 }
 
-template<class Density>
-[[nodiscard]] bool valid_inputs(
+[[nodiscard]] bool valid_data(
     const ArmaGarchLayout& layout,
-    const double* theta,
     const double* observations,
     std::size_t n,
     double initial_variance) noexcept
 {
-    if (theta == nullptr || observations == nullptr
+    if (observations == nullptr
         || n <= layout.maximum_lag || !std::isfinite(initial_variance)
         || initial_variance <= 0.0) {
         return false;
     }
+    for (std::size_t time = 0; time < n; ++time) {
+        if (!std::isfinite(observations[time]))
+            return false;
+    }
+    return true;
+}
+
+template<class Density, bool ValidateMeanDomain, bool Leverage>
+[[nodiscard]] bool valid_parameters(
+    const ArmaGarchLayout& layout,
+    const double* theta,
+    double* current,
+    double* next) noexcept
+{
+    if (theta == nullptr)
+        return false;
     const std::size_t total_parameters =
         layout.parameter_count + Density::shape_parameters;
     for (std::size_t parameter = 0; parameter < total_parameters;
@@ -163,12 +193,25 @@ template<class Density>
         if (!std::isfinite(theta[parameter]))
             return false;
     }
-    for (std::size_t time = 0; time < n; ++time) {
-        if (!std::isfinite(observations[time]))
+    if constexpr (ValidateMeanDomain) {
+        if ((layout.p_ar != 0u
+             && !reflection_inverse_values(
+                 theta + 1u, layout.p_ar, 1.0, nullptr, current, next))
+            || (layout.q_ma != 0u
+                && !reflection_inverse_values(
+                    theta + layout.ma_start, layout.q_ma, -1.0, nullptr,
+                    current, next))) {
             return false;
+        }
     }
     if (theta[layout.omega_index] <= 0.0)
         return false;
+    if constexpr (Leverage) {
+        return generated::valid_gjr_coefficients_and_persistence<Density>(
+            theta, layout.p_vol, layout.q_vol,
+            layout.alpha_start, layout.gamma_start, layout.beta_start,
+            theta + layout.parameter_count);
+    }
     double persistence = 0.0;
     for (std::size_t lag = 0; lag < layout.p_vol; ++lag) {
         const double alpha = theta[layout.alpha_start + lag];
@@ -186,7 +229,8 @@ template<class Density>
         && Density::valid_shape(theta + layout.parameter_count);
 }
 
-template<class Density, bool EmitValue, bool EmitGradient, bool EmitHessian>
+template<class Density, bool Leverage,
+         bool EmitValue, bool EmitGradient, bool EmitHessian>
 [[nodiscard]] bool evaluate(
     const ArmaGarchLayout& layout,
     const double* theta,
@@ -226,6 +270,9 @@ template<class Density, bool EmitValue, bool EmitGradient, bool EmitHessian>
     if (!density.valid)
         return false;
     auto accumulated_value = Density::initial_value(density);
+    model::initialize_density_shape_derivatives<
+        EmitGradient, EmitHessian, true, Density>(
+            density, K, gradient, hessian);
 
     for (std::size_t time = layout.maximum_lag; time < n; ++time) {
         double residual = observations[time] - theta[0];
@@ -243,8 +290,11 @@ template<class Density, bool EmitValue, bool EmitGradient, bool EmitHessian>
         for (std::size_t lag = 0; lag < layout.p_vol; ++lag) {
             const double previous = scratch.residual_history[
                 (time - 1u - lag) % layout.maximum_lag];
+            const double coefficient = theta[layout.alpha_start + lag]
+                + (Leverage && previous < 0.0
+                    ? theta[layout.gamma_start + lag] : 0.0);
             generated::arma_garch_equation::add_squared_product(
-                variance, theta[layout.alpha_start + lag], previous);
+                variance, coefficient, previous);
         }
         for (std::size_t lag = 0; lag < layout.q_vol; ++lag) {
             generated::arma_garch_equation::add_product(
@@ -283,9 +333,26 @@ template<class Density, bool EmitValue, bool EmitGradient, bool EmitHessian>
                 const double* previous_first =
                     scratch.residual_first_history + slot * K;
                 const std::size_t alpha = layout.alpha_start + lag;
+                const bool negative = Leverage && previous_residual < 0.0;
+                if constexpr (Leverage) {
+                    if (previous_residual == 0.0) {
+                        for (std::size_t parameter = 0; parameter < K;
+                             ++parameter) {
+                            if (previous_first[parameter] != 0.0)
+                                return false;
+                        }
+                    }
+                }
+                const double coefficient = theta[alpha]
+                    + (negative ? theta[layout.gamma_start + lag] : 0.0);
                 generated::arma_garch_equation::add_arch_first(
-                    scratch.variance_first, K, alpha, theta[alpha],
+                    scratch.variance_first, K, alpha, coefficient,
                     previous_residual, previous_first);
+                if (negative) {
+                    generated::arma_garch_equation::add_shock_coefficient_first(
+                        scratch.variance_first, layout.gamma_start + lag,
+                        previous_residual);
+                }
             }
             for (std::size_t lag = 0; lag < layout.q_vol; ++lag) {
                 const std::size_t slot =
@@ -323,9 +390,18 @@ template<class Density, bool EmitValue, bool EmitGradient, bool EmitHessian>
                 const double* previous_second =
                     scratch.residual_second_history + slot * K2;
                 const std::size_t alpha = layout.alpha_start + lag;
+                const bool negative = Leverage && previous_residual < 0.0;
+                const double coefficient = theta[alpha]
+                    + (negative ? theta[layout.gamma_start + lag] : 0.0);
                 generated::arma_garch_equation::add_arch_second(
-                    scratch.variance_second, K, alpha, theta[alpha],
+                    scratch.variance_second, K, alpha, coefficient,
                     previous_residual, previous_first, previous_second);
+                if (negative) {
+                    generated::arma_garch_equation::add_shock_coefficient_second(
+                        scratch.variance_second, K,
+                        layout.gamma_start + lag,
+                        previous_residual, previous_first);
+                }
             }
             for (std::size_t lag = 0; lag < layout.q_vol; ++lag) {
                 const std::size_t slot =
@@ -402,7 +478,7 @@ template<class Density, bool EmitValue, bool EmitGradient, bool EmitHessian>
     return true;
 }
 
-template<class Density>
+template<class Density, bool Leverage>
 [[nodiscard]] bool evaluate_planned(
     const ArmaGarchLayout& layout,
     const double* theta,
@@ -417,31 +493,31 @@ template<class Density>
 {
     switch (request) {
     case VLK_JET_F:
-        return evaluate<Density, true, false, false>(
+        return evaluate<Density, Leverage, true, false, false>(
             layout, theta, observations, n, initial_variance,
             scratch, value, nullptr, nullptr);
     case VLK_JET_G:
-        return evaluate<Density, false, true, false>(
+        return evaluate<Density, Leverage, false, true, false>(
             layout, theta, observations, n, initial_variance,
             scratch, nullptr, gradient, nullptr);
     case VLK_JET_H:
-        return evaluate<Density, false, false, true>(
+        return evaluate<Density, Leverage, false, false, true>(
             layout, theta, observations, n, initial_variance,
             scratch, nullptr, nullptr, hessian);
     case VLK_JET_F | VLK_JET_G:
-        return evaluate<Density, true, true, false>(
+        return evaluate<Density, Leverage, true, true, false>(
             layout, theta, observations, n, initial_variance,
             scratch, value, gradient, nullptr);
     case VLK_JET_F | VLK_JET_H:
-        return evaluate<Density, true, false, true>(
+        return evaluate<Density, Leverage, true, false, true>(
             layout, theta, observations, n, initial_variance,
             scratch, value, nullptr, hessian);
     case VLK_JET_G | VLK_JET_H:
-        return evaluate<Density, false, true, true>(
+        return evaluate<Density, Leverage, false, true, true>(
             layout, theta, observations, n, initial_variance,
             scratch, nullptr, gradient, hessian);
     case VLK_JET_F | VLK_JET_G | VLK_JET_H:
-        return evaluate<Density, true, true, true>(
+        return evaluate<Density, Leverage, true, true, true>(
             layout, theta, observations, n, initial_variance,
             scratch, value, gradient, hessian);
     default:
@@ -459,7 +535,8 @@ template<class Density>
     return true;
 }
 
-template<class Density, std::size_t PAr, std::size_t QMa,
+template<class Density, bool Prevalidated, bool Leverage,
+         std::size_t PAr, std::size_t QMa,
          std::size_t PVol, std::size_t QVol>
 std::int32_t evaluate_fixed(
     const double* parameters,
@@ -473,13 +550,40 @@ std::int32_t evaluate_fixed(
     double* hessian,
     std::uint32_t* valid_mask)
 {
-    using Jet = generated::ArmaGarchJet<
-        PAr, QMa, PVol, QVol, Density>;
+    using Jet = std::conditional_t<
+        Leverage,
+        generated::ArmaGjrGarchJet<PAr, QMa, PVol, QVol, Density>,
+        generated::ArmaGarchJet<PAr, QMa, PVol, QVol, Density>>;
     if (parameter_count != Jet::K)
         return VLK_JET_INVALID_ARGUMENT;
-    if (!Jet::evaluate_planned(
+    if constexpr (!Prevalidated) {
+        constexpr std::size_t maximum_mean_order =
+            std::max({PAr, QMa, std::size_t {1u}});
+        std::array<double, maximum_mean_order> current {};
+        std::array<double, maximum_mean_order> next {};
+        if constexpr (PAr > 0u) {
+            if (!reflection_inverse_values(
+                    parameters + 1u, PAr, 1.0, nullptr,
+                    current.data(), next.data())) {
+                return VLK_JET_DOMAIN_ERROR;
+            }
+        }
+        if constexpr (QMa > 0u) {
+            if (!reflection_inverse_values(
+                    parameters + 1u + PAr, QMa, -1.0, nullptr,
+                    current.data(), next.data())) {
+                return VLK_JET_DOMAIN_ERROR;
+            }
+        }
+    }
+    const bool ok = Prevalidated
+        ? Jet::evaluate_prevalidated_planned(
             parameters, observations, observation_count, initial_variance,
-            request, value, gradient, hessian)) {
+            request, value, gradient, hessian)
+        : Jet::evaluate_planned(
+            parameters, observations, observation_count, initial_variance,
+            request, value, gradient, hessian);
+    if (!ok) {
         return VLK_JET_DOMAIN_ERROR;
     }
     *valid_mask = request;
@@ -510,9 +614,8 @@ bool evaluate_arma_garch_runtime(
     const std::size_t required = arma_garch_runtime_workspace_bytes(
         layout, request);
     if (!layout.valid || !valid_request(request)
-        || !valid_inputs<generated::NormalDensity>(
-            layout, parameters, observations, observation_count,
-            initial_variance)
+        || !valid_data(
+            layout, observations, observation_count, initial_variance)
         || workspace == nullptr || required == 0u || workspace_bytes < required
         || ((request & VLK_JET_F) != 0u && value == nullptr)
         || ((request & VLK_JET_G) != 0u && gradient == nullptr)
@@ -522,7 +625,10 @@ bool evaluate_arma_garch_runtime(
     WorkspaceArena arena(workspace, workspace_bytes);
     Scratch scratch;
     if (!bind_scratch(arena, layout, request, scratch)
-        || !evaluate_planned<generated::NormalDensity>(
+        || !valid_parameters<generated::NormalDensity, true, false>(
+            layout, parameters, scratch.residual_history,
+            scratch.variance_history)
+        || !evaluate_planned<generated::NormalDensity, false>(
             layout, parameters, observations, observation_count,
             initial_variance, request, scratch, value, gradient, hessian)) {
         return false;
@@ -535,7 +641,7 @@ bool evaluate_arma_garch_runtime(
                 hessian, layout.parameter_count * layout.parameter_count));
 }
 
-template<class Density>
+template<class Density, bool ValidateData, bool Leverage>
 std::int32_t evaluate_runtime_entry(
     const ArmaGarchLayout& layout,
     const double* parameters,
@@ -568,16 +674,20 @@ std::int32_t evaluate_runtime_entry(
     }
     if (workspace_bytes < required)
         return VLK_JET_INSUFFICIENT_WORKSPACE;
-    if (!valid_inputs<Density>(
-            layout, parameters, observations, observation_count,
-            initial_variance)) {
-        return VLK_JET_DOMAIN_ERROR;
-    }
     WorkspaceArena arena(workspace, workspace_bytes);
     Scratch scratch;
     if (!bind_scratch(arena, layout, request, scratch))
         return VLK_JET_INSUFFICIENT_WORKSPACE;
-    if (!evaluate_planned<Density>(
+    if (!valid_parameters<Density, ValidateData, Leverage>(
+            layout, parameters, scratch.residual_history,
+            scratch.variance_history)
+        || (ValidateData
+            && !valid_data(
+                layout, observations, observation_count,
+                initial_variance))) {
+        return VLK_JET_DOMAIN_ERROR;
+    }
+    if (!evaluate_planned<Density, Leverage>(
             layout, parameters, observations, observation_count,
             initial_variance, request, scratch, value, gradient, hessian)) {
         return VLK_JET_DOMAIN_ERROR;
@@ -594,6 +704,43 @@ std::int32_t evaluate_runtime_entry(
     return VLK_JET_OK;
 }
 
+template<class Density, bool ValidateData, bool Leverage>
+std::int32_t evaluate_theta_entry(
+    const ArmaGarchLayout& layout,
+    const double* parameters,
+    std::size_t parameter_count,
+    const double* observations,
+    std::size_t observation_count,
+    double initial_variance,
+    std::uint32_t request,
+    void* workspace,
+    std::size_t workspace_bytes,
+    double* value,
+    double* gradient,
+    double* hessian,
+    std::uint32_t* valid_mask) noexcept
+{
+    if (valid_mask != nullptr)
+        *valid_mask = 0u;
+    if (!layout.valid || !valid_request(request) || valid_mask == nullptr
+        || parameters == nullptr || observations == nullptr
+        || ((request & VLK_JET_F) != 0u && value == nullptr)
+        || ((request & VLK_JET_G) != 0u && gradient == nullptr)
+        || ((request & VLK_JET_H) != 0u && hessian == nullptr)) {
+        return VLK_JET_INVALID_ARGUMENT;
+    }
+    if (uses_fixed_arma_garch_kernel(layout)) {
+        return evaluate_fixed<
+            Density, !ValidateData, Leverage, 1u, 1u, 1u, 1u>(
+            parameters, parameter_count, observations, observation_count,
+            initial_variance, request, value, gradient, hessian, valid_mask);
+    }
+    return evaluate_runtime_entry<Density, ValidateData, Leverage>(
+        layout, parameters, parameter_count, observations, observation_count,
+        initial_variance, request, workspace, workspace_bytes,
+        value, gradient, hessian, valid_mask);
+}
+
 [[nodiscard]] std::size_t bytes_as_doubles(std::size_t bytes) noexcept
 {
     constexpr std::size_t width = sizeof(double);
@@ -604,7 +751,10 @@ std::int32_t evaluate_runtime_entry(
 
 template<class Density>
 [[nodiscard]] std::size_t transformed_workspace_bytes(
-    const ArmaGarchLayout& layout, std::uint32_t request) noexcept
+    const ArmaGarchLayout& layout,
+    std::uint32_t density,
+    std::uint32_t request,
+    bool use_fixed_kernel = false) noexcept
 {
     if (!layout.valid || !valid_request(request))
         return 0u;
@@ -623,13 +773,20 @@ template<class Density>
     const std::uint32_t theta_request = request
         | (need_hessian ? VLK_JET_G : 0u);
     const std::size_t map_doubles = bytes_as_doubles(
-        arma_garch_map_workspace_bytes(layout));
-    const std::size_t recursion_doubles = bytes_as_doubles(
-        arma_garch_runtime_workspace_bytes(layout, theta_request));
+        layout.leverage
+            ? arma_gjr_garch_map_workspace_bytes(layout, density)
+            : arma_garch_map_workspace_bytes(layout));
+    const std::size_t recursion_doubles = use_fixed_kernel
+        ? 0u
+        : bytes_as_doubles(
+            arma_garch_runtime_workspace_bytes(layout, theta_request));
     const std::size_t curvature_doubles = need_hessian
-        ? bytes_as_doubles(arma_garch_curvature_workspace_bytes(layout))
+        ? bytes_as_doubles(
+            layout.leverage
+                ? arma_gjr_garch_curvature_workspace_bytes(layout, density)
+                : arma_garch_curvature_workspace_bytes(layout))
         : 0u;
-    if (map_doubles == 0u || recursion_doubles == 0u
+    if (map_doubles == 0u || (!use_fixed_kernel && recursion_doubles == 0u)
         || (need_hessian && curvature_doubles == 0u)) {
         return 0u;
     }
@@ -638,21 +795,25 @@ template<class Density>
         || (need_derivatives
             && (!sizer.add<double>(total_square)
                 || !sizer.add<double>(total)
-                || !sizer.add<double>(model_square)))
+                || (!layout.leverage
+                    && !sizer.add<double>(model_square))))
         || (need_hessian
             && (!sizer.add<double>(total_square)
-                || !sizer.add<double>(model_square)
+                || (!layout.leverage
+                    && !sizer.add<double>(model_square))
                 || !sizer.add<double>(curvature_doubles)))
         || !sizer.add<double>(map_doubles)
-        || !sizer.add<double>(recursion_doubles)) {
+        || (!use_fixed_kernel && !sizer.add<double>(recursion_doubles))) {
         return 0u;
     }
     return sizer.size();
 }
 
-template<class Density, class ShapeTransform>
+template<class Density, class ShapeTransform,
+         bool ValidateData, bool AllowFixed, bool Leverage>
 std::int32_t evaluate_transformed_entry(
     const ArmaGarchLayout& layout,
+    std::uint32_t density_code,
     const double* coordinates,
     std::size_t parameter_count,
     const double* observations,
@@ -671,8 +832,10 @@ std::int32_t evaluate_transformed_entry(
         *valid_mask = 0u;
     const std::size_t model = layout.parameter_count;
     const std::size_t total = model + Density::shape_parameters;
+    const bool use_fixed_kernel =
+        AllowFixed && uses_fixed_arma_garch_kernel(layout);
     const std::size_t required = transformed_workspace_bytes<Density>(
-        layout, request);
+        layout, density_code, request, use_fixed_kernel);
     if (parameter_count != total || coordinates == nullptr
         || observations == nullptr || valid_mask == nullptr
         || workspace == nullptr || required == 0u
@@ -692,11 +855,19 @@ std::int32_t evaluate_transformed_entry(
     const std::size_t total_square = total * total;
     const std::size_t model_square = model * model;
     const std::size_t map_doubles = bytes_as_doubles(
-        arma_garch_map_workspace_bytes(layout));
-    const std::size_t recursion_doubles = bytes_as_doubles(
-        arma_garch_runtime_workspace_bytes(layout, theta_request));
+        Leverage
+            ? arma_gjr_garch_map_workspace_bytes(layout, density_code)
+            : arma_garch_map_workspace_bytes(layout));
+    const std::size_t recursion_doubles = use_fixed_kernel
+        ? 0u
+        : bytes_as_doubles(
+            arma_garch_runtime_workspace_bytes(layout, theta_request));
     const std::size_t curvature_doubles = need_hessian
-        ? bytes_as_doubles(arma_garch_curvature_workspace_bytes(layout))
+        ? bytes_as_doubles(
+            Leverage
+                ? arma_gjr_garch_curvature_workspace_bytes(
+                    layout, density_code)
+                : arma_garch_curvature_workspace_bytes(layout))
         : 0u;
 
     WorkspaceArena arena(workspace, workspace_bytes);
@@ -705,50 +876,67 @@ std::int32_t evaluate_transformed_entry(
         ? arena.take<double>(total_square) : nullptr;
     double* theta_gradient = need_derivatives
         ? arena.take<double>(total) : nullptr;
-    double* base_jacobian = need_derivatives
+    double* base_jacobian = need_derivatives && !Leverage
         ? arena.take<double>(model_square) : nullptr;
     double* theta_hessian = need_hessian
         ? arena.take<double>(total_square) : nullptr;
-    double* base_curvature = need_hessian
+    double* base_curvature = need_hessian && !Leverage
         ? arena.take<double>(model_square) : nullptr;
     double* curvature_workspace = need_hessian
         ? arena.take<double>(curvature_doubles) : nullptr;
     double* map_workspace = arena.take<double>(map_doubles);
-    double* recursion_workspace = arena.take<double>(recursion_doubles);
+    double* recursion_workspace = use_fixed_kernel
+        ? nullptr : arena.take<double>(recursion_doubles);
     if (theta == nullptr || map_workspace == nullptr
-        || recursion_workspace == nullptr
+        || (!use_fixed_kernel && recursion_workspace == nullptr)
         || (need_derivatives
             && (jacobian == nullptr || theta_gradient == nullptr
-                || base_jacobian == nullptr))
+                || (!Leverage && base_jacobian == nullptr)))
         || (need_hessian
-            && (theta_hessian == nullptr || base_curvature == nullptr
+            && (theta_hessian == nullptr
+                || (!Leverage && base_curvature == nullptr)
                 || curvature_workspace == nullptr))) {
         return VLK_JET_INSUFFICIENT_WORKSPACE;
     }
 
-    if (!arma_garch_coordinate_forward(
-            layout, coordinates, need_derivatives,
-            map_workspace, map_doubles * sizeof(double),
-            theta, base_jacobian)) {
-        return VLK_JET_DOMAIN_ERROR;
-    }
-    ShapeTransform::pack(coordinates + model, theta + model);
-    if (need_derivatives) {
-        std::fill_n(jacobian, total_square, 0.0);
-        for (std::size_t row = 0; row < model; ++row) {
-            std::copy_n(
-                base_jacobian + row * model, model,
-                jacobian + row * total);
+    if constexpr (Leverage) {
+        if (!arma_gjr_garch_coordinate_forward(
+                layout, density_code, coordinates, need_derivatives,
+                map_workspace, map_doubles * sizeof(double),
+                theta, jacobian)) {
+            return VLK_JET_DOMAIN_ERROR;
         }
-        ShapeTransform::fill_jacobian(
-            theta + model, jacobian, total, model);
+    } else {
+        if (!arma_garch_coordinate_forward(
+                layout, coordinates, need_derivatives,
+                map_workspace, map_doubles * sizeof(double),
+                theta, base_jacobian)) {
+            return VLK_JET_DOMAIN_ERROR;
+        }
+        ShapeTransform::pack(coordinates + model, theta + model);
+        if (need_derivatives) {
+            std::fill_n(jacobian, total_square, 0.0);
+            for (std::size_t row = 0; row < model; ++row) {
+                std::copy_n(
+                    base_jacobian + row * model, model,
+                    jacobian + row * total);
+            }
+            ShapeTransform::fill_jacobian(
+                theta + model, jacobian, total, model);
+        }
     }
 
-    const std::int32_t status = evaluate_runtime_entry<Density>(
-        layout, theta, total, observations, observation_count,
-        initial_variance, theta_request,
-        recursion_workspace, recursion_doubles * sizeof(double), value,
-        theta_gradient, theta_hessian, valid_mask);
+    const std::int32_t status = AllowFixed
+        ? evaluate_theta_entry<Density, ValidateData, Leverage>(
+            layout, theta, total, observations, observation_count,
+            initial_variance, theta_request,
+            recursion_workspace, recursion_doubles * sizeof(double), value,
+            theta_gradient, theta_hessian, valid_mask)
+        : evaluate_runtime_entry<Density, ValidateData, Leverage>(
+            layout, theta, total, observations, observation_count,
+            initial_variance, theta_request,
+            recursion_workspace, recursion_doubles * sizeof(double), value,
+            theta_gradient, theta_hessian, valid_mask);
     if (status != VLK_JET_OK)
         return status;
 
@@ -767,22 +955,31 @@ std::int32_t evaluate_transformed_entry(
                 hessian[row * total + column] = pulled;
             }
         }
-        std::fill_n(base_curvature, model_square, 0.0);
-        if (!add_arma_garch_coordinate_curvature(
-                layout, coordinates, theta, theta_gradient,
-                curvature_workspace,
-                curvature_doubles * sizeof(double), base_curvature)) {
-            return VLK_JET_DOMAIN_ERROR;
-        }
-        for (std::size_t row = 0; row < model; ++row) {
-            for (std::size_t column = 0; column < model; ++column) {
-                hessian[row * total + column] +=
-                    base_curvature[row * model + column];
+        if constexpr (Leverage) {
+            if (!add_arma_gjr_garch_coordinate_curvature(
+                    layout, density_code, coordinates, theta, theta_gradient,
+                    jacobian, curvature_workspace,
+                    curvature_doubles * sizeof(double), hessian)) {
+                return VLK_JET_DOMAIN_ERROR;
             }
+        } else {
+            std::fill_n(base_curvature, model_square, 0.0);
+            if (!add_arma_garch_coordinate_curvature(
+                    layout, coordinates, theta, theta_gradient,
+                    curvature_workspace,
+                    curvature_doubles * sizeof(double), base_curvature)) {
+                return VLK_JET_DOMAIN_ERROR;
+            }
+            for (std::size_t row = 0; row < model; ++row) {
+                for (std::size_t column = 0; column < model; ++column) {
+                    hessian[row * total + column] +=
+                        base_curvature[row * model + column];
+                }
+            }
+            ShapeTransform::add_curvature(
+                theta + model, theta_gradient + model,
+                hessian, total, model);
         }
-        ShapeTransform::add_curvature(
-            theta + model, theta_gradient + model,
-            hessian, total, model);
     }
     if ((request & VLK_JET_G) != 0u) {
         for (std::size_t column = 0; column < total; ++column) {
@@ -829,7 +1026,7 @@ namespace {
     }
 }
 
-template<class Density>
+template<class Density, bool ValidateData, bool AllowFixed, bool Leverage>
 std::int32_t evaluate_runtime_arma_garch_density(
     const vlk::experiment::runtime::ArmaGarchLayout& layout,
     const double* parameters,
@@ -845,94 +1042,24 @@ std::int32_t evaluate_runtime_arma_garch_density(
     double* hessian,
     std::uint32_t* valid_mask) noexcept
 {
-    return vlk::experiment::runtime::evaluate_runtime_entry<Density>(
-        layout, parameters, parameter_count, observations, observation_count,
-        initial_variance, request, workspace, workspace_bytes,
-        value, gradient, hessian, valid_mask);
-}
-
-}  // namespace
-
-extern "C" std::size_t vlk_arma_garch_parameter_count(
-    std::size_t p_ar,
-    std::size_t q_ma,
-    std::size_t p_vol,
-    std::size_t q_vol,
-    std::uint32_t density)
-{
-    const auto layout = vlk::experiment::runtime::arma_garch_layout(
-        p_ar, q_ma, p_vol, q_vol);
-    const std::size_t shape = arma_garch_shape_parameter_count(density);
-    return layout.valid && shape != static_cast<std::size_t>(-1)
-        ? layout.parameter_count + shape
-        : 0u;
-}
-
-extern "C" std::size_t vlk_runtime_arma_garch_jet_workspace_bytes(
-    std::size_t p_ar,
-    std::size_t q_ma,
-    std::size_t p_vol,
-    std::size_t q_vol,
-    std::uint32_t density,
-    std::uint32_t transformed,
-    std::uint32_t request)
-{
-    if (transformed > 1u
-        || arma_garch_shape_parameter_count(density)
-            == static_cast<std::size_t>(-1)) {
-        return 0u;
+    if constexpr (AllowFixed) {
+        return vlk::experiment::runtime::evaluate_theta_entry<
+            Density, ValidateData, Leverage>(
+                layout, parameters, parameter_count,
+                observations, observation_count, initial_variance,
+                request, workspace, workspace_bytes,
+                value, gradient, hessian, valid_mask);
     }
-    const auto layout = vlk::experiment::runtime::arma_garch_layout(
-        p_ar, q_ma, p_vol, q_vol);
-    if (transformed == 0u) {
-        return vlk::experiment::runtime::arma_garch_runtime_workspace_bytes(
-            layout, request);
-    }
-    using namespace vlk::experiment;
-    switch (density) {
-    case VLK_GARCH_NORMAL:
-        return runtime::transformed_workspace_bytes<generated::NormalDensity>(
-            layout, request);
-    case VLK_GARCH_STUDENTT:
-        return runtime::transformed_workspace_bytes<generated::StudentTDensity>(
-            layout, request);
-    case VLK_GARCH_SKEWT:
-        return runtime::transformed_workspace_bytes<generated::SkewTDensity>(
-            layout, request);
-    case VLK_GARCH_GED:
-        return runtime::transformed_workspace_bytes<generated::GedDensity>(
-            layout, request);
-    case VLK_GARCH_GH:
-        return runtime::transformed_workspace_bytes<
-            generated::GeneralizedHyperbolicDensity>(layout, request);
-    case VLK_GARCH_NIG:
-        return runtime::transformed_workspace_bytes<
-            generated::NormalInverseGaussianDensity>(layout, request);
-    case VLK_GARCH_HYPERBOLIC:
-        return runtime::transformed_workspace_bytes<
-            generated::HyperbolicDensity>(layout, request);
-    case VLK_GARCH_VARIANCE_GAMMA:
-        return runtime::transformed_workspace_bytes<
-            generated::VarianceGammaDensity>(layout, request);
-    default:
-        return 0u;
-    }
+    return vlk::experiment::runtime::evaluate_runtime_entry<
+        Density, ValidateData, Leverage>(
+            layout, parameters, parameter_count,
+            observations, observation_count, initial_variance,
+            request, workspace, workspace_bytes,
+            value, gradient, hessian, valid_mask);
 }
 
-extern "C" std::size_t vlk_arma_garch_jet_workspace_bytes(
-    std::size_t p_ar,
-    std::size_t q_ma,
-    std::size_t p_vol,
-    std::size_t q_vol,
-    std::uint32_t density,
-    std::uint32_t transformed,
-    std::uint32_t request)
-{
-    return vlk_runtime_arma_garch_jet_workspace_bytes(
-        p_ar, q_ma, p_vol, q_vol, density, transformed, request);
-}
-
-extern "C" std::int32_t vlk_runtime_arma_garch_jet_evaluate(
+template<bool ValidateData, bool AllowFixed, bool Leverage>
+std::int32_t evaluate_arma_garch_entry(
     const double* parameters,
     std::size_t parameter_count,
     const double* observations,
@@ -950,25 +1077,27 @@ extern "C" std::int32_t vlk_runtime_arma_garch_jet_evaluate(
     double* value,
     double* gradient,
     double* hessian,
-    std::uint32_t* valid_mask)
+    std::uint32_t* valid_mask) noexcept
 {
     using namespace vlk::experiment;
     if (transformed > 1u)
         return VLK_JET_INVALID_ARGUMENT;
     const auto layout = runtime::arma_garch_layout(
-        p_ar, q_ma, p_vol, q_vol);
+        p_ar, q_ma, p_vol, q_vol, Leverage);
 #define VLK_ARMA_GARCH_DENSITY(CODE, TYPE, TRANSFORM) \
     case CODE: \
         return transformed != 0u \
             ? runtime::evaluate_transformed_entry< \
-                generated::TYPE, generated::TRANSFORM>( \
-                    layout, parameters, parameter_count, observations, \
+                generated::TYPE, generated::TRANSFORM, \
+                ValidateData, AllowFixed, Leverage>( \
+                    layout, CODE, parameters, parameter_count, observations, \
                     observation_count, initial_variance, request, workspace, \
                     workspace_bytes, value, gradient, hessian, valid_mask) \
-            : evaluate_runtime_arma_garch_density<generated::TYPE>( \
-                layout, parameters, parameter_count, observations, \
-                observation_count, initial_variance, request, workspace, \
-                workspace_bytes, value, gradient, hessian, valid_mask)
+            : evaluate_runtime_arma_garch_density< \
+                generated::TYPE, ValidateData, AllowFixed, Leverage>( \
+                    layout, parameters, parameter_count, observations, \
+                    observation_count, initial_variance, request, workspace, \
+                    workspace_bytes, value, gradient, hessian, valid_mask)
     switch (density) {
         VLK_ARMA_GARCH_DENSITY(
             VLK_GARCH_NORMAL, NormalDensity, NoShapeTransform);
@@ -995,6 +1124,339 @@ extern "C" std::int32_t vlk_runtime_arma_garch_jet_evaluate(
 #undef VLK_ARMA_GARCH_DENSITY
 }
 
+[[nodiscard]] std::size_t arma_garch_workspace_for_layout(
+    const vlk::experiment::runtime::ArmaGarchLayout& layout,
+    std::uint32_t density,
+    std::uint32_t transformed,
+    std::uint32_t request,
+    bool allow_fixed) noexcept
+{
+    using namespace vlk::experiment;
+    if (!layout.valid || transformed > 1u
+        || arma_garch_shape_parameter_count(density)
+            == static_cast<std::size_t>(-1)) {
+        return 0u;
+    }
+    const bool fixed = allow_fixed
+        && runtime::uses_fixed_arma_garch_kernel(layout);
+    if (transformed == 0u) {
+        return fixed ? 0u
+            : runtime::arma_garch_runtime_workspace_bytes(layout, request);
+    }
+#define VLK_ARMA_WORKSPACE(CODE, TYPE) \
+    case CODE: \
+        return runtime::transformed_workspace_bytes<generated::TYPE>( \
+            layout, density, request, fixed)
+    switch (density) {
+        VLK_ARMA_WORKSPACE(VLK_GARCH_NORMAL, NormalDensity);
+        VLK_ARMA_WORKSPACE(VLK_GARCH_STUDENTT, StudentTDensity);
+        VLK_ARMA_WORKSPACE(VLK_GARCH_SKEWT, SkewTDensity);
+        VLK_ARMA_WORKSPACE(VLK_GARCH_GED, GedDensity);
+        VLK_ARMA_WORKSPACE(VLK_GARCH_GH, GeneralizedHyperbolicDensity);
+        VLK_ARMA_WORKSPACE(VLK_GARCH_NIG, NormalInverseGaussianDensity);
+        VLK_ARMA_WORKSPACE(VLK_GARCH_HYPERBOLIC, HyperbolicDensity);
+        VLK_ARMA_WORKSPACE(VLK_GARCH_VARIANCE_GAMMA, VarianceGammaDensity);
+    default:
+        return 0u;
+    }
+#undef VLK_ARMA_WORKSPACE
+}
+
+}  // namespace
+
+extern "C" std::size_t vlk_arma_garch_parameter_count(
+    std::size_t p_ar,
+    std::size_t q_ma,
+    std::size_t p_vol,
+    std::size_t q_vol,
+    std::uint32_t density)
+{
+    const auto layout = vlk::experiment::runtime::arma_garch_layout(
+        p_ar, q_ma, p_vol, q_vol);
+    const std::size_t shape = arma_garch_shape_parameter_count(density);
+    return layout.valid && shape != static_cast<std::size_t>(-1)
+        ? layout.parameter_count + shape
+        : 0u;
+}
+
+extern "C" std::size_t vlk_arma_gjr_garch_parameter_count(
+    std::size_t p_ar,
+    std::size_t q_ma,
+    std::size_t p_vol,
+    std::size_t q_vol,
+    std::uint32_t density)
+{
+    const auto layout = vlk::experiment::runtime::arma_garch_layout(
+        p_ar, q_ma, p_vol, q_vol, true);
+    const std::size_t shape = arma_garch_shape_parameter_count(density);
+    return layout.valid && shape != static_cast<std::size_t>(-1)
+        ? layout.parameter_count + shape
+        : 0u;
+}
+
+extern "C" std::int32_t vlk_arma_garch_sample_data_valid(
+    const double* observations,
+    std::size_t observation_count,
+    double initial_variance,
+    std::size_t p_ar,
+    std::size_t q_ma,
+    std::size_t p_vol,
+    std::size_t q_vol,
+    std::uint32_t density)
+{
+    const auto layout = vlk::experiment::runtime::arma_garch_layout(
+        p_ar, q_ma, p_vol, q_vol);
+    return arma_garch_shape_parameter_count(density)
+            != static_cast<std::size_t>(-1)
+        && layout.valid
+        && vlk::experiment::runtime::valid_data(
+            layout, observations, observation_count, initial_variance);
+}
+
+extern "C" std::int32_t vlk_arma_gjr_garch_sample_data_valid(
+    const double* observations,
+    std::size_t observation_count,
+    double initial_variance,
+    std::size_t p_ar,
+    std::size_t q_ma,
+    std::size_t p_vol,
+    std::size_t q_vol,
+    std::uint32_t density)
+{
+    const auto layout = vlk::experiment::runtime::arma_garch_layout(
+        p_ar, q_ma, p_vol, q_vol, true);
+    return arma_garch_shape_parameter_count(density)
+            != static_cast<std::size_t>(-1)
+        && layout.valid
+        && vlk::experiment::runtime::valid_data(
+            layout, observations, observation_count, initial_variance);
+}
+
+extern "C" std::int32_t vlk_arma_garch_dispatch_kind(
+    std::size_t p_ar,
+    std::size_t q_ma,
+    std::size_t p_vol,
+    std::size_t q_vol,
+    std::uint32_t density)
+{
+    const auto layout = vlk::experiment::runtime::arma_garch_layout(
+        p_ar, q_ma, p_vol, q_vol);
+    if (!layout.valid || arma_garch_shape_parameter_count(density)
+            == static_cast<std::size_t>(-1)) {
+        return -1;
+    }
+    return vlk::experiment::runtime::uses_fixed_arma_garch_kernel(layout)
+        ? 1 : 0;
+}
+
+extern "C" std::int32_t vlk_arma_gjr_garch_dispatch_kind(
+    std::size_t p_ar,
+    std::size_t q_ma,
+    std::size_t p_vol,
+    std::size_t q_vol,
+    std::uint32_t density)
+{
+    const auto layout = vlk::experiment::runtime::arma_garch_layout(
+        p_ar, q_ma, p_vol, q_vol, true);
+    if (!layout.valid || arma_garch_shape_parameter_count(density)
+            == static_cast<std::size_t>(-1)) {
+        return -1;
+    }
+    return vlk::experiment::runtime::uses_fixed_arma_garch_kernel(layout)
+        ? 1 : 0;
+}
+
+extern "C" std::size_t vlk_runtime_arma_garch_jet_workspace_bytes(
+    std::size_t p_ar,
+    std::size_t q_ma,
+    std::size_t p_vol,
+    std::size_t q_vol,
+    std::uint32_t density,
+    std::uint32_t transformed,
+    std::uint32_t request)
+{
+    if (transformed > 1u
+        || arma_garch_shape_parameter_count(density)
+            == static_cast<std::size_t>(-1)) {
+        return 0u;
+    }
+    const auto layout = vlk::experiment::runtime::arma_garch_layout(
+        p_ar, q_ma, p_vol, q_vol);
+    if (transformed == 0u) {
+        return vlk::experiment::runtime::arma_garch_runtime_workspace_bytes(
+            layout, request);
+    }
+    using namespace vlk::experiment;
+    switch (density) {
+    case VLK_GARCH_NORMAL:
+        return runtime::transformed_workspace_bytes<generated::NormalDensity>(
+            layout, density, request);
+    case VLK_GARCH_STUDENTT:
+        return runtime::transformed_workspace_bytes<generated::StudentTDensity>(
+            layout, density, request);
+    case VLK_GARCH_SKEWT:
+        return runtime::transformed_workspace_bytes<generated::SkewTDensity>(
+            layout, density, request);
+    case VLK_GARCH_GED:
+        return runtime::transformed_workspace_bytes<generated::GedDensity>(
+            layout, density, request);
+    case VLK_GARCH_GH:
+        return runtime::transformed_workspace_bytes<
+            generated::GeneralizedHyperbolicDensity>(layout, density, request);
+    case VLK_GARCH_NIG:
+        return runtime::transformed_workspace_bytes<
+            generated::NormalInverseGaussianDensity>(layout, density, request);
+    case VLK_GARCH_HYPERBOLIC:
+        return runtime::transformed_workspace_bytes<
+            generated::HyperbolicDensity>(layout, density, request);
+    case VLK_GARCH_VARIANCE_GAMMA:
+        return runtime::transformed_workspace_bytes<
+            generated::VarianceGammaDensity>(layout, density, request);
+    default:
+        return 0u;
+    }
+}
+
+extern "C" std::size_t vlk_runtime_arma_gjr_garch_jet_workspace_bytes(
+    std::size_t p_ar,
+    std::size_t q_ma,
+    std::size_t p_vol,
+    std::size_t q_vol,
+    std::uint32_t density,
+    std::uint32_t transformed,
+    std::uint32_t request)
+{
+    return arma_garch_workspace_for_layout(
+        vlk::experiment::runtime::arma_garch_layout(
+            p_ar, q_ma, p_vol, q_vol, true),
+        density, transformed, request, false);
+}
+
+extern "C" std::size_t vlk_arma_garch_jet_workspace_bytes(
+    std::size_t p_ar,
+    std::size_t q_ma,
+    std::size_t p_vol,
+    std::size_t q_vol,
+    std::uint32_t density,
+    std::uint32_t transformed,
+    std::uint32_t request)
+{
+    if (transformed > 1u
+        || arma_garch_shape_parameter_count(density)
+            == static_cast<std::size_t>(-1)) {
+        return 0u;
+    }
+    const auto layout = vlk::experiment::runtime::arma_garch_layout(
+        p_ar, q_ma, p_vol, q_vol);
+    const bool fixed =
+        vlk::experiment::runtime::uses_fixed_arma_garch_kernel(layout);
+    if (transformed == 0u) {
+        return fixed ? 0u
+            : vlk::experiment::runtime::arma_garch_runtime_workspace_bytes(
+                layout, request);
+    }
+    using namespace vlk::experiment;
+    switch (density) {
+    case VLK_GARCH_NORMAL:
+        return runtime::transformed_workspace_bytes<generated::NormalDensity>(
+            layout, density, request, fixed);
+    case VLK_GARCH_STUDENTT:
+        return runtime::transformed_workspace_bytes<generated::StudentTDensity>(
+            layout, density, request, fixed);
+    case VLK_GARCH_SKEWT:
+        return runtime::transformed_workspace_bytes<generated::SkewTDensity>(
+            layout, density, request, fixed);
+    case VLK_GARCH_GED:
+        return runtime::transformed_workspace_bytes<generated::GedDensity>(
+            layout, density, request, fixed);
+    case VLK_GARCH_GH:
+        return runtime::transformed_workspace_bytes<
+            generated::GeneralizedHyperbolicDensity>(
+                layout, density, request, fixed);
+    case VLK_GARCH_NIG:
+        return runtime::transformed_workspace_bytes<
+            generated::NormalInverseGaussianDensity>(
+                layout, density, request, fixed);
+    case VLK_GARCH_HYPERBOLIC:
+        return runtime::transformed_workspace_bytes<
+            generated::HyperbolicDensity>(layout, density, request, fixed);
+    case VLK_GARCH_VARIANCE_GAMMA:
+        return runtime::transformed_workspace_bytes<
+            generated::VarianceGammaDensity>(layout, density, request, fixed);
+    default:
+        return 0u;
+    }
+}
+
+extern "C" std::size_t vlk_arma_gjr_garch_jet_workspace_bytes(
+    std::size_t p_ar,
+    std::size_t q_ma,
+    std::size_t p_vol,
+    std::size_t q_vol,
+    std::uint32_t density,
+    std::uint32_t transformed,
+    std::uint32_t request)
+{
+    return arma_garch_workspace_for_layout(
+        vlk::experiment::runtime::arma_garch_layout(
+            p_ar, q_ma, p_vol, q_vol, true),
+        density, transformed, request, true);
+}
+
+extern "C" std::int32_t vlk_runtime_arma_garch_jet_evaluate(
+    const double* parameters,
+    std::size_t parameter_count,
+    const double* observations,
+    std::size_t observation_count,
+    double initial_variance,
+    std::size_t p_ar,
+    std::size_t q_ma,
+    std::size_t p_vol,
+    std::size_t q_vol,
+    std::uint32_t density,
+    std::uint32_t transformed,
+    std::uint32_t request,
+    void* workspace,
+    std::size_t workspace_bytes,
+    double* value,
+    double* gradient,
+    double* hessian,
+    std::uint32_t* valid_mask)
+{
+    return evaluate_arma_garch_entry<true, false, false>(
+        parameters, parameter_count, observations, observation_count,
+        initial_variance, p_ar, q_ma, p_vol, q_vol, density, transformed,
+        request, workspace, workspace_bytes,
+        value, gradient, hessian, valid_mask);
+}
+
+extern "C" std::int32_t vlk_runtime_arma_gjr_garch_jet_evaluate(
+    const double* parameters,
+    std::size_t parameter_count,
+    const double* observations,
+    std::size_t observation_count,
+    double initial_variance,
+    std::size_t p_ar,
+    std::size_t q_ma,
+    std::size_t p_vol,
+    std::size_t q_vol,
+    std::uint32_t density,
+    std::uint32_t transformed,
+    std::uint32_t request,
+    void* workspace,
+    std::size_t workspace_bytes,
+    double* value,
+    double* gradient,
+    double* hessian,
+    std::uint32_t* valid_mask)
+{
+    return evaluate_arma_garch_entry<true, false, true>(
+        parameters, parameter_count, observations, observation_count,
+        initial_variance, p_ar, q_ma, p_vol, q_vol, density, transformed,
+        request, workspace, workspace_bytes,
+        value, gradient, hessian, valid_mask);
+}
+
 extern "C" std::int32_t vlk_arma_garch_jet_evaluate(
     const double* parameters,
     std::size_t parameter_count,
@@ -1015,7 +1477,88 @@ extern "C" std::int32_t vlk_arma_garch_jet_evaluate(
     double* hessian,
     std::uint32_t* valid_mask)
 {
-    return vlk_runtime_arma_garch_jet_evaluate(
+    return evaluate_arma_garch_entry<true, true, false>(
+        parameters, parameter_count, observations, observation_count,
+        initial_variance, p_ar, q_ma, p_vol, q_vol, density, transformed,
+        request, workspace, workspace_bytes,
+        value, gradient, hessian, valid_mask);
+}
+
+extern "C" std::int32_t vlk_arma_gjr_garch_jet_evaluate(
+    const double* parameters,
+    std::size_t parameter_count,
+    const double* observations,
+    std::size_t observation_count,
+    double initial_variance,
+    std::size_t p_ar,
+    std::size_t q_ma,
+    std::size_t p_vol,
+    std::size_t q_vol,
+    std::uint32_t density,
+    std::uint32_t transformed,
+    std::uint32_t request,
+    void* workspace,
+    std::size_t workspace_bytes,
+    double* value,
+    double* gradient,
+    double* hessian,
+    std::uint32_t* valid_mask)
+{
+    return evaluate_arma_garch_entry<true, true, true>(
+        parameters, parameter_count, observations, observation_count,
+        initial_variance, p_ar, q_ma, p_vol, q_vol, density, transformed,
+        request, workspace, workspace_bytes,
+        value, gradient, hessian, valid_mask);
+}
+
+extern "C" std::int32_t vlk_arma_garch_jet_evaluate_prevalidated(
+    const double* parameters,
+    std::size_t parameter_count,
+    const double* observations,
+    std::size_t observation_count,
+    double initial_variance,
+    std::size_t p_ar,
+    std::size_t q_ma,
+    std::size_t p_vol,
+    std::size_t q_vol,
+    std::uint32_t density,
+    std::uint32_t transformed,
+    std::uint32_t request,
+    void* workspace,
+    std::size_t workspace_bytes,
+    double* value,
+    double* gradient,
+    double* hessian,
+    std::uint32_t* valid_mask)
+{
+    return evaluate_arma_garch_entry<false, true, false>(
+        parameters, parameter_count, observations, observation_count,
+        initial_variance, p_ar, q_ma, p_vol, q_vol, density, transformed,
+        request, workspace, workspace_bytes,
+        value, gradient, hessian, valid_mask);
+}
+
+extern "C" std::int32_t vlk_arma_gjr_garch_jet_evaluate_prevalidated(
+    const double* parameters,
+    std::size_t parameter_count,
+    const double* observations,
+    std::size_t observation_count,
+    double initial_variance,
+    std::size_t p_ar,
+    std::size_t q_ma,
+    std::size_t p_vol,
+    std::size_t q_vol,
+    std::uint32_t density,
+    std::uint32_t transformed,
+    std::uint32_t request,
+    void* workspace,
+    std::size_t workspace_bytes,
+    double* value,
+    double* gradient,
+    double* hessian,
+    std::uint32_t* valid_mask)
+{
+    return evaluate_arma_garch_entry<false, true, true>(
         parameters, parameter_count, observations, observation_count,
         initial_variance, p_ar, q_ma, p_vol, q_vol, density, transformed,
         request, workspace, workspace_bytes,
@@ -1097,15 +1640,19 @@ extern "C" std::int32_t vlk_runtime_arma_garch_normal_jet(
     }
     if (workspace_bytes < required)
         return VLK_JET_INSUFFICIENT_WORKSPACE;
-    if (!runtime::valid_inputs<generated::NormalDensity>(
-            layout, parameters, observations, observation_count,
-            initial_variance))
+    if (!runtime::valid_data(
+            layout, observations, observation_count, initial_variance))
         return VLK_JET_DOMAIN_ERROR;
     runtime::WorkspaceArena arena(workspace, workspace_bytes);
     runtime::Scratch scratch;
     if (!runtime::bind_scratch(arena, layout, request, scratch))
         return VLK_JET_INSUFFICIENT_WORKSPACE;
-    if (!runtime::evaluate_planned<generated::NormalDensity>(
+    if (!runtime::valid_parameters<generated::NormalDensity, true, false>(
+            layout, parameters, scratch.residual_history,
+            scratch.variance_history)) {
+        return VLK_JET_DOMAIN_ERROR;
+    }
+    if (!runtime::evaluate_planned<generated::NormalDensity, false>(
             layout, parameters, observations, observation_count,
             initial_variance, request, scratch, value, gradient, hessian)) {
         return VLK_JET_DOMAIN_ERROR;
@@ -1151,7 +1698,7 @@ extern "C" std::int32_t vlk_arma_garch_normal_jet(
     const auto fixed = [&]<std::size_t PAr, std::size_t QMa,
                           std::size_t PVol, std::size_t QVol>() {
         return vlk::experiment::runtime::evaluate_fixed<
-            vlk::experiment::generated::NormalDensity,
+            vlk::experiment::generated::NormalDensity, false, false,
             PAr, QMa, PVol, QVol>(
                 parameters, parameter_count, observations, observation_count,
                 initial_variance, request, value, gradient, hessian, valid_mask);

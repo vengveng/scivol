@@ -226,7 +226,6 @@ double gjr_garch_ll_11_normal(const double* __restrict params,
 
     for (size_t t = 1; t < n; ++t) {
         sigma2[t] = gjr_sigma2_11(omega, alpha, gamma, beta, residuals[t - 1], sigma2[t - 1]);
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
         const double e2 = residuals[t] * residuals[t];
         sum_ll += log(sigma2[t]) + e2 / sigma2[t];
     }
@@ -256,7 +255,6 @@ void gjr_garch_ll_grad_11_normal(const double* __restrict params,
         const double ind     = (e_prev < 0.0) ? 1.0 : 0.0;
 
         sigma2[t] = omega + alpha * e2_prev + gamma * ind * e2_prev + beta * sigma2[t - 1];
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         // First-order sensitivities ∂h/∂θ
         double d_curr[4];
@@ -301,7 +299,6 @@ void gjr_garch_ll_hess_11_normal(const double* __restrict params,
         const double ind     = (e_prev < 0.0) ? 1.0 : 0.0;
 
         sigma2[t] = omega + alpha * e2_prev + gamma * ind * e2_prev + beta * sigma2[t - 1];
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         // First derivatives
         double d_curr[4];
@@ -372,7 +369,6 @@ double gjr_garch_ll_11_studentt(const double* __restrict params,
 
     for (size_t t = 1; t < n; ++t) {
         sigma2[t] = gjr_sigma2_11(omega, alpha, gamma, beta, residuals[t - 1], sigma2[t - 1]);
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         const double e2 = residuals[t] * residuals[t];
         var1 += log(sigma2[t]);
@@ -424,7 +420,6 @@ void gjr_garch_ll_grad_11_studentt(const double* __restrict params,
         const double ind     = (e_prev < 0.0) ? 1.0 : 0.0;
 
         sigma2[t] = omega + alpha * e2_prev + gamma * ind * e2_prev + beta * sigma2[t - 1];
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         double d_curr[4];
         d_curr[0] = 1.0                  + beta * d_prev[0];
@@ -508,7 +503,6 @@ void gjr_garch_ll_hess_11_studentt(const double* __restrict params,
         const double ind     = (e_prev < 0.0) ? 1.0 : 0.0;
 
         sigma2[t] = omega + alpha * e2_prev + gamma * ind * e2_prev + beta * sigma2[t - 1];
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         // First derivatives
         double d_curr[4];
@@ -618,7 +612,6 @@ double gjr_garch_ll_pq_normal(const double* __restrict params,
                 s += beta[k] * sigma2[t - 1 - k];
         }
         sigma2[t] = s;
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         const double e2 = residuals[t] * residuals[t];
         sum_ll += log(sigma2[t]) + e2 / sigma2[t];
@@ -636,7 +629,6 @@ double gjr_garch_ll_pq_normal(const double* __restrict params,
         for (size_t k = 0; k < q; ++k)
             s += beta[k] * sigma2[t - 1 - k];
         sigma2[t] = s;
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         const double e2 = residuals[t] * residuals[t];
         sum_ll += log(sigma2[t]) + e2 / sigma2[t];
@@ -685,7 +677,6 @@ void gjr_garch_ll_grad_pq_normal(const double* __restrict params,
             if (t > k) s += beta[k] * sigma2[t - 1 - k];
         }
         sigma2[t] = s;
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         double *d_t = d_buf + (t % ring) * K;
         dzeros(d_t, K);
@@ -726,7 +717,6 @@ void gjr_garch_ll_grad_pq_normal(const double* __restrict params,
         for (size_t k = 0; k < q; ++k)
             s += beta[k] * sigma2[t - 1 - k];
         sigma2[t] = s;
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         double *d_t = d_buf + (t % ring) * K;
         dzeros(d_t, K);
@@ -799,7 +789,6 @@ void gjr_garch_ll_hess_pq_normal(const double* __restrict params,
             if (t > k) s += beta[k] * sigma2[t - 1 - k];
         }
         sigma2[t] = s;
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         double *d_t = d_buf + (t % ring) * K;
         dzeros(d_t, K);
@@ -860,7 +849,6 @@ void gjr_garch_ll_hess_pq_normal(const double* __restrict params,
         for (size_t k = 0; k < q; ++k)
             s += beta[k] * sigma2[t - 1 - k];
         sigma2[t] = s;
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         double *d_t = d_buf + (t % ring) * K;
         dzeros(d_t, K);
@@ -953,7 +941,6 @@ double gjr_garch_ll_pq_studentt(const double* __restrict params,
                 s += beta[k] * sigma2[t - 1 - k];
         }
         sigma2[t] = s;
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         const double e2 = residuals[t] * residuals[t];
         var1 += log(sigma2[t]);
@@ -972,7 +959,6 @@ double gjr_garch_ll_pq_studentt(const double* __restrict params,
         for (size_t k = 0; k < q; ++k)
             s += beta[k] * sigma2[t - 1 - k];
         sigma2[t] = s;
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         const double e2 = residuals[t] * residuals[t];
         var1 += log(sigma2[t]);
@@ -1044,7 +1030,6 @@ void gjr_garch_ll_grad_pq_studentt(const double* __restrict params,
             if (t > k) s += beta[k] * sigma2[t - 1 - k];
         }
         sigma2[t] = s;
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         double *d_t = d_buf + (t % ring) * K;
         dzeros(d_t, K);
@@ -1096,7 +1081,6 @@ void gjr_garch_ll_grad_pq_studentt(const double* __restrict params,
         for (size_t k = 0; k < q; ++k)
             s += beta[k] * sigma2[t - 1 - k];
         sigma2[t] = s;
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         double *d_t = d_buf + (t % ring) * K;
         dzeros(d_t, K);
@@ -1206,7 +1190,6 @@ void gjr_garch_ll_hess_pq_studentt(const double* __restrict params,
             if (t > k) s += beta[k] * sigma2[t - 1 - k];
         }
         sigma2[t] = s;
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         double *d_t = d_buf + (t % ring) * K;
         dzeros(d_t, K);
@@ -1289,7 +1272,6 @@ void gjr_garch_ll_hess_pq_studentt(const double* __restrict params,
         for (size_t k = 0; k < q; ++k)
             s += beta[k] * sigma2[t - 1 - k];
         sigma2[t] = s;
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         double *d_t = d_buf + (t % ring) * K;
         dzeros(d_t, K);
@@ -1461,7 +1443,6 @@ void gjr_garch_ll_grad_pq_skewt(const double* __restrict params,
             if (t > k) s += beta[k] * sigma2[t - 1 - k];
         }
         sigma2[t] = s;
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         double *d_t = d_buf + (t % ring) * K_garch;
         dzeros(d_t, K_garch);
@@ -1510,7 +1491,6 @@ void gjr_garch_ll_grad_pq_skewt(const double* __restrict params,
             s += beta[k] * sigma2[t - 1 - k];
         }
         sigma2[t] = s;
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         double *d_t = d_buf + (t % ring) * K_garch;
         dzeros(d_t, K_garch);
@@ -1623,7 +1603,6 @@ void gjr_garch_ll_hess_pq_skewt(const double* __restrict params,
             if (t > k) s += beta[k] * sigma2[t - 1 - k];
         }
         sigma2[t] = s;
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         double *d_t = d_buf + (t % ring) * K_garch;
         dzeros(d_t, K_garch);
@@ -1695,7 +1674,6 @@ void gjr_garch_ll_hess_pq_skewt(const double* __restrict params,
             s += beta[k] * sigma2[t - 1 - k];
         }
         sigma2[t] = s;
-        if (sigma2[t] < H_FLOOR) sigma2[t] = H_FLOOR;
 
         double *d_t = d_buf + (t % ring) * K_garch;
         dzeros(d_t, K_garch);

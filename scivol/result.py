@@ -12,6 +12,7 @@ from scipy.special import gammaln
 
 from .roles import Role
 from ._settings import settings
+from ._distribution_moments import negative_half_second_moment
 from ._gh import fixed_gh_lambda, standardized_gh_cdf
 from ._vg import standardized_vg_cdf
 
@@ -90,13 +91,14 @@ class GARCHParams:
     alpha: NDArray[np.float64]  # length p
     beta: NDArray[np.float64]   # length q
     gamma: Optional[NDArray[np.float64]] = None  # length p (GJR-GARCH only)
+    negative_second_moment: float = 0.5
     
     @property
     def persistence(self) -> float:
-        """Sum of alpha (+ 0.5*gamma for GJR) + beta coefficients."""
+        """Return the density-aware GARCH or GJR-GARCH persistence."""
         p = float(np.sum(self.alpha) + np.sum(self.beta))
         if self.gamma is not None:
-            p += 0.5 * float(np.sum(self.gamma))
+            p += self.negative_second_moment * float(np.sum(self.gamma))
         return p
     
     @property
@@ -174,11 +176,16 @@ class APARCHParams:
     beta: NDArray[np.float64]
     gamma: NDArray[np.float64]
     delta: float
+    density_adjusted_persistence: Optional[float] = None
 
     @property
     def persistence(self) -> float:
-        """Return the alpha-plus-beta persistence proxy."""
-        return float(np.sum(self.alpha) + np.sum(self.beta))
+        """Return the fitted density-dependent APARCH persistence."""
+        if self.density_adjusted_persistence is None:
+            raise RuntimeError(
+                "Exact APARCH persistence requires the fitted conditional density."
+            )
+        return float(self.density_adjusted_persistence)
 
     @property
     def is_stationary(self) -> bool:
@@ -301,6 +308,8 @@ class FitMetadata:
     timeout: Optional[float] = None
     engine: Optional[str] = None
     optimizer_mode: Optional[int] = None
+    optimizer_phases: Optional[tuple[str, ...]] = None
+    optimizer_phase_modes: Optional[tuple[int, ...]] = None
     kkt_residual: Optional[float] = None
     coordinate_kkt_residual: Optional[float] = None
     kkt_tolerance: Optional[float] = None
@@ -309,6 +318,8 @@ class FitMetadata:
     gradient_evaluations: Optional[int] = None
     refinement_restarts: Optional[int] = None
     curvature_refinement_steps: Optional[int] = None
+    scientific_projection_steps: Optional[int] = None
+    theta_refinement_steps: Optional[int] = None
     objective_parity_error: Optional[float] = None
     jet_request_plan: Optional[str] = None
     boundary_reached: Optional[bool] = None
@@ -350,6 +361,16 @@ class FitMetadata:
             "timeout": self.timeout,
             "engine": self.engine,
             "optimizer_mode": self.optimizer_mode,
+            "optimizer_phases": (
+                list(self.optimizer_phases)
+                if self.optimizer_phases is not None
+                else None
+            ),
+            "optimizer_phase_modes": (
+                list(self.optimizer_phase_modes)
+                if self.optimizer_phase_modes is not None
+                else None
+            ),
             "kkt_residual": self.kkt_residual,
             "coordinate_kkt_residual": self.coordinate_kkt_residual,
             "kkt_tolerance": self.kkt_tolerance,
@@ -358,6 +379,8 @@ class FitMetadata:
             "gradient_evaluations": self.gradient_evaluations,
             "refinement_restarts": self.refinement_restarts,
             "curvature_refinement_steps": self.curvature_refinement_steps,
+            "scientific_projection_steps": self.scientific_projection_steps,
+            "theta_refinement_steps": self.theta_refinement_steps,
             "objective_parity_error": self.objective_parity_error,
             "jet_request_plan": self.jet_request_plan,
             "boundary_reached": self.boundary_reached,
@@ -579,6 +602,10 @@ class EstimationResult:
                 gamma=np.array(fp.get("gamma", []), dtype=np.float64),
                 beta=np.array(fp.get("beta", []), dtype=np.float64),
                 delta=float(fp.get("delta", 2.0)),
+                density_adjusted_persistence=(
+                    float(fp["persistence"])
+                    if "persistence" in fp else None
+                ),
             )
 
         omega = fp.get('omega', 0.0)
@@ -588,8 +615,26 @@ class EstimationResult:
         # GJR-GARCH has gamma (leverage) coefficients
         gamma_raw = fp.get('gamma')
         gamma = np.array(gamma_raw, dtype=np.float64) if gamma_raw is not None else None
-        
-        return GARCHParams(omega=omega, alpha=alpha, beta=beta, gamma=gamma)
+        negative_second_moment = 0.5
+        if gamma is not None:
+            distribution = self.density.signature if self.density is not None else "Normal"
+            density_params = self.dist_params
+            negative_second_moment = negative_half_second_moment(
+                distribution,
+                density_params.nu,
+                density_params.lam,
+                density_params.rho,
+                density_params.zeta,
+                density_params.shape_lambda,
+            )
+
+        return GARCHParams(
+            omega=omega,
+            alpha=alpha,
+            beta=beta,
+            gamma=gamma,
+            negative_second_moment=negative_second_moment,
+        )
     
     @property
     def arma_params(self) -> Optional[ARMAParams]:
@@ -1095,7 +1140,10 @@ class EstimationResult:
             b_name = _r("beta")
             if gp.gamma is not None:
                 g_name = _r("gamma")
-                persist_label = f"Persistence ({a_name} + 0.5{g_name} + {b_name}):"
+                moment = gp.negative_second_moment
+                persist_label = (
+                    f"Persistence ({a_name} + {moment:.4g}{g_name} + {b_name}):"
+                )
             else:
                 persist_label = f"Persistence ({a_name} + {b_name}):"
             print(f"{persist_label:<35} {persistence:.6f}")
@@ -1132,10 +1180,11 @@ class EstimationResult:
                 elif abs(gp.persistence) > 0.99:
                     add("Near-unit-root EGARCH persistence very close to 1")
             elif isinstance(gp, APARCHParams):
-                if gp.persistence >= 1.0:
-                    add("APARCH alpha-plus-beta persistence proxy is at least 1")
-                elif gp.persistence > 0.99:
-                    add("APARCH alpha-plus-beta persistence proxy is very close to 1")
+                if gp.density_adjusted_persistence is not None:
+                    if gp.persistence >= 1.0:
+                        add("Non-stationary APARCH persistence detected")
+                    elif gp.persistence > 0.99:
+                        add("APARCH persistence is very close to 1")
             else:
                 if gp.persistence >= 1.0:
                     add("IGARCH or explosive process detected")

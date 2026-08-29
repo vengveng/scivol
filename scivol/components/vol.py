@@ -20,8 +20,6 @@ class APARCH(Component):
     def __init__(self, p: int = 1, q: int = 1):
         if not isinstance(p, int) or not isinstance(q, int) or p <= 0 or q <= 0:
             raise ValueError("APARCH orders must be positive integers.")
-        if p > 3 or q > 3:
-            raise ValueError("APARCH currently supports orders up to 3.")
         self.p = p
         self.q = q
         self.fitted_params = None
@@ -50,12 +48,14 @@ class APARCH(Component):
         return np.concatenate(([omega], alpha, gamma, beta, [2.0]))
 
     def bounds(self) -> List[Tuple[float, float]]:
+        positive = np.nextafter(0.0, 1.0)
+        unit = np.nextafter(1.0, 0.0)
         return (
-            [(1e-8, 1.0)]
-            + [(1e-8, 0.99)] * self.p
-            + [(-0.999, 0.999)] * self.p
-            + [(1e-8, 0.99)] * self.q
-            + [(0.25, 4.0)]
+            [(positive, np.inf)]
+            + [(0.0, np.inf)] * self.p
+            + [(-unit, unit)] * self.p
+            + [(0.0, np.inf)] * self.q
+            + [(positive, np.inf)]
         )
 
     def pack(self, params_dict: dict) -> np.ndarray:
@@ -83,12 +83,14 @@ class APARCH(Component):
         return self.fitted_params
 
     def persistence(self) -> float:
-        """Return the alpha-plus-beta persistence proxy."""
+        """Return the fitted density-dependent APARCH persistence."""
         if self.fitted_params is None:
             raise RuntimeError("Model not fitted yet.")
-        return float(
-            sum(self.fitted_params["alpha"]) + sum(self.fitted_params["beta"])
-        )
+        if "persistence" not in self.fitted_params:
+            raise RuntimeError(
+                "Exact APARCH persistence requires the fitted conditional density."
+            )
+        return float(self.fitted_params["persistence"])
 
     def is_stationary(self) -> bool:
         return self.persistence() < 1.0 if self.fitted_params else False
@@ -106,7 +108,7 @@ class GJRGARCH(Component):
         α + 0.5·γ + β < 1
     
     For asymmetric distributions (e.g., Skew-t):
-        α + γ·P(z_t < 0) + β < 1
+        α + γ·E[z_t² I(z_t < 0)] + β < 1
     
     Parameters
     ----------
@@ -224,30 +226,36 @@ class GJRGARCH(Component):
         }
         return self.fitted_params
     
-    def persistence(self, p_neg: float = 0.5) -> float:
+    def persistence(self, negative_second_moment: float = 0.5) -> float:
         """
-        Compute persistence: α + γ·P(z<0) + β.
+        Compute persistence: α + γ·E[z² I(z<0)] + β.
         
         Parameters
         ----------
-        p_neg : float
-            Probability of negative innovations. Default 0.5 (symmetric).
-            For Skew-t, this should be P(z < 0) given the skewness parameter.
+        negative_second_moment : float
+            Negative-half second moment. Default 0.5 for symmetric,
+            variance-standardized innovations.
         """
         if self.fitted_params is None:
             raise RuntimeError("Model not fitted yet.")
         return (sum(self.fitted_params['alpha']) 
-                + p_neg * sum(self.fitted_params['gamma']) 
+                + negative_second_moment * sum(self.fitted_params['gamma'])
                 + sum(self.fitted_params['beta']))
     
-    def is_stationary(self, p_neg: float = 0.5) -> bool:
-        return self.persistence(p_neg) < 1.0 if self.fitted_params else False
+    def is_stationary(self, negative_second_moment: float = 0.5) -> bool:
+        return (
+            self.persistence(negative_second_moment) < 1.0
+            if self.fitted_params
+            else False
+        )
     
-    def unconditional_variance(self, p_neg: float = 0.5) -> float:
-        if not self.is_stationary(p_neg):
+    def unconditional_variance(self, negative_second_moment: float = 0.5) -> float:
+        if not self.is_stationary(negative_second_moment):
             return np.inf
         assert self.fitted_params is not None
-        return self.fitted_params['omega'] / (1 - self.persistence(p_neg))
+        return self.fitted_params['omega'] / (
+            1 - self.persistence(negative_second_moment)
+        )
 
 
 class EGARCH(Component):

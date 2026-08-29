@@ -9,6 +9,12 @@
 
 namespace vlk::experiment::model {
 
+#if defined(_MSC_VER)
+#  define VLK_LOCATION_SCALE_INLINE __forceinline
+#else
+#  define VLK_LOCATION_SCALE_INLINE inline __attribute__((always_inline))
+#endif
+
 template<class Density>
 inline constexpr bool residual_derivative_can_fail = [] {
     if constexpr (requires { Density::residual_derivative_can_fail; })
@@ -21,7 +27,7 @@ inline constexpr bool location_scale_observation_can_fail =
     Density::observation_can_fail || residual_derivative_can_fail<Density>;
 
 template<std::size_t StaticModelParameters>
-[[nodiscard]] inline std::size_t model_parameter_count(
+[[nodiscard]] VLK_LOCATION_SCALE_INLINE std::size_t model_parameter_count(
     std::size_t runtime_count) noexcept
 {
     if constexpr (StaticModelParameters == 0u)
@@ -30,7 +36,7 @@ template<std::size_t StaticModelParameters>
 }
 
 template<bool EmitValue, std::size_t StaticModelParameters, class Density>
-inline void accumulate_location_scale_first(
+VLK_LOCATION_SCALE_INLINE void accumulate_location_scale_first(
     std::size_t runtime_model_parameters,
     const generated::DensityObservation<Density::shape_parameters>& observation,
     const double* residual_first,
@@ -53,7 +59,7 @@ inline void accumulate_location_scale_first(
 
 template<bool EmitValue, bool EmitGradient, bool DenseHessian,
          std::size_t StaticModelParameters, class Density>
-inline void accumulate_location_scale_second(
+VLK_LOCATION_SCALE_INLINE void accumulate_location_scale_second(
     std::size_t runtime_model_parameters,
     const generated::DensityObservation<Density::shape_parameters>& observation,
     const double* residual_first,
@@ -129,5 +135,7 @@ inline void accumulate_location_scale_second(
 }
 
 }  // namespace vlk::experiment::model
+
+#undef VLK_LOCATION_SCALE_INLINE
 
 #endif

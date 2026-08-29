@@ -23,6 +23,25 @@ template<std::size_t StaticVarianceParameters>
     return row * width - row * (row + 1u) / 2u + column;
 }
 
+template<bool EmitGradient, bool EmitHessian, bool DenseHessian,
+         class Density, class Prepared>
+inline void initialize_density_shape_derivatives(
+    const Prepared& prepared,
+    std::size_t model_parameters,
+    double* gradient,
+    double* hessian)
+{
+    if constexpr (requires {
+        Density::template initialize_shape_derivatives<
+            EmitGradient, EmitHessian, DenseHessian>(
+                prepared, model_parameters, gradient, hessian);
+    }) {
+        Density::template initialize_shape_derivatives<
+            EmitGradient, EmitHessian, DenseHessian>(
+                prepared, model_parameters, gradient, hessian);
+    }
+}
+
 template<bool EmitValue, std::size_t StaticVarianceParameters, class Density>
 inline void accumulate_garch_first(
     std::size_t runtime_variance_parameters,

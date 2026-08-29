@@ -29,15 +29,51 @@ namespace vlk::experiment::generated {
 #  define VLK_GENERATED_RESTRICT __restrict__
 #endif
 
-template<std::size_t P, std::size_t Q, class Density>
+template<std::size_t P, std::size_t Q, class Density,
+         class Recursion = GarchRecursion<P, Q>>
 struct GarchJet {
     static_assert(P > 0u && Q > 0u);
-    static constexpr std::size_t V = 1u + P + Q;
+    static constexpr std::size_t V = Recursion::V;
     static constexpr std::size_t D = Density::shape_parameters;
     static constexpr std::size_t K = V + D;
     static constexpr std::size_t V2 = V * (V + 1u) / 2u;
     static constexpr std::size_t K2 = K * (K + 1u) / 2u;
     static constexpr std::size_t max_lag = P > Q ? P : Q;
+
+    [[nodiscard]] static bool valid_data(
+        GarchSample sample,
+        std::size_t n,
+        double h0)
+    {
+        if (sample.residuals2 == nullptr || n == 0u
+            || ((Density::requires_raw_residuals
+                 || Recursion::requires_raw_residuals)
+                && sample.residuals == nullptr)
+            || !std::isfinite(h0) || h0 <= 0.0)
+            return false;
+        for (std::size_t time = 0; time < n; ++time) {
+            if (!std::isfinite(sample.residuals2[time])
+                || sample.residuals2[time] < 0.0
+                || ((Density::requires_raw_residuals
+                     || Recursion::requires_raw_residuals)
+                    && !std::isfinite(sample.residuals[time])))
+                return false;
+        }
+        return true;
+    }
+
+    [[nodiscard]] static bool valid_parameters(const double* theta)
+    {
+        if (theta == nullptr)
+            return false;
+        for (std::size_t parameter = 0; parameter < K; ++parameter) {
+            if (!std::isfinite(theta[parameter]))
+                return false;
+        }
+        if (!(theta[0] > 0.0) || !Density::valid_shape(theta + V))
+            return false;
+        return Recursion::template valid_parameters<Density>(theta);
+    }
 
     [[nodiscard]] static bool valid_inputs(
         const double* theta,
@@ -45,30 +81,7 @@ struct GarchJet {
         std::size_t n,
         double h0)
     {
-        if (theta == nullptr || sample.residuals2 == nullptr || n == 0u
-            || (Density::requires_raw_residuals && sample.residuals == nullptr)
-            || !std::isfinite(h0) || h0 <= 0.0)
-            return false;
-        for (std::size_t time = 0; time < n; ++time) {
-            if (!std::isfinite(sample.residuals2[time])
-                || sample.residuals2[time] < 0.0
-                || (Density::requires_raw_residuals
-                    && !std::isfinite(sample.residuals[time])))
-                return false;
-        }
-        for (std::size_t parameter = 0; parameter < K; ++parameter) {
-            if (!std::isfinite(theta[parameter]))
-                return false;
-        }
-        if (!(theta[0] > 0.0) || !Density::valid_shape(theta + V))
-            return false;
-        double persistence = 0.0;
-        for (std::size_t parameter = 1u; parameter < V; ++parameter) {
-            if (theta[parameter] < 0.0)
-                return false;
-            persistence += theta[parameter];
-        }
-        return persistence < 1.0;
+        return valid_data(sample, n, h0) && valid_parameters(theta);
     }
 
     [[nodiscard]] static bool valid_inputs(
@@ -105,14 +118,17 @@ struct GarchJet {
                 h0,
                 sample.residuals == nullptr ? 0.0 : sample.residuals[0],
                 residual_ring[0]);
-        if constexpr (Density::observation_can_fail)
+        if constexpr (Density::observation_can_fail) {
             valid = initial_observation.valid;
-        if (valid)
+            if (valid)
+                Density::accumulate_value(objective, initial_observation);
+        } else {
             Density::accumulate_value(objective, initial_observation);
+        }
 
         auto process_observation = [&]<bool Startup>(std::size_t t) {
-            const double variance = advance_variance<Startup, P, Q>(
-                theta, residual_ring, variance_ring, t);
+            const double variance = Recursion::template advance_variance<Startup>(
+                theta, sample, residual_ring, variance_ring, t);
             const double residual2 = sample.residuals2[t];
             const auto observation =
                 Density::template observe<true, false, false>(
@@ -120,10 +136,13 @@ struct GarchJet {
                     variance,
                     sample.residuals == nullptr ? 0.0 : sample.residuals[t],
                     residual2);
-            if constexpr (Density::observation_can_fail)
+            if constexpr (Density::observation_can_fail) {
                 valid = valid && observation.valid;
-            if (valid)
+                if (valid)
+                    Density::accumulate_value(objective, observation);
+            } else {
                 Density::accumulate_value(objective, observation);
+            }
             residual_ring[t % P] = residual2;
             variance_ring[t % Q] = variance;
         };
@@ -173,6 +192,9 @@ struct GarchJet {
         residual_ring[0] = sample.residuals2[0];
         variance_ring[0] = h0;
         auto objective = Density::initial_value(density);
+        model::initialize_density_shape_derivatives<
+            true, false, false, Density>(
+                density, V, accumulated_gradient.data(), nullptr);
 
         const std::array<double, V> initial_first {};
         bool valid = true;
@@ -182,9 +204,17 @@ struct GarchJet {
                 h0,
                 sample.residuals == nullptr ? 0.0 : sample.residuals[0],
                 residual_ring[0]);
-        if constexpr (Density::observation_can_fail)
+        if constexpr (Density::observation_can_fail) {
             valid = initial_observation.valid;
-        if (valid) {
+            if (valid) {
+                model::accumulate_garch_first<EmitValue, V, Density>(
+                    V,
+                    initial_observation,
+                    initial_first.data(),
+                    objective,
+                    accumulated_gradient.data());
+            }
+        } else {
             model::accumulate_garch_first<EmitValue, V, Density>(
                 V,
                 initial_observation,
@@ -194,11 +224,11 @@ struct GarchJet {
         }
 
         auto process_observation = [&]<bool Startup>(std::size_t t) {
-            const double variance = advance_variance<Startup, P, Q>(
-                theta, residual_ring, variance_ring, t);
+            const double variance = Recursion::template advance_variance<Startup>(
+                theta, sample, residual_ring, variance_ring, t);
             std::array<double, V> current_first;
-            advance_first_sensitivities<Startup, P, Q>(
-                theta,
+            Recursion::template advance_first<Startup>(
+                theta, sample,
                 residual_ring,
                 variance_ring,
                 first_ring,
@@ -212,9 +242,17 @@ struct GarchJet {
                     variance,
                     sample.residuals == nullptr ? 0.0 : sample.residuals[t],
                     residual2);
-            if constexpr (Density::observation_can_fail)
+            if constexpr (Density::observation_can_fail) {
                 valid = valid && observation.valid;
-            if (valid) {
+                if (valid) {
+                    model::accumulate_garch_first<EmitValue, V, Density>(
+                        V,
+                        observation,
+                        current_first.data(),
+                        objective,
+                        accumulated_gradient.data());
+                }
+            } else {
                 model::accumulate_garch_first<EmitValue, V, Density>(
                     V,
                     observation,
@@ -292,6 +330,10 @@ struct GarchJet {
         residual_ring[0] = sample.residuals2[0];
         variance_ring[0] = h0;
         auto objective = Density::initial_value(density);
+        model::initialize_density_shape_derivatives<
+            EmitGradient, true, false, Density>(
+                density, V, accumulated_gradient.data(),
+                accumulated_hessian.data());
 
         const std::array<double, V> initial_first {};
         const std::array<double, V2> initial_second {};
@@ -302,9 +344,20 @@ struct GarchJet {
                 h0,
                 sample.residuals == nullptr ? 0.0 : sample.residuals[0],
                 residual_ring[0]);
-        if constexpr (Density::observation_can_fail)
+        if constexpr (Density::observation_can_fail) {
             valid = initial_observation.valid;
-        if (valid) {
+            if (valid) {
+                model::accumulate_garch_second<
+                    EmitValue, EmitGradient, false, V, Density>(
+                    V,
+                    initial_observation,
+                    initial_first.data(),
+                    initial_second.data(),
+                    objective,
+                    accumulated_gradient.data(),
+                    accumulated_hessian.data());
+            }
+        } else {
             model::accumulate_garch_second<
                 EmitValue, EmitGradient, false, V, Density>(
                 V,
@@ -318,18 +371,18 @@ struct GarchJet {
 
         auto process_observation = [&]<bool Startup>(std::size_t t)
             VLK_GENERATED_LAMBDA_INLINE {
-            const double variance = advance_variance<Startup, P, Q>(
-                theta, residual_ring, variance_ring, t);
+            const double variance = Recursion::template advance_variance<Startup>(
+                theta, sample, residual_ring, variance_ring, t);
             std::array<double, V> current_first;
             std::array<double, V2> current_second;
-            advance_first_sensitivities<Startup, P, Q>(
-                theta,
+            Recursion::template advance_first<Startup>(
+                theta, sample,
                 residual_ring,
                 variance_ring,
                 first_ring,
                 t,
                 current_first);
-            advance_second_sensitivities<Startup, P, Q>(
+            Recursion::template advance_second<Startup>(
                 theta, first_ring, second_ring, t, current_second);
 
             const double residual2 = sample.residuals2[t];
@@ -339,9 +392,20 @@ struct GarchJet {
                     variance,
                     sample.residuals == nullptr ? 0.0 : sample.residuals[t],
                     residual2);
-            if constexpr (Density::observation_can_fail)
+            if constexpr (Density::observation_can_fail) {
                 valid = valid && observation.valid;
-            if (valid) {
+                if (valid) {
+                    model::accumulate_garch_second<
+                        EmitValue, EmitGradient, false, V, Density>(
+                        V,
+                        observation,
+                        current_first.data(),
+                        current_second.data(),
+                        objective,
+                        accumulated_gradient.data(),
+                        accumulated_hessian.data());
+                }
+            } else {
                 model::accumulate_garch_second<
                     EmitValue, EmitGradient, false, V, Density>(
                     V,
@@ -483,17 +547,14 @@ private:
     }
 };
 
-template<std::size_t P, std::size_t Q, class Density, class Transform>
+template<std::size_t P, std::size_t Q, class Density, class Transform,
+         class Recursion = GarchRecursion<P, Q>>
 struct TransformedGarchJet {
-    using ThetaJet = GarchJet<P, Q, Density>;
+    using ThetaJet = GarchJet<P, Q, Density, Recursion>;
     static constexpr std::size_t K = ThetaJet::K;
     static_assert(K == Transform::parameters);
 
-    [[nodiscard]] static bool valid_inputs(
-        const double* z,
-        GarchSample sample,
-        std::size_t n,
-        double h0)
+    [[nodiscard]] static bool valid_parameters(const double* z)
     {
         if (z == nullptr)
             return false;
@@ -503,7 +564,25 @@ struct TransformedGarchJet {
         }
         std::array<double, K> theta {};
         Transform::pack(z, theta.data());
-        return ThetaJet::valid_inputs(theta.data(), sample, n, h0);
+        if constexpr (requires { Transform::guarantees_model_domain; }) {
+            if constexpr (Transform::guarantees_model_domain) {
+                for (double parameter : theta) {
+                    if (!std::isfinite(parameter))
+                        return false;
+                }
+                return Density::valid_shape(theta.data() + ThetaJet::V);
+            }
+        }
+        return ThetaJet::valid_parameters(theta.data());
+    }
+
+    [[nodiscard]] static bool valid_inputs(
+        const double* z,
+        GarchSample sample,
+        std::size_t n,
+        double h0)
+    {
+        return ThetaJet::valid_data(sample, n, h0) && valid_parameters(z);
     }
 
     [[nodiscard]] static bool valid_inputs(
@@ -585,6 +664,43 @@ inline bool finite_values(const double* values, std::size_t size)
             return false;
     }
     return true;
+}
+
+template<class Jet>
+std::int32_t evaluate_prevalidated_sample(
+    const double* parameters,
+    GarchSample sample,
+    std::size_t n,
+    double h0,
+    std::uint32_t request,
+    double* objective,
+    double* gradient,
+    double* hessian,
+    std::uint32_t* valid_mask)
+{
+    if (valid_mask != nullptr)
+        *valid_mask = 0u;
+    if (parameters == nullptr || sample.residuals2 == nullptr || n == 0u
+        || !std::isfinite(h0) || h0 <= 0.0 || valid_mask == nullptr
+        || request == 0u || (request & ~(VLK_JET_F | VLK_JET_G | VLK_JET_H)) != 0u
+        || ((request & VLK_JET_F) != 0u && objective == nullptr)
+        || ((request & VLK_JET_G) != 0u && gradient == nullptr)
+        || ((request & VLK_JET_H) != 0u && hessian == nullptr)) {
+        return VLK_JET_INVALID_ARGUMENT;
+    }
+    if (!Jet::valid_parameters(parameters))
+        return VLK_JET_DOMAIN_ERROR;
+
+    Jet::evaluate_planned(
+        parameters, sample, n, h0, request, objective, gradient, hessian);
+    const bool finite = ((request & VLK_JET_F) == 0u || std::isfinite(*objective))
+        && ((request & VLK_JET_G) == 0u || finite_values(gradient, Jet::K))
+        && ((request & VLK_JET_H) == 0u || finite_values(hessian, Jet::K * Jet::K));
+    if (!finite)
+        return VLK_JET_DOMAIN_ERROR;
+
+    *valid_mask = request;
+    return VLK_JET_OK;
 }
 
 template<class Jet>

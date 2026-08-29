@@ -18,6 +18,12 @@ from numpy.typing import NDArray
 GJR_H_FLOOR = 1e-12
 DCC_H_FLOOR = 1e-12
 SOFTPLUS_THRESHOLD = 20.0
+NATIVE_GED_FLOOR = 2.0**-330
+NATIVE_GH_LAMBDA_BOUNDS = (-6.0, 6.0)
+NATIVE_GH_RHO_LIMIT = 0.995
+NATIVE_GH_ZETA_BOUNDS = (0.1, 25.0)
+NATIVE_STUDENT_FLOOR = 2.0 + 8.0 * np.finfo(np.float64).eps
+NATIVE_VG_LAMBDA_BOUNDS = (1.5000000000000018, 50.0)
 
 
 @lru_cache(maxsize=1)
@@ -41,7 +47,7 @@ def _value_grad_hess(
     objective,
     theta: NDArray[np.float64],
 ) -> Tuple[float, NDArray[np.float64], NDArray[np.float64]]:
-    jax, jnp, _ = _jax_modules()
+    jax, jnp, jsp = _jax_modules()
     theta_j = jnp.asarray(theta, dtype=jnp.float64)
     value = float(objective(theta_j))
     grad = np.asarray(jax.grad(objective)(theta_j), dtype=np.float64)
@@ -52,6 +58,470 @@ def _value_grad_hess(
 def _softplus_production(jnp, x):
     """Mirror the production softplus thresholding used in transform code."""
     return jnp.where(x > SOFTPLUS_THRESHOLD, x, jnp.log1p(jnp.exp(x)))
+
+
+def _native_bounded_logistic(jax, coordinate, lower: float, upper: float):
+    return lower + (upper - lower) * jax.nn.sigmoid(coordinate)
+
+
+def _native_reflection_coefficients(jnp, coordinates, sign: float):
+    """Independent Schur-reflection map used by the native ARMA chart."""
+    order = int(coordinates.shape[0])
+    coefficients = jnp.zeros_like(coordinates)
+    for stage in range(order):
+        previous = coefficients
+        reflection = jnp.tanh(coordinates[stage])
+        for row in range(stage):
+            reverse = stage - 1 - row
+            coefficients = coefficients.at[row].set(
+                previous[row] - reflection * previous[reverse]
+            )
+        coefficients = coefficients.at[stage].set(reflection)
+    return sign * coefficients
+
+
+def _native_shape_coordinates(jax, jnp, coordinates, density: str):
+    def softplus(value):
+        return _softplus_production(jnp, value)
+
+    if density == "normal":
+        return jnp.zeros((0,), dtype=coordinates.dtype)
+    if density == "studentt":
+        return jnp.array([NATIVE_STUDENT_FLOOR + softplus(coordinates[0])])
+    if density == "ged":
+        return jnp.array([NATIVE_GED_FLOOR + softplus(coordinates[0])])
+    if density == "skewt":
+        return jnp.array([
+            NATIVE_STUDENT_FLOOR + softplus(coordinates[0]),
+            jnp.tanh(coordinates[1]),
+        ])
+
+    rho = NATIVE_GH_RHO_LIMIT * jnp.tanh(coordinates[0])
+    if density == "vg":
+        shape_lambda = _native_bounded_logistic(
+            jax, coordinates[1], *NATIVE_VG_LAMBDA_BOUNDS
+        )
+        return jnp.array([rho, shape_lambda])
+
+    zeta = _native_bounded_logistic(
+        jax, coordinates[1], *NATIVE_GH_ZETA_BOUNDS
+    )
+    if density in {"nig", "hyperbolic"}:
+        return jnp.array([rho, zeta])
+    if density == "gh":
+        shape_lambda = _native_bounded_logistic(
+            jax, coordinates[2], *NATIVE_GH_LAMBDA_BOUNDS
+        )
+        return jnp.array([rho, zeta, shape_lambda])
+    raise ValueError(f"Unsupported native density transform: {density}")
+
+
+def native_coordinate_chain_rule_value_grad_hess(
+    coordinates: NDArray[np.float64],
+    theta: NDArray[np.float64],
+    value_theta: float,
+    gradient_theta: NDArray[np.float64],
+    hessian_theta: NDArray[np.float64],
+    p_vol: int,
+    q_vol: int,
+    density: str,
+    *,
+    p_ar: int | None = None,
+    q_ma: int = 0,
+    leverage: bool = False,
+) -> Tuple[float, NDArray[np.float64], NDArray[np.float64]]:
+    """Independent chain-rule oracle for the complete native coordinate chart."""
+    jax, jnp, jsp = _jax_modules()
+    theta_reference = jnp.asarray(theta, dtype=jnp.float64)
+    gradient_reference = jnp.asarray(gradient_theta, dtype=jnp.float64)
+    hessian_reference = jnp.asarray(hessian_theta, dtype=jnp.float64)
+    contribution_count = (2 if leverage else 1) * p_vol + q_vol
+    persistence_limit = (
+        1.0
+        - 8.0 * float(contribution_count + 1) * np.finfo(np.float64).eps
+    )
+
+    def pack(coordinate_point):
+        blocks = []
+        if p_ar is None:
+            model_start = 0
+        else:
+            blocks.append(coordinate_point[:1])
+            ar_end = 1 + p_ar
+            ma_end = ar_end + q_ma
+            blocks.append(_native_reflection_coefficients(
+                jnp, coordinate_point[1:ar_end], 1.0
+            ))
+            blocks.append(_native_reflection_coefficients(
+                jnp, coordinate_point[ar_end:ma_end], -1.0
+            ))
+            model_start = ma_end
+
+        omega = (
+            np.finfo(np.float64).tiny
+            + _softplus_production(jnp, coordinate_point[model_start])
+        )
+        coefficient_start = model_start + 1
+        coefficient_end = coefficient_start + contribution_count
+        shape = _native_shape_coordinates(
+            jax, jnp, coordinate_point[coefficient_end:], density
+        )
+        logits = jnp.concatenate([
+            coordinate_point[coefficient_start:coefficient_end],
+            jnp.zeros((1,), dtype=coordinate_point.dtype),
+        ])
+        weights = jax.nn.softmax(logits)
+        contributions = persistence_limit * weights[:-1]
+        if leverage:
+            negative_moment = _jax_negative_second_moment(
+                jnp, jsp, shape, density
+            )
+            positive = contributions[:p_vol]
+            negative = contributions[p_vol:2 * p_vol]
+            alpha = positive / (1.0 - negative_moment)
+            gamma = negative / negative_moment - alpha
+            beta = contributions[2 * p_vol:]
+            volatility = jnp.concatenate([
+                jnp.array([omega]), alpha, gamma, beta
+            ])
+        else:
+            volatility = jnp.concatenate([
+                jnp.array([omega]), contributions
+            ])
+        blocks.append(volatility)
+        blocks.append(shape)
+        return jnp.concatenate(blocks)
+
+    def local_quadratic(coordinate_point):
+        delta = pack(coordinate_point) - theta_reference
+        return (
+            value_theta
+            + gradient_reference @ delta
+            + 0.5 * delta @ hessian_reference @ delta
+        )
+
+    return _value_grad_hess(local_quadratic, coordinates)
+
+
+def native_egarch_coordinate_chain_rule_value_grad_hess(
+    coordinates: NDArray[np.float64],
+    theta: NDArray[np.float64],
+    value_theta: float,
+    gradient_theta: NDArray[np.float64],
+    hessian_theta: NDArray[np.float64],
+    p: int,
+    q: int,
+    density: str,
+) -> Tuple[float, NDArray[np.float64], NDArray[np.float64]]:
+    """Independent chain-rule oracle for the native EGARCH coordinate chart."""
+    jax, jnp, _ = _jax_modules()
+    theta_reference = jnp.asarray(theta, dtype=jnp.float64)
+    gradient_reference = jnp.asarray(gradient_theta, dtype=jnp.float64)
+    hessian_reference = jnp.asarray(hessian_theta, dtype=jnp.float64)
+    beta_start = 1 + 2 * p
+    model_end = beta_start + q
+
+    def pack(coordinate_point):
+        return jnp.concatenate([
+            coordinate_point[:beta_start],
+            _native_reflection_coefficients(
+                jnp, coordinate_point[beta_start:model_end], 1.0
+            ),
+            _native_shape_coordinates(
+                jax, jnp, coordinate_point[model_end:], density
+            ),
+        ])
+
+    def local_quadratic(coordinate_point):
+        delta = pack(coordinate_point) - theta_reference
+        return (
+            value_theta
+            + gradient_reference @ delta
+            + 0.5 * delta @ hessian_reference @ delta
+        )
+
+    return _value_grad_hess(local_quadratic, coordinates)
+
+
+def native_arma_egarch_coordinate_chain_rule_value_grad_hess(
+    coordinates: NDArray[np.float64],
+    theta: NDArray[np.float64],
+    value_theta: float,
+    gradient_theta: NDArray[np.float64],
+    hessian_theta: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    p_vol: int,
+    q_vol: int,
+    density: str,
+) -> Tuple[float, NDArray[np.float64], NDArray[np.float64]]:
+    """Independent chain-rule oracle for the joint ARMA-EGARCH chart."""
+    jax, jnp, _ = _jax_modules()
+    theta_reference = jnp.asarray(theta, dtype=jnp.float64)
+    gradient_reference = jnp.asarray(gradient_theta, dtype=jnp.float64)
+    hessian_reference = jnp.asarray(hessian_theta, dtype=jnp.float64)
+    ar_end = 1 + p_ar
+    ma_end = ar_end + q_ma
+    beta_start = ma_end + 1 + 2 * p_vol
+    model_end = beta_start + q_vol
+
+    def pack(coordinate_point):
+        return jnp.concatenate([
+            coordinate_point[:1],
+            _native_reflection_coefficients(
+                jnp, coordinate_point[1:ar_end], 1.0
+            ),
+            _native_reflection_coefficients(
+                jnp, coordinate_point[ar_end:ma_end], -1.0
+            ),
+            coordinate_point[ma_end:beta_start],
+            _native_reflection_coefficients(
+                jnp, coordinate_point[beta_start:model_end], 1.0
+            ),
+            _native_shape_coordinates(
+                jax, jnp, coordinate_point[model_end:], density
+            ),
+        ])
+
+    def local_quadratic(coordinate_point):
+        delta = pack(coordinate_point) - theta_reference
+        return (
+            value_theta
+            + gradient_reference @ delta
+            + 0.5 * delta @ hessian_reference @ delta
+        )
+
+    return _value_grad_hess(local_quadratic, coordinates)
+
+
+def _jax_aparch_power_moment(jnp, jsp, gamma, delta, shape, density: str):
+    asymmetry = 0.5 * (
+        (1.0 - gamma) ** delta + (1.0 + gamma) ** delta
+    )
+    if density == "normal":
+        absolute = jnp.exp(
+            0.5 * delta * jnp.log(2.0)
+            + jsp.special.gammaln(0.5 * (delta + 1.0))
+            - 0.5 * jnp.log(jnp.pi)
+        )
+        return asymmetry * absolute
+    if density == "studentt":
+        nu = shape[0]
+        absolute = jnp.exp(
+            0.5 * delta * jnp.log(nu - 2.0)
+            + jsp.special.gammaln(0.5 * (delta + 1.0))
+            + jsp.special.gammaln(0.5 * (nu - delta))
+            - 0.5 * jnp.log(jnp.pi)
+            - jsp.special.gammaln(0.5 * nu)
+        )
+        return asymmetry * absolute
+    if density == "ged":
+        nu = shape[0]
+        inverse_nu = 1.0 / nu
+        log_scale = 0.5 * (
+            jsp.special.gammaln(inverse_nu)
+            - jsp.special.gammaln(3.0 * inverse_nu)
+        )
+        absolute = jnp.exp(
+            delta * log_scale
+            + jsp.special.gammaln((delta + 1.0) * inverse_nu)
+            - jsp.special.gammaln(inverse_nu)
+        )
+        return asymmetry * absolute
+
+    if density == "skewt":
+        full_nodes, full_weights = _egarch_skewt_quadrature_rule()
+        nodes = 0.5 * (full_nodes + 1.0)
+        weights = 0.5 * full_weights
+    else:
+        _, _, nodes, weights = _gh_quadrature_rules()
+    unit = jnp.asarray(nodes, dtype=shape.dtype)
+    weight = jnp.asarray(weights, dtype=shape.dtype)
+    angle = 0.5 * jnp.pi * unit
+    positive = jnp.tan(angle)
+    jacobian = 0.5 * jnp.pi / jnp.cos(angle) ** 2
+    if density == "skewt":
+        nu, skew = shape
+        c_log = (
+            jsp.special.gammaln(0.5 * (nu + 1.0))
+            - jsp.special.gammaln(0.5 * nu)
+            - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
+        )
+        a = 4.0 * skew * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
+        b = jnp.sqrt(1.0 + 3.0 * skew * skew - a * a)
+
+        def logpdf(values):
+            branch = b * values + a
+            scale = 1.0 + skew * jnp.where(branch >= 0.0, 1.0, -1.0)
+            adjusted = branch / scale
+            return (
+                jnp.log(b) + c_log
+                - 0.5 * (nu + 1.0)
+                * jnp.log1p(adjusted * adjusted / (nu - 2.0))
+            )
+
+        full_nodes, full_weights = _egarch_skewt_quadrature_rule()
+        local_nodes = jnp.asarray(full_nodes, dtype=shape.dtype)
+        local_weights = jnp.asarray(full_weights, dtype=shape.dtype)
+
+        def integrate_interval(lower, upper):
+            half_width = 0.5 * (upper - lower)
+            local_unit = (
+                half_width * local_nodes + 0.5 * (upper + lower)
+            )
+            local_angle = 0.5 * jnp.pi * local_unit
+            local_positive = jnp.tan(local_angle)
+            local_jacobian = 0.5 * jnp.pi / jnp.cos(local_angle) ** 2
+            local_positive_term = (
+                local_positive * (1.0 - gamma)
+            ) ** delta
+            local_negative_term = (
+                local_positive * (1.0 + gamma)
+            ) ** delta
+            return half_width * jnp.sum(
+                local_weights * local_jacobian * (
+                    local_positive_term * jnp.exp(logpdf(local_positive))
+                    + local_negative_term * jnp.exp(logpdf(-local_positive))
+                )
+            )
+
+        boundary = (2.0 / jnp.pi) * jnp.arctan(jnp.abs(a / b))
+        return integrate_interval(0.0, boundary) + integrate_interval(
+            boundary, 1.0
+        )
+    elif density == "vg":
+        logpdf = lambda values: _jax_vg_logpdf(  # noqa: E731
+            jnp, jsp, values, shape[0], shape[1]
+        )
+    else:
+        shape_lambda = (
+            -0.5 if density == "nig"
+            else 1.0 if density == "hyperbolic"
+            else shape[2]
+        )
+        logpdf = lambda values: _jax_gh_logpdf(  # noqa: E731
+            jnp, jsp, values, shape[0], shape[1], shape_lambda
+        )
+    positive_term = (positive * (1.0 - gamma)) ** delta
+    negative_term = (positive * (1.0 + gamma)) ** delta
+    return jnp.sum(
+        weight * jacobian * (
+            positive_term * jnp.exp(logpdf(positive))
+            + negative_term * jnp.exp(logpdf(-positive))
+        )
+    )
+
+
+def native_aparch_coordinate_chain_rule_value_grad_hess(
+    coordinates: NDArray[np.float64],
+    theta: NDArray[np.float64],
+    value_theta: float,
+    gradient_theta: NDArray[np.float64],
+    hessian_theta: NDArray[np.float64],
+    p_vol: int,
+    q_vol: int,
+    density: str,
+    *,
+    p_ar: int | None = None,
+    q_ma: int = 0,
+) -> Tuple[float, NDArray[np.float64], NDArray[np.float64]]:
+    """Independent chain-rule oracle for the exact APARCH chart."""
+    jax, jnp, jsp = _jax_modules()
+    theta_reference = jnp.asarray(theta, dtype=jnp.float64)
+    gradient_reference = jnp.asarray(gradient_theta, dtype=jnp.float64)
+    hessian_reference = jnp.asarray(hessian_theta, dtype=jnp.float64)
+    contribution_count = p_vol + q_vol
+    persistence_limit = (
+        1.0
+        - 8.0 * float(contribution_count + 1) * np.finfo(np.float64).eps
+    )
+
+    def pack(coordinate_point):
+        blocks = []
+        if p_ar is None:
+            mean_end = 0
+        else:
+            ar_end = 1 + p_ar
+            mean_end = ar_end + q_ma
+            blocks.extend([
+                coordinate_point[:1],
+                _native_reflection_coefficients(
+                    jnp, coordinate_point[1:ar_end], 1.0
+                ),
+                _native_reflection_coefficients(
+                    jnp, coordinate_point[ar_end:mean_end], -1.0
+                ),
+            ])
+
+        omega_index = mean_end
+        alpha_start = omega_index + 1
+        gamma_start = alpha_start + p_vol
+        beta_start = gamma_start + p_vol
+        delta_index = beta_start + q_vol
+        model_end = delta_index + 1
+        shape = _native_shape_coordinates(
+            jax, jnp, coordinate_point[model_end:], density
+        )
+        omega = (
+            np.finfo(np.float64).tiny
+            + _softplus_production(jnp, coordinate_point[omega_index])
+        )
+        gamma = jnp.tanh(
+            coordinate_point[gamma_start:gamma_start + p_vol]
+        )
+        delta = (
+            shape[0] * jax.nn.sigmoid(coordinate_point[delta_index])
+            if density in {"studentt", "skewt"}
+            else np.finfo(np.float64).tiny
+                + _softplus_production(jnp, coordinate_point[delta_index])
+        )
+        logits = jnp.concatenate([
+            coordinate_point[alpha_start:alpha_start + p_vol],
+            coordinate_point[beta_start:beta_start + q_vol],
+            jnp.zeros((1,), dtype=coordinate_point.dtype),
+        ])
+        contributions = persistence_limit * jax.nn.softmax(logits)[:-1]
+        moments = jnp.stack([
+            _jax_aparch_power_moment(
+                jnp, jsp, gamma[lag], delta, shape, density
+            )
+            for lag in range(p_vol)
+        ])
+        alpha = contributions[:p_vol] / moments
+        beta = contributions[p_vol:]
+        blocks.extend([
+            jnp.concatenate([
+                jnp.array([omega]), alpha, gamma, beta,
+                jnp.array([delta]),
+            ]),
+            shape,
+        ])
+        return jnp.concatenate(blocks)
+
+    def local_quadratic(coordinate_point):
+        difference = pack(coordinate_point) - theta_reference
+        return (
+            value_theta
+            + gradient_reference @ difference
+            + 0.5 * difference @ hessian_reference @ difference
+        )
+
+    return _value_grad_hess(local_quadratic, coordinates)
+
+
+def aparch_power_moment_value_grad_hess(
+    parameters: NDArray[np.float64],
+    density: str,
+) -> Tuple[float, NDArray[np.float64], NDArray[np.float64]]:
+    """Independent AD oracle for E[(|z|-gamma*z)^delta]."""
+    _, jnp, jsp = _jax_modules()
+
+    def objective(local):
+        return _jax_aparch_power_moment(
+            jnp, jsp, local[0], local[1], local[2:], density
+        )
+
+    return _value_grad_hess(objective, parameters)
 
 
 @lru_cache(maxsize=1)
@@ -220,6 +690,51 @@ def _jax_vg_abs_moment(jnp, jsp, rho, shape_lambda):
     return jnp.sum(w * x * (positive + negative) * jacobian)
 
 
+def _jax_negative_second_moment(jnp, jsp, shape, density: str):
+    """Independent quadrature for E[z^2 1(z<0)] in native charts."""
+    if density in {"normal", "studentt", "ged"}:
+        return jnp.asarray(0.5, dtype=shape.dtype)
+
+    nodes, weights = _egarch_skewt_quadrature_rule()
+    u = 0.5 * (jnp.asarray(nodes, dtype=shape.dtype) + 1.0)
+    w = 0.5 * jnp.asarray(weights, dtype=shape.dtype)
+    angle = 0.5 * jnp.pi * u
+    x = jnp.tan(angle)
+    jacobian = 0.5 * jnp.pi / jnp.cos(angle) ** 2
+    z = -x
+
+    if density == "skewt":
+        nu, lam = shape
+        c_log = (
+            jsp.special.gammaln(0.5 * (nu + 1.0))
+            - jsp.special.gammaln(0.5 * nu)
+            - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
+        )
+        a = 4.0 * lam * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
+        b = jnp.sqrt(1.0 + 3.0 * lam * lam - a * a)
+        shifted = b * z + a
+        scale = jnp.where(shifted < 0.0, 1.0 - lam, 1.0 + lam)
+        adjusted = shifted / scale
+        logpdf = (
+            jnp.log(b)
+            + c_log
+            - 0.5 * (nu + 1.0)
+            * jnp.log1p(adjusted * adjusted / (nu - 2.0))
+        )
+    elif density == "vg":
+        logpdf = _jax_vg_logpdf(jnp, jsp, z, shape[0], shape[1])
+    else:
+        shape_lambda = (
+            -0.5 if density == "nig"
+            else 1.0 if density == "hyperbolic"
+            else shape[2]
+        )
+        logpdf = _jax_gh_logpdf(
+            jnp, jsp, z, shape[0], shape[1], shape_lambda
+        )
+    return jnp.sum(w * x * x * jnp.exp(logpdf) * jacobian)
+
+
 def gh_standardized_value_grad_hess(
     params: NDArray[np.float64],
     values: NDArray[np.float64],
@@ -347,6 +862,8 @@ def gh_surface_value_grad_hess(
                     value = vol[0]
                     for lag in range(p_vol):
                         if t <= lag:
+                            continue
+                        if mean_kind == "arma" and t - 1 - lag < first:
                             continue
                         e_lag = residuals[t - 1 - lag]
                         shock = jnp.abs(e_lag) - vol[1 + p_vol + lag] * e_lag
@@ -597,6 +1114,160 @@ def aparch_value_grad_hess(
                 * jnp.log1p(adjusted * adjusted / (nu - 2.0))
             )
         raise ValueError(f"Unsupported APARCH distribution: {dist}")
+
+    return _value_grad_hess(objective, theta)
+
+
+def arma_aparch_value_grad_hess(
+    theta: NDArray[np.float64],
+    y: NDArray[np.float64],
+    p_ar: int,
+    q_ma: int,
+    p_arch: int,
+    q_aparch: int,
+    dist: str = "normal",
+) -> Tuple[float, NDArray[np.float64], NDArray[np.float64]]:
+    """Reference additive NLL jet for joint ARMA+APARCH."""
+    first = max(p_ar, q_ma, p_arch, q_aparch)
+    if dist in {"gh", "nig", "hyperbolic", "vg"}:
+        fixed_lambda = {"nig": -0.5, "hyperbolic": 1.0}.get(dist)
+        result = (
+            vg_surface_value_grad_hess(
+                theta,
+                y,
+                mean_kind="arma",
+                p_mean=p_ar,
+                q_mean=q_ma,
+                volatility_kind="aparch",
+                p_vol=p_arch,
+                q_vol=q_aparch,
+            )
+            if dist == "vg"
+            else gh_surface_value_grad_hess(
+                theta,
+                y,
+                mean_kind="arma",
+                p_mean=p_ar,
+                q_mean=q_ma,
+                volatility_kind="aparch",
+                p_vol=p_arch,
+                q_vol=q_aparch,
+                fixed_lambda=fixed_lambda,
+            )
+        )
+        scale = float(y.size - first)
+        return tuple(np.asarray(entry) * scale for entry in result)  # type: ignore[return-value]
+
+    _, jnp, jsp = _jax_modules()
+    y_j = jnp.asarray(y, dtype=jnp.float64)
+    n = int(y.size)
+
+    def objective(theta_j):
+        index = 0
+        constant = theta_j[index]
+        index += 1
+        ar = theta_j[index:index + p_ar]
+        index += p_ar
+        ma = theta_j[index:index + q_ma]
+        index += q_ma
+        omega = theta_j[index]
+        index += 1
+        alpha = theta_j[index:index + p_arch]
+        index += p_arch
+        gamma = theta_j[index:index + p_arch]
+        index += p_arch
+        beta = theta_j[index:index + q_aparch]
+        index += q_aparch
+        delta = theta_j[index]
+        index += 1
+
+        residuals = jnp.zeros_like(y_j)
+        for time in range(first, n):
+            conditional_mean = constant
+            for lag in range(p_ar):
+                conditional_mean += ar[lag] * y_j[time - 1 - lag]
+            for lag in range(q_ma):
+                conditional_mean += ma[lag] * residuals[time - 1 - lag]
+            residuals = residuals.at[time].set(y_j[time] - conditional_mean)
+
+        initial_variance = jnp.mean(y_j * y_j)
+        power = jnp.full(
+            (n,), initial_variance ** (0.5 * delta), dtype=theta_j.dtype
+        )
+        variance = jnp.full((n,), initial_variance, dtype=theta_j.dtype)
+        for time in range(first, n):
+            current = omega
+            for lag in range(p_arch):
+                if time - 1 - lag < first:
+                    continue
+                lagged = residuals[time - 1 - lag]
+                shock = jnp.abs(lagged) - gamma[lag] * lagged
+                current += alpha[lag] * shock ** delta
+            for lag in range(q_aparch):
+                current += beta[lag] * power[time - 1 - lag]
+            power = power.at[time].set(current)
+            variance = variance.at[time].set(current ** (2.0 / delta))
+
+        residual = residuals[first:]
+        sigma2 = variance[first:]
+        residual2 = residual * residual
+        effective = n - first
+        if dist == "normal":
+            return 0.5 * jnp.sum(
+                jnp.log(2.0 * jnp.pi) + jnp.log(sigma2)
+                + residual2 / sigma2
+            )
+        if dist == "studentt":
+            nu = theta_j[index]
+            constant_t = (
+                jsp.special.gammaln(0.5 * (nu + 1.0))
+                - jsp.special.gammaln(0.5 * nu)
+                - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
+            )
+            return jnp.sum(
+                -constant_t + 0.5 * jnp.log(sigma2)
+                + 0.5 * (nu + 1.0)
+                * jnp.log1p(residual2 / (sigma2 * (nu - 2.0)))
+            )
+        if dist == "ged":
+            nu = theta_j[index]
+            inverse_nu = 1.0 / nu
+            log_scale = 0.5 * (
+                jsp.special.gammaln(inverse_nu)
+                - jsp.special.gammaln(3.0 * inverse_nu)
+            )
+            log_constant = (
+                jnp.log(nu) - jnp.log(2.0) - log_scale
+                - jsp.special.gammaln(inverse_nu)
+            )
+            standardized = jnp.abs(residual) / (
+                jnp.sqrt(sigma2) * jnp.exp(log_scale)
+            )
+            return jnp.sum(
+                -log_constant + 0.5 * jnp.log(sigma2)
+                + standardized ** nu
+            )
+        if dist == "skewt":
+            nu = theta_j[index]
+            skew = theta_j[index + 1]
+            c_log = (
+                jsp.special.gammaln(0.5 * (nu + 1.0))
+                - jsp.special.gammaln(0.5 * nu)
+                - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
+            )
+            a = 4.0 * skew * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
+            b = jnp.sqrt(1.0 + 3.0 * skew * skew - a * a)
+            standardized = residual / jnp.sqrt(sigma2)
+            branch = b * standardized + a
+            adjusted = branch / (
+                1.0 + skew * jnp.where(branch >= 0.0, 1.0, -1.0)
+            )
+            return jnp.sum(
+                -c_log - jnp.log(b) + 0.5 * jnp.log(sigma2)
+                + 0.5 * (nu + 1.0)
+                * jnp.log1p(adjusted * adjusted / (nu - 2.0))
+            )
+        raise ValueError(f"Unsupported ARMA-APARCH distribution: {dist}")
 
     return _value_grad_hess(objective, theta)
 
@@ -1017,7 +1688,7 @@ def linear_mean_egarch_value_grad_hess(
         mean = features_j @ beta_mean
         resid = y_j - mean
         resid2 = resid * resid
-        sigma0 = jnp.maximum(jnp.mean(y_j * y_j), GJR_H_FLOOR)
+        sigma0 = jnp.mean(y_j * y_j)
         logh0 = jnp.log(sigma0)
 
         if dist == "normal":
@@ -1052,7 +1723,7 @@ def linear_mean_egarch_value_grad_hess(
             for j in range(q):
                 logh_t = logh_t + jnp.where(t > j, beta[j] * x_buf[j], 0.0)
 
-            h_t = jnp.maximum(jnp.exp(logh_t), GJR_H_FLOOR)
+            h_t = jnp.exp(logh_t)
             z_t = resid[t] / jnp.sqrt(h_t)
             if q > 0:
                 x_buf = jnp.concatenate([jnp.array([jnp.log(h_t)], dtype=theta_j.dtype), x_buf[: q - 1]], axis=0)
@@ -1234,7 +1905,7 @@ def egarch_value_grad_hess(
         alpha = theta_j[1 : 1 + p]
         gamma = theta_j[1 + p : 1 + 2 * p]
         beta = theta_j[1 + 2 * p : k_vol]
-        sigma0 = jnp.maximum(jnp.mean(resid2_j), GJR_H_FLOOR)
+        sigma0 = jnp.mean(resid2_j)
         logh0 = jnp.log(sigma0)
 
         if dist == "normal":
@@ -1268,7 +1939,7 @@ def egarch_value_grad_hess(
                 logh_t = logh_t + jnp.where(t > i, term, 0.0)
             for j in range(q):
                 logh_t = logh_t + jnp.where(t > j, beta[j] * x_buf[j], 0.0)
-            h_t = jnp.maximum(jnp.exp(logh_t), GJR_H_FLOOR)
+            h_t = jnp.exp(logh_t)
             z_t = resid_j[t] / jnp.sqrt(h_t)
             if q > 0:
                 x_buf = jnp.concatenate([jnp.array([jnp.log(h_t)], dtype=theta_j.dtype), x_buf[: q - 1]], axis=0)
@@ -1364,7 +2035,9 @@ def egarch_logspace_value_grad_hess(
         omega = z_theta[0]
         alpha = z_theta[1 : 1 + p]
         gamma = z_theta[1 + p : 1 + 2 * p]
-        beta = jnp.tanh(z_theta[1 + 2 * p : k_vol])
+        beta = _native_reflection_coefficients(
+            jnp, z_theta[1 + 2 * p : k_vol], 1.0
+        )
 
         if dist == "normal":
             abs_moment = jnp.sqrt(2.0 / jnp.pi)
@@ -1375,7 +2048,7 @@ def egarch_logspace_value_grad_hess(
             lam = None
             abs_moment = studentt_abs_moment(nu)
         elif dist == "ged":
-            nu = 1.01 + softplus(z_theta[k_vol])
+            nu = NATIVE_GED_FLOOR + softplus(z_theta[k_vol])
             lam = None
             abs_moment = ged_abs_moment(nu)
         elif dist == "skewt":
@@ -1385,7 +2058,7 @@ def egarch_logspace_value_grad_hess(
         else:
             raise ValueError(f"Unsupported EGARCH distribution: {dist}")
 
-        sigma0 = jnp.maximum(jnp.mean(resid2_j), GJR_H_FLOOR)
+        sigma0 = jnp.mean(resid2_j)
         logh0 = jnp.log(sigma0)
         z0 = resid_j[0] / jnp.sqrt(sigma0)
         x_buf0 = jnp.concatenate(
@@ -1403,7 +2076,7 @@ def egarch_logspace_value_grad_hess(
                 logh_t = logh_t + jnp.where(t > i, term, 0.0)
             for j in range(q):
                 logh_t = logh_t + jnp.where(t > j, beta[j] * x_buf[j], 0.0)
-            h_t = jnp.maximum(jnp.exp(logh_t), GJR_H_FLOOR)
+            h_t = jnp.exp(logh_t)
             z_t = resid_j[t] / jnp.sqrt(h_t)
             if q > 0:
                 x_buf = jnp.concatenate([jnp.array([jnp.log(h_t)], dtype=z_theta.dtype), x_buf[: q - 1]], axis=0)
@@ -2202,15 +2875,9 @@ def arma_gjr_garch_value_grad_hess(
         beta = theta_j[idx:idx + q_garch]
         idx += q_garch
 
-        invalid = jnp.logical_or(
-            jnp.logical_or(omega <= 0.0, jnp.any(alpha < 0.0)),
-            jnp.any(gamma < 0.0),
-        )
+        invalid = jnp.logical_or(omega <= 0.0, jnp.any(alpha < 0.0))
+        invalid = jnp.logical_or(invalid, jnp.any(alpha + gamma < 0.0))
         invalid = jnp.logical_or(invalid, jnp.any(beta < 0.0))
-        invalid = jnp.logical_or(
-            invalid,
-            jnp.sum(alpha) + jnp.sum(gamma) + jnp.sum(beta) >= 1.0,
-        )
         invalid = jnp.logical_or(invalid, jnp.any(jnp.abs(phi) >= 1.0))
         invalid = jnp.logical_or(invalid, jnp.any(jnp.abs(theta_ma) >= 1.0))
 
@@ -2218,15 +2885,25 @@ def arma_gjr_garch_value_grad_hess(
         lam = None
         if dist == "studentt":
             nu = theta_j[idx]
-            invalid = jnp.logical_or(invalid, nu <= 2.001)
+            invalid = jnp.logical_or(invalid, nu <= 2.0)
         elif dist == "ged":
             nu = theta_j[idx]
-            invalid = jnp.logical_or(invalid, nu <= 1.01)
+            invalid = jnp.logical_or(invalid, nu <= 0.0)
         elif dist == "skewt":
             nu = theta_j[idx]
             lam = theta_j[idx + 1]
-            invalid = jnp.logical_or(invalid, nu <= 2.001)
-            invalid = jnp.logical_or(invalid, jnp.abs(lam) >= 0.999)
+            invalid = jnp.logical_or(invalid, nu <= 2.0)
+            invalid = jnp.logical_or(invalid, jnp.abs(lam) >= 1.0)
+
+        negative_moment = _jax_negative_second_moment(
+            jnp, jsp, theta_j[idx:], dist
+        )
+        persistence = (
+            jnp.sum(alpha)
+            + negative_moment * jnp.sum(gamma)
+            + jnp.sum(beta)
+        )
+        invalid = jnp.logical_or(invalid, persistence >= 1.0)
 
         h0 = jnp.mean(y_j * y_j)
         resid_hist0 = jnp.zeros((max_lag,), dtype=theta_j.dtype)
@@ -2250,8 +2927,6 @@ def arma_gjr_garch_value_grad_hess(
                 h_t = h_t + alpha[i] * e2_lag + gamma[i] * ind * e2_lag
             for j in range(q_garch):
                 h_t = h_t + beta[j] * sigma_hist[j]
-            h_t = jnp.maximum(h_t, GJR_H_FLOOR)
-
             resid_hist_next = jnp.concatenate([e_t[None], resid_hist[:-1]])
             sigma_hist_next = jnp.concatenate([h_t[None], sigma_hist[:-1]])
             return (resid_hist_next, sigma_hist_next), (e_t, h_t)
@@ -2278,8 +2953,8 @@ def arma_gjr_garch_value_grad_hess(
             lgamma_c = jsp.special.gammaln(0.5 * (nu + 1.0)) - jsp.special.gammaln(0.5 * nu)
             a = 4.0 * lam * jnp.exp(lgamma_c) * ((nu - 2.0) / (nu - 1.0)) / jnp.sqrt(jnp.pi * (nu - 2.0))
             b2 = 1.0 + 3.0 * lam * lam - a * a
-            invalid = jnp.logical_or(invalid, b2 <= 1e-12)
-            b = jnp.sqrt(jnp.maximum(b2, 1e-12))
+            invalid = jnp.logical_or(invalid, b2 <= 0.0)
+            b = jnp.sqrt(b2)
             zstar = b * resid_tail / jnp.sqrt(sigma_tail) + a
             scale = jnp.where(zstar < 0.0, 1.0 - lam, 1.0 + lam)
             z_adj = zstar / scale
@@ -2500,7 +3175,7 @@ def arma_egarch_value_grad_hess(
         else:
             raise ValueError(f"Unsupported ARMA-EGARCH distribution: {dist}")
 
-        h0 = jnp.maximum(jnp.mean(y_j * y_j), GJR_H_FLOOR)
+        h0 = jnp.mean(y_j * y_j)
         x0 = jnp.log(h0)
         resid_hist0 = jnp.zeros((max_lag,), dtype=theta_j.dtype)
         x_hist0 = jnp.full((max_lag,), x0, dtype=theta_j.dtype)
@@ -2522,7 +3197,7 @@ def arma_egarch_value_grad_hess(
             for j in range(q_egarch):
                 x_t = x_t + beta[j] * x_hist[j]
 
-            h_t = jnp.maximum(jnp.exp(x_t), GJR_H_FLOOR)
+            h_t = jnp.exp(x_t)
             x_t = jnp.log(h_t)
 
             resid_hist_next = jnp.concatenate([e_t[None], resid_hist[:-1]])
@@ -2645,7 +3320,7 @@ def arma_egarch_logspace_value_grad_hess(
         else:
             raise ValueError(f"Unsupported ARMA-EGARCH distribution: {dist}")
 
-        h0 = jnp.maximum(jnp.mean(y_j * y_j), GJR_H_FLOOR)
+        h0 = jnp.mean(y_j * y_j)
         x0 = jnp.log(h0)
         resid_hist0 = jnp.zeros((max_lag,), dtype=z_theta.dtype)
         x_hist0 = jnp.full((max_lag,), x0, dtype=z_theta.dtype)
@@ -2667,7 +3342,7 @@ def arma_egarch_logspace_value_grad_hess(
             for j in range(q_egarch):
                 x_t = x_t + beta[j] * x_hist[j]
 
-            h_t = jnp.maximum(jnp.exp(x_t), GJR_H_FLOOR)
+            h_t = jnp.exp(x_t)
             x_t = jnp.log(h_t)
 
             resid_hist_next = jnp.concatenate([e_t[None], resid_hist[:-1]])

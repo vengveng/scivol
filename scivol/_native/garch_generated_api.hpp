@@ -87,6 +87,44 @@ VLK_EXPORT vlk_fixed_garch_sample_jet vlk_resolve_generated_garch_sample(
     std::size_t q,
     std::uint32_t transformed);
 
+VLK_EXPORT vlk_fixed_garch_sample_jet vlk_resolve_generated_gjr_sample(
+    std::uint32_t density,
+    std::size_t p,
+    std::size_t q,
+    std::uint32_t transformed);
+
+VLK_EXPORT std::int32_t vlk_evaluate_generated_garch_sample_prevalidated(
+    const double* parameters,
+    const double* residuals,
+    const double* residuals2,
+    std::size_t n,
+    double h0,
+    std::size_t p,
+    std::size_t q,
+    std::uint32_t density,
+    std::uint32_t transformed,
+    std::uint32_t request,
+    double* value,
+    double* gradient,
+    double* hessian,
+    std::uint32_t* valid_mask);
+
+VLK_EXPORT std::int32_t vlk_evaluate_generated_gjr_sample_prevalidated(
+    const double* parameters,
+    const double* residuals,
+    const double* residuals2,
+    std::size_t n,
+    double h0,
+    std::size_t p,
+    std::size_t q,
+    std::uint32_t density,
+    std::uint32_t transformed,
+    std::uint32_t request,
+    double* value,
+    double* gradient,
+    double* hessian,
+    std::uint32_t* valid_mask);
+
 }  // extern "C"
 
 #endif

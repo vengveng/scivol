@@ -419,14 +419,17 @@ class TestDefaultOptimizationPathVisibility:
             ((GARCH(1, 1) + SkewT()).fit(data, solver="slsqp", verbose=False), True),
             ((GJRGARCH(1, 1) + Normal()).fit(data, solver="slsqp", verbose=False), True),
             ((GJRGARCH(1, 1) + StudentT()).fit(data, solver="slsqp", verbose=False), False),
-            ((EGARCH(1, 1) + Normal()).fit(data, solver="slsqp", verbose=False), False),
-            ((EGARCH(2, 1) + Normal()).fit(data, solver="slsqp", verbose=False), False),
+            ((EGARCH(1, 1) + Normal()).fit(data, solver="slsqp", verbose=False), True),
+            ((EGARCH(2, 1) + Normal()).fit(data, solver="slsqp", verbose=False), True),
             ((ARMA(1, 1) + Normal()).fit(data, solver="slsqp", verbose=False), False),
         ]
 
         for result, expected_log_mode in cases:
             assert result.fit_info.log_mode is expected_log_mode
             assert result.fit_info.used_default_log_mode is True
-            assert result.fit_info.optimization_space == (
-                "z-space" if expected_log_mode else "theta-space"
+            expected_spaces = (
+                {"z-space", "scipy-z-space"}
+                if expected_log_mode
+                else {"theta-space"}
             )
+            assert result.fit_info.optimization_space in expected_spaces

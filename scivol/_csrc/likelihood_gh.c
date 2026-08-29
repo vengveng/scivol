@@ -47,7 +47,7 @@ static double garch_variance_at(const double *params, const double *residuals,
     for (size_t lag = 1; lag <= q && t >= lag; ++lag) {
         value += params[p + lag] * sigma2[t - lag];
     }
-    return value > H_FLOOR && isfinite(value) ? value : H_FLOOR;
+    return value > 0.0 && isfinite(value) ? value : 0.0;
 }
 
 static int prepare_shapes(const double *params, size_t shape_start,

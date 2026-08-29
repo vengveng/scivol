@@ -41,6 +41,15 @@ struct DensityObservation {
         shape_hessian {};
 };
 
+template<std::size_t ShapeParameters>
+struct LogVarianceFirstObservation {
+    bool valid = true;
+    double value = 0.0;
+    double residual_gradient = 0.0;
+    double log_variance_gradient = 0.0;
+    std::array<double, ShapeParameters> shape_gradient {};
+};
+
 struct NormalDensity {
     static constexpr std::size_t shape_parameters = 0u;
     static constexpr bool requires_raw_residuals = false;
@@ -195,6 +204,14 @@ struct StudentTDensity {
             - prepared.constant;
     }
 
+    VLK_DENSITY_INLINE static double stable_log_tail(
+        double tail, double one_plus_tail)
+    {
+        if (tail < 1.0e-4)
+            return std::log1p(tail);
+        return std::log(one_plus_tail);
+    }
+
     template<bool NeedValue, bool NeedGradient, bool NeedHessian,
              bool NeedResidualDerivatives = false>
     VLK_DENSITY_INLINE static DensityObservation<1u> observe(
@@ -214,22 +231,33 @@ struct StudentTDensity {
         }
         const double tail = scaled_residual * prepared.inverse_nu_minus_two;
         const double one_plus_tail = 1.0 + tail;
+        double inverse_one_plus_tail = 0.0;
+        double inverse_residual_denominator = 0.0;
+        double weighted_tail = 0.0;
+        if constexpr (NeedGradient || NeedHessian) {
+            const double nu_minus_two = prepared.nu - 2.0;
+            const double residual_denominator =
+                variance * nu_minus_two + residual2;
+            inverse_residual_denominator = 1.0 / residual_denominator;
+            inverse_one_plus_tail = variance * nu_minus_two
+                * inverse_residual_denominator;
+            weighted_tail = (prepared.nu + 1.0) * residual2
+                * inverse_residual_denominator;
+        }
 
         if constexpr (NeedValue) {
             observation.value = std::log(variance);
-            observation.auxiliary_value = std::log1p(tail);
+            observation.auxiliary_value = stable_log_tail(
+                tail, one_plus_tail);
         }
 
         if constexpr (NeedGradient || NeedHessian) {
             observation.variance_gradient = 0.5 * inverse_variance
-                - 0.5 * (prepared.nu + 1.0) * residual2
-                    * prepared.inverse_nu_minus_two * inverse_variance
-                    * inverse_variance / one_plus_tail;
+                * (1.0 - weighted_tail);
             if constexpr (NeedResidualDerivatives) {
-                const double denominator = variance * (prepared.nu - 2.0)
-                    + residual2;
                 observation.residual_gradient =
-                    (prepared.nu + 1.0) * residual / denominator;
+                    (prepared.nu + 1.0) * residual
+                    * inverse_residual_denominator;
             }
         }
 
@@ -239,49 +267,46 @@ struct StudentTDensity {
                 + 0.5 * prepared.digamma_half_nu
                 + 0.5 * prepared.inverse_nu_minus_two
                 + 0.5 * std::log(one_plus_tail)
-                - 0.5 * (prepared.nu + 1.0) * residual2
-                    * prepared.inverse_nu_minus_two
-                    * prepared.inverse_nu_minus_two * inverse_variance
-                    / one_plus_tail;
+                - 0.5 * weighted_tail * prepared.inverse_nu_minus_two;
         }
 
         if constexpr (NeedHessian) {
             const double inverse_variance2 = inverse_variance * inverse_variance;
             const double inverse_nu_minus_two2 = prepared.inverse_nu_minus_two
                 * prepared.inverse_nu_minus_two;
-            observation.variance_hessian = -0.5 * inverse_variance2
-                + (prepared.nu + 1.0) * residual2
-                    * prepared.inverse_nu_minus_two * inverse_variance2
-                    * inverse_variance / one_plus_tail
-                - 0.5 * (prepared.nu + 1.0) * residual2 * residual2
-                    * inverse_nu_minus_two2 * inverse_variance2
-                    * inverse_variance2 / (one_plus_tail * one_plus_tail);
+            const double inverse_one_plus_tail2 = inverse_one_plus_tail
+                * inverse_one_plus_tail;
+            observation.variance_hessian = inverse_variance2 * (
+                -0.5 + weighted_tail
+                - 0.5 * weighted_tail * tail * inverse_one_plus_tail);
 
-            observation.variance_shape_hessian[0] = 0.5 * scaled_residual
-                * inverse_variance * inverse_nu_minus_two2
-                / (one_plus_tail * one_plus_tail)
-                * (3.0 * one_plus_tail - (prepared.nu + 1.0) * tail);
+            observation.variance_shape_hessian[0] = 0.5 * tail
+                * inverse_variance * prepared.inverse_nu_minus_two
+                * inverse_one_plus_tail2
+                * (3.0 - scaled_residual);
 
             observation.shape_hessian[0] =
                 -0.25 * prepared.trigamma_half_nu_plus_one
                 + 0.25 * prepared.trigamma_half_nu
                 - 0.5 * inverse_nu_minus_two2
-                - tail * prepared.inverse_nu_minus_two / one_plus_tail
-                + 0.5 * (prepared.nu + 1.0) * tail * (2.0 + tail)
-                    * inverse_nu_minus_two2
-                    / (one_plus_tail * one_plus_tail);
+                - tail * prepared.inverse_nu_minus_two
+                    * inverse_one_plus_tail
+                + 0.5 * weighted_tail * (2.0 + tail)
+                    * inverse_nu_minus_two2 * inverse_one_plus_tail;
             if constexpr (NeedResidualDerivatives) {
                 const double nu_minus_two = prepared.nu - 2.0;
-                const double denominator = variance * nu_minus_two + residual2;
-                const double denominator2 = denominator * denominator;
+                const double inverse_residual_denominator2 =
+                    inverse_residual_denominator
+                    * inverse_residual_denominator;
                 observation.residual_hessian = (prepared.nu + 1.0)
-                    * (variance * nu_minus_two - residual2) / denominator2;
+                    * (variance * nu_minus_two - residual2)
+                    * inverse_residual_denominator2;
                 observation.residual_variance_hessian =
                     -(prepared.nu + 1.0) * residual * nu_minus_two
-                    / denominator2;
+                    * inverse_residual_denominator2;
                 observation.residual_shape_hessian[0] = residual
-                    * (denominator - (prepared.nu + 1.0) * variance)
-                    / denominator2;
+                    * (residual2 - 3.0 * variance)
+                    * inverse_residual_denominator2;
             }
         }
         return observation;

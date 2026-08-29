@@ -14,6 +14,22 @@
 namespace vlk::experiment::runtime {
 namespace {
 
+[[nodiscard]] std::size_t density_shape_parameters(
+    std::uint32_t density) noexcept
+{
+    switch (density) {
+    case VLK_GARCH_NORMAL: return 0u;
+    case VLK_GARCH_STUDENTT:
+    case VLK_GARCH_GED: return 1u;
+    case VLK_GARCH_SKEWT:
+    case VLK_GARCH_NIG:
+    case VLK_GARCH_HYPERBOLIC:
+    case VLK_GARCH_VARIANCE_GAMMA: return 2u;
+    case VLK_GARCH_GH: return 3u;
+    default: return static_cast<std::size_t>(-1);
+    }
+}
+
 struct MapScratch {
     double* reflection = nullptr;
     double* coefficients = nullptr;
@@ -370,6 +386,222 @@ bool add_arma_garch_coordinate_curvature(
         }
     }
     return finite_values(coordinate_hessian, width * width);
+}
+
+std::size_t arma_gjr_garch_map_workspace_bytes(
+    const ArmaGarchLayout& layout,
+    std::uint32_t density) noexcept
+{
+    const std::size_t shape = density_shape_parameters(density);
+    if (!layout.valid || !layout.leverage
+        || shape == static_cast<std::size_t>(-1)) {
+        return 0u;
+    }
+    const std::size_t base = arma_garch_map_workspace_bytes(layout);
+    const std::size_t sub = layout.parameter_count
+        - layout.mean_parameters + shape;
+    std::size_t square = 0u;
+    std::size_t extra = 0u;
+    std::size_t total = 0u;
+    return base != 0u
+            && checked_product(sub, sub, square)
+            && checked_product(square, sizeof(double), extra)
+            && checked_sum(base, extra, total)
+        ? total : 0u;
+}
+
+bool arma_gjr_garch_coordinate_forward(
+    const ArmaGarchLayout& layout,
+    std::uint32_t density,
+    const double* coordinates,
+    bool need_jacobian,
+    void* workspace,
+    std::size_t workspace_bytes,
+    double* parameters,
+    double* jacobian) noexcept
+{
+    const std::size_t shape = density_shape_parameters(density);
+    const std::size_t required = arma_gjr_garch_map_workspace_bytes(
+        layout, density);
+    if (required == 0u || workspace_bytes < required
+        || shape == static_cast<std::size_t>(-1)
+        || coordinates == nullptr || parameters == nullptr
+        || (need_jacobian && jacobian == nullptr)) {
+        return false;
+    }
+    const std::size_t total = layout.parameter_count + shape;
+    if (!finite_values(coordinates, total))
+        return false;
+    MapScratch scratch;
+    const std::size_t base_bytes = arma_garch_map_workspace_bytes(layout);
+    if (!take_map_scratch(layout, workspace, base_bytes, scratch))
+        return false;
+    const std::size_t sub = total - layout.mean_parameters;
+    double* sub_jacobian = need_jacobian
+        ? reinterpret_cast<double*>(
+            static_cast<unsigned char*>(workspace) + base_bytes)
+        : nullptr;
+    std::fill_n(parameters, total, 0.0);
+    if (need_jacobian)
+        std::fill_n(jacobian, total * total, 0.0);
+    parameters[0] = coordinates[0];
+    if (need_jacobian)
+        jacobian[0] = 1.0;
+    if (!map_reflection_block(
+            coordinates, 1u, layout.p_ar, 1.0, total, scratch,
+            parameters, need_jacobian ? jacobian : nullptr)
+        || !map_reflection_block(
+            coordinates, layout.ma_start, layout.q_ma, -1.0, total, scratch,
+            parameters, need_jacobian ? jacobian : nullptr)
+        || !gjr_coordinate_forward(
+            layout.p_vol, layout.q_vol, density,
+            coordinates + layout.mean_parameters, need_jacobian,
+            parameters + layout.mean_parameters, sub_jacobian)) {
+        return false;
+    }
+    if (need_jacobian) {
+        for (std::size_t row = 0; row < sub; ++row) {
+            std::copy_n(
+                sub_jacobian + row * sub, sub,
+                jacobian + (layout.mean_parameters + row) * total
+                    + layout.mean_parameters);
+        }
+    }
+    return finite_values(parameters, total)
+        && (!need_jacobian || finite_values(jacobian, total * total));
+}
+
+bool arma_gjr_garch_coordinate_inverse(
+    const ArmaGarchLayout& layout,
+    std::uint32_t density,
+    const double* parameters,
+    void* workspace,
+    std::size_t workspace_bytes,
+    double* coordinates) noexcept
+{
+    const std::size_t shape = density_shape_parameters(density);
+    const std::size_t required = arma_gjr_garch_map_workspace_bytes(
+        layout, density);
+    if (required == 0u || workspace_bytes < required
+        || shape == static_cast<std::size_t>(-1)
+        || parameters == nullptr || coordinates == nullptr) {
+        return false;
+    }
+    const std::size_t total = layout.parameter_count + shape;
+    if (!finite_values(parameters, total))
+        return false;
+    MapScratch scratch;
+    const std::size_t base_bytes = arma_garch_map_workspace_bytes(layout);
+    if (!take_map_scratch(layout, workspace, base_bytes, scratch))
+        return false;
+    coordinates[0] = parameters[0];
+    if (!inverse_reflection_block(
+            parameters, 1u, layout.p_ar, 1.0, scratch, coordinates)
+        || !inverse_reflection_block(
+            parameters, layout.ma_start, layout.q_ma, -1.0,
+            scratch, coordinates)
+        || !gjr_coordinate_inverse(
+            layout.p_vol, layout.q_vol, density,
+            parameters + layout.mean_parameters,
+            coordinates + layout.mean_parameters)) {
+        return false;
+    }
+    return finite_values(coordinates, total);
+}
+
+std::size_t arma_gjr_garch_curvature_workspace_bytes(
+    const ArmaGarchLayout& layout,
+    std::uint32_t density) noexcept
+{
+    const std::size_t shape = density_shape_parameters(density);
+    if (!layout.valid || !layout.leverage
+        || shape == static_cast<std::size_t>(-1)) {
+        return 0u;
+    }
+    const std::size_t reflection = reflection_curvature_scratch_doubles(
+        std::max(std::max(layout.p_ar, layout.q_ma), std::size_t {1u}));
+    const std::size_t sub = layout.parameter_count
+        - layout.mean_parameters + shape;
+    std::size_t square = 0u;
+    WorkspaceSizer sizer;
+    return reflection != 0u && checked_product(sub, sub, square)
+            && sizer.add<double>(reflection)
+            && sizer.add<double>(square)
+            && sizer.add<double>(square)
+            && sizer.add<double>(square)
+        ? sizer.size() : 0u;
+}
+
+bool add_arma_gjr_garch_coordinate_curvature(
+    const ArmaGarchLayout& layout,
+    std::uint32_t density,
+    const double* coordinates,
+    const double* parameters,
+    const double* theta_gradient,
+    const double* jacobian,
+    void* workspace,
+    std::size_t workspace_bytes,
+    double* coordinate_hessian) noexcept
+{
+    const std::size_t shape = density_shape_parameters(density);
+    const std::size_t required = arma_gjr_garch_curvature_workspace_bytes(
+        layout, density);
+    if (required == 0u || workspace_bytes < required
+        || shape == static_cast<std::size_t>(-1)
+        || coordinates == nullptr || parameters == nullptr
+        || theta_gradient == nullptr || jacobian == nullptr
+        || coordinate_hessian == nullptr) {
+        return false;
+    }
+    const std::size_t total = layout.parameter_count + shape;
+    const std::size_t sub = total - layout.mean_parameters;
+    const std::size_t sub_square = sub * sub;
+    const std::size_t reflection = reflection_curvature_scratch_doubles(
+        std::max(std::max(layout.p_ar, layout.q_ma), std::size_t {1u}));
+    WorkspaceArena arena(workspace, workspace_bytes);
+    double* reflection_scratch = arena.take<double>(reflection);
+    double* sub_jacobian = arena.take<double>(sub_square);
+    double* moment_hessian = arena.take<double>(sub_square);
+    double* sub_hessian = arena.take<double>(sub_square);
+    if (reflection_scratch == nullptr || sub_jacobian == nullptr
+        || moment_hessian == nullptr || sub_hessian == nullptr) {
+        return false;
+    }
+    if ((layout.p_ar != 0u
+         && !reflection_add_contracted_curvature(
+            coordinates, 1u, layout.p_ar, 1.0,
+            theta_gradient, total, coordinate_hessian,
+            reflection_scratch))
+        || (layout.q_ma != 0u
+            && !reflection_add_contracted_curvature(
+                coordinates, layout.ma_start, layout.q_ma, -1.0,
+                theta_gradient, total, coordinate_hessian,
+                reflection_scratch))) {
+        return false;
+    }
+    for (std::size_t row = 0; row < sub; ++row) {
+        std::copy_n(
+            jacobian + (layout.mean_parameters + row) * total
+                + layout.mean_parameters,
+            sub, sub_jacobian + row * sub);
+    }
+    std::fill_n(sub_hessian, sub_square, 0.0);
+    if (!add_gjr_coordinate_curvature(
+            layout.p_vol, layout.q_vol, density,
+            parameters + layout.mean_parameters,
+            theta_gradient + layout.mean_parameters,
+            sub_jacobian, moment_hessian, sub_hessian)) {
+        return false;
+    }
+    for (std::size_t row = 0; row < sub; ++row) {
+        for (std::size_t column = 0; column < sub; ++column) {
+            coordinate_hessian[
+                (layout.mean_parameters + row) * total
+                + layout.mean_parameters + column] +=
+                    sub_hessian[row * sub + column];
+        }
+    }
+    return finite_values(coordinate_hessian, total * total);
 }
 
 }  // namespace vlk::experiment::runtime

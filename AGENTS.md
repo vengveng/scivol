@@ -1,6 +1,6 @@
 # scivol Library Guide for AI Agents
 
-**Last Updated:** 2026-08-27
+**Last Updated:** 2026-08-29
 **Purpose:** Essential architectural rules, patterns, and constraints for developing the scivol time series volatility modeling library.
 
 **Reference implementations:** `localdev/arma_garch_estimator.py` contains verified Python+Numba implementations with analytical gradients/Hessians for ARMA-GARCH models (Normal, Student-t, Skew-t). `localdev/gjr_garch_estimator.py` contains the GJR-GARCH reference implementation. Use as ground truth when porting to C.
@@ -322,11 +322,22 @@ order axis of the model, such as `(p, q)` for GARCH and
      that request plan from objective and complete-solve measurements, preserve
      identical outputs, and keep the unchosen plan only as measured development
      debt rather than assuming one traversal is faster.
+   - Speculative derivative evaluation is an optimizer policy, not a kernel claim.
+     Promote a trial from `F` to `F|G` only when measured acceptance rates make it
+     cheaper, retain the derivative in a distinct trial slot, and fall back to pure
+     `F` when the derivative request is invalid. Because even a one-ULP fused-value
+     difference can alter a nonconvex solve, matched-start likelihood and KKT gates
+     must pass for the complete speculative policy, not only at isolated points.
    - Preparation must have an explicit derivative order. Value and first-order
      requests may not construct, copy, or downgrade a second-order point cache.
    - Parameter-independent sample constants are formed once per solve or added once
      per request as an `n_eff` multiple. No distribution constant or other
      point-invariant primitive is recomputed in the observation loop.
+   - Preserve a recursion's native state coordinate across policy boundaries. For
+     example, an EGARCH first-order density intention may consume log variance
+     directly; it must not exponentiate the state only to take its logarithm in the
+     same observation. Coordinate-specific intentions must delegate to one local
+     density formula so performance specialization cannot fork the mathematics.
 
 5. **Exact sparse derivatives**
    - The theta jet provides exact analytical `F`, `G`, and `H`. An `H` path may
@@ -358,9 +369,17 @@ order axis of the model, such as `(p, q)` for GARCH and
    - Compile-time fixed scratch may use bounded stack storage only when the binary
      audit records its frame and enforces a documented per-kernel budget. Larger or
      data-dependent scratch belongs in a caller-owned arena.
+   - Native builds enforce a 16 KiB stack-frame ceiling. Treat the ceiling as a
+     gate, not a target: inspect common fixed specializations after materially
+     changing prepared state, request routing, or template instantiation.
    - A pure `F` request streams the minimum state. Add derivative rings for `G` and
      `H` only as needed, and materialize sample-length paths only for an explicit
      evidence request.
+   - A promoted fit materializes its reported residual, variance, and innovation
+     paths through the canonical jet policies or the exact shared recursion. A
+     historical evaluator may provide comparison evidence; it may not construct
+     the returned state or reject a valid canonical point when it implements a
+     different numerical model.
    - Do not branch on fixed model orders inside the observation loop. Inspect fixed
      specialization assembly to verify that runtime order checks and ring indexing
      disappear where expected. Audit binary text size and stack frames as well as
@@ -377,6 +396,10 @@ order axis of the model, such as `(p, q)` for GARCH and
    - Test arbitrary orders beyond the precompiled set, zero orders where the model
      declares them valid, constants, conditioning boundaries, theoretical-domain
      boundaries, and request-specific failures.
+   - Include long-horizon, near-boundary derivative cases whose recursive
+     sensitivities are materially larger than ordinary test points. Audit the
+     oracle itself for hidden clipping, floors, smoothing, and floating-point
+     cancellation before attributing a stress-case discrepancy to the jet.
    - Match the established production likelihood at identical points and benchmark
      objective requests separately from complete solves. Python-boundary savings do
      not excuse a slower objective kernel.
@@ -401,6 +424,37 @@ order axis of the model, such as `(p, q)` for GARCH and
      small deterministic cross-fit matrix after optimizer, map, or domain changes;
      and full empirical panels only at promotion, default-policy, or release
      milestones. Do not rerun a full panel for ordinary line-level edits.
+   - Stress at least one deterministic difficult basin from a matched start.
+     Optimizer phase budgets may not let one method consume all work before a
+     declared fallback or exact-curvature phase can run. Record every phase that
+     materially prepares, solves, or refines the returned point.
+
+10. **Native performance attribution gate**
+   - A slower native result is an incomplete investigation, not an acceptable
+     implementation outcome. Keep the entry `prototype/incomplete` until the
+     regression is explained and removed; do not present an alternate native mode
+     as completed migration.
+   - Reconcile complete-fit time from measured request counts and identical-point
+     `F`, `G`, and `H` costs, plus preparation, validation, refinement, filtering,
+     and inference. Faster components producing a slower fit prove that the timing
+     account is incomplete.
+   - Prove dispatch identity for every claimed fixed specialization. Compilation
+     is not evidence that the optimizer reaches it. CI must fail when a common
+     order expected to be fixed resolves to the runtime path.
+   - Classify expensive work by lifetime: once per solve, parameter point,
+     observation, or parameter pair. Test or instrument work whose accidental
+     promotion to a more frequent lifetime would materially affect performance.
+   - Keep a tracked, deterministic promotion benchmark that finishes within the
+     routine benchmark budget. It must report sparse request costs, optimizer
+     request counts, matched-start complete-fit time, matched-point likelihood,
+     feasibility, and projected KKT credibility.
+   - Run promotion microbenchmarks without concurrent tests or builds. Alternate
+     native and production order, use repeated paired measurements, and report a
+     robust central pair. A single timing sample or a fixed first-run advantage is
+     not admissible performance evidence.
+   - Performance evidence is admissible only when mathematical and credibility
+     gates pass. A faster result with worse likelihood, feasibility, or KKT does
+     not satisfy this gate.
 
 Additional optimizer-interface rules:
 
@@ -412,6 +466,9 @@ Additional optimizer-interface rules:
   that would instantiate duplicate recursions.
 - Coordinate maps expose value-only and value-plus-Jacobian intentions. Line-search
   `F` trials must not construct a dense transform Jacobian.
+- Point-dependent quadrature plans belong in request-specific prepared state and
+  are formed once per parameter point. Observation loops may consume the plan but
+  may not reconstruct its order terms, nodes, weights, or derivative tables.
 - Constraint evaluators should return finite violated constraints for infeasible
   optimizer trials whenever the mathematics permits it. A line-search domain
   failure is handled by a generic finite rejection policy in the optimizer; never
@@ -420,6 +477,9 @@ Additional optimizer-interface rules:
   theta-constraint and bound multipliers from the returned point, theta gradient,
   and constraint Jacobian; do not substitute zero multipliers or reuse multipliers
   from an unrelated coordinate-space problem.
+- Use a projected-gradient residual for bound and simplex credibility checks.
+  Fixed activity cutoffs misclassify coefficients near zero and must not define
+  `result.success`.
 - Keep independent theta and coordinate solvers independently callable. A policy
   that conditionally polishes one with the other is a third, explicitly named path
   whose result records every formulation it evaluated and which one it selected.
@@ -1101,18 +1161,18 @@ from scivol.result import EstimationResult
 ### Native Engine Promotion Status
 
 The native C++ function-jet engine is the default MLE path for fixed standalone
-GARCH with Normal, Student-t, Skew-t, or GED density. It is available explicitly
-through `solver="native"` for every shipped univariate density and genuine joint
-ARMA-GARCH specifications at arbitrary declared orders. `solver="slsqp"` and
-`solver="legacy"` retain the independent established path, while
-`log_mode=False` selects its theta-space formulation when no solver is supplied.
+GARCH, GJR-GARCH, and EGARCH and for their genuine joint ARMA forms across all
+eight densities. Each promoted family supports arbitrary declared orders;
+measured common orders dispatch to generated fixed specializations.
+`solver="slsqp"` and `solver="legacy"` retain independent SciPy comparison
+paths where supported.
 
 The native path stays quiet during fitting. It records historical Kraft mode,
-strict KKT residual and tolerance, maximum violation, refinement restarts, request
-plan, and matched production-objective error in `result.fit_info`. A failed strict
-check returns a normal result with a persistent warning. Joint ARMA-GARCH,
-GH-family GARCH, QMLE, and auto-selection remain on the established default
-engine until their native performance and inference contracts are promoted.
+strict KKT residual and tolerance, maximum violation, refinement restarts,
+curvature and scientific-coordinate projection steps, request plan, and matched
+production-objective error in `result.fit_info`. A failed strict check returns a
+normal result with a persistent warning. APARCH, exogenous joint models, and
+QMLE remain on the established engine until their native contracts are promoted.
 
 Files under `scivol/_native/` marked `SCIVOL-NATIVE: CORE` are production sources.
 The SciPy SLSQP translation under `third_party/` is pinned upstream code.
@@ -1213,6 +1273,8 @@ following are true:
    - The same policies can generate compile-time fixed-order specializations
    - The jet returns the exact additive likelihood, including all constants
    - All sparse `F`/`G`/`H` requests and every shipped coordinate path are validated
+   - Fixed dispatch and complete-fit cost are proven by the tracked attribution benchmark
+   - A slower unexplained native request or solve keeps the entry incomplete
    - Any missing clause keeps the surface labeled prototype/incomplete
 
 6. **Native code remains the shipped source of truth**

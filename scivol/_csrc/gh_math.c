@@ -340,29 +340,23 @@ static double log_bessel_k_scalar(double order, double argument)
     }
     const gh_quadrature_rule_t rule = quadrature_rule(order);
     double max_term = -INFINITY;
-    for (size_t i = 0; i < rule.half_count; ++i) {
-        const double offset = GH_QUAD_MIDPOINT * rule.nodes[i];
-        const double log_weight = log(GH_QUAD_MIDPOINT * rule.weights[i]);
-        const double t_left = GH_QUAD_MIDPOINT - offset;
-        const double t_right = GH_QUAD_MIDPOINT + offset;
-        const double left = log_weight - argument * cosh(t_left)
-                          + log_cosh_scalar(order * t_left);
-        const double right = log_weight - argument * cosh(t_right)
-                           + log_cosh_scalar(order * t_right);
-        if (left > max_term) max_term = left;
-        if (right > max_term) max_term = right;
-    }
-
     double sum = 0.0;
     for (size_t i = 0; i < rule.half_count; ++i) {
         const double offset = GH_QUAD_MIDPOINT * rule.nodes[i];
         const double log_weight = log(GH_QUAD_MIDPOINT * rule.weights[i]);
         const double t_left = GH_QUAD_MIDPOINT - offset;
         const double t_right = GH_QUAD_MIDPOINT + offset;
-        sum += exp(log_weight - argument * cosh(t_left)
-                 + log_cosh_scalar(order * t_left) - max_term);
-        sum += exp(log_weight - argument * cosh(t_right)
-                 + log_cosh_scalar(order * t_right) - max_term);
+        const double t_values[2] = {t_left, t_right};
+        for (size_t side = 0; side < 2; ++side) {
+            const double t = t_values[side];
+            const double term = log_weight - argument * cosh(t)
+                              + log_cosh_scalar(order * t);
+            if (term > max_term) {
+                sum *= isfinite(max_term) ? exp(max_term - term) : 0.0;
+                max_term = term;
+            }
+            sum += exp(term - max_term);
+        }
     }
     return max_term + log(sum);
 }
@@ -375,21 +369,6 @@ static void log_bessel_k_moments(
 {
     const gh_quadrature_rule_t rule = quadrature_rule(order);
     double max_term = -INFINITY;
-    for (size_t i = 0; i < rule.half_count; ++i) {
-        const double offset = GH_QUAD_MIDPOINT * rule.nodes[i];
-        const double log_weight = log(GH_QUAD_MIDPOINT * rule.weights[i]);
-        const double t_values[2] = {
-            GH_QUAD_MIDPOINT - offset,
-            GH_QUAD_MIDPOINT + offset,
-        };
-        for (size_t side = 0; side < 2; ++side) {
-            const double t = t_values[side];
-            const double term = log_weight - argument * cosh(t)
-                              + log_cosh_scalar(order * t);
-            if (term > max_term) max_term = term;
-        }
-    }
-
     double weight_sum = 0.0;
     double order_sum = 0.0;
     double argument_sum = 0.0;
@@ -410,10 +389,24 @@ static void log_bessel_k_moments(
             const double tanh_order_t = tanh(order * t);
             const double order_score = t * tanh_order_t;
             const double argument_score = -cosh_t;
-            const double weight = exp(
-                log_weight - argument * cosh_t
-                + log_cosh_scalar(order * t) - max_term
-            );
+            const double term = log_weight - argument * cosh_t
+                + log_cosh_scalar(order * t);
+            if (term > max_term) {
+                const double scale = isfinite(max_term)
+                    ? exp(max_term - term)
+                    : 0.0;
+                weight_sum *= scale;
+                order_sum *= scale;
+                argument_sum *= scale;
+                if (second_order) {
+                    order_square_sum *= scale;
+                    order_curvature_sum *= scale;
+                    cross_sum *= scale;
+                    argument_square_sum *= scale;
+                }
+                max_term = term;
+            }
+            const double weight = exp(term - max_term);
             weight_sum += weight;
             order_sum += weight * order_score;
             argument_sum += weight * argument_score;
@@ -441,6 +434,341 @@ static void log_bessel_k_moments(
     }
 }
 
+int gh_log_bessel_k_first(double order, double argument,
+                          int differentiate_order,
+                          double *value, double *d_order,
+                          double *d_argument)
+{
+    if (!value || !d_order || !d_argument || !isfinite(order)
+        || !isfinite(argument) || !(argument > 0.0)) return 0;
+    if (!differentiate_order && fabs(fabs(order) - 0.5) < 1e-14) {
+        *value = 0.5 * (GH_LOG_PI_OVER_2 - log(argument)) - argument;
+        *d_order = 0.0;
+        *d_argument = -0.5 / argument - 1.0;
+        return isfinite(*value) && isfinite(*d_argument);
+    }
+    if (!differentiate_order && fabs(fabs(order) - 1.0) < 1e-14) {
+        double second;
+        if (log_bessel_k1_fast(argument, value, d_argument, &second)) {
+            *d_order = 0.0;
+            return 1;
+        }
+    }
+    double d_order_order = 0.0;
+    double d_order_argument = 0.0;
+    double d_argument_argument = 0.0;
+    log_bessel_k_moments(
+        order, argument, 0, value, d_order, d_argument,
+        &d_order_order, &d_order_argument, &d_argument_argument);
+    return isfinite(*value) && isfinite(*d_order) && isfinite(*d_argument);
+}
+
+static int gh_bessel_value_plan_initialize(double order, int allow_fixed,
+                                           gh_bessel_value_plan_t *plan)
+{
+    if (!plan || !isfinite(order)) return 0;
+    memset(plan, 0, sizeof(*plan));
+    if (allow_fixed && fabs(fabs(order) - 0.5) < 1e-14) {
+        plan->fixed_kind = 1;
+        return 1;
+    }
+    if (allow_fixed && fabs(fabs(order) - 1.0) < 1e-14) {
+        plan->fixed_kind = 2;
+        return 1;
+    }
+
+    const gh_quadrature_rule_t rule = quadrature_rule(order);
+    if (2 * rule.half_count > GH_BESSEL_PLAN_MAX_TERMS) return 0;
+    for (size_t i = 0; i < rule.half_count; ++i) {
+        const double offset = GH_QUAD_MIDPOINT * rule.nodes[i];
+        const double log_weight = log(GH_QUAD_MIDPOINT * rule.weights[i]);
+        const double t_values[2] = {
+            GH_QUAD_MIDPOINT - offset,
+            GH_QUAD_MIDPOINT + offset,
+        };
+        for (size_t side = 0; side < 2; ++side) {
+            const size_t index = 2 * i + side;
+            const double t = t_values[side];
+            const double order_t = order * t;
+            plan->cosh_t[index] = cosh(t);
+            plan->base[index] = log_weight + log_cosh_scalar(order_t);
+        }
+    }
+    plan->count = 2 * rule.half_count;
+    return 1;
+}
+
+int gh_bessel_value_plan_init(double order,
+                              gh_bessel_value_plan_t *plan)
+{
+    return gh_bessel_value_plan_initialize(order, 1, plan);
+}
+
+int gh_log_bessel_k_value_planned(const gh_bessel_value_plan_t *plan,
+                                  double argument, double *value)
+{
+    if (!plan || !value || !isfinite(argument) || !(argument > 0.0))
+        return 0;
+    if (plan->fixed_kind == 1) {
+        *value = 0.5 * (GH_LOG_PI_OVER_2 - log(argument)) - argument;
+        return isfinite(*value);
+    }
+    if (plan->fixed_kind == 2) {
+        double first;
+        double second;
+        return log_bessel_k1_fast(argument, value, &first, &second);
+    }
+    if (plan->count == 0 || plan->count > GH_BESSEL_PLAN_MAX_TERMS)
+        return 0;
+
+    double max_term = -INFINITY;
+    double weight_sum = 0.0;
+    for (size_t index = 0; index < plan->count; ++index) {
+        const double term = plan->base[index]
+            - argument * plan->cosh_t[index];
+        if (term > max_term) {
+            const double scale = isfinite(max_term)
+                ? exp(max_term - term)
+                : 0.0;
+            weight_sum *= scale;
+            max_term = term;
+        }
+        weight_sum += exp(term - max_term);
+    }
+    *value = max_term + log(weight_sum);
+    return isfinite(*value);
+}
+
+int gh_bessel_first_plan_init(double order, int differentiate_order,
+                              gh_bessel_first_plan_t *plan)
+{
+    if (!plan || !isfinite(order)) return 0;
+    memset(plan, 0, sizeof(*plan));
+    if (!gh_bessel_value_plan_initialize(
+            order, !differentiate_order, &plan->value)) {
+        return 0;
+    }
+    if (plan->value.fixed_kind != 0)
+        return 1;
+    if (differentiate_order) {
+        const gh_quadrature_rule_t rule = quadrature_rule(order);
+        for (size_t i = 0; i < rule.half_count; ++i) {
+            const double offset = GH_QUAD_MIDPOINT * rule.nodes[i];
+            const double t_values[2] = {
+                GH_QUAD_MIDPOINT - offset,
+                GH_QUAD_MIDPOINT + offset,
+            };
+            for (size_t side = 0; side < 2; ++side) {
+                const size_t index = 2 * i + side;
+                const double t = t_values[side];
+                plan->order_score[index] = t * tanh(order * t);
+            }
+        }
+    }
+    return 1;
+}
+
+int gh_log_bessel_k_first_planned(const gh_bessel_first_plan_t *plan,
+                                  double argument,
+                                  double *value, double *d_order,
+                                  double *d_argument)
+{
+    if (!plan || !value || !d_order || !d_argument
+        || !isfinite(argument) || !(argument > 0.0)) return 0;
+    const gh_bessel_value_plan_t *value_plan = &plan->value;
+    if (value_plan->fixed_kind == 1) {
+        *value = 0.5 * (GH_LOG_PI_OVER_2 - log(argument)) - argument;
+        *d_order = 0.0;
+        *d_argument = -0.5 / argument - 1.0;
+        return isfinite(*value) && isfinite(*d_argument);
+    }
+    if (value_plan->fixed_kind == 2) {
+        double second;
+        if (!log_bessel_k1_fast(argument, value, d_argument, &second))
+            return 0;
+        *d_order = 0.0;
+        return 1;
+    }
+    if (value_plan->count == 0
+        || value_plan->count > GH_BESSEL_PLAN_MAX_TERMS)
+        return 0;
+
+    double max_term = -INFINITY;
+    double weight_sum = 0.0;
+    double order_sum = 0.0;
+    double argument_sum = 0.0;
+    for (size_t index = 0; index < value_plan->count; ++index) {
+        const double term = value_plan->base[index]
+            - argument * value_plan->cosh_t[index];
+        if (term > max_term) {
+            const double scale = isfinite(max_term)
+                ? exp(max_term - term)
+                : 0.0;
+            weight_sum *= scale;
+            order_sum *= scale;
+            argument_sum *= scale;
+            max_term = term;
+        }
+        const double weight = exp(term - max_term);
+        weight_sum += weight;
+        order_sum += weight * plan->order_score[index];
+        argument_sum -= weight * value_plan->cosh_t[index];
+    }
+    const double inverse = 1.0 / weight_sum;
+    *value = max_term + log(weight_sum);
+    *d_order = order_sum * inverse;
+    *d_argument = argument_sum * inverse;
+    return isfinite(*value) && isfinite(*d_order) && isfinite(*d_argument);
+}
+
+int gh_bessel_second_plan_init(double order, int differentiate_order,
+                               gh_bessel_second_plan_t *plan)
+{
+    if (!plan || !isfinite(order)) return 0;
+    memset(plan, 0, sizeof(*plan));
+    plan->differentiate_order = differentiate_order != 0;
+    if (!gh_bessel_first_plan_init(
+            order, differentiate_order, &plan->first)) {
+        return 0;
+    }
+    if (!plan->differentiate_order
+        || plan->first.value.fixed_kind != 0) {
+        return 1;
+    }
+    const gh_quadrature_rule_t rule = quadrature_rule(order);
+    for (size_t i = 0; i < rule.half_count; ++i) {
+        const double offset = GH_QUAD_MIDPOINT * rule.nodes[i];
+        const double t_values[2] = {
+            GH_QUAD_MIDPOINT - offset,
+            GH_QUAD_MIDPOINT + offset,
+        };
+        for (size_t side = 0; side < 2; ++side) {
+            const size_t index = 2 * i + side;
+            const double t = t_values[side];
+            const double tanh_order_t = tanh(order * t);
+            plan->order_curvature[index] = t * t
+                * (1.0 - tanh_order_t * tanh_order_t);
+        }
+    }
+    return 1;
+}
+
+int gh_log_bessel_k_second_planned(
+    const gh_bessel_second_plan_t *plan,
+    double argument,
+    double *value,
+    double *d_order,
+    double *d_argument,
+    double *d_order_order,
+    double *d_order_argument,
+    double *d_argument_argument)
+{
+    if (!plan || !value || !d_order || !d_argument || !d_order_order
+        || !d_order_argument || !d_argument_argument
+        || !isfinite(argument) || !(argument > 0.0)) {
+        return 0;
+    }
+    const gh_bessel_value_plan_t *value_plan = &plan->first.value;
+    if (value_plan->fixed_kind == 1) {
+        *value = 0.5 * (GH_LOG_PI_OVER_2 - log(argument)) - argument;
+        *d_order = 0.0;
+        *d_argument = -0.5 / argument - 1.0;
+        *d_order_order = 0.0;
+        *d_order_argument = 0.0;
+        *d_argument_argument = 0.5 / (argument * argument);
+        return isfinite(*value) && isfinite(*d_argument)
+            && isfinite(*d_argument_argument);
+    }
+    if (value_plan->fixed_kind == 2) {
+        *d_order = 0.0;
+        *d_order_order = 0.0;
+        *d_order_argument = 0.0;
+        return log_bessel_k1_fast(
+            argument, value, d_argument, d_argument_argument);
+    }
+    if (value_plan->count == 0
+        || value_plan->count > GH_BESSEL_PLAN_MAX_TERMS) {
+        return 0;
+    }
+
+    double max_term = -INFINITY;
+    double weight_sum = 0.0;
+    double order_sum = 0.0;
+    double argument_sum = 0.0;
+    double order_square_sum = 0.0;
+    double order_curvature_sum = 0.0;
+    double cross_sum = 0.0;
+    double argument_square_sum = 0.0;
+    for (size_t index = 0; index < value_plan->count; ++index) {
+        const double argument_score = -value_plan->cosh_t[index];
+        const double term = value_plan->base[index]
+            + argument * argument_score;
+        if (term > max_term) {
+            const double scale = isfinite(max_term)
+                ? exp(max_term - term)
+                : 0.0;
+            weight_sum *= scale;
+            order_sum *= scale;
+            argument_sum *= scale;
+            order_square_sum *= scale;
+            order_curvature_sum *= scale;
+            cross_sum *= scale;
+            argument_square_sum *= scale;
+            max_term = term;
+        }
+        const double weight = exp(term - max_term);
+        const double order_score = plan->first.order_score[index];
+        weight_sum += weight;
+        order_sum += weight * order_score;
+        argument_sum += weight * argument_score;
+        order_square_sum += weight * order_score * order_score;
+        order_curvature_sum += weight * plan->order_curvature[index];
+        cross_sum += weight * order_score * argument_score;
+        argument_square_sum += weight * argument_score * argument_score;
+    }
+    const double inverse = 1.0 / weight_sum;
+    *value = max_term + log(weight_sum);
+    *d_order = order_sum * inverse;
+    *d_argument = argument_sum * inverse;
+    *d_order_order = (order_square_sum + order_curvature_sum) * inverse
+        - *d_order * *d_order;
+    *d_order_argument = cross_sum * inverse
+        - *d_order * *d_argument;
+    *d_argument_argument = argument_square_sum * inverse
+        - *d_argument * *d_argument;
+    return isfinite(*value) && isfinite(*d_order)
+        && isfinite(*d_argument) && isfinite(*d_order_order)
+        && isfinite(*d_order_argument) && isfinite(*d_argument_argument);
+}
+
+static gh_jet_t jet_log_bessel_chain(
+    gh_jet_t order, gh_jet_t argument,
+    double value, double d_order, double d_argument,
+    double d_order_order, double d_order_argument,
+    double d_argument_argument)
+{
+    gh_jet_t out = jet_constant(value);
+    out.second_order = order.second_order || argument.second_order;
+    for (size_t i = 0; i < GH_DERIV_DIM; ++i) {
+        out.grad[i] = d_order * order.grad[i]
+                    + d_argument * argument.grad[i];
+        if (out.second_order) {
+            for (size_t j = 0; j < GH_DERIV_DIM; ++j) {
+                out.hess[i * GH_DERIV_DIM + j] =
+                    d_order_order * order.grad[i] * order.grad[j]
+                    + d_order_argument
+                      * (order.grad[i] * argument.grad[j]
+                         + argument.grad[i] * order.grad[j])
+                    + d_argument_argument
+                      * argument.grad[i] * argument.grad[j]
+                    + d_order * order.hess[i * GH_DERIV_DIM + j]
+                    + d_argument * argument.hess[i * GH_DERIV_DIM + j];
+            }
+        }
+    }
+    return out;
+}
+
 static gh_jet_t jet_log_bessel_k(gh_jet_t order, gh_jet_t argument)
 {
     int fixed_order = 1;
@@ -465,35 +793,44 @@ static gh_jet_t jet_log_bessel_k(gh_jet_t order, gh_jet_t argument)
             return jet_unary(argument, value, first, second);
         }
     }
-    gh_jet_t out;
-    out.second_order = order.second_order || argument.second_order;
+    double value;
     double d_order, d_argument;
     double d_order_order = 0.0;
     double d_order_argument = 0.0;
     double d_argument_argument = 0.0;
     log_bessel_k_moments(
-        order.value, argument.value, out.second_order,
-        &out.value, &d_order, &d_argument,
+        order.value, argument.value,
+        order.second_order || argument.second_order,
+        &value, &d_order, &d_argument,
         &d_order_order, &d_order_argument, &d_argument_argument
     );
-    for (size_t i = 0; i < GH_DERIV_DIM; ++i) {
-        out.grad[i] = d_order * order.grad[i]
-                    + d_argument * argument.grad[i];
-        if (out.second_order) {
-            for (size_t j = 0; j < GH_DERIV_DIM; ++j) {
-                out.hess[i * GH_DERIV_DIM + j] =
-                    d_order_order * order.grad[i] * order.grad[j]
-                    + d_order_argument
-                      * (order.grad[i] * argument.grad[j]
-                         + argument.grad[i] * order.grad[j])
-                    + d_argument_argument
-                      * argument.grad[i] * argument.grad[j]
-                    + d_order * order.hess[i * GH_DERIV_DIM + j]
-                    + d_argument * argument.hess[i * GH_DERIV_DIM + j];
-            }
-        }
+    return jet_log_bessel_chain(
+        order, argument, value, d_order, d_argument,
+        d_order_order, d_order_argument, d_argument_argument);
+}
+
+static gh_jet_t jet_log_bessel_k_planned(
+    gh_jet_t order, gh_jet_t argument,
+    const gh_bessel_second_plan_t *plan)
+{
+    double value;
+    double d_order;
+    double d_argument;
+    double d_order_order;
+    double d_order_argument;
+    double d_argument_argument;
+    if (!gh_log_bessel_k_second_planned(
+            plan, argument.value,
+            &value, &d_order, &d_argument,
+            &d_order_order, &d_order_argument,
+            &d_argument_argument)) {
+        gh_jet_t invalid = jet_constant(NAN);
+        invalid.second_order = 1;
+        return invalid;
     }
-    return out;
+    return jet_log_bessel_chain(
+        order, argument, value, d_order, d_argument,
+        d_order_order, d_order_argument, d_argument_argument);
 }
 
 static int valid_shapes(double rho, double zeta, double lambda)
@@ -710,7 +1047,9 @@ int gh_family_cache_init(const double *params, size_t shape_start,
     );
 }
 
-static gh_jet_t vg_logpdf_jet(gh_jet_t x, const gh_shape_cache_t *cache)
+static gh_jet_t vg_logpdf_jet(
+    gh_jet_t x, const gh_shape_cache_t *cache,
+    const gh_bessel_second_plan_t *plan)
 {
     const gh_jet_t half = jet_constant(0.5);
     const gh_jet_t order = jet_sub(cache->zeta, half);
@@ -754,7 +1093,9 @@ static gh_jet_t vg_logpdf_jet(gh_jet_t x, const gh_shape_cache_t *cache)
             order,
             jet_sub(jet_log(abs_y), jet_log(cache->vg_argument_scale))
         ),
-        jet_log_bessel_k(order, argument)
+        plan
+            ? jet_log_bessel_k_planned(order, argument, plan)
+            : jet_log_bessel_k(order, argument)
     );
     return jet_add(logpdf, bessel_product);
 }
@@ -774,7 +1115,9 @@ static void shape_cache_use_first_order(gh_shape_cache_t *cache)
 
 static int gh_obs_jet_active(double residual, double variance,
                              const gh_shape_cache_t *cache,
-                             int second_order, gh_jet_t *out)
+                             int second_order,
+                             const gh_bessel_second_plan_t *plan,
+                             gh_jet_t *out)
 {
     if (!cache || !out || !isfinite(residual) || !isfinite(variance)) return 0;
     if (!(variance > 0.0)) return 0;
@@ -787,7 +1130,7 @@ static int gh_obs_jet_active(double residual, double variance,
     const gh_jet_t z = jet_div(e, jet_sqrt(h));
     if (cache->family_kind == GH_FAMILY_VARIANCE_GAMMA) {
         const gh_jet_t nll = jet_sub(
-            jet_scale(jet_log(h), 0.5), vg_logpdf_jet(z, cache)
+            jet_scale(jet_log(h), 0.5), vg_logpdf_jet(z, cache, plan)
         );
         if (!isfinite(nll.value)) return 0;
         *out = nll;
@@ -802,9 +1145,13 @@ static int gh_obs_jet_active(double residual, double variance,
     const gh_jet_t log_kernel = jet_sub(
         jet_add(
             jet_mul(cache->beta, centered),
-            jet_log_bessel_k(
-                jet_sub(cache->lambda, jet_constant(0.5)), argument
-            )
+            plan
+                ? jet_log_bessel_k_planned(
+                    jet_sub(cache->lambda, jet_constant(0.5)),
+                    argument,
+                    plan)
+                : jet_log_bessel_k(
+                    jet_sub(cache->lambda, jet_constant(0.5)), argument)
         ),
         jet_mul(
             jet_sub(jet_constant(0.5), cache->lambda),
@@ -825,11 +1172,13 @@ static int gh_obs_jet(double residual, double variance,
                       int second_order, gh_jet_t *out)
 {
     if (second_order)
-        return gh_obs_jet_active(residual, variance, cache, 1, out);
+        return gh_obs_jet_active(
+            residual, variance, cache, 1, NULL, out);
     if (!cache) return 0;
     gh_shape_cache_t first_cache = *cache;
     shape_cache_use_first_order(&first_cache);
-    return gh_obs_jet_active(residual, variance, &first_cache, 0, out);
+    return gh_obs_jet_active(
+        residual, variance, &first_cache, 0, NULL, out);
 }
 
 int gh_obs_derivatives(double residual, double variance,
@@ -838,6 +1187,23 @@ int gh_obs_derivatives(double residual, double variance,
 {
     gh_jet_t nll;
     if (!out || !gh_obs_jet(residual, variance, cache, 1, &nll)) return 0;
+    out->value = nll.value;
+    memcpy(out->grad, nll.grad, sizeof(out->grad));
+    memcpy(out->hess, nll.hess, sizeof(out->hess));
+    return 1;
+}
+
+int gh_obs_derivatives_planned(
+    double residual, double variance,
+    const gh_shape_cache_t *cache,
+    const gh_bessel_second_plan_t *plan,
+    gh_obs_derivs_t *out)
+{
+    gh_jet_t nll;
+    if (!out || !plan || !gh_obs_jet_active(
+            residual, variance, cache, 1, plan, &nll)) {
+        return 0;
+    }
     out->value = nll.value;
     memcpy(out->grad, nll.grad, sizeof(out->grad));
     memcpy(out->hess, nll.hess, sizeof(out->hess));
@@ -863,7 +1229,7 @@ int gh_obs_gradient_prepared(double residual, double variance,
         || cache->lambda.second_order) return 0;
     gh_jet_t nll;
     if (!out || !gh_obs_jet_active(
-            residual, variance, cache, 0, &nll)) return 0;
+            residual, variance, cache, 0, NULL, &nll)) return 0;
     out->value = nll.value;
     memcpy(out->grad, nll.grad, sizeof(out->grad));
     return 1;
@@ -907,6 +1273,26 @@ double gh_obs_nll_value(double residual, double variance,
     return 0.5 * log(variance) - cache->log_normalizer - log_kernel;
 }
 
+double gh_obs_nll_value_planned(double residual, double variance,
+                                const gh_shape_value_cache_t *cache,
+                                const gh_bessel_value_plan_t *plan)
+{
+    if (!cache || !plan || !isfinite(residual) || !isfinite(variance)
+        || !(variance > 0.0)) return INFINITY;
+    const double standardized = residual / sqrt(variance);
+    const double centered = standardized - cache->mu;
+    const double radius = hypot(cache->delta, centered);
+    const double argument = cache->alpha * radius;
+    double log_bessel;
+    if (!gh_log_bessel_k_value_planned(plan, argument, &log_bessel)) {
+        return INFINITY;
+    }
+    const double log_kernel = cache->beta * centered + log_bessel
+        - (0.5 - cache->lambda)
+          * (log(radius) - log(cache->alpha));
+    return 0.5 * log(variance) - cache->log_normalizer - log_kernel;
+}
+
 double vg_obs_nll_value(double residual, double variance,
                         const vg_shape_value_cache_t *cache)
 {
@@ -930,6 +1316,37 @@ double vg_obs_nll_value(double residual, double variance,
         logpdf += order * (
             log(absolute_y) - log(cache->argument_scale))
             + log_bessel_k_scalar(order, argument);
+    }
+    return 0.5 * log(variance) - logpdf;
+}
+
+double vg_obs_nll_value_planned(double residual, double variance,
+                                const vg_shape_value_cache_t *cache,
+                                const gh_bessel_value_plan_t *plan)
+{
+    if (!cache || !plan || !isfinite(residual) || !isfinite(variance)
+        || !(variance > 0.0)) return INFINITY;
+    const double standardized = residual / sqrt(variance);
+    const double order = cache->lambda - 0.5;
+    const double y = cache->scale * standardized
+        + cache->theta * cache->lambda;
+    double logpdf = log(cache->scale) + GH_LOG_2 - 0.5 * LOG_2PI
+        - lgamma(cache->lambda) + cache->theta * y;
+    if (cache->argument_scale * fabs(y) < 1e-4) {
+        const double center = (order - 1.0) * GH_LOG_2 + lgamma(order)
+            - 2.0 * order * log(cache->argument_scale);
+        const double curvature = cache->argument_scale
+            * cache->argument_scale / (2.0 * (1.0 - order));
+        logpdf += center + 0.5 * curvature * y * y;
+    } else {
+        const double absolute_y = fabs(y);
+        const double argument = cache->argument_scale * absolute_y;
+        double log_bessel;
+        if (!gh_log_bessel_k_value_planned(plan, argument, &log_bessel)) {
+            return INFINITY;
+        }
+        logpdf += order * (
+            log(absolute_y) - log(cache->argument_scale)) + log_bessel;
     }
     return 0.5 * log(variance) - logpdf;
 }
@@ -1051,7 +1468,7 @@ double vg_standardized_logpdf_scalar(double x, double rho, double lambda)
     gh_shape_cache_t cache;
     if (!vg_shape_cache_init(rho, lambda, &cache)) return -INFINITY;
     gh_jet_t x_jet = jet_constant(x);
-    return vg_logpdf_jet(x_jet, &cache).value;
+    return vg_logpdf_jet(x_jet, &cache, NULL).value;
 }
 
 double vg_standardized_nll(const double *x, size_t n,

@@ -41,6 +41,49 @@ namespace vlk::experiment::runtime {
         : 0u;
 }
 
+[[nodiscard]] inline bool reflection_inverse_values(
+    const double* coefficients,
+    std::size_t order,
+    double sign,
+    double* reflection,
+    double* current,
+    double* next,
+    bool require_stable = true) noexcept
+{
+    if (coefficients == nullptr || order == 0u || current == nullptr
+        || next == nullptr || !std::isfinite(sign)) {
+        return false;
+    }
+    for (std::size_t index = 0; index < order; ++index)
+        current[index] = sign * coefficients[index];
+
+    for (std::size_t stage = order; stage > 0u; --stage) {
+        const std::size_t final = stage - 1u;
+        const double current_reflection = current[final];
+        if (!std::isfinite(current_reflection)
+            || (require_stable && !(std::abs(current_reflection) < 1.0))) {
+            return false;
+        }
+        if (reflection != nullptr)
+            reflection[final] = current_reflection;
+        if (stage == 1u)
+            return true;
+
+        const double denominator =
+            1.0 - current_reflection * current_reflection;
+        if (denominator == 0.0)
+            return false;
+        for (std::size_t row = 0; row < final; ++row) {
+            const std::size_t reverse = final - 1u - row;
+            next[row] = (
+                current[row] + current_reflection * current[reverse]
+            ) / denominator;
+        }
+        std::copy_n(next, final, current);
+    }
+    return true;
+}
+
 [[nodiscard]] inline std::size_t reflection_curvature_scratch_doubles(
     std::size_t order) noexcept
 {

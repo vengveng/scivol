@@ -13,7 +13,7 @@ from numpy.typing import NDArray
 from typing import Dict, Tuple
 
 from .. import _core
-from .._optimizer import resolve_optimizer_budget
+from .._optimizer import resolve_initial_params, resolve_optimizer_budget
 from ..components.mean import ARMA
 from ..components.vol import GARCH
 from ..components.density import Normal
@@ -152,6 +152,10 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
             [0.05 / P_arch] * P_arch,
             [0.90 / Q_garch] * Q_garch,
         ])
+        start, warm_started = resolve_initial_params(
+            _.get("initial_params"), start, n_params, uid
+        )
+        fit_info["warm_started"] = warm_started
         
         if not log_mode:
             # =========================================================
@@ -247,6 +251,8 @@ def _build(p_ar: int, q_ma: int, P_arch: int, Q_garch: int) -> Routine:
             res.x = theta_hat
             nll_final = res.fun / p_scaler
         
+        fit_info["function_evaluations"] = int(getattr(res, "nfev", 0))
+        fit_info["gradient_evaluations"] = int(getattr(res, "njev", 0))
         average_nll = call_nll(theta_hat)
         n_eff = n - max_lag
         nll_final = n_eff * (average_nll + 0.9189385332046727)

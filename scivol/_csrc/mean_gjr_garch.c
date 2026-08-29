@@ -65,23 +65,18 @@ VLK_INLINE int lmgjr_validate_garch(double omega,
         return 0;
     }
 
-    double alpha_sum = 0.0;
-    double gamma_sum = 0.0;
-    double beta_sum = 0.0;
     for (size_t i = 0; i < p; ++i) {
-        if (alpha[i] < 0.0 || !isfinite(alpha[i]) || gamma[i] < 0.0 || !isfinite(gamma[i])) {
+        if (alpha[i] < 0.0 || !isfinite(alpha[i])
+            || alpha[i] + gamma[i] < 0.0 || !isfinite(gamma[i])) {
             return 0;
         }
-        alpha_sum += alpha[i];
-        gamma_sum += gamma[i];
     }
     for (size_t j = 0; j < q; ++j) {
         if (beta[j] < 0.0 || !isfinite(beta[j])) {
             return 0;
         }
-        beta_sum += beta[j];
     }
-    return alpha_sum + gamma_sum + beta_sum < 1.0;
+    return 1;
 }
 
 VLK_INLINE void lmgjr_update_dynamic_grad(
@@ -287,7 +282,7 @@ VLK_INLINE int lmgjr_studentt_obs_derivs(
     lmgjr_studentt_obs_derivs_t *out
 )
 {
-    if (!(h > H_FLOOR) || !(nu > NU_MIN) || !isfinite(e) || !isfinite(h) || !isfinite(nu)) {
+    if (!(h > 0.0) || !(nu > NU_MIN) || !isfinite(e) || !isfinite(h) || !isfinite(nu)) {
         return 0;
     }
 
@@ -380,7 +375,10 @@ VLK_INLINE int lmgjr_ged_obs_derivs(
     lmgjr_ged_obs_derivs_t *out
 )
 {
-    const double h_safe = h > H_FLOOR ? h : H_FLOOR;
+    if (!(h > 0.0) || !isfinite(h)) {
+        return 0;
+    }
+    const double h_safe = h;
     const double abs_e = MAX(fabs(e), 1e-300);
     const double e_safe = (fabs(e) < 1e-12) ? ((e < 0.0) ? -1e-12 : 1e-12) : e;
     const double inv_h = 1.0 / h_safe;
@@ -614,7 +612,7 @@ double linear_mean_gjr_garch_nll_pq_normal(
         if (t > 0) {
             sigma2[t] = lmgjr_sigma2_pq(omega, alpha, gamma, beta, p, q, t, resid, sigma2);
         }
-        if (sigma2[t] < H_FLOOR || !isfinite(sigma2[t])) {
+        if (!(sigma2[t] > 0.0) || !isfinite(sigma2[t])) {
             return 1e10;
         }
         nll += 0.5 * (log(sigma2[t]) + resid[t] * resid[t] / sigma2[t]);
@@ -678,7 +676,7 @@ void linear_mean_gjr_garch_nll_grad_pq_normal(
         if (t > 0) {
             sigma2[t] = lmgjr_sigma2_pq(omega, alpha, gamma, beta, p, q, t, resid, sigma2);
         }
-        if (sigma2[t] < H_FLOOR || !isfinite(sigma2[t])) {
+        if (!(sigma2[t] > 0.0) || !isfinite(sigma2[t])) {
             free(D_buf);
             dzeros(grad, K);
             return;
@@ -789,7 +787,7 @@ void linear_mean_gjr_garch_hess_pq_normal(
         if (t > 0) {
             sigma2[t] = lmgjr_sigma2_pq(omega, alpha, gamma, beta, p, q, t, resid, sigma2);
         }
-        if (sigma2[t] < H_FLOOR || !isfinite(sigma2[t])) {
+        if (!(sigma2[t] > 0.0) || !isfinite(sigma2[t])) {
             free(D_buf);
             free(C_buf);
             dzeros(hess, K * K);

@@ -4,8 +4,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <utility>
+
+#include "garch_density_policy.hpp"
+#include "gjr_moment_policy.hpp"
 
 #if defined(_MSC_VER)
 #  define VLK_GENERATED_INLINE __forceinline
@@ -214,6 +218,192 @@ VLK_GENERATED_INLINE void advance_second_sensitivities(
         }
     }
 }
+
+template<std::size_t P, std::size_t Q>
+struct GarchRecursion {
+    static constexpr std::size_t V = 1u + P + Q;
+    static constexpr bool requires_raw_residuals = false;
+
+    template<class Density>
+    [[nodiscard]] static bool valid_parameters(const double* theta)
+    {
+        double persistence = 0.0;
+        for (std::size_t index = 1u; index < V; ++index) {
+            if (!std::isfinite(theta[index]) || theta[index] < 0.0)
+                return false;
+            persistence += theta[index];
+        }
+        return persistence < 1.0;
+    }
+
+    template<bool Startup>
+    VLK_GENERATED_INLINE static double advance_variance(
+        const double* theta,
+        GarchSample,
+        const std::array<double, P>& residual_ring,
+        const std::array<double, Q>& variance_ring,
+        std::size_t time)
+    {
+        return generated::advance_variance<Startup, P, Q>(
+            theta, residual_ring, variance_ring, time);
+    }
+
+    template<bool Startup>
+    VLK_GENERATED_INLINE static void advance_first(
+        const double* theta,
+        GarchSample,
+        const std::array<double, P>& residual_ring,
+        const std::array<double, Q>& variance_ring,
+        const std::array<std::array<double, V>, Q>& first_ring,
+        std::size_t time,
+        std::array<double, V>& current)
+    {
+        advance_first_sensitivities<Startup, P, Q>(
+            theta, residual_ring, variance_ring, first_ring, time, current);
+    }
+
+    template<bool Startup>
+    VLK_GENERATED_INLINE static void advance_second(
+        const double* theta,
+        const std::array<std::array<double, V>, Q>& first_ring,
+        const std::array<std::array<double, V * (V + 1u) / 2u>, Q>& second_ring,
+        std::size_t time,
+        std::array<double, V * (V + 1u) / 2u>& current)
+    {
+        advance_second_sensitivities<Startup, P, Q>(
+            theta, first_ring, second_ring, time, current);
+    }
+};
+
+template<std::size_t P, std::size_t Q>
+struct GjrRecursion {
+    static constexpr std::size_t V = 1u + 2u * P + Q;
+    static constexpr std::size_t alpha_start = 1u;
+    static constexpr std::size_t gamma_start = alpha_start + P;
+    static constexpr std::size_t beta_start = gamma_start + P;
+    static constexpr bool requires_raw_residuals = true;
+
+    template<class Density>
+    [[nodiscard]] static bool valid_parameters(const double* theta)
+    {
+        return valid_gjr_coefficients_and_persistence<Density>(
+            theta, P, Q, alpha_start, gamma_start, beta_start,
+            theta + V);
+    }
+
+    template<bool Startup>
+    VLK_GENERATED_INLINE static double advance_variance(
+        const double* theta,
+        GarchSample sample,
+        const std::array<double, P>& residual_ring,
+        const std::array<double, Q>& variance_ring,
+        std::size_t time)
+    {
+        double variance = theta[0];
+        for (std::size_t lag = 0; lag < P; ++lag) {
+            if constexpr (!Startup) {
+                const std::size_t source = time - 1u - lag;
+                const double residual = sample.residuals[source];
+                const double residual2 = residual * residual;
+                variance += theta[alpha_start + lag] * residual2
+                    + theta[gamma_start + lag]
+                        * (residual < 0.0 ? residual2 : 0.0);
+            } else if (time > lag) {
+                const std::size_t source = time - 1u - lag;
+                const double residual = sample.residuals[source];
+                const double residual2 = residual * residual;
+                variance += theta[alpha_start + lag] * residual2
+                    + theta[gamma_start + lag]
+                        * (residual < 0.0 ? residual2 : 0.0);
+            }
+        }
+        for (std::size_t lag = 0; lag < Q; ++lag) {
+            if constexpr (!Startup) {
+                const std::size_t source = time - 1u - lag;
+                variance += theta[beta_start + lag]
+                    * variance_ring[source % Q];
+            } else if (time > lag) {
+                const std::size_t source = time - 1u - lag;
+                variance += theta[beta_start + lag]
+                    * variance_ring[source % Q];
+            }
+        }
+        return variance;
+    }
+
+    template<bool Startup>
+    VLK_GENERATED_INLINE static void advance_first(
+        const double* theta,
+        GarchSample sample,
+        const std::array<double, P>& residual_ring,
+        const std::array<double, Q>& variance_ring,
+        const std::array<std::array<double, V>, Q>& first_ring,
+        std::size_t time,
+        std::array<double, V>& current)
+    {
+        garch_equation::initialize_first(current.data(), V);
+        for (std::size_t lag = 0; lag < P; ++lag) {
+            if constexpr (!Startup) {
+                const std::size_t source = time - 1u - lag;
+                const double residual = sample.residuals[source];
+                const double residual2 = residual * residual;
+                current[alpha_start + lag] += residual2;
+                if (residual < 0.0)
+                    current[gamma_start + lag] += residual2;
+            } else if (time > lag) {
+                const std::size_t source = time - 1u - lag;
+                const double residual = sample.residuals[source];
+                const double residual2 = residual * residual;
+                current[alpha_start + lag] += residual2;
+                if (residual < 0.0)
+                    current[gamma_start + lag] += residual2;
+            }
+        }
+        for (std::size_t lag = 0; lag < Q; ++lag) {
+            if constexpr (!Startup) {
+                const std::size_t source = time - 1u - lag;
+                const auto& previous = first_ring[source % Q];
+                garch_equation::add_garch_first(
+                    current.data(), V, beta_start + lag,
+                    theta[beta_start + lag], variance_ring[source % Q],
+                    previous.data());
+            } else if (time > lag) {
+                const std::size_t source = time - 1u - lag;
+                const auto& previous = first_ring[source % Q];
+                garch_equation::add_garch_first(
+                    current.data(), V, beta_start + lag,
+                    theta[beta_start + lag], variance_ring[source % Q],
+                    previous.data());
+            }
+        }
+    }
+
+    template<bool Startup>
+    VLK_GENERATED_INLINE static void advance_second(
+        const double* theta,
+        const std::array<std::array<double, V>, Q>& first_ring,
+        const std::array<std::array<double, V * (V + 1u) / 2u>, Q>& second_ring,
+        std::size_t time,
+        std::array<double, V * (V + 1u) / 2u>& current)
+    {
+        current.fill(0.0);
+        for (std::size_t lag = 0; lag < Q; ++lag) {
+            if constexpr (!Startup) {
+                const std::size_t slot = (time - 1u - lag) % Q;
+                garch_equation::add_garch_second(
+                    current.data(), V, beta_start + lag,
+                    theta[beta_start + lag], first_ring[slot].data(),
+                    second_ring[slot].data());
+            } else if (time > lag) {
+                const std::size_t slot = (time - 1u - lag) % Q;
+                garch_equation::add_garch_second(
+                    current.data(), V, beta_start + lag,
+                    theta[beta_start + lag], first_ring[slot].data(),
+                    second_ring[slot].data());
+            }
+        }
+    }
+};
 
 }  // namespace vlk::experiment::generated
 

@@ -257,11 +257,14 @@ $$
 ```python
 spec = APARCH(1, 1) + Normal()
 spec = APARCH(2, 1) + GeneralizedHyperbolic()
+spec = ARMA(1, 1) + APARCH(2, 1) + StudentT()
 ```
 
-`APARCH` supports orders up to 3 and every shipped density. Its first release is
-zero-mean and MLE-only. Parameters are `omega`, `alpha[1:p]`, `gamma[1:p]`,
-`beta[1:q]`, and `delta`.
+`APARCH` supports arbitrary positive orders, every shipped density, and genuine
+joint ARMA estimation. It is MLE-only. Parameters are `omega`, `alpha[1:p]`,
+`gamma[1:p]`, `beta[1:q]`, and `delta`. Stationarity uses the exact fitted-density
+moment of each asymmetric power term; Student-t and Skew-t also require
+`delta < nu`.
 
 ### DCC(p, q)
 
@@ -423,9 +426,9 @@ Solvers:
 
 | Solver | Method | Notes |
 |--------|--------|-------|
-| `"native"` | C++ function-jet SLSQP | Default for fixed MLE GARCH with Normal, Student-t, Skew-t, or GED |
-| `"slsqp"` | SciPy SLSQP over the established C kernels | Explicit independent legacy path |
-| `"legacy"` | Alias for `"slsqp"` | Keeps the established engine easy to request |
+| `"native"` | C++ function-jet SLSQP | Default for promoted fixed MLE volatility and joint ARMA-volatility models |
+| `"slsqp"` | SciPy optimizer over the canonical jet where available | Explicit independent comparison path |
+| `"legacy"` | Established SciPy adapter | Keeps the previous optimizer easy to request |
 | `"nelder-mead"` | Derivative-free simplex | Slow but dependable |
 | `"trust"` | Trust-region (gradient + Hessian) | Fast when it converges |
 | `"trust-exact"` | Trust-region in log-space | Most stable for difficult data |
@@ -442,13 +445,11 @@ Solvers:
 
 This guarantees stationarity by construction and avoids boundary problems during optimization.
 
-Fixed MLE GARCH models use the native transformed engine by default with Normal,
-Student-t, Skew-t, or GED density. Pass `solver="native"` to use it explicitly
-for GH-family GARCH or genuine joint ARMA-GARCH models. Pass `solver="slsqp"` or
-`solver="legacy"` to run the independent SciPy path. Passing `log_mode=False`
-without a solver also selects the legacy theta-space path. Joint ARMA-GARCH,
-GH-family GARCH, QMLE, and auto-selection retain legacy defaults pending their
-own promotion gates.
+Fixed MLE GARCH, GJR-GARCH, and EGARCH models use the native transformed engine
+by default across all eight densities. The same is true for genuine joint
+`ARMA + GARCH`, `ARMA + GJR-GARCH`, and `ARMA + EGARCH` models. Pass
+`solver="slsqp"` or `solver="legacy"` to run an independent SciPy path. QMLE
+and unsupported mean-volatility families retain the established engine.
 
 Other model families retain their benchmark-driven `log_mode` defaults. Every
 fit reports the effective path:
@@ -464,7 +465,7 @@ lags they require; `hold_back=k` requests at least `k` leading observations be
 trimmed. Results preserve pandas alignment, and the effective sample is recorded
 in `result.fit_info`.
 
-Standalone volatility fits and native joint ARMA-GARCH fits accept
+Standalone volatility fits and promoted native joint ARMA-volatility fits accept
 constrained-space warm starts and explicit optimizer budgets. The same start
 works in theta- or z-space:
 
@@ -478,23 +479,12 @@ Current default path policy:
 
 | Family | Default path |
 |--------|--------------|
-| `GARCH + Normal / StudentT / SkewT / GED` | native `z-space` |
-| `GARCH + GH / NIG / Hyperbolic / VarianceGamma` | `theta-space` |
-| `GJRGARCH + Normal` | `z-space` |
-| `GJRGARCH + StudentT / SkewT` | `theta-space` |
-| `EGARCH + Normal` | `theta-space` |
-| `EGARCH + StudentT` | `theta-space` |
-| `EGARCH + SkewT` | `theta-space` |
-| `EGARCH + GED` | `theta-space` |
-| `APARCH + any shipped density` | `theta-space` |
+| `GARCH / GJRGARCH / EGARCH / APARCH + any shipped density` | native `z-space` |
+| `ARMA + GARCH / GJRGARCH / EGARCH / APARCH + any shipped density` | native `z-space` |
 | `ARMA + Normal / GED` | `theta-space` |
 | `ARX/HARX + Normal / StudentT / SkewT / GED` | `theta-space` |
-| `ARMA + GARCH + any shipped density` | `theta-space` |
-| `ARMA + EGARCH + Normal / StudentT / SkewT / GED` | `theta-space` |
 | `ARX/HARX + GARCH + Normal / StudentT / SkewT / GED` | `theta-space` |
 | `ARX/HARX + EGARCH + Normal / StudentT / SkewT / GED` | `theta-space` |
-
-For `EGARCH + Normal`, the current SLSQP policy is based on targeted checks of the shipped `EGARCH(1,1)` and `EGARCH(2,1)` surfaces. Those runs showed theta-space matching z-space on fit quality while usually converging in fewer iterations and less wall time.
 
 ### QMLE
 
@@ -1053,7 +1043,7 @@ gjr.persistence(p_neg=0.6)
 aparch = APARCH(1, 1)
 aparch.n_params            # 2 + 2p + q
 aparch.fitted_params       # includes gamma and delta
-aparch.persistence()       # alpha + beta proxy
+aparch.persistence()       # exact fitted-density asymmetric-power persistence
 ```
 
 ### AutoVol

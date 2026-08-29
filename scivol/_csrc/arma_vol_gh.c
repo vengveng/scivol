@@ -55,13 +55,21 @@ static int validate_volatility(const double *vol, size_t p, size_t q,
     }
 
     if (!(vol[0] > 0.0) || !isfinite(vol[0])) return 0;
-    const size_t arch_count = volatility_kind == ARMA_VOL_GJR_GARCH ? 2 * p : p;
-    double persistence = 0.0;
-    for (size_t i = 0; i < arch_count + q; ++i) {
-        if (vol[1 + i] < 0.0 || !isfinite(vol[1 + i])) return 0;
-        persistence += vol[1 + i];
+    for (size_t i = 0; i < p; ++i) {
+        const double alpha = vol[1 + i];
+        if (alpha < 0.0 || !isfinite(alpha)) return 0;
+        if (volatility_kind == ARMA_VOL_GJR_GARCH) {
+            const double gamma = vol[1 + p + i];
+            if (!isfinite(gamma) || alpha + gamma < 0.0) return 0;
+        }
     }
-    return persistence < 1.0;
+    const size_t beta_start = 1
+        + (volatility_kind == ARMA_VOL_GJR_GARCH ? 2 * p : p);
+    for (size_t i = 0; i < q; ++i) {
+        if (vol[beta_start + i] < 0.0
+            || !isfinite(vol[beta_start + i])) return 0;
+    }
+    return 1;
 }
 
 static void arma_residual_derivatives(
@@ -159,7 +167,7 @@ static double arma_vol_gh_core(
     for (size_t i = 0; i < max_lag; ++i) {
         resid[i] = e0[i];
         sigma2[i] = h0[i];
-        if (!(sigma2[i] > H_FLOOR) || !isfinite(sigma2[i])) return 1e10;
+        if (!(sigma2[i] > 0.0) || !isfinite(sigma2[i])) return 1e10;
     }
 
     double *de_history = calloc(e_lags * K, sizeof(double));
@@ -345,7 +353,7 @@ static double arma_vol_gh_core(
                 }
             }
         }
-        if (!(h_t > H_FLOOR) || !isfinite(h_t)) {
+        if (!(h_t > 0.0) || !isfinite(h_t)) {
             total = 1e10;
             break;
         }

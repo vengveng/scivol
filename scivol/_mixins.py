@@ -428,9 +428,20 @@ class FitsMixin:
         from ._validation import prepare_series_input, validate_spec
 
         spec = validate_spec(self.spec)
-        from .components.vol import APARCH
+        from .components.mean import ARMA
+        from .components.vol import APARCH, EGARCH
         from .roles import Role
         force_legacy_engine = bool(kwargs.pop("_force_legacy_engine", False))
+        legacy_requested = str(kwargs.get("solver", "")).lower() == "legacy"
+        mean_component = spec.get_component(Role.MEAN)
+        canonical_egarch = (
+            isinstance(spec.get_component(Role.VOLATILITY), EGARCH)
+            and (mean_component is None or isinstance(mean_component, ARMA))
+        )
+        canonical_aparch = (
+            isinstance(spec.get_component(Role.VOLATILITY), APARCH)
+            and (mean_component is None or isinstance(mean_component, ARMA))
+        )
         has_auto_components = self._has_auto_components()
         native_requested = str(kwargs.get("solver", "")).lower() == "native"
         native_engine = self._should_use_native_engine(
@@ -442,8 +453,51 @@ class FitsMixin:
             kwargs=kwargs,
         )
         fit_kwargs = dict(kwargs)
-        if str(fit_kwargs.get("solver", "")).lower() == "legacy":
-            fit_kwargs["solver"] = "slsqp"
+        if legacy_requested:
+            fit_kwargs["solver"] = "lbfgsb" if canonical_egarch else "slsqp"
+
+        requested_solver = str(kwargs.get("solver", "")).lower()
+        if (
+            canonical_egarch
+            and method.lower() == "mle"
+            and kwargs.get("log_mode") is False
+        ):
+            raise ValueError(
+                "EGARCH no longer exposes log_mode=False because its "
+                "historical theta-space bounds do not encode the general-order "
+                "stationarity domain. Use the default native path or an explicit "
+                "canonical SciPy solver."
+            )
+        if (
+            canonical_egarch
+            and method.lower() == "mle"
+            and requested_solver
+            and requested_solver not in {"native", "legacy", "slsqp"}
+        ):
+            raise NotImplementedError(
+                f"solver='{requested_solver}' is not yet wired to the canonical "
+                "EGARCH jet; use 'native', 'legacy', or 'slsqp'."
+            )
+        if (
+            canonical_aparch
+            and method.lower() == "mle"
+            and kwargs.get("log_mode") is False
+        ):
+            raise ValueError(
+                "APARCH no longer exposes log_mode=False because the historical "
+                "theta-space constraints do not encode density-dependent "
+                "stationarity. Use the default native path or canonical SciPy."
+            )
+        if (
+            canonical_aparch
+            and method.lower() == "mle"
+            and requested_solver
+            and requested_solver not in {"native", "legacy", "slsqp"}
+        ):
+            raise NotImplementedError(
+                f"solver='{requested_solver}' is not wired to the canonical "
+                "APARCH jet; use 'native', 'legacy', or 'slsqp'."
+            )
 
         if native_requested and method.lower() == "qmle":
             raise NotImplementedError(
@@ -471,14 +525,14 @@ class FitsMixin:
                 vol, (GARCH, GJRGARCH, EGARCH, APARCH)
             )
             joint_budget_supported = (
-                "initial_params" not in fit_kwargs
-                and isinstance(mean, ARMA)
-                and isinstance(vol, GARCH)
+                isinstance(mean, ARMA)
+                and isinstance(vol, (GARCH, EGARCH, APARCH))
             )
             if not (standalone_supported or joint_budget_supported):
                 raise NotImplementedError(
                     "initial_params currently supports fixed standalone volatility "
-                    "models; optimizer budgets also support fixed joint ARMA-GARCH."
+                    "models; optimizer budgets also support fixed joint ARMA-GARCH "
+                    "ARMA-EGARCH, and ARMA-APARCH."
                 )
             if method.lower() == "qmle" and "initial_params" in fit_kwargs:
                 raise NotImplementedError("QMLE warm starts are not yet supported.")
@@ -521,6 +575,16 @@ class FitsMixin:
                 from ._native_fit import fit_native_spec
 
                 result = fit_native_spec(
+                    spec, prepared.data, x=prepared.x, **fit_kwargs
+                )
+                result._fit_x = prepared.x
+            elif (
+                (canonical_egarch or canonical_aparch)
+                and requested_solver in {"legacy", "slsqp"}
+            ):
+                from ._native_fit import fit_scipy_canonical_spec
+
+                result = fit_scipy_canonical_spec(
                     spec, prepared.data, x=prepared.x, **fit_kwargs
                 )
                 result._fit_x = prepared.x
@@ -685,11 +749,12 @@ class FitsMixin:
         mean_candidates: List[Tuple[str, Tuple[Any, ...]]],
         vol_candidates: List[Tuple[str, int, int]],
     ) -> None:
-        if any(kind != "Zero" for kind, _ in mean_candidates) and any(
+        if any(kind not in {"Zero", "ARMA"} for kind, _ in mean_candidates) and any(
             vol_type == "APARCH" for vol_type, _, _ in vol_candidates
         ):
             raise ValueError(
-                "APARCH auto candidates currently require a zero-mean specification."
+                "APARCH auto candidates currently support zero mean or ARMA mean "
+                "specifications."
             )
 
     def _spec_to_params(self) -> Dict[str, Any]:
@@ -776,7 +841,6 @@ class FitsMixin:
                     "solver='native' currently requires a fixed model specification."
                 )
             candidate_kwargs = dict(kwargs)
-            candidate_kwargs["_force_legacy_engine"] = True
             vol_candidates = self._get_vol_candidates()
             density_candidates = self._get_density_candidates()
             mean_candidates = self._get_mean_candidates()
@@ -909,7 +973,6 @@ class FitsMixin:
         mean_component = self.spec.get_component(Role.MEAN)
         mean_auto = isinstance(mean_component, AutoMean)
         candidate_kwargs = dict(kwargs)
-        candidate_kwargs["_force_legacy_engine"] = True
 
         result, all_candidates = select_best_model(
             data,
