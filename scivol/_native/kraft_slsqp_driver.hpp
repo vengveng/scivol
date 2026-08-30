@@ -22,14 +22,12 @@ extern "C" {
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <span>
-#include <stop_token>
 #include <type_traits>
 
 namespace vlk::experiment::kraft {
@@ -63,21 +61,6 @@ inline constexpr std::int64_t deadline_mode = -104;
 struct NeverStop {
     [[nodiscard]] constexpr StopReason poll() const noexcept
     {
-        return StopReason::none;
-    }
-};
-
-struct StopTokenDeadline {
-    std::stop_token token {};
-    std::chrono::steady_clock::time_point deadline =
-        std::chrono::steady_clock::time_point::max();
-
-    [[nodiscard]] StopReason poll() const noexcept
-    {
-        if (token.stop_requested())
-            return StopReason::cancelled;
-        if (std::chrono::steady_clock::now() >= deadline)
-            return StopReason::deadline;
         return StopReason::none;
     }
 };

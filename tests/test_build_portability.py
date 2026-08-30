@@ -79,3 +79,12 @@ def test_portable_blas_option_arguments_are_const():
     assert "const char* trans" in declaration
     assert "const char* trans" in implementation
     assert "const_cast<char*>" not in implementation
+
+
+def test_native_optimizer_does_not_require_stop_token():
+    driver = (
+        ROOT / "scivol/_native/kraft_slsqp_driver.hpp"
+    ).read_text()
+
+    assert "<stop_token>" not in driver
+    assert "std::stop_token" not in driver
