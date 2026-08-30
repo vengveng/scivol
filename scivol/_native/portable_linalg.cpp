@@ -149,7 +149,7 @@ double BLAS_FUNC(ddot)(
 }
 
 void BLAS_FUNC(dgemv)(
-    char* trans,
+    const char* trans,
     CBLAS_INT* m,
     CBLAS_INT* n,
     double* alpha,
@@ -188,9 +188,9 @@ void BLAS_FUNC(dgemv)(
 }
 
 void BLAS_FUNC(dtpmv)(
-    char* uplo,
-    char* trans,
-    char* diag,
+    const char* uplo,
+    const char* trans,
+    const char* diag,
     CBLAS_INT* n,
     double* packed,
     double* x,
@@ -225,9 +225,9 @@ void BLAS_FUNC(dtpmv)(
 }
 
 void BLAS_FUNC(dtpsv)(
-    char* uplo,
-    char* trans,
-    char* diag,
+    const char* uplo,
+    const char* trans,
+    const char* diag,
     CBLAS_INT* n,
     double* packed,
     double* x,
@@ -248,9 +248,9 @@ void BLAS_FUNC(dtpsv)(
 }
 
 void BLAS_FUNC(dtrsv)(
-    char* uplo,
-    char* trans,
-    char* diag,
+    const char* uplo,
+    const char* trans,
+    const char* diag,
     CBLAS_INT* n,
     double* a,
     CBLAS_INT* lda,
@@ -278,10 +278,10 @@ void BLAS_FUNC(dtrsv)(
 }
 
 void BLAS_FUNC(dtrsm)(
-    char* side,
-    char* uplo,
-    char* trans,
-    char* diag,
+    const char* side,
+    const char* uplo,
+    const char* trans,
+    const char* diag,
     CBLAS_INT* m,
     CBLAS_INT* n,
     double* alpha,
@@ -385,7 +385,7 @@ void BLAS_FUNC(dlartgp)(
 }
 
 void BLAS_FUNC(dlarf)(
-    char* side,
+    const char* side,
     CBLAS_INT* m,
     CBLAS_INT* n,
     double* vector,
@@ -459,7 +459,7 @@ void BLAS_FUNC(dgeqr2)(
             a[index + index * *lda] = 1.0;
             CBLAS_INT columns = *n - index - 1;
             BLAS_FUNC(dlarf)(
-                const_cast<char*>("L"),
+                "L",
                 &length,
                 &columns,
                 &a[index + index * *lda],
@@ -488,8 +488,8 @@ void BLAS_FUNC(dgeqrf)(
 }
 
 void BLAS_FUNC(dorm2r)(
-    char* side,
-    char* trans,
+    const char* side,
+    const char* trans,
     CBLAS_INT* m,
     CBLAS_INT* n,
     CBLAS_INT* k,
@@ -554,7 +554,7 @@ void BLAS_FUNC(dgerq2)(
             a[row + (length - 1) * *lda] = 1.0;
             CBLAS_INT rows = row;
             BLAS_FUNC(dlarf)(
-                const_cast<char*>("R"),
+                "R",
                 &rows,
                 &length,
                 &a[row],
@@ -569,8 +569,8 @@ void BLAS_FUNC(dgerq2)(
 }
 
 void BLAS_FUNC(dormr2)(
-    char* side,
-    char* trans,
+    const char* side,
+    const char* trans,
     CBLAS_INT* m,
     CBLAS_INT* n,
     CBLAS_INT* k,

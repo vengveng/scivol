@@ -894,16 +894,17 @@ struct GeneralizedHyperbolicFamily {
     }
 };
 
-template<double Lambda>
+template<class LambdaPolicy>
 struct FixedLambdaGhFamily {
     static constexpr std::size_t shape_parameters = 2u;
+    static constexpr double lambda = LambdaPolicy::value;
     using ValueCache = gh_shape_value_cache_t;
 
     static bool valid_shape(const double* shape) noexcept
     {
         if (shape == nullptr)
             return false;
-        const double canonical[3] {shape[0], shape[1], Lambda};
+        const double canonical[3] {shape[0], shape[1], lambda};
         return GeneralizedHyperbolicFamily::valid_shape(canonical);
     }
 
@@ -911,26 +912,26 @@ struct FixedLambdaGhFamily {
         const double* shape, gh_shape_value_cache_t* cache) noexcept
     {
         return gh_shape_value_cache_init(
-            shape[0], shape[1], Lambda, cache) != 0;
+            shape[0], shape[1], lambda, cache) != 0;
     }
 
     static bool prepare_value_plan(
         const double*, gh_bessel_value_plan_t* plan) noexcept
     {
-        return gh_bessel_value_plan_init(Lambda - 0.5, plan) != 0;
+        return gh_bessel_value_plan_init(lambda - 0.5, plan) != 0;
     }
 
     static bool prepare_hessian(
         const double* shape, gh_shape_cache_t* cache) noexcept
     {
         return gh_shape_cache_init(
-            shape[0], shape[1], Lambda, 0, cache) != 0;
+            shape[0], shape[1], lambda, 0, cache) != 0;
     }
 
     static bool prepare_second_plan(
         const double*, gh_bessel_second_plan_t* plan) noexcept
     {
-        return gh_bessel_second_plan_init(Lambda - 0.5, 0, plan) != 0;
+        return gh_bessel_second_plan_init(lambda - 0.5, 0, plan) != 0;
     }
 
     template<bool IncludeResidualDerivatives>
@@ -942,7 +943,7 @@ struct FixedLambdaGhFamily {
         constexpr std::size_t shape_start =
             IncludeResidualDerivatives ? 2u : 1u;
         return gh_first::prepare_gh(
-            shape, shape_start, false, Lambda, cache);
+            shape, shape_start, false, lambda, cache);
     }
 
     static double value_planned(
@@ -958,6 +959,14 @@ struct FixedLambdaGhFamily {
     {
         return GH_DERIV_RHO + shape;
     }
+};
+
+struct HyperbolicLambda {
+    static constexpr double value = 1.0;
+};
+
+struct NormalInverseGaussianLambda {
+    static constexpr double value = -0.5;
 };
 
 struct VarianceGammaFamily {
@@ -1142,9 +1151,10 @@ struct GhFamilyDensity {
 
 using GeneralizedHyperbolicDensity =
     GhFamilyDensity<GeneralizedHyperbolicFamily>;
-using HyperbolicDensity = GhFamilyDensity<FixedLambdaGhFamily<1.0>>;
+using HyperbolicDensity =
+    GhFamilyDensity<FixedLambdaGhFamily<HyperbolicLambda>>;
 using NormalInverseGaussianDensity =
-    GhFamilyDensity<FixedLambdaGhFamily<-0.5>>;
+    GhFamilyDensity<FixedLambdaGhFamily<NormalInverseGaussianLambda>>;
 using VarianceGammaDensity = GhFamilyDensity<VarianceGammaFamily>;
 
 }  // namespace vlk::experiment::generated

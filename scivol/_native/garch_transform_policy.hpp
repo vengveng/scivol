@@ -59,110 +59,116 @@ VLK_TRANSFORM_POLICY_INLINE double softplus_second_from_positive(double value)
     return first * (1.0 - first);
 }
 
-template<double Lower>
+template<class Bound>
 struct ShiftedSoftplusMap {
+    static constexpr double lower = Bound::value;
+
     static double forward(double coordinate)
     {
-        return Lower + softplus(coordinate);
+        return lower + softplus(coordinate);
     }
 
     static bool inverse(double parameter, double& coordinate)
     {
-        if (!std::isfinite(parameter) || parameter <= Lower)
+        if (!std::isfinite(parameter) || parameter <= lower)
             return false;
-        coordinate = inverse_softplus(parameter - Lower);
+        coordinate = inverse_softplus(parameter - lower);
         return std::isfinite(coordinate);
     }
 
     static double first(double parameter)
     {
-        return softplus_first_from_positive(parameter - Lower);
+        return softplus_first_from_positive(parameter - lower);
     }
 
     static double second(double parameter)
     {
-        return softplus_second_from_positive(parameter - Lower);
+        return softplus_second_from_positive(parameter - lower);
     }
 
     template<class Number>
     static Number forward_differential(const Number& coordinate)
     {
-        return Number::constant(Lower) + ad::softplus(coordinate);
+        return Number::constant(lower) + ad::softplus(coordinate);
     }
 };
 
-template<double Limit>
+template<class Bound>
 struct ScaledTanhMap {
+    static constexpr double limit = Bound::value;
+
     static double forward(double coordinate)
     {
-        return Limit * std::tanh(coordinate);
+        return limit * std::tanh(coordinate);
     }
 
     static bool inverse(double parameter, double& coordinate)
     {
-        if (!std::isfinite(parameter) || std::abs(parameter) >= Limit)
+        if (!std::isfinite(parameter) || std::abs(parameter) >= limit)
             return false;
-        coordinate = std::atanh(parameter / Limit);
+        coordinate = std::atanh(parameter / limit);
         return std::isfinite(coordinate);
     }
 
     static double first(double parameter)
     {
-        const double ratio = parameter / Limit;
-        return Limit * (1.0 - ratio * ratio);
+        const double ratio = parameter / limit;
+        return limit * (1.0 - ratio * ratio);
     }
 
     static double second(double parameter)
     {
-        return -2.0 * (parameter / Limit) * first(parameter);
+        return -2.0 * (parameter / limit) * first(parameter);
     }
 
     template<class Number>
     static Number forward_differential(const Number& coordinate)
     {
-        return Number::constant(Limit) * ad::tanh(coordinate);
+        return Number::constant(limit) * ad::tanh(coordinate);
     }
 };
 
-template<double Lower, double Upper>
+template<class Bounds>
 struct BoundedLogisticMap {
-    static_assert(Upper > Lower);
-    static constexpr double range = Upper - Lower;
+    static constexpr double lower = Bounds::lower;
+    static constexpr double upper = Bounds::upper;
+    static_assert(upper > lower);
+    static constexpr double range = upper - lower;
 
     static double forward(double coordinate)
     {
         const double probability = coordinate >= 0.0
             ? 1.0 / (1.0 + std::exp(-coordinate))
             : std::exp(coordinate) / (1.0 + std::exp(coordinate));
-        return Lower + range * probability;
+        return lower + range * probability;
     }
 
     static bool inverse(double parameter, double& coordinate)
     {
-        if (!std::isfinite(parameter) || parameter <= Lower
-            || parameter >= Upper)
+        if (!std::isfinite(parameter) || parameter <= lower
+            || parameter >= upper)
             return false;
-        const double probability = (parameter - Lower) / range;
+        const double probability = (parameter - lower) / range;
         coordinate = std::log(probability) - std::log1p(-probability);
         return std::isfinite(coordinate);
     }
 
     static double first(double parameter)
     {
-        const double probability = (parameter - Lower) / range;
+        const double probability = (parameter - lower) / range;
         return range * probability * (1.0 - probability);
     }
 
     static double second(double parameter)
     {
-        const double probability = (parameter - Lower) / range;
+        const double probability = (parameter - lower) / range;
         return first(parameter) * (1.0 - 2.0 * probability);
     }
 
     template<class Number>
     static Number forward_differential(const Number& coordinate)
     {
-        return Number::constant(Lower)
+        return Number::constant(lower)
             + Number::constant(range) * ad::logistic(coordinate);
     }
 };
@@ -309,25 +315,55 @@ struct NoShapeTransform {
         std::array<Number, Width>&) {}
 };
 
+struct StudentTShapeLowerBound {
+    static constexpr double value =
+        domain::StationaryGarchDomain<1u>::student_t_floor;
+};
+
+struct GedShapeLowerBound {
+    static constexpr double value = domain::ged_shape_numerical_floor;
+};
+
+struct UnitShapeLimit {
+    static constexpr double value = 1.0;
+};
+
+struct GhRhoLimit {
+    static constexpr double value = GH_NUMERICAL_RHO_LIMIT;
+};
+
+struct GhZetaBounds {
+    static constexpr double lower = GH_NUMERICAL_ZETA_MIN;
+    static constexpr double upper = GH_NUMERICAL_ZETA_MAX;
+};
+
+struct GhLambdaBounds {
+    static constexpr double lower = GH_NUMERICAL_LAMBDA_MIN;
+    static constexpr double upper = GH_NUMERICAL_LAMBDA_MAX;
+};
+
+struct VarianceGammaLambdaBounds {
+    static constexpr double lower = VG_LAMBDA_MIN;
+    static constexpr double upper = VG_LAMBDA_MAX;
+};
+
 using StudentTShapeTransform = DiagonalShapeTransform<
-    ShiftedSoftplusMap<domain::StationaryGarchDomain<1u>::student_t_floor>>;
+    ShiftedSoftplusMap<StudentTShapeLowerBound>>;
 using GedShapeTransform =
-    DiagonalShapeTransform<ShiftedSoftplusMap<
-        domain::ged_shape_numerical_floor>>;
+    DiagonalShapeTransform<ShiftedSoftplusMap<GedShapeLowerBound>>;
 using SkewTShapeTransform = DiagonalShapeTransform<
-    ShiftedSoftplusMap<domain::StationaryGarchDomain<1u>::student_t_floor>,
-    ScaledTanhMap<1.0>>;
+    ShiftedSoftplusMap<StudentTShapeLowerBound>,
+    ScaledTanhMap<UnitShapeLimit>>;
 using GhShapeTransform = DiagonalShapeTransform<
-    ScaledTanhMap<GH_NUMERICAL_RHO_LIMIT>,
-    BoundedLogisticMap<GH_NUMERICAL_ZETA_MIN, GH_NUMERICAL_ZETA_MAX>,
-    BoundedLogisticMap<
-        GH_NUMERICAL_LAMBDA_MIN, GH_NUMERICAL_LAMBDA_MAX>>;
+    ScaledTanhMap<GhRhoLimit>,
+    BoundedLogisticMap<GhZetaBounds>,
+    BoundedLogisticMap<GhLambdaBounds>>;
 using FixedLambdaGhShapeTransform = DiagonalShapeTransform<
-    ScaledTanhMap<GH_NUMERICAL_RHO_LIMIT>,
-    BoundedLogisticMap<GH_NUMERICAL_ZETA_MIN, GH_NUMERICAL_ZETA_MAX>>;
+    ScaledTanhMap<GhRhoLimit>,
+    BoundedLogisticMap<GhZetaBounds>>;
 using VarianceGammaShapeTransform = DiagonalShapeTransform<
-    ScaledTanhMap<GH_NUMERICAL_RHO_LIMIT>,
-    BoundedLogisticMap<VG_LAMBDA_MIN, VG_LAMBDA_MAX>>;
+    ScaledTanhMap<GhRhoLimit>,
+    BoundedLogisticMap<VarianceGammaLambdaBounds>>;
 
 template<std::size_t P, std::size_t Q, class ShapeTransform>
 struct GarchTransform {

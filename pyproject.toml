@@ -7,7 +7,8 @@ name            = "scivol"
 dynamic         = ["version"]
 description     = "Volatility modeling in Python with fast GARCH-family C extensions."
 readme          = "README.md"
-license         = { file = "LICENSE" }
+license         = "MIT"
+license-files   = ["LICENSE"]
 authors         = [{ name = "Ivan Khalin" }]
 requires-python = ">=3.10"
 dependencies    = [
@@ -67,4 +68,4 @@ version = { attr = "scivol._version.__version__" }
 [tool.cibuildwheel]
 build = "cp310-* cp311-* cp312-*"
 skip = "*-win32 *-manylinux_i686 *-musllinux_i686"
-test-command = 'python -c "import numpy as np; import scivol; import scivol._core; import scivol._native_core; from scivol import GARCH, GJRGARCH, Normal, StudentT; data = np.random.default_rng(0).standard_normal(500).astype(np.float64) * 0.01; r1 = (GARCH(1, 1) + Normal()).fit(data, solver=\"slsqp\", verbose=False, n_jobs=1); assert r1.converged; r2 = (GJRGARCH(1, 1) + StudentT()).fit(data, solver=\"slsqp\", log_mode=True, verbose=False, n_jobs=1); assert r2.params is not None; assert np.all(np.isfinite(r2.params)); r3 = (GARCH(1, 1) + StudentT()).fit(data, maxiter=700); assert r3.converged; assert r3.fit_info.engine == \"cpp-function-jet\""'
+test-command = 'python -c "import numpy as np; import scivol; import scivol._core; import scivol._native_core; from scivol import GARCH, GJRGARCH, Normal, StudentT; data = np.random.default_rng(0).standard_normal(500).astype(np.float64) * 0.01; r1 = (GARCH(1, 1) + Normal()).fit(data, solver=\"slsqp\", verbose=False, n_jobs=1); assert r1.converged; r2 = (GJRGARCH(1, 1) + StudentT()).fit(data, solver=\"slsqp\", log_mode=True, verbose=False, n_jobs=1); assert r2.params is not None; assert np.all(np.isfinite(r2.params)); r3 = (GARCH(1, 1) + StudentT()).fit(data, maxiter=700); assert np.all(np.isfinite(r3.params)); assert r3.fit_info.optimizer_mode == 0; assert r3.fit_info.engine == \"cpp-function-jet\""'

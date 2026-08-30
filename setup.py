@@ -1,16 +1,48 @@
 from __future__ import annotations
 
 import os
+import shlex
 import sys
+import sysconfig
 
 from setuptools import Extension, setup
+
+
+def _portable_build() -> bool:
+    return (
+        os.environ.get("SCIVOL_PORTABLE_BUILD") == "1"
+        or os.environ.get("CIBUILDWHEEL") == "1"
+    )
+
+
+def _configured_cxx() -> str:
+    return os.environ.get("CXX") or sysconfig.get_config_var("CXX") or ""
+
+
+def _compiler_executable(command: str) -> str:
+    try:
+        executable = shlex.split(command)[0]
+    except (IndexError, ValueError):
+        return ""
+    return os.path.basename(executable).lower()
+
+
+def _frame_limit_args(compiler_command: str | None = None) -> list[str]:
+    compiler = _compiler_executable(compiler_command or _configured_cxx())
+    is_gnu = "g++" in compiler or "gcc" in compiler
+    if "clang" in compiler or (sys.platform == "darwin" and not is_gnu):
+        return [
+            "-Wframe-larger-than=16384",
+            "-Werror=frame-larger-than",
+        ]
+    return ["-Werror=frame-larger-than=16384"]
 
 
 def _compile_args() -> list[str]:
     if sys.platform.startswith("win"):
         return ["/O2", "/fp:fast"]
 
-    if os.environ.get("SCIVOL_PORTABLE_BUILD") == "1":
+    if _portable_build():
         return ["-O3"]
 
     return ["-O3", "-ffast-math", "-ffp-contract=fast", "-funroll-loops", "-march=native"]
@@ -25,10 +57,9 @@ def _native_compile_args() -> list[str]:
         "-O3",
         "-fno-exceptions",
         "-fno-rtti",
-        "-Wframe-larger-than=16384",
-        "-Werror=frame-larger-than",
+        *_frame_limit_args(),
     ]
-    if os.environ.get("SCIVOL_PORTABLE_BUILD") == "1":
+    if _portable_build():
         return base
     return [*base, "-ffp-contract=fast", "-funroll-loops", "-march=native"]
 
