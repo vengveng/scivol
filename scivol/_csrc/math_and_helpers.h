@@ -163,3 +163,53 @@ VLK_FORCE_INLINE double hansen_skewt_abs_moment(double nu, double lam)
 #define NU_MIN    2.001
 #define GED_NU_MIN 1.01
 #define LAM_MAX   0.999
+
+typedef struct {
+    double value, first, second;
+} vlk_student_normalization_t;
+
+VLK_FORCE_INLINE vlk_student_normalization_t vlk_student_normalization(
+    double nu, int need_value, int need_first, int need_second)
+{
+    vlk_student_normalization_t result = {0.0, 0.0, 0.0};
+    if (nu < 128.0) {
+        if (need_value)
+            result.value = lgamma(.5*(nu+1.))-lgamma(.5*nu)
+                -.5*log(M_PI*(nu-2.));
+        if (need_first)
+            result.first = .5*(digamma_approx(.5*(nu+1.))-digamma_approx(.5*nu))
+                -.5/(nu-2.);
+        if (need_second)
+            result.second = .25*(trigamma_approx(.5*(nu+1.))-trigamma_approx(.5*nu))
+                +.5/((nu-2.)*(nu-2.));
+        return result;
+    }
+    /* Bernoulli gamma-ratio expansion, DLMF 5.11.8; omitted term <4e-26 at 128. */
+    const double coefficients[] = {0.,-.25,0.,1./24.,0.,-1./20.,0.,
+        17./112.,0.,-31./36.,0.,691./88.};
+    const double t = 1./nu;
+    double value=0.,first=0.,second=0.;
+    for (int power=11; power>=0; --power) {
+        if (need_second) second = second*t+2.*first;
+        if (need_first || need_second) first = first*t+value;
+        value = value*t+coefficients[power];
+    }
+    const double denominator = 1.-2.*t;
+    if (need_value)
+        result.value = -.5*LOG_2PI-.5*log1p(-2.*t)+value;
+    if (need_first)
+        result.first = -t*t*(1./denominator+first);
+    if (need_second)
+        result.second = t*t*t*(2.*(1./denominator+first)
+            + t*(2./(denominator*denominator)+second));
+    return result;
+}
+
+VLK_FORCE_INLINE double vlk_student_log_tail(
+    double squared_adjusted, double nu_minus_two,
+    double tail_sum, double log_nu_minus_two)
+{
+    if (squared_adjusted < 1.0e-4 * nu_minus_two)
+        return log1p(squared_adjusted / nu_minus_two);
+    return log(tail_sum) - log_nu_minus_two;
+}

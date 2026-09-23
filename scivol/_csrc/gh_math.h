@@ -2,6 +2,7 @@
 #define SCIVOL_GH_MATH_H
 
 #include <stddef.h>
+#include "gh_bessel_expansion.h"
 
 #define GH_DERIV_DIM 5
 #define GH_FAMILY_INTERIOR 0
@@ -45,6 +46,9 @@ typedef struct {
     gh_jet_t vg_theta;
     gh_jet_t vg_scale;
     gh_jet_t vg_argument_scale;
+    gh_jet_t log_kernel_scale; /* log(alpha) for GH; log(argument_scale) for VG */
+    gh_jet_t vg_center;
+    gh_jet_t vg_curvature;
     int family_kind;
     int estimate_lambda;
 } gh_shape_cache_t;
@@ -58,6 +62,7 @@ typedef struct {
     double delta;
     double mu;
     double log_normalizer;
+    double log_alpha;
 } gh_shape_value_cache_t;
 
 typedef struct {
@@ -66,6 +71,10 @@ typedef struct {
     double theta;
     double scale;
     double argument_scale;
+    double log_normalizer;
+    double log_argument_scale;
+    double center;
+    double curvature;
 } vg_shape_value_cache_t;
 
 typedef struct {
@@ -81,19 +90,24 @@ typedef struct {
 
 typedef struct {
     double base[GH_BESSEL_PLAN_MAX_TERMS];
-    double cosh_t[GH_BESSEL_PLAN_MAX_TERMS];
+    const double *cosh_t;
     size_t count;
     int fixed_kind;
+    int expansion_ready;
+    int differentiate_order;
+    double expansion[GH_BESSEL_EXPANSION_TERMS + 1];
 } gh_bessel_value_plan_t;
 
 typedef struct {
     gh_bessel_value_plan_t value;
     double order_score[GH_BESSEL_PLAN_MAX_TERMS];
+    double expansion_first[GH_BESSEL_EXPANSION_TERMS + 1];
 } gh_bessel_first_plan_t;
 
 typedef struct {
     gh_bessel_first_plan_t first;
     double order_curvature[GH_BESSEL_PLAN_MAX_TERMS];
+    double expansion_second[GH_BESSEL_EXPANSION_TERMS + 1];
     int differentiate_order;
 } gh_bessel_second_plan_t;
 

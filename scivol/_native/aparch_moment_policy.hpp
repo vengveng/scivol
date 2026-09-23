@@ -9,14 +9,83 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstring>
+#include <memory>
 #include <type_traits>
 #include <utility>
 
 namespace vlk::experiment::generated {
 
+template<class Density>
+inline constexpr bool power_tail_coupled =
+    std::is_same_v<Density, StudentTDensity> || std::is_same_v<Density, SkewTDensity>;
+
+template<class Density>
+[[nodiscard]] bool valid_power_moment_domain(const double* shape,double gamma,double delta) noexcept
+{
+    if (!Density::valid_shape(shape) || !std::isfinite(gamma)
+        || !std::isfinite(delta) || !(gamma>-1.0 && gamma<1.0) || !(delta>0.0)) return false;
+    if constexpr (power_tail_coupled<Density>) return shape[0]>delta;
+    return true;
+}
+
 template<std::size_t ShapeParameters>
 using AsymmetricPowerMoment =
     density_moment::Jet<ShapeParameters + 2u>;
+
+template<class Density>
+inline constexpr bool quadrature_power_moment =
+    !std::is_same_v<Density, NormalDensity>
+    && !std::is_same_v<Density, StudentTDensity>
+    && !std::is_same_v<Density, GedDensity>;
+
+// One value slot per lag, shared by theta-domain checks and SQP constraints.
+// The owning solve supplies the arena; derivative requests never consume this state.
+template<class Density>
+struct PowerMomentValues {
+    static constexpr std::size_t Shapes=Density::shape_parameters;
+    struct Entry {
+        std::array<double, Shapes + 2u> point;
+        double value;
+        unsigned char state; // 0: empty, 1: invalid result, 2: valid result
+    };
+    Entry* entries = nullptr;
+    std::size_t slots = 0;
+
+    bool reset() const noexcept
+    {
+        if (slots && !entries) return false;
+        for (std::size_t slot = 0; slot < slots; ++slot)
+            std::construct_at(entries + slot, Entry{});
+        return true;
+    }
+    const Entry* find(std::size_t slot, const double* shape,
+                      double gamma, double delta) const noexcept
+    {
+        if (slot >= slots || !entries) return nullptr;
+        const auto& entry = entries[slot];
+        if (!entry.state
+            || std::memcmp(entry.point.data(), &gamma, sizeof(double))
+            || std::memcmp(entry.point.data() + 1u, &delta, sizeof(double)))
+            return nullptr;
+        if constexpr (Shapes > 0u)
+            if (std::memcmp(entry.point.data() + 2u, shape, Shapes * sizeof(double)))
+                return nullptr;
+        return &entry;
+    }
+    void store(std::size_t slot, const double* shape, double gamma, double delta,
+               const AsymmetricPowerMoment<Shapes>& result) const noexcept
+    {
+        if (slot >= slots || !entries) return;
+        auto& entry = entries[slot];
+        entry.point[0] = gamma;
+        entry.point[1] = delta;
+        if constexpr (Shapes > 0u)
+            std::copy_n(shape, Shapes, entry.point.data() + 2u);
+        entry.value = result.value;
+        entry.state = result.valid ? 2u : 1u;
+    }
+};
 
 namespace aparch_moment_detail {
 
@@ -39,7 +108,8 @@ template<int Order, class Density>
 symmetric_closed_form(
     const double* shape,
     double gamma,
-    double delta) noexcept
+    double delta,
+    double log_multiplier = 0.0) noexcept
 {
     constexpr std::size_t D = Density::shape_parameters;
     constexpr std::size_t W = D + 2u;
@@ -49,9 +119,9 @@ symmetric_closed_form(
     const Number one = Number::constant(1.0);
     const Number asymmetry = Number::constant(0.5) * (
         ad::pow(one - g, d) + ad::pow(one + g, d));
-    Number absolute;
+    Number log_absolute;
     if constexpr (std::is_same_v<Density, NormalDensity>) {
-        absolute = ad::exp(
+        log_absolute = (
             Number::constant(0.5 * std::log(2.0)) * d
             + ad::lgamma(Number::constant(0.5) * (d + one))
             - Number::constant(0.5 * std::log(M_PI)));
@@ -59,7 +129,7 @@ symmetric_closed_form(
         const Number nu = Number::variable(shape[0], 2u);
         if (!(nu.value > d.value))
             return {};
-        absolute = ad::exp(
+        log_absolute = (
             Number::constant(0.5) * d
                 * ad::log(nu - Number::constant(2.0))
             + ad::lgamma(Number::constant(0.5) * (d + one))
@@ -73,12 +143,13 @@ symmetric_closed_form(
         const Number log_scale = Number::constant(0.5) * (
             ad::lgamma(inverse_nu)
             - ad::lgamma(Number::constant(3.0) * inverse_nu));
-        absolute = ad::exp(
+        log_absolute = (
             d * log_scale
             + ad::lgamma((d + one) * inverse_nu)
             - ad::lgamma(inverse_nu));
     }
-    return from_differential(asymmetry * absolute);
+    return from_differential(asymmetry * ad::exp(
+        log_absolute + Number::constant(log_multiplier)));
 }
 
 template<int Order, std::size_t ShapeParameters>
@@ -158,7 +229,7 @@ integration_boundaries(
     return {boundaries, count};
 }
 
-template<int Order, class Density>
+template<int Order, class Density, bool RegularizeOrigin = false>
 [[nodiscard]] AsymmetricPowerMoment<Density::shape_parameters> integrate(
     const double* shape,
     double gamma,
@@ -178,10 +249,17 @@ template<int Order, class Density>
     const Local g = Local::variable(gamma, 0u);
     const Local d = Local::variable(delta, 1u);
     const Local one = Local::constant(1.0);
+    // u = v^4 regularizes the sublinear x^delta endpoint, including log
+    // factors in power derivatives. Each chosen map is parameter-independent.
     const auto integrand = [&](double unit) noexcept {
+        const double square = unit * unit;
+        const double coordinate = RegularizeOrigin ? square * square : unit;
         const double standardized = std::tan(
-            density_moment::half_pi * unit);
-        const double jacobian = density_moment::half_pi
+            density_moment::half_pi * coordinate);
+        const double coordinate_jacobian = RegularizeOrigin
+            ? 4.0 * square * unit * density_moment::half_pi
+            : density_moment::half_pi;
+        const double jacobian = coordinate_jacobian
             * (1.0 + standardized * standardized);
         const Local magnitude = Local::constant(standardized);
         const Local positive_power = ad::pow(magnitude * (one - g), d);
@@ -199,8 +277,11 @@ template<int Order, class Density>
         density_moment::add(result, negative);
         return result;
     };
-    const auto [boundaries, count] =
+    auto [boundaries, count] =
         integration_boundaries<Density>(prepared, shape);
+    if constexpr (RegularizeOrigin)
+        for (std::size_t i = 0; i < count; ++i)
+            boundaries[i] = std::sqrt(std::sqrt(boundaries[i]));
     auto result = density_moment::integrate<Order, W>(
         integrand, boundaries.data(), count);
     if (!(result.valid && result.value > 0.0 && std::isfinite(result.value)))
@@ -215,22 +296,33 @@ template<int Order, class Density>
 asymmetric_power_moment(
     const double* shape,
     double gamma,
-    double delta) noexcept
+    double delta,
+    PowerMomentValues<Density>* values = nullptr,
+    std::size_t slot = 0u) noexcept
 {
-    if (!Density::valid_shape(shape) || !std::isfinite(gamma)
-        || !std::isfinite(delta) || !(gamma > -1.0 && gamma < 1.0)
-        || !(delta > 0.0)) {
+    if (!valid_power_moment_domain<Density>(shape,gamma,delta)) {
         return {};
     }
-    if constexpr (
-        std::is_same_v<Density, NormalDensity>
-        || std::is_same_v<Density, StudentTDensity>
-        || std::is_same_v<Density, GedDensity>) {
+    if constexpr (!quadrature_power_moment<Density>) {
         return aparch_moment_detail::symmetric_closed_form<Order, Density>(
             shape, gamma, delta);
     }
-    return aparch_moment_detail::integrate<Order, Density>(
-        shape, gamma, delta);
+    if constexpr (Order == 0) {
+        if (values) {
+            if (const auto* entry = values->find(slot, shape, gamma, delta)) {
+                AsymmetricPowerMoment<Density::shape_parameters> result;
+                result.valid = entry->state == 2u;
+                result.value = entry->value;
+                return result;
+            }
+        }
+    }
+    const auto result = delta < 1.0
+        ? aparch_moment_detail::integrate<Order, Density, true>(shape, gamma, delta)
+        : aparch_moment_detail::integrate<Order, Density>(shape, gamma, delta);
+    if constexpr (Order == 0)
+        if (values) values->store(slot, shape, gamma, delta, result);
+    return result;
 }
 
 }  // namespace vlk::experiment::generated

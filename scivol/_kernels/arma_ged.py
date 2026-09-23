@@ -14,8 +14,6 @@ from ..result import EstimationResult
 from ..spec.composite import CompositeSpec
 from .routine import Routine
 from .transforms import (
-    compute_se_via_logspace,
-    jacobian_arma_ged,
     log_hessian_arma_ged,
     pack_arma_ged,
     unpack_arma_ged,
@@ -55,6 +53,9 @@ def _build(p: int, q: int) -> Routine:
 
         y = np.ascontiguousarray(y, dtype=np.float64)
         n = len(y)
+        n_eff = n - max(p, q, 1)
+        if n_eff <= 0:
+            raise ValueError("ARMA requires observations beyond its conditioning lags.")
         resid = np.zeros(n, dtype=np.float64)
         e0 = np.zeros(max(q, 1), dtype=np.float64)
 
@@ -224,23 +225,11 @@ def _build(p: int, q: int) -> Routine:
         _ = call_nll(theta_hat)
         sigma2_hat = float(theta_hat[n_mean])
 
-        hessian = None
-        cov_matrix = None
-        if log_mode:
-            hessian, cov_matrix = compute_se_via_logspace(
-                theta_hat=theta_hat,
-                nll_theta=lambda th: call_nll(th),
-                unpack_fn=lambda th: unpack_arma_ged(th, p, q),
-                jacobian_fn=lambda th: jacobian_arma_ged(th, p, q),
-                pack_fn=lambda z: pack_arma_ged(z, p, q),
-                hess_z_fn=lambda z: log_hessian_arma_ged(
-                    pack_arma_ged(z, p, q),
-                    call_grad(pack_arma_ged(z, p, q)) * 2.0,
-                    call_hess(pack_arma_ged(z, p, q)) * 2.0,
-                    p,
-                    q,
-                ),
-            )
+        from .._native_fit import _covariance_from_hessian
+
+        hessian = n_eff * call_hess(theta_hat)
+        cov_matrix = _covariance_from_hessian(hessian)
+        fit_info.update(likelihood_n_obs=n_eff)
 
         class ScaledResult:
             def __init__(self, opt_res: object, nll: float):
@@ -255,7 +244,7 @@ def _build(p: int, q: int) -> Routine:
 
         result = EstimationResult(
             spec=spec,
-            optimization_result=ScaledResult(res, nll_final),
+            optimization_result=ScaledResult(res, n_eff * nll_final),
             data=y,
             sigma2=np.full(n, sigma2_hat, dtype=np.float64),
             time_elapsed=t_elapsed,

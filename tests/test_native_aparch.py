@@ -118,6 +118,19 @@ def _evaluate(
     return status, valid, float(value[0]), gradient, hessian
 
 
+@pytest.mark.parametrize("small,gamma", [(1e-170, 0.15), (0.1, np.nextafter(1.0, 0.0))])
+def test_fixed_aparch_shock_derivatives_avoid_cancelled_or_squared_small_bases(small, gamma):
+    data = np.array([0.7, small, -0.4, 0.2, -0.5])
+    theta = np.array([0.2, 0.07, gamma, 0.6, 1.7])
+    expected = aparch_value_grad_hess(theta, data, 1, 1, dist="normal")
+    for request in range(1, 8):
+        status, valid, value, gradient, hessian = _evaluate(theta, data, 0, request)
+        assert (status, valid) == (0, request)
+        for bit, actual, reference in zip((1, 2, 4), (value, gradient, hessian), expected):
+            if request & bit:
+                np.testing.assert_allclose(actual, reference, rtol=2e-6, atol=2e-7)
+
+
 def _map(
     theta: np.ndarray,
     density: int,
@@ -162,11 +175,12 @@ def _map(
 
 
 @pytest.mark.parametrize(("name", "code", "shape"), DENSITIES)
+@pytest.mark.parametrize("delta", [0.7, 1.7])
 def test_aparch_stationarity_moment_matches_ad(
-    name: str, code: int, shape: list[float]
+    name: str, code: int, shape: list[float], delta: float,
 ) -> None:
     shape_array = np.asarray(shape, dtype=np.float64)
-    local = np.r_[0.15, 1.7, shape_array]
+    local = np.r_[0.15, delta, shape_array]
     value = np.empty(1)
     gradient = np.empty(local.size)
     hessian = np.empty((local.size, local.size))
@@ -185,6 +199,101 @@ def test_aparch_stationarity_moment_matches_ad(
     np.testing.assert_allclose(value[0], expected[0], rtol=2e-9, atol=2e-11)
     np.testing.assert_allclose(gradient, expected[1], rtol=2e-8, atol=2e-10)
     np.testing.assert_allclose(hessian, expected[2], rtol=2e-7, atol=1e-8)
+
+
+@pytest.mark.parametrize("gamma", [0.0, 0.25])
+@pytest.mark.parametrize("delta", [0.7, 1.7, 2.0, 3.5])
+def test_zero_skew_power_moment_oracle_has_finite_exact_reduction(gamma, delta):
+    local = np.array([gamma, delta, 8.0, 0.0])
+    reference = aparch_power_moment_value_grad_hess(local, "skewt")
+    student = aparch_power_moment_value_grad_hess(local[:3], "studentt")
+    for value in reference:
+        assert np.isfinite(value).all()
+    np.testing.assert_allclose(reference[0], student[0], rtol=2e-9, atol=2e-11)
+    np.testing.assert_allclose(reference[1][:3], student[1], rtol=2e-8, atol=2e-10)
+    np.testing.assert_allclose(reference[2][:3, :3], student[2], rtol=2e-7, atol=1e-8)
+
+
+@pytest.mark.parametrize("delta", [0.7, 1.7, 2.0, 3.5])
+def test_zero_skew_power_moment_native_matches_full_oracle(delta):
+    gamma = 0.25
+    local = np.array([gamma, delta, 8.0, 0.0])
+    reference = aparch_power_moment_value_grad_hess(local, "skewt")
+    value, gradient, hessian = np.empty(1), np.empty(4), np.empty((4, 4))
+    shape = np.ascontiguousarray(local[2:])
+    assert _native_core._aparch_asymmetric_power_moment(
+        shape.ctypes.data, 2, gamma, delta, 7, value.ctypes.data,
+        gradient.ctypes.data, hessian.ctypes.data,
+    ) == 0
+    for actual, expected in zip((value[0], gradient, hessian), reference):
+        np.testing.assert_allclose(actual, expected, rtol=2e-7, atol=1e-8)
+
+
+@pytest.mark.parametrize("power", [0.7, 1.7])
+def test_zero_skew_vg_moment_derivatives_match_independent_density_integrals(power):
+    mp = pytest.importorskip("mpmath")
+    local = np.array([0.25, power, 0.0, 3.0])
+    value, gradient, hessian = aparch_power_moment_value_grad_hess(local, "vg")
+    with mp.workdps(40):
+        gamma, delta = mp.mpf(0.25), mp.mpf(power)
+
+        def density(z, rho):
+            # At lambda=3, K_(5/2) gives an exact polynomial-times-exponential PDF.
+            skew = mp.sqrt(2) * rho / mp.sqrt(1 - rho * rho)
+            scale = mp.sqrt(3 * (1 + skew * skew))
+            y = scale * z + 3 * skew
+            a = mp.sqrt(2 + skew * skew)
+            return (
+                scale
+                / 2
+                * mp.exp(skew * y - a * abs(y))
+                * (y * y / a**3 + 3 * abs(y) / a**4 + 3 / a**5)
+            )
+
+        def moment_derivative(order):
+            def integrand(x):
+                if x == 0:
+                    return mp.mpf(0)
+                return x**delta * (
+                    (1 - gamma) ** delta
+                    * mp.diff(lambda rho: density(x, rho), 0, order)
+                    + (1 + gamma) ** delta
+                    * mp.diff(lambda rho: density(-x, rho), 0, order)
+                )
+
+            return float(mp.quad(integrand, [0, 1, 4, 12, mp.inf]))
+
+        reference = [moment_derivative(order) for order in (0, 1, 2)]
+    np.testing.assert_allclose(
+        [value, gradient[2], hessian[2, 2]],
+        reference,
+        rtol=2e-9,
+        atol=2e-11,
+    )
+
+
+@pytest.mark.parametrize("rho", [-0.12, 0.0, 0.12])
+def test_vg_power_moment_split_oracle_converges(rho):
+    from scivol._devtools.ad_oracle import _jax_modules, _jax_vg_power_moment
+
+    jax,jnp,jsp = _jax_modules()
+    local = np.array([0.1,1.4,rho,2.0])
+    references=[]
+    for count in (64,128):
+        def objective(theta):
+            return _jax_vg_power_moment(jnp,jsp,*theta,nodes_count=count)
+        point=jnp.asarray(local)
+        references.append((float(objective(point)),np.asarray(jax.grad(objective)(point)),
+            np.asarray(jax.hessian(objective)(point))))
+    for coarse,fine in zip(*references):
+        np.testing.assert_allclose(coarse,fine,rtol=2e-6,atol=2e-8)
+    value,gradient,hessian=np.empty(1),np.empty(4),np.empty((4,4))
+    shape=np.ascontiguousarray(local[2:])
+    assert _native_core._aparch_asymmetric_power_moment(
+        shape.ctypes.data,7,local[0],local[1],7,value.ctypes.data,
+        gradient.ctypes.data,hessian.ctypes.data)==0
+    for actual,expected in zip((value[0],gradient,hessian),references[-1]):
+        np.testing.assert_allclose(actual,expected,rtol=2e-6,atol=2e-8)
 
 
 @pytest.mark.parametrize(("name", "code", "shape"), DENSITIES)
@@ -416,6 +525,36 @@ def test_arbitrary_joint_orders_match_ad() -> None:
     np.testing.assert_allclose(actual[3], expected[1], rtol=2e-8, atol=2e-9)
     np.testing.assert_allclose(actual[4], expected[2], rtol=2e-7, atol=2e-8)
     assert _native_core._arma_aparch_dispatch_kind(*orders, 0, 0) == 0
+
+
+@pytest.mark.parametrize("p_ar,q_ma", [(0, 0), (0, 2), (3, 0)])
+def test_joint_aparch_empty_reflection_blocks_have_exact_transformed_hessian(
+    p_ar, q_ma
+):
+    data = np.random.default_rng(2087).normal(size=19)
+    orders = (p_ar, q_ma, 2, 1)
+    theta = np.r_[
+        0.03,
+        np.full(p_ar, 0.04),
+        np.full(q_ma, -0.03),
+        0.08,
+        0.04,
+        0.03,
+        0.1,
+        -0.1,
+        0.6,
+        1.7,
+    ]
+    coordinates = _map(theta, 0, orders=orders)
+    theta_jet = _evaluate(theta, data, 0, orders=orders)
+    assert theta_jet[:2] == (0, 7)
+    expected = native_aparch_coordinate_chain_rule_value_grad_hess(
+        coordinates, theta, *theta_jet[2:], 2, 1, "normal", p_ar=p_ar, q_ma=q_ma
+    )
+    for mask in (4, 5, 6, 7):
+        actual = _evaluate(coordinates, data, 0, mask, transformed=True, orders=orders)
+        assert actual[:2] == (0, mask)
+        np.testing.assert_allclose(actual[4], expected[2], rtol=2e-7, atol=2e-8)
 
 
 def test_aparch_domain_and_zero_residual_derivative_semantics() -> None:

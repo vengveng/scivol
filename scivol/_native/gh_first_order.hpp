@@ -30,6 +30,9 @@ struct Cache {
     Number<Width> vg_theta {};
     Number<Width> vg_scale {};
     Number<Width> vg_argument_scale {};
+    Number<Width> log_kernel_scale {};
+    Number<Width> vg_center {};
+    Number<Width> vg_curvature {};
     gh_bessel_first_plan_t observation_bessel {};
     bool variance_gamma = false;
 };
@@ -138,6 +141,7 @@ template<std::size_t Width>
         return false;
 
     cache.alpha = ad::sqrt(alpha_square);
+    cache.log_kernel_scale = ad::log(cache.alpha);
     cache.beta = cache.alpha * cache.rho;
     cache.delta = cache.zeta / (cache.alpha * ad::sqrt(rho2));
     cache.mu = -(cache.beta * cache.delta * cache.delta * kappa);
@@ -179,6 +183,14 @@ template<std::size_t Width>
     const N theta2 = cache.vg_theta * cache.vg_theta;
     cache.vg_scale = ad::sqrt(cache.zeta * (one + theta2));
     cache.vg_argument_scale = ad::sqrt(theta2 + N::constant(2.0));
+    const N order = cache.zeta - N::constant(0.5);
+    cache.log_kernel_scale = ad::log(cache.vg_argument_scale);
+    cache.log_normalizer = ad::log(cache.vg_scale)
+        + N::constant(GH_LOG_2 - 0.5 * LOG_2PI) - ad::lgamma(cache.zeta);
+    cache.vg_center = N::constant(GH_LOG_2) * (order - N::constant(1.0))
+        + ad::lgamma(order) - N::constant(2.0) * order * cache.log_kernel_scale;
+    cache.vg_curvature = cache.vg_argument_scale * cache.vg_argument_scale
+        / (N::constant(2.0) * (N::constant(1.0) - order));
     cache.variance_gamma = true;
     return ad::finite(cache.vg_scale)
         && ad::finite(cache.vg_argument_scale)
@@ -195,30 +207,45 @@ template<std::size_t Width>
     const N order = cache.zeta - N::constant(0.5);
     const N y = cache.vg_scale * standardized
         + cache.vg_theta * cache.zeta;
-    N logpdf = ad::log(cache.vg_scale)
-        + N::constant(GH_LOG_2 - 0.5 * LOG_2PI)
-        - ad::lgamma(cache.zeta) + cache.vg_theta * y;
+    N logpdf = cache.log_normalizer + cache.vg_theta * y;
 
     if (cache.vg_argument_scale.value * std::abs(y.value) < 1e-4) {
-        const N center = N::constant(GH_LOG_2)
-                * (order - N::constant(1.0))
-            + ad::lgamma(order)
-            - N::constant(2.0) * order
-                * ad::log(cache.vg_argument_scale);
-        const N curvature = cache.vg_argument_scale
-                * cache.vg_argument_scale
-            / (N::constant(2.0) * (N::constant(1.0) - order));
-        return logpdf + center
-            + N::constant(0.5) * curvature * y * y;
+        return logpdf + cache.vg_center
+            + N::constant(0.5) * cache.vg_curvature * y * y;
     }
 
     const N absolute_y = ad::abs(y);
     const N argument = cache.vg_argument_scale * absolute_y;
     return logpdf
         + order * (
-            ad::log(absolute_y) - ad::log(cache.vg_argument_scale))
+            ad::log(absolute_y) - cache.log_kernel_scale)
         + log_bessel_k_planned(
             order, argument, cache.observation_bessel);
+}
+
+template<std::size_t Width>
+[[nodiscard]] inline Number<Width> standardized_nll(
+    const Cache<Width>& cache,
+    const Number<Width>& standardized,
+    const Number<Width>& log_scale) noexcept
+{
+    using N = Number<Width>;
+    if (cache.variance_gamma) {
+        return log_scale - variance_gamma_logpdf(standardized, cache);
+    }
+
+    const N centered = standardized - cache.mu;
+    const N radius = ad::sqrt(
+        cache.delta * cache.delta + centered * centered);
+    const N argument = cache.alpha * radius;
+    const N log_kernel = cache.beta * centered
+        + log_bessel_k_planned(
+            cache.lambda - N::constant(0.5),
+            argument,
+            cache.observation_bessel)
+        - (N::constant(0.5) - cache.lambda)
+            * (ad::log(radius) - cache.log_kernel_scale);
+    return log_scale - cache.log_normalizer - log_kernel;
 }
 
 template<bool IncludeResidualDerivatives, std::size_t Width>
@@ -234,25 +261,26 @@ template<bool IncludeResidualDerivatives, std::size_t Width>
         ? N::variable(residual, 0u)
         : N::constant(residual);
     const N h = N::variable(variance, variance_index);
-    const N standardized = e / ad::sqrt(h);
-    if (cache.variance_gamma) {
-        return N::constant(0.5) * ad::log(h)
-            - variance_gamma_logpdf(standardized, cache);
-    }
+    return standardized_nll(
+        cache, e / ad::sqrt(h), N::constant(0.5) * ad::log(h));
+}
 
-    const N centered = standardized - cache.mu;
-    const N radius = ad::sqrt(
-        cache.delta * cache.delta + centered * centered);
-    const N argument = cache.alpha * radius;
-    const N log_kernel = cache.beta * centered
-        + log_bessel_k_planned(
-            cache.lambda - N::constant(0.5),
-            argument,
-            cache.observation_bessel)
-        - (N::constant(0.5) - cache.lambda)
-            * (ad::log(radius) - ad::log(cache.alpha));
-    return N::constant(0.5) * ad::log(h)
-        - cache.log_normalizer - log_kernel;
+// Candidate intention; fitting dispatch stays variance-based pending solve gates.
+template<bool IncludeResidualDerivatives, std::size_t Width>
+[[nodiscard]] inline Number<Width> observation_log_variance_nll(
+    const Cache<Width>& cache,
+    double residual,
+    double log_variance) noexcept
+{
+    using N = Number<Width>;
+    constexpr std::size_t variance_index =
+        IncludeResidualDerivatives ? 1u : 0u;
+    const N e = IncludeResidualDerivatives
+        ? N::variable(residual, 0u)
+        : N::constant(residual);
+    const N log_scale = N::constant(0.5)
+        * N::variable(log_variance, variance_index);
+    return standardized_nll(cache, e * ad::exp(-log_scale), log_scale);
 }
 
 }  // namespace vlk::experiment::gh_first

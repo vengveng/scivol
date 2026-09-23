@@ -82,7 +82,7 @@ def _native_reflection_coefficients(jnp, coordinates, sign: float):
 
 def _native_shape_coordinates(jax, jnp, coordinates, density: str):
     def softplus(value):
-        return _softplus_production(jnp, value)
+        return jax.nn.softplus(value)
 
     if density == "normal":
         return jnp.zeros((0,), dtype=coordinates.dtype)
@@ -129,6 +129,7 @@ def native_coordinate_chain_rule_value_grad_hess(
     p_ar: int | None = None,
     q_ma: int = 0,
     leverage: bool = False,
+    linear_mean_parameters: int | None = None,
 ) -> Tuple[float, NDArray[np.float64], NDArray[np.float64]]:
     """Independent chain-rule oracle for the complete native coordinate chart."""
     jax, jnp, jsp = _jax_modules()
@@ -143,7 +144,10 @@ def native_coordinate_chain_rule_value_grad_hess(
 
     def pack(coordinate_point):
         blocks = []
-        if p_ar is None:
+        if linear_mean_parameters is not None:
+            blocks.append(coordinate_point[:linear_mean_parameters])
+            model_start = linear_mean_parameters
+        elif p_ar is None:
             model_start = 0
         else:
             blocks.append(coordinate_point[:1])
@@ -159,7 +163,7 @@ def native_coordinate_chain_rule_value_grad_hess(
 
         omega = (
             np.finfo(np.float64).tiny
-            + _softplus_production(jnp, coordinate_point[model_start])
+            + jax.nn.softplus(coordinate_point[model_start])
         )
         coefficient_start = model_start + 1
         coefficient_end = coefficient_start + contribution_count
@@ -295,6 +299,8 @@ def native_arma_egarch_coordinate_chain_rule_value_grad_hess(
 
 
 def _jax_aparch_power_moment(jnp, jsp, gamma, delta, shape, density: str):
+    if density == "vg":
+        return _jax_vg_power_moment(jnp, jsp, gamma, delta, shape[0], shape[1])
     asymmetry = 0.5 * (
         (1.0 - gamma) ** delta + (1.0 + gamma) ** delta
     )
@@ -337,9 +343,13 @@ def _jax_aparch_power_moment(jnp, jsp, gamma, delta, shape, density: str):
         _, _, nodes, weights = _gh_quadrature_rules()
     unit = jnp.asarray(nodes, dtype=shape.dtype)
     weight = jnp.asarray(weights, dtype=shape.dtype)
-    angle = 0.5 * jnp.pi * unit
+    map_power = jnp.where(delta < 1.0, 4.0, 1.0) if density != "skewt" else 1.0
+    angle = 0.5 * jnp.pi * unit**map_power
     positive = jnp.tan(angle)
-    jacobian = 0.5 * jnp.pi / jnp.cos(angle) ** 2
+    jacobian = (
+        0.5 * jnp.pi * map_power * unit**(map_power - 1.0)
+        / jnp.cos(angle) ** 2
+    )
     if density == "skewt":
         nu, skew = shape
         c_log = (
@@ -364,14 +374,17 @@ def _jax_aparch_power_moment(jnp, jsp, gamma, delta, shape, density: str):
         local_nodes = jnp.asarray(full_nodes, dtype=shape.dtype)
         local_weights = jnp.asarray(full_weights, dtype=shape.dtype)
 
-        def integrate_interval(lower, upper):
+        def integrate_interval(lower, upper, map_power=1):
             half_width = 0.5 * (upper - lower)
             local_unit = (
                 half_width * local_nodes + 0.5 * (upper + lower)
             )
-            local_angle = 0.5 * jnp.pi * local_unit
+            local_angle = 0.5 * jnp.pi * local_unit**map_power
             local_positive = jnp.tan(local_angle)
-            local_jacobian = 0.5 * jnp.pi / jnp.cos(local_angle) ** 2
+            local_jacobian = (
+                0.5 * jnp.pi * map_power * local_unit**(map_power - 1)
+                / jnp.cos(local_angle) ** 2
+            )
             local_positive_term = (
                 local_positive * (1.0 - gamma)
             ) ** delta
@@ -386,12 +399,14 @@ def _jax_aparch_power_moment(jnp, jsp, gamma, delta, shape, density: str):
             )
 
         boundary = (2.0 / jnp.pi) * jnp.arctan(jnp.abs(a / b))
-        return integrate_interval(0.0, boundary) + integrate_interval(
-            boundary, 1.0
-        )
-    elif density == "vg":
-        logpdf = lambda values: _jax_vg_logpdf(  # noqa: E731
-            jnp, jsp, values, shape[0], shape[1]
+        # At zero skew there is no interior density branch boundary. Differentiating
+        # the collapsed interval creates 0 * d2(0**delta), not a model singularity.
+        # A fixed fourth-power change of variable resolves the small-delta origin.
+        jax, _, _ = _jax_modules()
+        return jax.lax.cond(
+            boundary == 0.0,
+            lambda: integrate_interval(0.0, 1.0, 4),
+            lambda: integrate_interval(0.0, boundary) + integrate_interval(boundary, 1.0),
         )
     else:
         shape_lambda = (
@@ -464,7 +479,7 @@ def native_aparch_coordinate_chain_rule_value_grad_hess(
         )
         omega = (
             np.finfo(np.float64).tiny
-            + _softplus_production(jnp, coordinate_point[omega_index])
+            + jax.nn.softplus(coordinate_point[omega_index])
         )
         gamma = jnp.tanh(
             coordinate_point[gamma_start:gamma_start + p_vol]
@@ -473,7 +488,7 @@ def native_aparch_coordinate_chain_rule_value_grad_hess(
             shape[0] * jax.nn.sigmoid(coordinate_point[delta_index])
             if density in {"studentt", "skewt"}
             else np.finfo(np.float64).tiny
-                + _softplus_production(jnp, coordinate_point[delta_index])
+                + jax.nn.softplus(coordinate_point[delta_index])
         )
         logits = jnp.concatenate([
             coordinate_point[alpha_start:alpha_start + p_vol],
@@ -679,15 +694,145 @@ def _jax_vg_logpdf(jnp, jsp, values, rho, shape_lambda):
 
 
 def _jax_vg_abs_moment(jnp, jsp, rho, shape_lambda):
-    _, _, nodes, weights = _gh_quadrature_rules()
-    u = jnp.asarray(nodes, dtype=jnp.float64)
-    w = jnp.asarray(weights, dtype=jnp.float64)
-    angle = 0.5 * jnp.pi * u
-    x = jnp.tan(angle)
-    jacobian = 0.5 * jnp.pi / jnp.cos(angle) ** 2
-    positive = jnp.exp(_jax_vg_logpdf(jnp, jsp, x, rho, shape_lambda))
-    negative = jnp.exp(_jax_vg_logpdf(jnp, jsp, -x, rho, shape_lambda))
-    return jnp.sum(w * x * (positive + negative) * jacobian)
+    return _jax_vg_mixture_absolute_moment(jnp, jsp, jnp.stack([rho, shape_lambda]))
+
+
+def _jax_vg_power_moment(jnp, jsp, gamma, delta, rho, shape_lambda, nodes_count=128):
+    """Independent split quadrature, differentiating its moving density center."""
+    jax, _, _ = _jax_modules()
+    nodes, weights = np.polynomial.legendre.leggauss(nodes_count)
+    skew = jnp.sqrt(2.0) * rho / jnp.sqrt(1.0 - rho * rho)
+    center = jnp.abs(skew * shape_lambda / jnp.sqrt(shape_lambda * (1.0 + skew * skew)))
+    split = 2.0 / jnp.pi * jnp.arctan(center)
+    map_power = jnp.where(delta < 1.0, 4.0, 1.0)
+
+    def interval(lower, upper):
+        half = (upper - lower) / 2.0
+        unit = half * jnp.asarray(nodes) + (upper + lower) / 2.0
+        angle = jnp.pi / 2.0 * unit**map_power
+        magnitude = jnp.tan(angle)
+        jacobian = (
+            jnp.pi / 2.0 * map_power * unit ** (map_power - 1.0) / jnp.cos(angle) ** 2
+        )
+        positive = jnp.exp(_jax_vg_logpdf(jnp, jsp, magnitude, rho, shape_lambda))
+        negative = jnp.exp(_jax_vg_logpdf(jnp, jsp, -magnitude, rho, shape_lambda))
+        return half * jnp.sum(
+            jnp.asarray(weights)
+            * jacobian
+            * (
+                (magnitude * (1.0 - gamma)) ** delta * positive
+                + (magnitude * (1.0 + gamma)) ** delta * negative
+            )
+        )
+
+    def split_intervals():
+        boundary = split ** (1.0 / map_power)
+        return interval(0.0, boundary) + interval(boundary, 1.0)
+
+    def zero_skew_jet():
+        # Normal-Gamma mixture moments supply the exact two-jet at rho=0.
+        # The rho terms retain skew and cross derivatives of the full family.
+        a = shape_lambda + delta / 2.0
+        log_scale = (
+            delta / 2.0 * jnp.log(2.0 / shape_lambda)
+            - jsp.special.gammaln(shape_lambda)
+            - 0.5 * jnp.log(jnp.pi)
+        )
+        positive, negative = (1.0 - gamma) ** delta, (1.0 + gamma) ** delta
+        value = (
+            0.5
+            * (positive + negative)
+            * jnp.exp(
+                log_scale
+                + jsp.special.gammaln((delta + 1.0) / 2.0)
+                + jsp.special.gammaln(a)
+            )
+        )
+        first = (
+            (positive - negative)
+            * (delta - 1.0)
+            / 2.0
+            * jnp.exp(
+                log_scale
+                + jsp.special.gammaln((delta + 2.0) / 2.0)
+                + jsp.special.gammaln(a - 0.5)
+            )
+        )
+        second = 2.0 * delta * value * (delta / 2.0 - 1.0) ** 2 / (a - 1.0)
+        return value + rho * first + 0.5 * rho * rho * second
+
+    return jax.lax.cond(
+        (rho == 0.0) & (shape_lambda + delta / 2.0 > 1.0),
+        zero_skew_jet,
+        lambda: jax.lax.cond(split > 0.0, split_intervals, lambda: interval(0.0, 1.0)),
+    )
+
+
+@lru_cache(maxsize=32)
+def _vg_mixture_log_quadrature(reference_lambda: float, nodes_per_interval: int):
+    nodes, weights = np.polynomial.legendre.leggauss(nodes_per_interval)
+    center = np.log(reference_lambda)
+    edges = np.array(
+        [-40.0, center - 2.0, center - 0.25, center, center + 0.25, center + 2.0, 8.0]
+    )
+    half_width = np.diff(edges) / 2.0
+    midpoint = (edges[:-1] + edges[1:]) / 2.0
+    return (
+        (midpoint[:, None] + half_width[:, None] * nodes).ravel(),
+        (half_width[:, None] * weights).ravel(),
+    )
+
+
+def _jax_vg_mixture_absolute_moment(
+    jnp, jsp, shape, reference_lambda: float = 8.0, nodes_per_interval: int = 256
+):
+    """Independent fixed log-G quadrature of the conditional Normal absolute moment.
+
+    The partition is fixed under AD. Native code uses adaptive sqrt(G) quadrature;
+    tests refine this separate grid and compare the Bessel-density integral where
+    its shape derivatives are resolved.
+    """
+    log_nodes, weights = _vg_mixture_log_quadrature(reference_lambda, nodes_per_interval)
+    log_g = jnp.asarray(log_nodes)
+    mixing = jnp.exp(log_g)
+    rho, shape_lambda = shape
+    theta = jnp.sqrt(2.0) * rho / jnp.sqrt(1.0 - rho * rho)
+    mean = theta * (mixing - shape_lambda)
+    root = jnp.sqrt(mixing)
+    standardized = mean / root
+    partial = (
+        jnp.sqrt(2.0 / jnp.pi) * root * jnp.exp(-0.5 * standardized**2)
+        + mean * jsp.special.erf(standardized / jnp.sqrt(2.0))
+    ) / jnp.sqrt(shape_lambda * (1.0 + theta * theta))
+    log_mass = shape_lambda * log_g - mixing - jsp.special.gammaln(shape_lambda)
+    return jnp.sum(jnp.asarray(weights) * jnp.exp(log_mass) * partial)
+
+
+def _jax_vg_mixture_negative_second_moment(
+    jnp, jsp, shape, reference_lambda: float, nodes_per_interval: int = 64
+):
+    """Independent fixed log-G quadrature; partition stays fixed under AD.
+
+    The Gamma mixing tails outside exp([-40, 8]) are negligible on the declared
+    VG support. Tests double the quadrature order, including near-boundary skew.
+    Native code instead uses adaptive integration in sqrt(G) and analytic jets.
+    """
+    log_nodes, weights = _vg_mixture_log_quadrature(
+        reference_lambda, nodes_per_interval
+    )
+    log_g = jnp.asarray(log_nodes)
+    mixing = jnp.exp(log_g)
+    rho, shape_lambda = shape
+    theta = jnp.sqrt(2.0) * rho / jnp.sqrt(1.0 - rho * rho)
+    mean = theta * (mixing - shape_lambda)
+    root = jnp.sqrt(mixing)
+    threshold = mean / root
+    partial = (
+        (mean * mean + mixing) * jsp.special.ndtr(-threshold)
+        - mean * root * jnp.exp(-0.5 * threshold * threshold) / jnp.sqrt(2.0 * jnp.pi)
+    ) / (shape_lambda * (1.0 + theta * theta))
+    log_mass = shape_lambda * log_g - mixing - jsp.special.gammaln(shape_lambda)
+    return jnp.sum(jnp.asarray(weights) * jnp.exp(log_mass) * partial)
 
 
 def _jax_negative_second_moment(jnp, jsp, shape, density: str):
@@ -698,11 +843,6 @@ def _jax_negative_second_moment(jnp, jsp, shape, density: str):
     nodes, weights = _egarch_skewt_quadrature_rule()
     u = 0.5 * (jnp.asarray(nodes, dtype=shape.dtype) + 1.0)
     w = 0.5 * jnp.asarray(weights, dtype=shape.dtype)
-    angle = 0.5 * jnp.pi * u
-    x = jnp.tan(angle)
-    jacobian = 0.5 * jnp.pi / jnp.cos(angle) ** 2
-    z = -x
-
     if density == "skewt":
         nu, lam = shape
         c_log = (
@@ -712,6 +852,27 @@ def _jax_negative_second_moment(jnp, jsp, shape, density: str):
         )
         a = 4.0 * lam * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
         b = jnp.sqrt(1.0 + 3.0 * lam * lam - a * a)
+        # Integrate each smooth branch; AD also differentiates the moving split.
+        distance = a / b
+        split = jnp.where(distance > 0.0, 2.0 / jnp.pi * jnp.arctan(distance), 0.5)
+        w = jnp.concatenate([w * split, w * (1.0 - split)])
+        u = jnp.concatenate([u * split, split + u * (1.0 - split)])
+    elif density == "vg":
+        rho, shape_lambda = shape
+        theta = jnp.sqrt(2.0) * rho / jnp.sqrt(1.0 - rho * rho)
+        scale = jnp.sqrt(shape_lambda * (1.0 + theta * theta))
+        distance = theta * shape_lambda / scale
+        # An absent branch needs an ordinary interval, not zero-weight singular nodes.
+        split = jnp.where(distance > 0.0, 2.0 / jnp.pi * jnp.arctan(distance), 0.5)
+        w = jnp.concatenate([w * split, w * (1.0 - split)])
+        u = jnp.concatenate([u * split, split + u * (1.0 - split)])
+
+    angle = 0.5 * jnp.pi * u
+    x = jnp.tan(angle)
+    jacobian = 0.5 * jnp.pi / jnp.cos(angle) ** 2
+    z = -x
+
+    if density == "skewt":
         shifted = b * z + a
         scale = jnp.where(shifted < 0.0, 1.0 - lam, 1.0 + lam)
         adjusted = shifted / scale
@@ -1051,7 +1212,7 @@ def aparch_value_grad_hess(
                 if t <= lag:
                     continue
                 residual_lag = residuals_j[t - 1 - lag]
-                shock = jnp.abs(residual_lag) - gamma[lag] * residual_lag
+                shock = (jnp.where(residual_lag < 0.0, -1.0, 1.0) - gamma[lag]) * residual_lag
                 value += alpha[lag] * shock ** delta
             for lag in range(q):
                 if t <= lag:
@@ -1201,7 +1362,7 @@ def arma_aparch_value_grad_hess(
                 if time - 1 - lag < first:
                     continue
                 lagged = residuals[time - 1 - lag]
-                shock = jnp.abs(lagged) - gamma[lag] * lagged
+                shock = (jnp.where(lagged < 0.0, -1.0, 1.0) - gamma[lag]) * lagged
                 current += alpha[lag] * shock ** delta
             for lag in range(q_aparch):
                 current += beta[lag] * power[time - 1 - lag]
@@ -1317,7 +1478,7 @@ def linear_mean_garch_value_grad_hess(
             dist_offset = n_mean + 1 + p + q
 
         if dist == "normal":
-            return 0.5 * jnp.sum(jnp.log(sigma2) + resid2 / sigma2)
+            return 0.5 * (n * jnp.log(2.0 * jnp.pi) + jnp.sum(jnp.log(sigma2) + resid2 / sigma2))
 
         if dist == "studentt":
             nu = theta_j[dist_offset]
@@ -1567,7 +1728,7 @@ def linear_mean_gjr_garch_value_grad_hess(
 
         dist_offset = n_mean + 1 + 2 * p + q
         if dist == "normal":
-            return 0.5 * jnp.sum(jnp.log(sigma2) + resid2 / sigma2)
+            return 0.5 * (n * jnp.log(2.0 * jnp.pi) + jnp.sum(jnp.log(sigma2) + resid2 / sigma2))
 
         if dist == "studentt":
             nu = theta_j[dist_offset]
@@ -1735,7 +1896,7 @@ def linear_mean_egarch_value_grad_hess(
         sigma2 = jnp.concatenate([sigma0[None], sigma_tail])
 
         if dist == "normal":
-            return 0.5 * jnp.sum(jnp.log(sigma2) + resid2 / sigma2)
+            return 0.5 * (n * jnp.log(2.0 * jnp.pi) + jnp.sum(jnp.log(sigma2) + resid2 / sigma2))
 
         if dist == "studentt":
             nu = theta_j[dist_offset]
@@ -1879,6 +2040,7 @@ def egarch_value_grad_hess(
     jax, jnp, jsp = _jax_modules()
     resid_j = jnp.asarray(resid, dtype=jnp.float64)
     resid2_j = resid_j * resid_j
+    nonzero = np.flatnonzero(resid)
     n = int(resid.shape[0])
     quad_nodes_np, quad_weights_np = _egarch_skewt_quadrature_rule()
     quad_nodes = jnp.asarray(quad_nodes_np, dtype=jnp.float64)
@@ -1968,7 +2130,8 @@ def egarch_value_grad_hess(
             nu = theta_j[k_vol]
             log_scale = 0.5 * (jsp.special.gammaln(1.0 / nu) - jsp.special.gammaln(3.0 / nu))
             log_const = jnp.log(nu) - jnp.log(2.0) - log_scale - jsp.special.gammaln(1.0 / nu)
-            z_std = jnp.abs(resid_j) / (jnp.sqrt(sigma2) * jnp.exp(log_scale))
+            # Fixed zero residuals contribute exactly zero, including shape derivatives.
+            z_std = jnp.abs(resid_j[nonzero]) / (jnp.sqrt(sigma2[nonzero]) * jnp.exp(log_scale))
             return -n * log_const + 0.5 * jnp.sum(jnp.log(sigma2)) + jnp.sum(jnp.power(z_std, nu))
 
         nu = theta_j[k_vol]
@@ -2007,6 +2170,7 @@ def egarch_logspace_value_grad_hess(
     z_j = jnp.asarray(z, dtype=jnp.float64)
     resid_j = jnp.asarray(resid, dtype=jnp.float64)
     resid2_j = resid_j * resid_j
+    nonzero = np.flatnonzero(resid)
     n = int(resid.shape[0])
     k_vol = 1 + 2 * p + q
     quad_nodes_np, quad_weights_np = _egarch_skewt_quadrature_rule()
@@ -2105,7 +2269,7 @@ def egarch_logspace_value_grad_hess(
             assert nu is not None
             log_scale = 0.5 * (jsp.special.gammaln(1.0 / nu) - jsp.special.gammaln(3.0 / nu))
             log_const = jnp.log(nu) - jnp.log(2.0) - log_scale - jsp.special.gammaln(1.0 / nu)
-            z_std = jnp.abs(resid_j) / (jnp.sqrt(sigma2) * jnp.exp(log_scale))
+            z_std = jnp.abs(resid_j[nonzero]) / (jnp.sqrt(sigma2[nonzero]) * jnp.exp(log_scale))
             return -n * log_const + 0.5 * jnp.sum(jnp.log(sigma2)) + jnp.sum(jnp.power(z_std, nu))
 
         assert nu is not None and lam is not None

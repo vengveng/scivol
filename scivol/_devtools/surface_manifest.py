@@ -6,6 +6,7 @@ from typing import Callable, Iterable, Optional
 
 C = "C"
 C_FUSED = "C-fused"
+CPP_JET = "C++ jet"
 PY_C = "Py+C"
 AD_FULL = "AD full"
 AD_PARTIAL = "AD partial"
@@ -30,10 +31,7 @@ GH_DENSITIES = (
     "NormalInverseGaussian",
     "VarianceGamma",
 )
-ABSENT_SURFACE_IDS = (
-    "mean:arma+vol:none+density:studentt",
-    "mean:arma+vol:none+density:skewt",
-)
+ABSENT_SURFACE_IDS: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -363,19 +361,21 @@ def _surfaces() -> tuple[SurfaceContract, ...]:
         default_log_mode=True,
     )
 
-    for density in ("Normal", "GED", *GH_DENSITIES):
-        log_path = C_FUSED if density in FUSED_DENSITIES else PY_C
+    for density in DENSITIES:
         surfaces.append(
             _make_surface(
                 mean="ARMA",
                 volatility=None,
                 density=density,
                 kind="standalone mean",
-                log_nll=log_path,
-                log_grad=log_path,
+                constrained=CPP_JET,
+                log_nll=CPP_JET,
+                log_grad=CPP_JET,
+                log_hess=CPP_JET,
                 theta_validation=AD_FULL,
                 log_validation=AD_FULL,
-                default_log_mode=False,
+                default_engine=NATIVE_ENGINE,
+                default_log_mode=density in (*FUSED_DENSITIES,"VarianceGamma"),
             )
         )
 
@@ -465,35 +465,34 @@ def _surfaces() -> tuple[SurfaceContract, ...]:
                     volatility=None,
                     density=density,
                     kind="standalone mean",
+                    constrained=CPP_JET,
+                    log_nll=CPP_JET,
+                    log_grad=CPP_JET,
+                    log_hess=CPP_JET,
                     theta_validation=AD_FULL,
                     log_validation=AD_FULL,
-                    default_log_mode=False,
+                    default_engine=NATIVE_ENGINE,
+                    default_log_mode=density in (*FUSED_DENSITIES,"VarianceGamma"),
                 )
             )
-        _extend(
-            surfaces,
-            mean=mean,
-            volatility="GARCH",
-            kind="linked joint",
-            densities=DENSITIES,
-            log_nll=PY_C,
-            log_grad=PY_C,
-            theta_validation=lambda _density: AD_FULL,
-            log_validation=lambda _density: AD_FULL,
-            default_log_mode=False,
-        )
-        _extend(
-            surfaces,
-            mean=mean,
-            volatility="GJR-GARCH",
-            kind="linked joint",
-            densities=DENSITIES,
-            log_nll=PY_C,
-            log_grad=PY_C,
-            theta_validation=_meanx_gjr_theta_validation,
-            log_validation=lambda _density: AD_FULL,
-            default_log_mode=False,
-        )
+        for volatility in ("GARCH", "GJR-GARCH"):
+            for density in DENSITIES:
+                surfaces.append(
+                    _make_surface(
+                        mean=mean,
+                        volatility=volatility,
+                        density=density,
+                        kind="linked joint",
+                        constrained=CPP_JET,
+                        log_nll=CPP_JET,
+                        log_grad=CPP_JET,
+                        log_hess=CPP_JET,
+                        theta_validation=AD_FULL,
+                        log_validation=AD_FULL,
+                        default_engine=NATIVE_ENGINE,
+                        default_log_mode=False,
+                    )
+                )
         _extend(
             surfaces,
             mean=mean,
@@ -517,6 +516,33 @@ SURFACE_BY_ID = {surface.surface_id: surface for surface in SURFACES}
 def _native_jets() -> tuple[NativeJetContract, ...]:
     contracts = []
     for surface in SURFACES:
+        if surface.mean in ("ARX", "HARX") and surface.volatility in ("GARCH", "GJR-GARCH"):
+            contracts.append(
+                NativeJetContract(
+                    surface_id=surface.surface_id,
+                    status="complete",
+                    order_axes=(
+                        "lags" if surface.mean == "ARX" else "horizons",
+                        "n_exog", "p_vol", "q_vol",
+                    ),
+                    general_order=True,
+                    generated_fixed_orders=True,
+                    precompiled_orders=("columns=4,11", "columns=7,11"),
+                    additive_objective=True,
+                    sparse_requests=True,
+                    transformed_hessian=True,
+                    model_domain=True,
+                    theta_ad=True,
+                    transformed_ad=True,
+                    sparse_projection=True,
+                    fixed_runtime_parity=True,
+                    ad_evidence="tests/test_native_joint_mean.py",
+                    dispatch_evidence="tests/test_native_joint_mean.py",
+                    performance_evidence="benchmark_native_joint.py",
+                    replacement_default=True,
+                )
+            )
+            continue
         is_aparch = surface.volatility == "APARCH"
         is_volatility_only = (
             surface.mean is None
@@ -526,7 +552,22 @@ def _native_jets() -> tuple[NativeJetContract, ...]:
             surface.mean == "ARMA"
             and surface.volatility in ("GARCH", "GJR-GARCH", "EGARCH", "APARCH")
         )
-        if not (is_volatility_only or is_joint):
+        is_mean = surface.volatility is None and surface.mean in ("ARMA","ARX","HARX")
+        if not (is_volatility_only or is_joint or is_mean):
+            continue
+        if is_mean:
+            contracts.append(NativeJetContract(
+                surface_id=surface.surface_id,status="complete",
+                order_axes=("p_ar","q_ma") if surface.mean=="ARMA" else (
+                    "lags" if surface.mean=="ARX" else "horizons","n_exog"),
+                general_order=True,generated_fixed_orders=True,
+                precompiled_orders=("11",) if surface.mean=="ARMA" else ("columns=4",),
+                additive_objective=True,sparse_requests=True,transformed_hessian=True,
+                model_domain=True,theta_ad=True,transformed_ad=True,sparse_projection=True,
+                fixed_runtime_parity=True,ad_evidence="tests/test_native_mean.py",
+                dispatch_evidence="tests/test_native_mean.py",
+                performance_evidence="benchmark_native_mean.py",replacement_default=True,
+            ))
             continue
         contracts.append(NativeJetContract(
             surface_id=surface.surface_id,
@@ -644,6 +685,13 @@ def native_jet_markdown() -> str:
         ("ARMA + GJR-GARCH", "ARMA", "GJR-GARCH", "`(p_ar,q_ma,p_vol,q_vol)`", "1111"),
         ("ARMA + EGARCH", "ARMA", "EGARCH", "`(p_ar,q_ma,p_vol,q_vol)`", "1111"),
         ("ARMA + APARCH", "ARMA", "APARCH", "`(p_ar,q_ma,p_vol,q_vol)`", "1111"),
+        ("ARMA", "ARMA", None, "`(p_ar,q_ma)`", "11"),
+        ("ARX", "ARX", None, "`(lags,n_exog)`", "4 design columns"),
+        ("HARX", "HARX", None, "`(horizons,n_exog)`", "4 design columns"),
+        ("ARX + GARCH", "ARX", "GARCH", "`(lags,n_exog,p_vol,q_vol)`", "4/7 design columns, 11"),
+        ("ARX + GJR-GARCH", "ARX", "GJR-GARCH", "`(lags,n_exog,p_vol,q_vol)`", "4/7 design columns, 11"),
+        ("HARX + GARCH", "HARX", "GARCH", "`(horizons,n_exog,p_vol,q_vol)`", "4/7 design columns, 11"),
+        ("HARX + GJR-GARCH", "HARX", "GJR-GARCH", "`(horizons,n_exog,p_vol,q_vol)`", "4/7 design columns, 11"),
     )
     for label, mean, volatility, order, fixed in groups:
         contracts = [
@@ -659,7 +707,8 @@ def native_jet_markdown() -> str:
             if contract.replacement_default
         ) or "Explicit only"
         benchmark = (
-            "benchmark_native_aparch.py"
+            "benchmark_native_mean.py" if volatility is None else "benchmark_native_joint.py"
+            if mean in ("ARX", "HARX") else "benchmark_native_aparch.py"
             if volatility == "APARCH" else "benchmark_native_tensor.py"
         )
         lines.append(

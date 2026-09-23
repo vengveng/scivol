@@ -22,8 +22,7 @@ using aparch::Layout;
 
 template<class Density>
 inline constexpr bool tail_coupled_delta =
-    std::is_same_v<Density, generated::StudentTDensity>
-    || std::is_same_v<Density, generated::SkewTDensity>;
+    generated::power_tail_coupled<Density>;
 
 [[nodiscard]] inline double unit_logistic(double coordinate) noexcept
 {
@@ -213,11 +212,9 @@ template<class Density, class ShapeTransform>
         for (std::size_t index = 0; index < count; ++index)
             scratch.weights[index] *= limit / denominator;
         for (std::size_t lag = 0; lag < layout.p; ++lag) {
-            const auto moment =
-                generated::asymmetric_power_moment<0, Density>(
-                    destination + layout.model_parameters,
-                    destination[layout.gamma_start + lag],
-                    destination[layout.delta_index]);
+            const auto moment = generated::asymmetric_power_moment<0, Density>(
+                destination + layout.model_parameters,
+                destination[layout.gamma_start + lag], destination[layout.delta_index]);
             if (!moment.valid)
                 return false;
             destination[layout.alpha_start + lag] =
@@ -264,11 +261,9 @@ template<class Density, class ShapeTransform>
         const std::size_t count = contribution_count(layout);
         double persistence = 0.0;
         for (std::size_t lag = 0; lag < layout.p; ++lag) {
-            const auto moment =
-                generated::asymmetric_power_moment<0, Density>(
-                    source + layout.model_parameters,
-                    source[layout.gamma_start + lag],
-                    source[layout.delta_index]);
+            const auto moment = generated::asymmetric_power_moment<0, Density>(
+                source + layout.model_parameters,
+                source[layout.gamma_start + lag], source[layout.delta_index]);
             const double alpha = source[layout.alpha_start + lag];
             if (!moment.valid || !std::isfinite(alpha) || alpha < 0.0)
                 return false;
@@ -564,8 +559,8 @@ template<int Order, class Density, class ShapeTransform>
     std::copy_n(coordinates, width, scratch.theta);
     if (derivatives) {
         std::fill_n(scratch.jacobian, width * width, 0.0);
-        if (layout.joint)
-            scratch.jacobian[0] = 1.0;
+        for (std::size_t index=0;index<layout.mean_parameters;++index)
+            scratch.jacobian[index*width+index] = 1.0;
     }
     if (!map_reflection_with_jacobian(
             layout, coordinates, layout.ar_start, layout.p_ar, 1.0,
@@ -650,8 +645,7 @@ template<int Order, class Density, class ShapeTransform>
         const double contribution = scratch.weights[lag];
         const auto moment = generated::asymmetric_power_moment<Order, Density>(
             scratch.theta + layout.model_parameters,
-            scratch.theta[layout.gamma_start + lag],
-            scratch.theta[layout.delta_index]);
+            scratch.theta[layout.gamma_start + lag], scratch.theta[layout.delta_index]);
         if (!moment.valid)
             return false;
         scratch.moment_values[lag] = moment.value;
@@ -680,9 +674,9 @@ template<int Order, class Density, class ShapeTransform>
                 }
             }
             scratch.jacobian[alpha * width + column] =
-                contribution_first / moment.value
-                - contribution * moment_gradient[column]
-                    / (moment.value * moment.value);
+                (contribution_first
+                    - contribution * (moment_gradient[column] / moment.value))
+                / moment.value;
         }
     }
     for (std::size_t lag = 0; lag < layout.q; ++lag) {
@@ -795,14 +789,14 @@ template<class Density, class ShapeTransform>
         }
     }
     if (layout.joint
-        && (!reflection_add_contracted_curvature(
+        && ((layout.p_ar != 0u && !reflection_add_contracted_curvature(
                 coordinates, layout.ar_start, layout.p_ar, 1.0,
                 scratch.theta_gradient, width, hessian,
-                scratch.curvature_scratch)
-            || !reflection_add_contracted_curvature(
+                scratch.curvature_scratch))
+            || (layout.q_ma != 0u && !reflection_add_contracted_curvature(
                 coordinates, layout.ma_start, layout.q_ma, -1.0,
                 scratch.theta_gradient, width, hessian,
-                scratch.curvature_scratch))) {
+                scratch.curvature_scratch)))) {
         return false;
     }
     hessian[layout.omega_index * width + layout.omega_index] +=
@@ -869,25 +863,25 @@ template<class Density, class ShapeTransform>
         const double* moment_hessian =
             scratch.moment_hessians + output * width * width;
         const double contribution = scratch.weights[output];
-        const double inverse = 1.0 / moment_value;
+        // Normalize moment derivatives before products: M^2 and M^3 can
+        // overflow while the derivatives of contribution/M remain finite.
         for (std::size_t row = 0; row < width; ++row) {
             const double c_row = contribution_first(
                 layout, scratch, output, row);
-            const double m_row = moment_gradient[row];
+            const double m_row = moment_gradient[row] / moment_value;
             for (std::size_t column = 0; column < width; ++column) {
                 const double c_column = contribution_first(
                     layout, scratch, output, column);
-                const double m_column = moment_gradient[column];
+                const double m_column = moment_gradient[column] / moment_value;
                 const double alpha_second =
-                    contribution_second(
-                        layout, scratch, output, row, column) * inverse
-                    - c_row * m_column * inverse * inverse
-                    - c_column * m_row * inverse * inverse
+                    (contribution_second(
+                        layout, scratch, output, row, column)
+                    - c_row * m_column
+                    - c_column * m_row
                     + contribution * (
                         2.0 * m_row * m_column
-                            * inverse * inverse * inverse
                         - moment_hessian[row * width + column]
-                            * inverse * inverse);
+                            / moment_value)) / moment_value;
                 hessian[row * width + column] +=
                     output_weight * alpha_second;
             }

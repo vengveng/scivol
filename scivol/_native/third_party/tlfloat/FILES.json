@@ -1,0 +1,9 @@
+{
+  "LICENSE.txt": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
+  "tlfloat/bigint.hpp": "ee1a05e515d9a634a0a8cf254740f3fcf38a8397f89691055807fc59df3b5f46",
+  "tlfloat/rpitab.hpp": "05c569ab7711f1d5b7c67f077b196445d2aeab7a8fabcd804ffaef1757264ec1",
+  "tlfloat/tlfloat.hpp": "c9cc9cae032e34739815da858f2e4b6d8bb67a964118a3cdaf86abd14285c683",
+  "tlfloat/tlfloatconfig.hpp": "d0cca6bf40c0d467fa4154ea43628dfab1e3b851684f401851c862cca8fe213e",
+  "tlfloat/tlmath.hpp": "7e30ceabebac33252e500bad3b766f6e04a73992a020e46902ceec60c6dc655b",
+  "tlfloat/tlmathcoef.hpp": "35d988fc18a892e37ffc5214cf692447879945589626cc4d03bb2113a79ecad8"
+}

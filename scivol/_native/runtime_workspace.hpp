@@ -11,7 +11,7 @@ namespace vlk::experiment::runtime {
 class WorkspaceSizer {
 public:
     template<class T>
-    bool add(std::size_t count) noexcept
+    constexpr bool add(std::size_t count) noexcept
     {
         const std::size_t aligned = align_up(size_, alignof(T));
         if (aligned == invalid || count >
@@ -23,7 +23,7 @@ public:
         return true;
     }
 
-    [[nodiscard]] std::size_t size() const noexcept
+    [[nodiscard]] constexpr std::size_t size() const noexcept
     {
         return valid_ ? size_ : 0u;
     }
@@ -32,7 +32,7 @@ private:
     static constexpr std::size_t invalid =
         std::numeric_limits<std::size_t>::max();
 
-    static std::size_t align_up(
+    static constexpr std::size_t align_up(
         std::size_t value, std::size_t alignment) noexcept
     {
         const std::size_t remainder = value % alignment;
@@ -81,7 +81,7 @@ private:
     std::size_t remaining_ = 0u;
 };
 
-[[nodiscard]] inline bool checked_product(
+[[nodiscard]] constexpr bool checked_product(
     std::size_t left,
     std::size_t right,
     std::size_t& result) noexcept
@@ -94,7 +94,7 @@ private:
     return true;
 }
 
-[[nodiscard]] inline bool checked_sum(
+[[nodiscard]] constexpr bool checked_sum(
     std::size_t left,
     std::size_t right,
     std::size_t& result) noexcept

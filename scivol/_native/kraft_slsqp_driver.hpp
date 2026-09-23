@@ -29,6 +29,7 @@ extern "C" {
 #include <limits>
 #include <span>
 #include <type_traits>
+#include "nnls_workspace.hpp"
 
 namespace vlk::experiment::kraft {
 
@@ -47,6 +48,7 @@ enum class ConstraintRequest : std::uint8_t {
 struct Options {
     double accuracy = 1e-8;
     std::int64_t maximum_iterations = 100;
+    bool constraint_curvature_reset = false;
 };
 
 enum class StopReason : std::uint8_t {
@@ -57,6 +59,7 @@ enum class StopReason : std::uint8_t {
 
 inline constexpr std::int64_t cancelled_mode = -103;
 inline constexpr std::int64_t deadline_mode = -104;
+inline constexpr std::int64_t retained_point_mode = -105;
 
 struct NeverStop {
     [[nodiscard]] constexpr StopReason poll() const noexcept
@@ -79,8 +82,11 @@ struct Result {
     std::size_t gradient_evaluations = 0;
     std::size_t constraint_evaluations = 0;
     std::size_t jacobian_evaluations = 0;
+    std::size_t constraint_curvature_resets = 0;
+    std::size_t checkpoint_restarts = 0;
     StopReason stop_reason = StopReason::none;
     bool derivatives_current = false;
+    bool retained_feasible_trial = false;
 
     [[nodiscard]] bool success() const noexcept { return mode == 0; }
 };
@@ -122,6 +128,9 @@ struct alignas(64) Workspace {
     std::array<double, Dimension> gradient {};
     std::array<double, leading_dimension * Dimension> jacobian {};
     std::array<double, leading_dimension> constraint_values {};
+    static constexpr auto nnls_bytes=nnls::sqp_workspace_bytes(Dimension,Constraints);
+    static_assert(nnls_bytes>0);
+    alignas(double) std::array<std::byte,nnls_bytes> nnls_memory;
 };
 
 template<std::size_t Dimension>
@@ -183,14 +192,13 @@ struct NoConstraints {
 
 namespace detail {
 
-[[nodiscard]] inline double rejected_trial_value(
-    double last_valid_value) noexcept
+// This is line-search information for a rejected trial, never an objective.
+[[nodiscard]] inline double rejected_trial_merit(double last_valid_value) noexcept
 {
     const double scale = std::max(1.0, std::abs(last_valid_value));
     const double limit = std::numeric_limits<double>::max() / 4.0;
     return last_valid_value < limit - scale * 1e6
-        ? last_valid_value + scale * 1e6
-        : limit;
+        ? last_valid_value + scale * 1e6 : limit;
 }
 
 template<ObjectiveRequest Request, class Objective>
@@ -483,8 +491,10 @@ template<
     state.meq = static_cast<std::int64_t>(equality_count);
     state.mode = 0;
     state.n = static_cast<std::int64_t>(dimension);
+    state.curvature_reset.enabled = options.constraint_curvature_reset;
 
     bool derivatives_are_current = true;
+    bool value_is_current = true;
     bool last_value_point_is_current = false;
     while (true) {
         result.stop_reason = stop_control.poll();
@@ -505,21 +515,26 @@ template<
             const_cast<double*>(bounds.lower.data()),
             const_cast<double*>(bounds.upper.data()),
             workspace.buffer.data(),
-            workspace.indices.data());
+            workspace.indices.data(),
+            {workspace.nnls_memory.data(),workspace.nnls_memory.size()});
 
         if (state.mode == 1) {
             detail::clip_to_bounds(parameters, bounds);
-            if (!detail::evaluate_objective<ObjectiveRequest::value>(
+            derivatives_are_current = false;
+            last_value_point_is_current = true;
+            ++result.function_evaluations;
+            value_is_current = detail::evaluate_objective<ObjectiveRequest::value>(
                     objective,
                     parameters,
                     &value,
                     workspace.gradient.data(),
-                    false)) {
-                value = detail::rejected_trial_value(last_valid_value);
+                    false);
+            if (!value_is_current) {
+                value = detail::rejected_trial_merit(last_valid_value);
+                state.mode = VLK_SLSQP_REJECT_OBJECTIVE;
             } else {
                 last_valid_value = value;
             }
-            ++result.function_evaluations;
             if (!detail::evaluate_constraints<ConstraintRequest::value>(
                     constraints,
                     parameters,
@@ -530,8 +545,6 @@ template<
             }
             if constexpr (constraint_count > 0u)
                 ++result.constraint_evaluations;
-            derivatives_are_current = false;
-            last_value_point_is_current = true;
             continue;
         }
 
@@ -595,9 +608,11 @@ template<
         }
     }
 
-    result.value = value;
+    result.value = value_is_current
+        ? value : std::numeric_limits<double>::quiet_NaN();
     result.mode = state.mode;
     result.iterations = state.iter;
+    result.constraint_curvature_resets = state.curvature_reset.count;
     result.derivatives_current = derivatives_are_current;
     result.maximum_violation = detail::maximum_violation(
         parameters, bounds, workspace);

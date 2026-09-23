@@ -28,36 +28,13 @@ extern "C" {
 
 namespace vlk::experiment::generated {
 
-constexpr double kTransformThreshold = 20.0;
 constexpr double kInverseFloor =
     8.0 * std::numeric_limits<double>::epsilon();
 
-VLK_TRANSFORM_POLICY_INLINE double softplus(double value)
-{
-    if (value > kTransformThreshold)
-        return value;
-    if (value < -kTransformThreshold)
-        return std::exp(value);
-    return std::log1p(std::exp(value));
-}
-
-VLK_TRANSFORM_POLICY_INLINE double inverse_softplus(double value)
-{
-    if (value > kTransformThreshold)
-        return value;
-    return std::log(std::expm1(value));
-}
-
-VLK_TRANSFORM_POLICY_INLINE double softplus_first_from_positive(double value)
-{
-    return value > kTransformThreshold ? 1.0 : -std::expm1(-value);
-}
-
-VLK_TRANSFORM_POLICY_INLINE double softplus_second_from_positive(double value)
-{
-    const double first = softplus_first_from_positive(value);
-    return first * (1.0 - first);
-}
+using positive_coordinate::softplus;
+using positive_coordinate::inverse_softplus;
+using positive_coordinate::softplus_first_from_positive;
+using positive_coordinate::softplus_second_from_positive;
 
 template<class Bound>
 struct ShiftedSoftplusMap {
@@ -173,9 +150,54 @@ struct BoundedLogisticMap {
     }
 };
 
+template<class Map>
+void representable_coordinate_bounds(double& lower, double& upper) noexcept
+{
+    const double inf = std::numeric_limits<double>::infinity();
+    lower = -inf;
+    upper = inf;
+    if constexpr (requires { Map::limit; }) {
+        upper = std::atanh(std::nextafter(1.0,0.0));
+        lower = -upper;
+    } else if constexpr (requires { Map::upper; }) {
+        const double head = (std::nextafter(Map::lower,Map::upper)-Map::lower)/Map::range;
+        const double tail = (Map::upper-std::nextafter(Map::upper,Map::lower))/Map::range;
+        lower = std::log(head)-std::log1p(-head);
+        upper = std::log1p(-tail)-std::log(tail);
+        // Rounding plateaus can span trillions of coordinate ULPs. Bisect
+        // against the representable chart midpoint instead of walking them.
+        if (!(Map::forward(lower)>Map::lower)) {
+            double outside=lower, inside=0.0;
+            for (unsigned i=0;i<64;++i) {
+                const double middle=outside+(inside-outside)*0.5;
+                if (Map::forward(middle)>Map::lower) inside=middle;
+                else outside=middle;
+            }
+            lower=inside;
+        }
+        if (!(Map::forward(upper)<Map::upper)) {
+            double outside=upper, inside=0.0;
+            for (unsigned i=0;i<64;++i) {
+                const double middle=inside+(outside-inside)*0.5;
+                if (Map::forward(middle)<Map::upper) inside=middle;
+                else outside=middle;
+            }
+            upper=inside;
+        }
+    } else {
+        lower = inverse_softplus(std::nextafter(Map::lower,inf)-Map::lower);
+    }
+}
+
 template<class... Maps>
 struct DiagonalShapeTransform {
     static constexpr std::size_t parameters = sizeof...(Maps);
+
+    static void coordinate_bounds(double* lower, double* upper) noexcept
+    {
+        std::size_t index=0;
+        ((representable_coordinate_bounds<Maps>(lower[index],upper[index]),++index),...);
+    }
 
     static void pack(const double* z, double* theta)
     {
@@ -301,6 +323,7 @@ private:
 
 struct NoShapeTransform {
     static constexpr std::size_t parameters = 0u;
+    static void coordinate_bounds(double*,double*) noexcept {}
 
     static void pack(const double*, double*) {}
     static bool unpack(const double*, double*) { return true; }

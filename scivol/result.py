@@ -307,7 +307,13 @@ class FitMetadata:
     maxiter: Optional[int] = None
     timeout: Optional[float] = None
     engine: Optional[str] = None
+    scalar_precision: Optional[str] = None
     optimizer_mode: Optional[int] = None
+    optimizer_status_kind: Optional[str] = None
+    optimizer_terminated: Optional[bool] = None
+    stationarity_status: Optional[str] = None
+    inference_status: Optional[str] = None
+    jet_consistency: Optional[Dict[str, Any]] = None
     optimizer_phases: Optional[tuple[str, ...]] = None
     optimizer_phase_modes: Optional[tuple[int, ...]] = None
     kkt_residual: Optional[float] = None
@@ -316,12 +322,23 @@ class FitMetadata:
     maximum_constraint_violation: Optional[float] = None
     function_evaluations: Optional[int] = None
     gradient_evaluations: Optional[int] = None
+    hessian_evaluations: Optional[int] = None
+    jet_requests: Optional[Dict[str, Any]] = None
+    postfit_jet_requests: Optional[Dict[str, Any]] = None
+    request_count_scope: Optional[str] = None
     refinement_restarts: Optional[int] = None
     curvature_refinement_steps: Optional[int] = None
     scientific_projection_steps: Optional[int] = None
     theta_refinement_steps: Optional[int] = None
     objective_parity_error: Optional[float] = None
     jet_request_plan: Optional[str] = None
+    parameter_domain: Optional[Dict[str, Any]] = None
+    likelihood_n_obs: Optional[int] = None
+    profiled_parameters: int = 0
+    internal_data_scale: Optional[float] = None
+    evaluation_counts: Optional[Dict[str, int]] = None
+    phase_diagnostics: tuple[Dict[str, Any], ...] = ()
+    kernel_dispatch: Optional[int] = None
     boundary_reached: Optional[bool] = None
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
@@ -361,6 +378,12 @@ class FitMetadata:
             "timeout": self.timeout,
             "engine": self.engine,
             "optimizer_mode": self.optimizer_mode,
+            "optimizer_status_kind": self.optimizer_status_kind,
+            "optimizer_terminated": self.optimizer_terminated,
+            "stationarity_status": self.stationarity_status,
+            "inference_status": self.inference_status,
+            "jet_consistency": self.jet_consistency,
+            "scalar_precision": self.scalar_precision,
             "optimizer_phases": (
                 list(self.optimizer_phases)
                 if self.optimizer_phases is not None
@@ -377,12 +400,23 @@ class FitMetadata:
             "maximum_constraint_violation": self.maximum_constraint_violation,
             "function_evaluations": self.function_evaluations,
             "gradient_evaluations": self.gradient_evaluations,
+            "hessian_evaluations": self.hessian_evaluations,
+            "jet_requests": self.jet_requests,
+            "postfit_jet_requests": self.postfit_jet_requests,
+            "request_count_scope": self.request_count_scope,
             "refinement_restarts": self.refinement_restarts,
             "curvature_refinement_steps": self.curvature_refinement_steps,
             "scientific_projection_steps": self.scientific_projection_steps,
             "theta_refinement_steps": self.theta_refinement_steps,
             "objective_parity_error": self.objective_parity_error,
             "jet_request_plan": self.jet_request_plan,
+            "parameter_domain": self.parameter_domain,
+            "likelihood_n_obs": self.likelihood_n_obs,
+            "profiled_parameters": self.profiled_parameters,
+            "internal_data_scale": self.internal_data_scale,
+            "evaluation_counts": self.evaluation_counts,
+            "phase_diagnostics": list(self.phase_diagnostics),
+            "kernel_dispatch": self.kernel_dispatch,
             "boundary_reached": self.boundary_reached,
             "warnings": list(self.warnings),
         }
@@ -538,18 +572,20 @@ class EstimationResult:
     # --------------------------------------------------------------------- #
     @property
     def aic(self) -> float:
-        k = len(self.params)
+        k = len(self.params) + self.fit_info.profiled_parameters
         return 2 * k - 2 * self.log_likelihood
 
     @property
     def bic(self) -> float:
-        k = len(self.params)
-        return k * np.log(self.n_obs) - 2 * self.log_likelihood
+        k = len(self.params) + self.fit_info.profiled_parameters
+        n = self.fit_info.likelihood_n_obs or self.n_obs
+        return k * np.log(n) - 2 * self.log_likelihood
 
     @property
     def hqic(self) -> float:
-        k = len(self.params)
-        return 2 * k * np.log(np.log(self.n_obs)) - 2 * self.log_likelihood
+        k = len(self.params) + self.fit_info.profiled_parameters
+        n = self.fit_info.likelihood_n_obs or self.n_obs
+        return 2 * k * np.log(np.log(n)) - 2 * self.log_likelihood
 
     # Component shorthands
     # --------------------------------------------------------------------- #
@@ -1026,6 +1062,8 @@ class EstimationResult:
                 names.append("delta")
 
         density_shapes = {
+            "StudentT": 1,
+            "SkewT": 2,
             "GED": 1,
             "GeneralizedHyperbolic": 3,
             "Hyperbolic": 2,

@@ -63,7 +63,7 @@ template<bool EmitValue, bool EmitGradient, bool EmitHessian,
     typename Density::ValueAccumulator& value_accumulator,
     Objective& objective,
     std::size_t model_parameters,
-    std::size_t runtime_width) noexcept
+    std::size_t runtime_width, bool fixed_residual = false) noexcept
 {
     const std::size_t width = egarch_equation::width<StaticWidth>(runtime_width);
     const std::size_t shape_parameters = width - model_parameters;
@@ -71,9 +71,19 @@ template<bool EmitValue, bool EmitGradient, bool EmitHessian,
         Density::template observe_log_variance_first_with_residuals<EmitValue>(
             prepared, log_variance.value, residual.value);
     }) {
-        const auto observation =
+        auto observation =
             Density::template observe_log_variance_first_with_residuals<
                 EmitValue>(prepared, log_variance.value, residual.value);
+        if (!observation.valid) {
+            if constexpr (requires {
+                Density::template observe_log_variance_first_with_residuals<EmitValue>(
+                    prepared, log_variance.value, residual.value, false);
+            }) {
+                if (fixed_residual)
+                    observation = Density::template observe_log_variance_first_with_residuals<EmitValue>(
+                        prepared, log_variance.value, residual.value, false);
+            }
+        }
         if (!observation.valid)
             return false;
         if constexpr (EmitValue)
@@ -95,11 +105,21 @@ template<bool EmitValue, bool EmitGradient, bool EmitHessian,
     const double variance = std::exp(log_variance.value);
     if (!(variance > 0.0) || !std::isfinite(variance))
         return false;
-    const auto observation = Density::template observe<
+    auto observation = Density::template observe<
         EmitValue, Order >= 1, EmitHessian, Order >= 1>(
             prepared, variance, residual.value,
             residual.value * residual.value);
     if constexpr (location_scale_observation_can_fail<Density>) {
+        if (!observation.valid) {
+            if constexpr (requires {
+                Density::template observe<EmitValue, Order >= 1, EmitHessian, Order >= 1>(
+                    prepared, variance, residual.value, residual.value * residual.value, false);
+            }) {
+                if (fixed_residual)
+                    observation = Density::template observe<EmitValue, Order >= 1, EmitHessian, Order >= 1>(
+                        prepared, variance, residual.value, residual.value * residual.value, false);
+            }
+        }
         if (!observation.valid)
             return false;
     }

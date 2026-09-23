@@ -1,5 +1,6 @@
 include scivol/_csrc/*.h
 recursive-include scivol/_native *.cpp *.hpp *.c *.h *.txt *.md
+recursive-include scivol/_native/third_party *.json
 include LICENSE
 include README.md
 include scivol/_core.pyi

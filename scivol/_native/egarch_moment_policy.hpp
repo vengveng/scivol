@@ -89,21 +89,10 @@ integrate(const double* shape) noexcept
 
     std::array<double, 4u> boundaries {0.0, 0.5, 1.0, 1.0};
     std::size_t boundary_count = 3u;
-    if constexpr (std::is_same_v<Density, SkewTDensity>) {
-        const double branch = std::abs(prepared.a.value / prepared.b.value);
-        const double unit = std::atan(branch) / density_moment::half_pi;
-        if (unit > 0.0 && unit < 1.0 && unit != 0.5) {
-            boundaries = {0.0, 0.5, unit, 1.0};
-            std::sort(boundaries.begin(), boundaries.end());
-            boundary_count = 4u;
-        }
-    } else if constexpr (std::is_same_v<Density, VarianceGammaDensity>) {
-        const double rho = shape[0];
-        const double lambda = shape[1];
-        const double theta = std::sqrt(2.0) * rho
-            / std::sqrt(1.0 - rho * rho);
-        const double scale = std::sqrt(lambda * (1.0 + theta * theta));
-        const double branch = std::abs(theta * lambda / scale);
+    if constexpr (std::is_same_v<Density, SkewTDensity>
+                  || std::is_same_v<Density, VarianceGammaDensity>) {
+        const double branch = std::abs(
+            density_moment::negative_branch_distance<Density>(prepared,shape));
         const double unit = std::atan(branch) / density_moment::half_pi;
         if (unit > 0.0 && unit < 1.0 && unit != 0.5) {
             boundaries = {0.0, 0.5, unit, 1.0};
@@ -134,6 +123,12 @@ absolute_moment(const double* shape) noexcept
         return egarch_moment_detail::student_t<Order>(shape);
     } else if constexpr (std::is_same_v<Density, GedDensity>) {
         return egarch_moment_detail::ged<Order>(shape);
+    } else if constexpr (std::is_same_v<Density, VarianceGammaDensity>) {
+        // Preserve established rounding until the shared precision policy also
+        // passes matched-fit gates; the positive-integral candidate is exact
+        // but its double-only replacement changes difficult solver trajectories.
+        return density_moment::variance_gamma_mixture<
+            Order, density_moment::NormalMoment::absolute>(shape);
     } else {
         return egarch_moment_detail::integrate<Order, Density>(shape);
     }

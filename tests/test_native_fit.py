@@ -1055,6 +1055,37 @@ def test_arma_egarch_public_filter_uses_the_canonical_joint_state(
     assert_allclose(state.mean, data - residuals, rtol=0.0, atol=0.0)
 
 
+@pytest.mark.parametrize("density_name,density_factory", [("normal", Normal), ("ged", GED)])
+@pytest.mark.parametrize("p,q", [(1, 1), (3, 2)])
+def test_egarch_fixed_zero_residual_has_exact_derivatives(
+    density_name, density_factory, p, q,
+) -> None:
+    model, data, theta = _egarch_model_and_parameters(density_factory, p=p, q=q)
+    data = data[:12].copy()
+    data[[0, 4]] = 0.0
+    expected = _independent_egarch_theta_jet(density_name, model, data, theta)
+    for request in _REQUESTS:
+        actual = _evaluate_mask(model, data, theta, request, transformed=False)
+        for index, bit in enumerate((1, 2, 4)):
+            if request & bit:
+                assert_allclose(actual[index], expected[index], rtol=2e-6, atol=2e-7)
+
+
+@pytest.mark.parametrize("alpha", [0.0, 0.08])
+def test_joint_egarch_active_zero_is_request_specific(alpha) -> None:
+    model, data, theta = _arma_egarch_model_and_parameters(
+        Normal, p_ar=1, q_ma=1, p_vol=1, q_vol=1,
+    )
+    data = data[:8].copy()
+    theta[:model.n_mean] = 0.0
+    theta[model.n_mean + 1] = alpha
+    data[1] = 0.0
+    for request in _REQUESTS:
+        valid = not (request & 4) and (not (request & 2) or alpha == 0.0)
+        expected = (0, request) if valid else (3, 0)
+        assert _checked_arma_egarch_status(model, data, theta, request) == expected
+
+
 def test_arma_egarch_coordinate_map_round_trips_arbitrary_orders() -> None:
     model, _, theta = _arma_egarch_model_and_parameters(
         StudentT, p_ar=3, q_ma=2, p_vol=2, q_vol=3
@@ -1392,6 +1423,60 @@ def test_public_gjr_moment_matches_the_native_domain_contract(
     assert public_moment == pytest.approx(native_moment, rel=3e-10, abs=3e-11)
 
 
+@pytest.mark.parametrize(
+    "rho,shape_lambda",
+    [
+        (0.0, 50.0),
+        (0.21510280956821728, 50.0),
+        (0.3, 50.0),
+        (0.12, 2.0),
+        (0.9, 1.51),
+        (-0.9, 1.51),
+        (0.99, 50.0),
+        (-0.99, 50.0),
+        (0.99, 1.5000000000000018),
+    ],
+)
+def test_vg_gjr_mixture_moment_matches_independent_ad(rho, shape_lambda):
+    pytest.importorskip("jax")
+    from scivol._devtools.ad_oracle import (
+        _jax_modules,
+        _jax_vg_mixture_negative_second_moment,
+    )
+
+    jax, jnp, jsp = _jax_modules()
+    shape = np.array([rho, shape_lambda])
+    references = []
+    for order in (64, 128):
+
+        def objective(point):
+            return _jax_vg_mixture_negative_second_moment(
+                jnp, jsp, point, shape_lambda, order
+            )
+
+        evaluate = jax.jit(
+            lambda point: (
+                objective(point),
+                jax.grad(objective)(point),
+                jax.hessian(objective)(point),
+            )
+        )
+        references.append(tuple(np.asarray(item) for item in evaluate(shape)))
+    for coarse, fine in zip(*references):
+        assert_allclose(coarse, fine, rtol=2e-8, atol=2e-10)
+
+    for request in (1, 3, 7):
+        outputs = (np.empty(1), np.empty(2), np.empty(3))
+        _native_core._gjr_negative_second_moment(
+            shape.ctypes.data, 7, request, *(item.ctypes.data for item in outputs)
+        )
+        for bit, actual, expected in zip((1, 2, 4), outputs, references[-1]):
+            if request & bit:
+                if bit == 4:
+                    expected = expected[np.triu_indices(2)]
+                assert_allclose(actual, expected, rtol=2e-7, atol=2e-9)
+
+
 def test_gjr_result_persistence_uses_the_negative_half_second_moment() -> None:
     data = _returns(n=80)
     theta = np.array([2e-5, 0.08, 0.12, 0.75, 7.0, 0.6])
@@ -1399,9 +1484,7 @@ def test_gjr_result_persistence_uses_the_negative_half_second_moment() -> None:
     expected_moment = negative_half_second_moment("SkewT", 7.0, 0.6)
 
     assert result.garch_params is not None
-    assert result.garch_params.negative_second_moment == pytest.approx(
-        expected_moment
-    )
+    assert result.garch_params.negative_second_moment == pytest.approx(expected_moment)
     assert result.garch_params.persistence == pytest.approx(
         0.08 + expected_moment * 0.12 + 0.75
     )
@@ -1525,6 +1608,20 @@ def test_joint_ged_zero_residual_has_request_specific_validity(
             assert valid == 0
 
 
+@pytest.mark.parametrize("p", (1, 3))
+@pytest.mark.parametrize("leverage", (0.0, 0.04))
+def test_joint_gjr_zero_shock_preserves_valid_gradient(p: int, leverage: float) -> None:
+    data = np.array([0.1, 0.0, 0.0, 0.0, 0.2, -0.1, 0.15], dtype=np.float64)
+    model = _describe_model(ARMA(1, 1) + GJRGARCH(p, 1) + Normal())
+    theta = np.r_[0.0, 0.0, 0.0, 0.01, np.full(p, 0.05/p),
+                  np.full(p, leverage/p), 0.8]
+    for request in _REQUESTS:
+        status, valid = _checked_joint_status(model, data, theta, request)
+        expected = 3 if request & 4 and leverage else 0
+        assert status == expected
+        assert valid == (0 if expected else request)
+
+
 def test_joint_arma_sample_plan_does_not_apply_hold_back_twice() -> None:
     data = np.array([0.4, -0.2, 0.1, 0.7, -0.3], dtype=np.float64)
     theta = np.array([0.03, 0.2, -0.1, 0.08, 0.07, 0.85], dtype=np.float64)
@@ -1614,9 +1711,36 @@ def test_native_transformed_jet_matches_independent_chain_rule_ad(
     assert_allclose(transformed_jet[2], expected[2], rtol=5e-7, atol=5e-7)
 
 
+@pytest.mark.parametrize("kind", ("gjr", "arma_gjr"))
+@pytest.mark.parametrize("skew", (-0.2, 0.0, 0.2))
+@pytest.mark.parametrize("density_name,density_factory", (("skewt", SkewT), ("vg", VarianceGamma)))
+def test_gjr_coordinate_hessian_resolves_density_branch(
+    kind: str, skew: float, density_name: str, density_factory: DensityFactory
+) -> None:
+    pytest.importorskip("jax")
+    from scivol._devtools.ad_oracle import native_coordinate_chain_rule_value_grad_hess
+
+    model, data, theta = _model_and_parameters(kind, density_factory)
+    theta[-2:] = [7.0, skew] if density_name == "skewt" else [skew, 2.0]
+    coordinates = _theta_to_coordinates(model, theta)
+    theta_jet = _evaluate_mask(model, data, theta, 7, transformed=False)
+    expected = native_coordinate_chain_rule_value_grad_hess(
+        coordinates, theta, *theta_jet, model.p_vol, model.q_vol, density_name,
+        p_ar=model.p_ar if kind.startswith("arma_") else None,
+        q_ma=model.q_ma, leverage=True,
+    )
+    for mask in (4, 7):
+        actual = _evaluate_mask(model, data, coordinates, mask, transformed=True)
+        assert_allclose(actual[2], expected[2], rtol=5e-7, atol=5e-7)
+
+
 @pytest.mark.parametrize("kind", ("garch", "gjr", "arma_garch", "arma_gjr"))
-def test_native_zero_skew_reduces_exactly_to_student_t(kind: str) -> None:
+@pytest.mark.parametrize("at_join", (False, True))
+def test_native_zero_skew_reduces_exactly_to_student_t(kind: str, at_join: bool) -> None:
     student_model, data, student_theta = _model_and_parameters(kind, StudentT)
+    if at_join:
+        data[-1] = 0.0
+        student_theta[: student_model.n_mean] = 0.0
     volatility = GJRGARCH(2, 1) if "gjr" in kind else GARCH(2, 1)
     skew_model = _describe_model(
         (ARMA(2, 1) + volatility if kind.startswith("arma_") else volatility)

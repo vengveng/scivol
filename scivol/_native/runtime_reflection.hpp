@@ -9,6 +9,68 @@
 
 namespace vlk::experiment::runtime {
 
+namespace reflection_detail {
+
+// One inverse-Schur equation for value, Jacobian and constraint-curvature paths.
+struct InverseSchurStep {
+    double reflection;
+    double denominator;
+    double denominator_squared;
+
+    explicit InverseSchurStep(double k) noexcept
+        : reflection(k),denominator(1.0-k*k),
+          denominator_squared(denominator*denominator) {}
+
+    bool valid(std::size_t rows) const noexcept
+    {
+        return std::isfinite(denominator)
+            && (denominator!=0.0 || (rows==1 && reflection==-1.0));
+    }
+
+    template<bool Center=false> struct Row {
+        const InverseSchurStep& step;
+        double reverse;
+        double numerator;
+        double value;
+
+        double first(double direct_i,double reverse_i,double ki) const noexcept
+        {
+            if constexpr(Center)
+                return (direct_i+value*ki)/(1.0-step.reflection);
+            const double ni=direct_i+ki*reverse+step.reflection*reverse_i;
+            const double di=-2.0*step.reflection*ki;
+            // Preserve the established FMA grouping across scalar/vector lowering.
+            return std::fma(ni,step.denominator,-numerator*di)/step.denominator_squared;
+        }
+
+        double second(double direct_ij,double reverse_ij,double reverse_i,
+            double reverse_j,double ki,double kj,double kij,double bi,double bj) const noexcept
+        {
+            if constexpr(Center)
+                return (direct_ij+value*kij+bi*kj+bj*ki)/(1.0-step.reflection);
+            const double nij=direct_ij+kij*reverse+ki*reverse_j+kj*reverse_i
+                +step.reflection*reverse_ij;
+            const double di=-2.0*step.reflection*ki,dj=-2.0*step.reflection*kj;
+            const double dij=-2.0*(ki*kj+step.reflection*kij);
+            return (nij-value*dij-bi*dj-bj*di)/step.denominator;
+        }
+    };
+
+    Row<> row(double direct,double reverse) const noexcept
+    {
+        const double numerator=direct+reflection*reverse;
+        return {*this,reverse,numerator,numerator/denominator};
+    }
+
+    Row<true> center_row(double coefficient) const noexcept
+    {
+        // Structural identity cancels (1+k), including its removable pole at k=-1.
+        return {*this,coefficient,coefficient,coefficient/(1.0-reflection)};
+    }
+};
+
+} // namespace reflection_detail
+
 [[nodiscard]] inline std::size_t reflection_forward_scratch_doubles(
     std::size_t order) noexcept
 {
@@ -23,15 +85,15 @@ namespace vlk::experiment::runtime {
 }
 
 [[nodiscard]] inline std::size_t reflection_inverse_scratch_doubles(
-    std::size_t order) noexcept
+    std::size_t order, std::size_t independent_parameters) noexcept
 {
     if (order > std::numeric_limits<std::size_t>::max() / 2u
-        || (order != 0u
-            && order > std::numeric_limits<std::size_t>::max() / order)) {
+        || (independent_parameters != 0u
+            && order > std::numeric_limits<std::size_t>::max() / independent_parameters)) {
         return 0u;
     }
     const std::size_t doubled_order = 2u * order;
-    const std::size_t square = order * order;
+    const std::size_t square = order * independent_parameters;
     if (square > std::numeric_limits<std::size_t>::max() / 2u)
         return 0u;
     const std::size_t doubled_square = 2u * square;
@@ -39,6 +101,12 @@ namespace vlk::experiment::runtime {
             <= std::numeric_limits<std::size_t>::max() - doubled_square
         ? doubled_order + doubled_square
         : 0u;
+}
+
+[[nodiscard]] inline std::size_t reflection_inverse_scratch_doubles(
+    std::size_t order) noexcept
+{
+    return reflection_inverse_scratch_doubles(order, order);
 }
 
 [[nodiscard]] inline bool reflection_inverse_values(
@@ -69,15 +137,13 @@ namespace vlk::experiment::runtime {
         if (stage == 1u)
             return true;
 
-        const double denominator =
-            1.0 - current_reflection * current_reflection;
-        if (denominator == 0.0)
+        const reflection_detail::InverseSchurStep step(current_reflection);
+        if (!step.valid(final))
             return false;
         for (std::size_t row = 0; row < final; ++row) {
             const std::size_t reverse = final - 1u - row;
-            next[row] = (
-                current[row] + current_reflection * current[reverse]
-            ) / denominator;
+            next[row] = row==reverse ? step.center_row(current[row]).value
+                : step.row(current[row],current[reverse]).value;
         }
         std::copy_n(next, final, current);
     }
@@ -296,21 +362,30 @@ namespace reflection_detail {
     double* reflection,
     double* jacobian,
     double* scratch,
-    bool require_stable) noexcept
+    bool require_stable,
+    std::size_t independent_parameters = 0u,
+    const double* input_jacobian = nullptr) noexcept
 {
     if (coefficients == nullptr || order == 0u || reflection == nullptr
         || jacobian == nullptr || scratch == nullptr) {
         return false;
     }
-    double* current_coefficients = scratch;
-    double* next_coefficients = current_coefficients + order;
-    double* current_jacobian = next_coefficients + order;
-    double* next_jacobian = current_jacobian + order * order;
+    const std::size_t width = input_jacobian ? independent_parameters : order;
+    if (!width || !reflection_inverse_scratch_doubles(order, width))
+        return false;
+    double* __restrict current_coefficients = scratch;
+    double* __restrict next_coefficients = current_coefficients + order;
+    double* __restrict current_jacobian = next_coefficients + order;
+    double* __restrict next_jacobian = current_jacobian + order * width;
     std::copy_n(coefficients, order, current_coefficients);
-    std::fill_n(current_jacobian, order * order, 0.0);
-    for (std::size_t index = 0; index < order; ++index)
-        current_jacobian[index * order + index] = 1.0;
-    std::fill_n(jacobian, order * order, 0.0);
+    if (input_jacobian) {
+        std::copy_n(input_jacobian, order*width, current_jacobian);
+    } else {
+        std::fill_n(current_jacobian, order * width, 0.0);
+        for (std::size_t index = 0; index < order; ++index)
+            current_jacobian[index * width + index] = 1.0;
+    }
+    std::fill_n(jacobian, order * width, 0.0);
 
     for (std::size_t stage = order; stage > 0u; --stage) {
         const std::size_t final = stage - 1u;
@@ -321,48 +396,56 @@ namespace reflection_detail {
         }
         reflection[final] = current_reflection;
         std::copy_n(
-            current_jacobian + final * order, order,
-            jacobian + final * order);
+            current_jacobian + final * width, width,
+            jacobian + final * width);
         if (stage == 1u)
             break;
 
-        const double denominator =
-            1.0 - current_reflection * current_reflection;
-        if (denominator == 0.0)
+        const InverseSchurStep step(current_reflection);
+        if (!step.valid(final))
             return false;
-        const double denominator_squared = denominator * denominator;
         for (std::size_t row = 0; row < final; ++row) {
             const std::size_t reverse = final - 1u - row;
-            const double numerator = current_coefficients[row]
-                + current_reflection * current_coefficients[reverse];
-            next_coefficients[row] = numerator / denominator;
-            for (std::size_t column = 0; column < order; ++column) {
-                const double reflection_derivative =
-                    current_jacobian[final * order + column];
-                const double numerator_derivative =
-                    current_jacobian[row * order + column]
-                    + reflection_derivative * current_coefficients[reverse]
-                    + current_reflection
-                        * current_jacobian[reverse * order + column];
-                const double denominator_derivative =
-                    -2.0 * current_reflection * reflection_derivative;
-                next_jacobian[row * order + column] =
-                    (numerator_derivative * denominator
-                     - numerator * denominator_derivative)
-                    / denominator_squared;
-            }
+            const auto evaluate_row=[&](const auto& equation) {
+                next_coefficients[row] = equation.value;
+#if defined(__clang__)
+                // These short triangular rows lose time to runtime vector alias guards.
+#pragma clang loop vectorize(disable)
+#endif
+                for (std::size_t column = 0; column < width; ++column) {
+                    next_jacobian[row * width + column] = equation.first(
+                        current_jacobian[row * width + column],
+                        current_jacobian[reverse * width + column],
+                        current_jacobian[final * width + column]);
+                }
+            };
+            if (row==reverse) evaluate_row(step.center_row(current_coefficients[row]));
+            else evaluate_row(step.row(current_coefficients[row],current_coefficients[reverse]));
         }
         std::copy_n(next_coefficients, final, current_coefficients);
         for (std::size_t row = 0; row < final; ++row) {
             std::copy_n(
-                next_jacobian + row * order, order,
-                current_jacobian + row * order);
+                next_jacobian + row * width, width,
+                current_jacobian + row * width);
         }
     }
     return true;
 }
 
 }  // namespace reflection_detail
+
+[[nodiscard]] inline bool reflection_inverse_composed(
+    const double* coefficients, std::size_t order,
+    const double* coefficient_jacobian, std::size_t independent_parameters,
+    double* reflection, double* jacobian, double* scratch,
+    bool require_stable = true) noexcept
+{
+    if (!coefficient_jacobian)
+        return false;
+    return reflection_detail::reflection_inverse_impl(
+        coefficients, order, reflection, jacobian, scratch,
+        require_stable, independent_parameters, coefficient_jacobian);
+}
 
 [[nodiscard]] inline bool reflection_inverse(
     const double* coefficients,

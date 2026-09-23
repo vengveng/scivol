@@ -37,6 +37,7 @@ _MODE_MESSAGES = {
     9: "Native SLSQP reached its iteration limit.",
     -101: "The native objective rejected the current point.",
     -102: "The native constraint evaluator rejected the current point.",
+    -105: "A better feasible trial was retained without optimizer termination at that point.",
     -1001: "The caller-provided native workspace was too small.",
 }
 

@@ -35,11 +35,12 @@ template<std::size_t StaticModelParameters>
     return StaticModelParameters;
 }
 
-template<bool EmitValue, std::size_t StaticModelParameters, class Density>
+template<bool EmitValue, std::size_t StaticModelParameters, class Density,
+         bool ConstantVariance = false, class ResidualFirst>
 VLK_LOCATION_SCALE_INLINE void accumulate_location_scale_first(
     std::size_t runtime_model_parameters,
     const generated::DensityObservation<Density::shape_parameters>& observation,
-    const double* residual_first,
+    const ResidualFirst& residual_first,
     const double* variance_first,
     typename Density::ValueAccumulator& objective,
     double* gradient) noexcept
@@ -48,17 +49,37 @@ VLK_LOCATION_SCALE_INLINE void accumulate_location_scale_first(
         model_parameter_count<StaticModelParameters>(runtime_model_parameters);
     if constexpr (EmitValue)
         Density::accumulate_value(objective, observation);
-    for (std::size_t parameter = 0; parameter < model_parameters; ++parameter) {
-        gradient[parameter] +=
-            observation.residual_gradient * residual_first[parameter]
-            + observation.variance_gradient * variance_first[parameter];
+    if constexpr (ConstantVariance) {
+        for (std::size_t parameter = 0; parameter + 1u < model_parameters; ++parameter)
+            gradient[parameter] += observation.residual_gradient * residual_first[parameter];
+        gradient[model_parameters-1u] += observation.variance_gradient;
+    } else {
+        const std::size_t residual_parameters = [&] {
+            if constexpr (requires { residual_first.size(); })
+                return residual_first.size();
+            else return model_parameters;
+        }();
+        // Public accumulators are disjoint from the recursion's sensitivity rows.
+#if defined(__clang__)
+#pragma clang loop vectorize(assume_safety)
+#elif defined(__GNUC__)
+#pragma GCC ivdep
+#endif
+        for (std::size_t parameter = 0; parameter < residual_parameters; ++parameter) {
+            gradient[parameter] +=
+                observation.residual_gradient * residual_first[parameter]
+                + observation.variance_gradient * variance_first[parameter];
+        }
+        for (std::size_t parameter = residual_parameters; parameter < model_parameters; ++parameter)
+            gradient[parameter] += observation.variance_gradient * variance_first[parameter];
     }
     for (std::size_t shape = 0; shape < Density::shape_parameters; ++shape)
         gradient[model_parameters + shape] += observation.shape_gradient[shape];
 }
 
 template<bool EmitValue, bool EmitGradient, bool DenseHessian,
-         std::size_t StaticModelParameters, class Density>
+         std::size_t StaticModelParameters, class Density,
+         bool ConstantVariance = false, bool AffineResidual = false>
 VLK_LOCATION_SCALE_INLINE void accumulate_location_scale_second(
     std::size_t runtime_model_parameters,
     const generated::DensityObservation<Density::shape_parameters>& observation,
@@ -73,20 +94,12 @@ VLK_LOCATION_SCALE_INLINE void accumulate_location_scale_second(
     const std::size_t model_parameters =
         model_parameter_count<StaticModelParameters>(runtime_model_parameters);
     const std::size_t width = model_parameters + Density::shape_parameters;
-    if constexpr (EmitValue)
-        Density::accumulate_value(objective, observation);
     if constexpr (EmitGradient) {
-        for (std::size_t parameter = 0; parameter < model_parameters;
-             ++parameter) {
-            gradient[parameter] +=
-                observation.residual_gradient * residual_first[parameter]
-                + observation.variance_gradient * variance_first[parameter];
-        }
-        for (std::size_t shape = 0; shape < Density::shape_parameters; ++shape) {
-            gradient[model_parameters + shape] +=
-                observation.shape_gradient[shape];
-        }
-    }
+        accumulate_location_scale_first<EmitValue, StaticModelParameters,
+            Density, ConstantVariance>(runtime_model_parameters, observation,
+                residual_first, variance_first, objective, gradient);
+    } else if constexpr (EmitValue)
+        Density::accumulate_value(objective, observation);
 
     const auto add_hessian = [&](std::size_t row, std::size_t column,
                                  double value) {
@@ -95,31 +108,41 @@ VLK_LOCATION_SCALE_INLINE void accumulate_location_scale_second(
             : packed_upper_index(width, row, column);
         hessian[index] += value;
     };
-    for (std::size_t row = 0; row < model_parameters; ++row) {
-        for (std::size_t column = row; column < model_parameters; ++column) {
+    const std::size_t residual_parameters = model_parameters - (ConstantVariance ? 1u : 0u);
+    for (std::size_t row = 0; row < residual_parameters; ++row) {
+        for (std::size_t column = row; column < residual_parameters; ++column) {
             const std::size_t packed = packed_upper_index(
                 model_parameters, row, column);
-            add_hessian(
-                row,
-                column,
-                observation.residual_hessian
-                    * residual_first[row] * residual_first[column]
-                + observation.residual_variance_hessian
+            double entry = observation.residual_hessian
+                    * residual_first[row] * residual_first[column];
+            if constexpr (!ConstantVariance) {
+                entry += observation.residual_variance_hessian
                     * (residual_first[row] * variance_first[column]
-                       + variance_first[row] * residual_first[column])
-                + observation.variance_hessian
-                    * variance_first[row] * variance_first[column]
-                + observation.residual_gradient * residual_second[packed]
-                + observation.variance_gradient * variance_second[packed]);
+                       + variance_first[row] * residual_first[column]);
+                entry += observation.variance_hessian
+                    * variance_first[row] * variance_first[column];
+            }
+            if constexpr (!AffineResidual)
+                entry += observation.residual_gradient * residual_second[packed];
+            if constexpr (!ConstantVariance)
+                entry += observation.variance_gradient * variance_second[packed];
+            add_hessian(row, column, entry);
         }
+        if constexpr (ConstantVariance)
+            add_hessian(row, residual_parameters,
+                observation.residual_variance_hessian * residual_first[row]);
         for (std::size_t shape = 0; shape < Density::shape_parameters; ++shape) {
-            add_hessian(
-                row,
-                model_parameters + shape,
-                observation.residual_shape_hessian[shape] * residual_first[row]
-                + observation.variance_shape_hessian[shape]
-                    * variance_first[row]);
+            double entry = observation.residual_shape_hessian[shape] * residual_first[row];
+            if constexpr (!ConstantVariance)
+                entry += observation.variance_shape_hessian[shape] * variance_first[row];
+            add_hessian(row, model_parameters + shape, entry);
         }
+    }
+    if constexpr (ConstantVariance) {
+        add_hessian(residual_parameters, residual_parameters, observation.variance_hessian);
+        for (std::size_t shape = 0; shape < Density::shape_parameters; ++shape)
+            add_hessian(residual_parameters, model_parameters + shape,
+                observation.variance_shape_hessian[shape]);
     }
     for (std::size_t row = 0; row < Density::shape_parameters; ++row) {
         for (std::size_t column = row; column < Density::shape_parameters;

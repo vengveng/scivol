@@ -272,6 +272,7 @@ VLK_INLINE int lm_studentt_obs_derivs(
     double e,
     double h,
     double nu,
+    const vlk_student_normalization_t *normalization,
     lm_studentt_obs_derivs_t *out
 )
 {
@@ -295,23 +296,14 @@ VLK_INLINE int lm_studentt_obs_derivs(
     const double inv_B2 = inv_B * inv_B;
     const double one_plus = 1.0 + e2 * inv_h * inv_a;
     const double one_plus2 = one_plus * one_plus;
-    const double digamma_half_nu = digamma_approx(0.5 * nu);
-    const double digamma_half_nu_plus_1 = digamma_approx(0.5 * (nu + 1.0));
-    const double trigamma_half_nu = trigamma_approx(0.5 * nu);
-    const double trigamma_half_nu_plus_1 = trigamma_approx(0.5 * (nu + 1.0));
-    const double c_log = lgamma_approx(0.5 * (nu + 1.0))
-                       - lgamma_approx(0.5 * nu)
-                       - 0.5 * log(M_PI * nu_m2);
+    const double log_tail = log1p(e2 * inv_h * inv_a);
     const double q = nu + 1.0;
     const double tmp = e2 * inv_h;
 
-    out->value = 0.5 * log(h) + 0.5 * q * log(one_plus) - c_log;
+    out->value = 0.5 * log(h) + 0.5 * q * log_tail - normalization->value;
     out->ell_e = q * e * inv_B;
     out->ell_h = 0.5 * inv_h - 0.5 * q * e2 * inv_a * inv_h2 / one_plus;
-    out->ell_nu = -0.5 * digamma_half_nu_plus_1
-                + 0.5 * digamma_half_nu
-                + 0.5 * inv_a
-                + 0.5 * log(one_plus)
+    out->ell_nu = -normalization->first + 0.5 * log_tail
                 - 0.5 * q * e2 * inv_a2 * inv_h / one_plus;
     out->ell_ee = q * (B - 2.0 * e2) * inv_B2;
     out->ell_eh = -q * e * nu_m2 * inv_B2;
@@ -321,9 +313,7 @@ VLK_INLINE int lm_studentt_obs_derivs(
     out->ell_e_nu = e * inv_B - q * e * h * inv_B2;
     out->ell_h_nu = -0.5 * e2 * inv_h2 / one_plus
                   * (inv_a - q * inv_a2 / one_plus);
-    out->ell_nu_nu = -0.25 * trigamma_half_nu_plus_1
-                   + 0.25 * trigamma_half_nu
-                   - 0.5 * inv_a2
+    out->ell_nu_nu = -normalization->second
                    - e2 * inv_a2 * inv_h / one_plus
                    + 0.5 * q * e2 * inv_a3 * inv_h * (1.0 + one_plus) / one_plus2;
     return 1;
@@ -405,14 +395,11 @@ VLK_INLINE int lm_skewt_precompute_full(double nu, double lam, lm_skewt_cache_t 
         return 0;
     }
 
-    const double c_log = lgamma_approx(0.5 * (nu + 1.0)) - lgamma_approx(0.5 * nu) - 0.5 * log(M_PI * nu_m2);
+    const vlk_student_normalization_t normalization = vlk_student_normalization(nu, 1, 1, 1);
+    const double c_log = normalization.value;
     const double c = exp(c_log);
-    const double dc_log_dnu = 0.5 * digamma_approx(0.5 * (nu + 1.0))
-                            - 0.5 * digamma_approx(0.5 * nu)
-                            - 0.5 / nu_m2;
-    const double d2c_log_dnu2 = 0.25 * trigamma_approx(0.5 * (nu + 1.0))
-                              - 0.25 * trigamma_approx(0.5 * nu)
-                              + 0.5 / (nu_m2 * nu_m2);
+    const double dc_log_dnu = normalization.first;
+    const double d2c_log_dnu2 = normalization.second;
     const double dc_dnu = c * dc_log_dnu;
     const double d2c_dnu2 = c * (dc_log_dnu * dc_log_dnu + d2c_log_dnu2);
     const double f = c * nu_m2 / nu_m1;
@@ -538,12 +525,13 @@ VLK_INLINE int lm_skewt_obs_derivs(
     const double R_nu_lam = 2.0 * (v_nu * v_lam + v * v_nu_lam);
     const double R_lam_lam = 2.0 * (v_lam * v_lam + v * v_lam_lam);
 
-    out->value = 0.5 * log(h) - cache->c_log - log(cache->b) + q * (log(R) - log(nu_m2));
+    const double log_tail = vlk_student_log_tail(v*v, nu_m2, R, log(nu_m2));
+    out->value = 0.5 * log(h) - cache->c_log - log(cache->b) + q * log_tail;
     out->ell_e = q * R_e * inv_R;
     out->ell_h = 0.5 * inv_h + q * R_h * inv_R;
     out->ell_nu = -cache->dc_log_dnu
                 - cache->b_nu * inv_b
-                + 0.5 * (log(R) - log(nu_m2))
+                + 0.5 * log_tail
                 + q * (R_nu * inv_R - 1.0 / nu_m2);
     out->ell_lam = -cache->b_lam * inv_b + q * R_lam * inv_R;
     out->ell_ee = q * (R_ee * inv_R - R_e * R_e * inv_R2);
@@ -625,7 +613,7 @@ double linear_mean_garch_nll_pq_normal(
         }
         nll += 0.5 * (log(sigma2[t]) + resid[t] * resid[t] / sigma2[t]);
     }
-    return nll;
+    return nll + 0.5 * (double)n * LOG_2PI;
 }
 
 __attribute__((visibility("default"), hot, flatten))
@@ -967,6 +955,7 @@ double linear_mean_garch_nll_pq_studentt(
     if (!lm_validate_garch(omega, alpha, beta, p, q) || !(nu > NU_MIN) || !isfinite(nu)) {
         return 1e10;
     }
+    const vlk_student_normalization_t normalization = vlk_student_normalization(nu, 1, 1, 1);
 
     double nll = 0.0;
     for (size_t t = 0; t < n; ++t) {
@@ -978,7 +967,7 @@ double linear_mean_garch_nll_pq_studentt(
         } else if (t > 0) {
             sigma2[t] = lm_sigma2_pq(omega, alpha, beta, p, q, t, resid, sigma2);
         }
-        if (!lm_studentt_obs_derivs(resid[t], sigma2[t], nu, &obs)) {
+        if (!lm_studentt_obs_derivs(resid[t], sigma2[t], nu, &normalization, &obs)) {
             return 1e10;
         }
         nll += obs.value;
@@ -1027,6 +1016,7 @@ void linear_mean_garch_nll_grad_pq_studentt(
     if (!lm_validate_garch(omega, alpha, beta, p, q) || !(nu > NU_MIN) || !isfinite(nu)) {
         return;
     }
+    const vlk_student_normalization_t normalization = vlk_student_normalization(nu, 1, 1, 1);
 
     const size_t ring = q + 1;
     double *D_buf = (double *)calloc(ring * ndyn, sizeof(double));
@@ -1047,7 +1037,7 @@ void linear_mean_garch_nll_grad_pq_studentt(
         }
         lm_update_dynamic_grad(D_t, D_buf, ring, features, resid, sigma2, alpha, beta, t, n_mean, p, q, ndyn);
 
-        if (!lm_studentt_obs_derivs(resid[t], sigma2[t], nu, &obs)) {
+        if (!lm_studentt_obs_derivs(resid[t], sigma2[t], nu, &normalization, &obs)) {
             free(D_buf);
             dzeros(grad, K);
             return;
@@ -1107,6 +1097,7 @@ void linear_mean_garch_hess_pq_studentt(
     if (!lm_validate_garch(omega, alpha, beta, p, q) || !(nu > NU_MIN) || !isfinite(nu)) {
         return;
     }
+    const vlk_student_normalization_t normalization = vlk_student_normalization(nu, 1, 1, 1);
 
     const size_t ring = q + 1;
     double *D_buf = (double *)calloc(ring * ndyn, sizeof(double));
@@ -1131,7 +1122,7 @@ void linear_mean_garch_hess_pq_studentt(
         }
         lm_update_dynamic_hess(D_t, C_t, D_buf, C_buf, ring, features, resid, sigma2, alpha, beta, t, n_mean, p, q, ndyn);
 
-        if (!lm_studentt_obs_derivs(resid[t], sigma2[t], nu, &obs)) {
+        if (!lm_studentt_obs_derivs(resid[t], sigma2[t], nu, &normalization, &obs)) {
             free(D_buf);
             free(C_buf);
             dzeros(hess, K * K);

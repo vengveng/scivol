@@ -43,8 +43,23 @@ template<int Order, std::size_t StaticWidth, class State, class Moment>
     std::size_t runtime_width) noexcept
 {
     const std::size_t parameters_count = width<StaticWidth>(runtime_width);
+    if constexpr (Order >= 1) {
+        if (standardized.value == 0.0) {
+            bool active_first = false;
+            for (std::size_t i=0;i<parameters_count;++i)
+                active_first |= standardized.gradient[i] != 0.0;
+            if (active_first && (Order >= 2 || parameters[alpha] != 0.0))
+                return false;
+            if constexpr (Order >= 2) {
+                if (parameters[alpha] != 0.0)
+                    for (std::size_t i=0;i<parameters_count*(parameters_count+1u)/2u;++i)
+                        if (standardized.hessian[i] != 0.0) return false;
+            }
+        }
+    }
     const double sign = standardized.value < 0.0 ? -1.0 : 1.0;
-    const double centered = std::abs(standardized.value) - moment.value;
+    using std::fabs;
+    const auto centered = fabs(standardized.value) - moment.value;
     const double propagation = parameters[alpha] * sign + parameters[gamma];
     current.value += parameters[alpha] * centered
         + parameters[gamma] * standardized.value;
@@ -58,8 +73,8 @@ template<int Order, std::size_t StaticWidth, class State, class Moment>
             current.gradient[model_parameters + shape] -=
                 parameters[alpha] * moment.gradient[shape];
         }
-        current.gradient[alpha] += centered;
-        current.gradient[gamma] += standardized.value;
+        current.gradient[alpha] += static_cast<double>(centered);
+        current.gradient[gamma] += static_cast<double>(standardized.value);
     }
     if constexpr (Order >= 2) {
         for (std::size_t row = 0; row < parameters_count; ++row) {
@@ -113,7 +128,7 @@ VLK_EGARCH_EQUATION_INLINE void add_persistence(
             current.gradient[index] +=
                 coefficient * previous.gradient[index];
         }
-        current.gradient[beta] += previous.value;
+        current.gradient[beta] += static_cast<double>(previous.value);
     }
     if constexpr (Order >= 2) {
         for (std::size_t row = 0; row < parameters_count; ++row) {
@@ -140,13 +155,13 @@ template<int Order, std::size_t StaticWidth, class State>
     std::size_t runtime_width) noexcept
 {
     const std::size_t parameters_count = width<StaticWidth>(runtime_width);
-    standardized.value = residual * std::exp(-0.5 * log_variance.value);
+    using std::exp;
+    standardized.value = residual * exp(-0.5 * log_variance.value);
     if constexpr (Order > 0) {
-        if (standardized.value == 0.0)
-            return false;
+        const double value = static_cast<double>(standardized.value);
         for (std::size_t index = 0; index < parameters_count; ++index) {
             standardized.gradient[index] = -0.5
-                * standardized.value * log_variance.gradient[index];
+                * value * log_variance.gradient[index];
         }
     }
     if constexpr (Order >= 2) {
@@ -157,13 +172,13 @@ template<int Order, std::size_t StaticWidth, class State>
                     parameters_count, row, column);
                 const double outer = log_variance.gradient[row]
                     * log_variance.gradient[column];
-                standardized.hessian[packed] = standardized.value
+                standardized.hessian[packed] = static_cast<double>(standardized.value)
                     * (0.25 * outer - 0.5 * log_variance.hessian[packed]);
             }
         }
     }
-    return std::isfinite(log_variance.value)
-        && std::isfinite(standardized.value);
+    return std::isfinite(static_cast<double>(log_variance.value))
+        && std::isfinite(static_cast<double>(standardized.value));
 }
 
 template<int Order, std::size_t StaticWidth, class State>
@@ -174,15 +189,16 @@ template<int Order, std::size_t StaticWidth, class State>
     std::size_t runtime_width) noexcept
 {
     const std::size_t parameters_count = width<StaticWidth>(runtime_width);
-    const double inverse_scale = std::exp(-0.5 * log_variance.value);
-    standardized.value = residual.value * inverse_scale;
+    using std::exp;
+    const auto scalar_inverse_scale = exp(-0.5 * log_variance.value);
+    standardized.value = residual.value * scalar_inverse_scale;
+    const double inverse_scale = static_cast<double>(scalar_inverse_scale);
+    const double residual_value = static_cast<double>(residual.value);
     if constexpr (Order >= 1) {
-        if (standardized.value == 0.0)
-            return false;
         for (std::size_t index = 0; index < parameters_count; ++index) {
             standardized.gradient[index] = inverse_scale
                 * (residual.gradient[index]
-                   - 0.5 * residual.value * log_variance.gradient[index]);
+                   - 0.5 * residual_value * log_variance.gradient[index]);
         }
     }
     if constexpr (Order >= 2) {
@@ -197,15 +213,15 @@ template<int Order, std::size_t StaticWidth, class State>
                         * log_variance.gradient[column]
                     - 0.5 * residual.gradient[column]
                         * log_variance.gradient[row]
-                    - 0.5 * residual.value * log_variance.hessian[packed]
-                    + 0.25 * residual.value
+                    - 0.5 * residual_value * log_variance.hessian[packed]
+                    + 0.25 * residual_value
                         * log_variance.gradient[row]
                         * log_variance.gradient[column]);
             }
         }
     }
-    return std::isfinite(log_variance.value)
-        && std::isfinite(standardized.value);
+    return std::isfinite(static_cast<double>(log_variance.value))
+        && std::isfinite(static_cast<double>(standardized.value));
 }
 
 }  // namespace egarch_equation

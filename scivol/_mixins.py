@@ -432,6 +432,8 @@ class FitsMixin:
         from .components.vol import APARCH, EGARCH
         from .roles import Role
         force_legacy_engine = bool(kwargs.pop("_force_legacy_engine", False))
+        from ._mean_fit import supports_mean
+        canonical_mean = supports_mean(spec) and not force_legacy_engine
         legacy_requested = str(kwargs.get("solver", "")).lower() == "legacy"
         mean_component = spec.get_component(Role.MEAN)
         canonical_egarch = (
@@ -513,7 +515,7 @@ class FitsMixin:
         ):
             raise NotImplementedError("APARCH QMLE is not yet implemented; use method='mle'.")
         if (
-            not native_engine
+            not native_engine and not canonical_mean
             and any(key in fit_kwargs for key in ("initial_params", "maxiter", "maxfev"))
         ):
             from .components.mean import ARMA
@@ -571,10 +573,17 @@ class FitsMixin:
             if method_lower == "qmle":
                 from ._qmle import fit_qmle
                 result = fit_qmle(spec, prepared.data, x=prepared.x, **fit_kwargs)
+            elif canonical_mean:
+                from ._mean_fit import fit_mean_spec
+
+                result = fit_mean_spec(spec, prepared.data, x=prepared.x, **fit_kwargs)
+                result._fit_x = prepared.x
             elif native_engine:
                 from ._native_fit import fit_native_spec
+                from ._joint_mean_fit import supports_joint_mean, fit_joint_mean_spec
 
-                result = fit_native_spec(
+                fit_engine = fit_joint_mean_spec if supports_joint_mean(spec) else fit_native_spec
+                result = fit_engine(
                     spec, prepared.data, x=prepared.x, **fit_kwargs
                 )
                 result._fit_x = prepared.x
@@ -592,6 +601,12 @@ class FitsMixin:
                 from ._kernels import get_routine
 
                 routine = get_routine(str(spec))
+                if force_legacy_engine and supports_mean(spec):
+                    from importlib import import_module
+                    from ._kernels import _family_module
+
+                    module = import_module(_family_module(str(spec), canonical_mean=False))
+                    routine = module.get_routine(str(spec))
                 result = routine.fit(prepared.data, x=prepared.x, **fit_kwargs)
                 result._fit_x = prepared.x
 
@@ -628,6 +643,15 @@ class FitsMixin:
         requested_solver = kwargs.get("solver")
         if requested_solver is not None:
             return str(requested_solver).lower() == "native"
+        from ._joint_mean_fit import uses_joint_native_by_default
+
+        if (
+            not force_legacy_engine
+            and not has_auto_components
+            and method.lower() == "mle"
+            and uses_joint_native_by_default(spec)
+        ):
+            return True
         if (
             force_legacy_engine
             or has_auto_components

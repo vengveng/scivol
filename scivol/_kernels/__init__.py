@@ -9,7 +9,7 @@ from .routine import Routine
 _ROUTINES: Dict[str, Routine] = {}          # uid -> Routine
 
 
-def _family_module(uid: str) -> str:
+def _family_module(uid: str, *, canonical_mean: bool = True) -> str:
     """
     Convert canonical UID to family module path.
 
@@ -18,6 +18,8 @@ def _family_module(uid: str) -> str:
         "EGARCH(1,1)+StudentT"        -> scivol._kernels.egarch_studentt
         ...
     """
+    if canonical_mean and re.fullmatch(r"(ARMA|ARX|HARX)\([0-9,]+\)\+[A-Za-z]+", uid):
+        return f"{__name__}.mean"
     if uid.startswith("APARCH("):
         return f"{__name__}.aparch"
     if (

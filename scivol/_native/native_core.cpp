@@ -9,6 +9,7 @@
 #include "curvature_refinement.hpp"
 #include "egarch_runtime.hpp"
 #include "garch_runtime.hpp"
+#include "garch_solver_constraints.hpp"
 #include "garch_transform_policy.hpp"
 #include "runtime_kraft_slsqp.hpp"
 
@@ -1992,83 +1993,7 @@ struct NoConstraints {
     }
 };
 
-struct GjrThetaConstraints {
-    std::size_t dimension_value;
-    std::size_t mean_parameters;
-    std::size_t p;
-    std::size_t q;
-    std::uint32_t density;
-
-    [[nodiscard]] std::size_t dimension() const noexcept
-    {
-        return dimension_value;
-    }
-
-    [[nodiscard]] std::size_t count() const noexcept
-    {
-        return p + 1u;
-    }
-
-    [[nodiscard]] bool evaluate(
-        kraft::ConstraintRequest request,
-        const double* parameters,
-        double* values,
-        double* jacobian) const noexcept
-    {
-        const std::size_t omega = mean_parameters;
-        const std::size_t alpha_start = omega + 1u;
-        const std::size_t gamma_start = alpha_start + p;
-        const std::size_t beta_start = gamma_start + p;
-        const std::size_t shape_start = beta_start + q;
-        const std::size_t rows = count();
-        const std::size_t shapes = density_shape_count(density);
-        double moment = 0.0;
-        double moment_gradient[3] {};
-        const std::uint32_t moment_request =
-            request == kraft::ConstraintRequest::value
-            ? VLK_JET_F
-            : VLK_JET_F | VLK_JET_G;
-        if (!vlk_gjr_negative_second_moment(
-                parameters + shape_start, density, moment_request,
-                &moment, moment_gradient, nullptr)) {
-            return false;
-        }
-
-        if (request != kraft::ConstraintRequest::jacobian) {
-            double persistence = 0.0;
-            for (std::size_t lag = 0; lag < p; ++lag) {
-                const double alpha = parameters[alpha_start + lag];
-                const double gamma = parameters[gamma_start + lag];
-                values[lag] = alpha + gamma;
-                persistence += alpha + moment * gamma;
-            }
-            for (std::size_t lag = 0; lag < q; ++lag)
-                persistence += parameters[beta_start + lag];
-            values[p] = vlk::experiment::domain::stationary_persistence_limit(
-                2u * p + q) - persistence;
-        }
-        if (request == kraft::ConstraintRequest::value)
-            return true;
-
-        std::fill_n(jacobian, rows * dimension_value, 0.0);
-        for (std::size_t lag = 0; lag < p; ++lag) {
-            jacobian[lag + (alpha_start + lag) * rows] = 1.0;
-            jacobian[lag + (gamma_start + lag) * rows] = 1.0;
-            jacobian[p + (alpha_start + lag) * rows] = -1.0;
-            jacobian[p + (gamma_start + lag) * rows] = -moment;
-        }
-        for (std::size_t lag = 0; lag < q; ++lag)
-            jacobian[p + (beta_start + lag) * rows] = -1.0;
-        double gamma_sum = 0.0;
-        for (std::size_t lag = 0; lag < p; ++lag)
-            gamma_sum += parameters[gamma_start + lag];
-        for (std::size_t shape = 0; shape < shapes; ++shape) {
-            jacobian[p + (shape_start + shape) * rows] =
-                -gamma_sum * moment_gradient[shape];
-        }
-        return true;
-    }
-};
+using GjrThetaConstraints = runtime::GarchThetaConstraints;
 
 template<class Objective>
 kraft::Result minimize_objective(
@@ -4408,7 +4333,16 @@ PyModuleDef module = {
 
 }  // namespace
 
+int register_mean_methods(PyObject* module);
+int register_linear_joint_methods(PyObject* module);
+
 PyMODINIT_FUNC PyInit__native_core()
 {
-    return PyModule_Create(&module);
+    PyObject* result = PyModule_Create(&module);
+    if (result && (register_mean_methods(result) < 0
+                  || register_linear_joint_methods(result) < 0)) {
+        Py_DECREF(result);
+        return nullptr;
+    }
+    return result;
 }

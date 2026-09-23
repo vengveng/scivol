@@ -1541,4 +1541,15 @@ def main():
 
 
 if __name__ == "__main__":
+    import sys
+
+    if "--mean-native" in sys.argv:
+        import subprocess
+
+        command = [
+            sys.executable,
+            str(Path(__file__).with_name("benchmark_native_mean.py")),
+            *(argument for argument in sys.argv[1:] if argument != "--mean-native"),
+        ]
+        raise SystemExit(subprocess.call(command))
     df = main()

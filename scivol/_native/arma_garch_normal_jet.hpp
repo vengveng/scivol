@@ -181,10 +181,6 @@ struct ArmaGarchJet {
                 Density::accumulate_value(
                     accumulated_value, value_observation);
             }
-            if (!Recursion::differentiable(
-                    time, residual_history, residual_first_history)) {
-                return false;
-            }
             typename Recursion::First residual_first;
             typename Recursion::First variance_first;
             Recursion::advance_first(
@@ -303,7 +299,7 @@ struct ArmaGarchJet {
             if (!valid_variance(variance))
                 return false;
             if (!Recursion::differentiable(
-                    time, residual_history, residual_first_history)) {
+                    theta, time, residual_history, residual_first_history)) {
                 return false;
             }
             const auto observation = Density::template observe<

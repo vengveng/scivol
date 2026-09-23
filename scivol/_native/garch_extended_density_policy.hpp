@@ -155,7 +155,7 @@ struct GedDensity {
     observe_log_variance_first_with_residuals(
         const Prepared<Order, true>& prepared,
         double log_variance,
-        double residual) noexcept
+        double residual, bool residual_active = true) noexcept
     {
         static_assert(Order == 1);
         LogVarianceFirstObservation<shape_parameters> result;
@@ -173,7 +173,7 @@ struct GedDensity {
                 - prepared.log_scale.value;
             kernel = std::exp(nu * log_standardized);
             result.residual_gradient = nu * kernel / residual;
-        } else if (nu <= 1.0) {
+        } else if (nu <= 1.0 && residual_active) {
             result.valid = false;
             return result;
         }
@@ -200,7 +200,7 @@ struct GedDensity {
     DensityObservation<shape_parameters> observe_first_with_residuals(
         const Prepared<Order, true>& prepared,
         double variance,
-        double residual) noexcept
+        double residual, bool residual_active = true) noexcept
     {
         static_assert(Order == 1);
         DensityObservation<shape_parameters> result;
@@ -209,7 +209,7 @@ struct GedDensity {
             return result;
         }
         const auto local = observe_log_variance_first_with_residuals<NeedValue>(
-            prepared, std::log(variance), residual);
+            prepared, std::log(variance), residual, residual_active);
         result.valid = local.valid;
         result.value = local.value;
         result.residual_gradient = local.residual_gradient;
@@ -232,12 +232,12 @@ struct GedDensity {
         const Prepared<Order, NeedResidualDerivatives>& prepared,
         double variance,
         double residual,
-        double residual2) noexcept
+        double residual2, bool residual_active = true) noexcept
     {
         static_assert(Order == (NeedHessian ? 2 : NeedGradient ? 1 : 0));
         if constexpr (Order == 1 && NeedResidualDerivatives) {
             return observe_first_with_residuals<NeedValue>(
-                prepared, variance, residual);
+                prepared, variance, residual, residual_active);
         }
         using Number = typename Prepared<Order, NeedResidualDerivatives>::Number;
         constexpr std::size_t variance_index = NeedResidualDerivatives ? 1u : 0u;
@@ -265,12 +265,12 @@ struct GedDensity {
         auto result = local_density_observation<
             Order, shape_parameters, NeedResidualDerivatives>(nll);
         if constexpr (NeedResidualDerivatives && Order >= 1) {
-            if (residual == 0.0 && prepared.nu.value <= 1.0)
+            if (residual_active && residual == 0.0 && prepared.nu.value <= 1.0)
                 result.valid = false;
         }
         if constexpr (NeedResidualDerivatives && Order >= 2) {
             if (residual == 0.0) {
-                if (prepared.nu.value < 2.0) {
+                if (prepared.nu.value < 2.0 && residual_active) {
                     result.valid = false;
                 } else if (prepared.nu.value == 2.0) {
                     result.residual_hessian = 2.0 * std::exp(
@@ -293,6 +293,7 @@ struct SkewTDensity {
         bool valid = false;
         Number nu {};
         Number lam {};
+        std::array<double,2> inverse_sides {};
         Number nu_minus_two {};
         double log_nu_minus_two = 0.0;
         Number half_nu_plus_one {};
@@ -322,14 +323,12 @@ struct SkewTDensity {
         Prepared<order, NeedResidualDerivatives> result;
         result.nu = Number::variable(shape[0], 0u);
         result.lam = Number::variable(shape[1], 1u);
+        result.inverse_sides={1.0/(1.0-shape[1]),1.0/(1.0+shape[1])};
         result.nu_minus_two = result.nu - Number::constant(2.0);
         result.log_nu_minus_two = std::log(result.nu_minus_two.value);
         result.half_nu_plus_one = Number::constant(0.5)
             * (result.nu + Number::constant(1.0));
-        const Number c_log = ad::lgamma(result.half_nu_plus_one)
-            - ad::lgamma(Number::constant(0.5) * result.nu)
-            - Number::constant(0.5) * ad::log(
-                Number::constant(M_PI) * result.nu_minus_two);
+        const Number c_log = student_normalization(result.nu);
         const Number c = ad::exp(c_log);
         result.a = Number::constant(4.0) * result.lam * c
             * result.nu_minus_two / (result.nu - Number::constant(1.0));
@@ -350,10 +349,8 @@ struct SkewTDensity {
         double tail_sum,
         double log_nu_minus_two) noexcept
     {
-        const double ratio = squared_adjusted / nu_minus_two;
-        if (ratio < 1.0e-4)
-            return std::log1p(ratio);
-        return std::log(tail_sum) - log_nu_minus_two;
+        return vlk_student_log_tail(
+            squared_adjusted,nu_minus_two,tail_sum,log_nu_minus_two);
     }
 
     template<int Order, bool NeedResidualDerivatives>
@@ -428,8 +425,9 @@ struct SkewTDensity {
         const double inverse_h2 = inverse_h * inverse_h;
         const double z = residual / std::sqrt(variance);
         const double u = prepared.b.value * z + prepared.a.value;
-        if constexpr (Order > 0) {
-            if (u == 0.0) {
+        if constexpr (NeedHessian) {
+            if (u == 0.0 && prepared.lam.value != 0.0) {
+                result.valid = false;
                 const double invalid =
                     std::numeric_limits<double>::quiet_NaN();
                 result.variance_gradient = invalid;
@@ -443,8 +441,7 @@ struct SkewTDensity {
             }
         }
         const double sign = u < 0.0 ? -1.0 : 1.0;
-        const double side = 1.0 + sign * prepared.lam.value;
-        const double inverse_side = 1.0 / side;
+        const double inverse_side = prepared.inverse_sides[static_cast<std::size_t>(u>=0.0)];
         const double inverse_side2 = inverse_side * inverse_side;
         const double inverse_side3 = inverse_side2 * inverse_side;
         const double adjusted = u * inverse_side;
@@ -579,11 +576,13 @@ struct SkewTDensity {
         static_assert(Order == (NeedHessian ? 2 : NeedGradient ? 1 : 0));
         static_assert(NeedResidualDerivatives);
         DensityObservation<shape_parameters> result;
-        const double inverse_sqrt_variance = 1.0 / std::sqrt(variance);
-        const double z = residual * inverse_sqrt_variance;
+        const double sqrt_variance = std::sqrt(variance);
+        const double inverse_sqrt_variance = Order>0 ? 1.0/sqrt_variance : 0.0;
+        const double z = Order>0 ? residual*inverse_sqrt_variance : residual/sqrt_variance;
         const double u = prepared.b.value * z + prepared.a.value;
-        if constexpr (Order > 0) {
-            if (u == 0.0) {
+        // The joined density is C1; its curvature jumps only at nonzero skew.
+        if constexpr (NeedHessian) {
+            if (u == 0.0 && prepared.lam.value != 0.0) {
                 const double failure =
                     std::numeric_limits<double>::quiet_NaN();
                 result.valid = false;
@@ -602,8 +601,7 @@ struct SkewTDensity {
             }
         }
         const double sign = u < 0.0 ? -1.0 : 1.0;
-        const double side = 1.0 + sign * prepared.lam.value;
-        const double inverse_side = 1.0 / side;
+        const double inverse_side = prepared.inverse_sides[static_cast<std::size_t>(u>=0.0)];
         const double v = u * inverse_side;
         const double nu_minus_two = prepared.nu_minus_two.value;
         const double tail = nu_minus_two + v * v;

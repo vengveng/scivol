@@ -12,47 +12,85 @@
 #define GH_LOG_PI_OVER_2 0.45158270528945486473
 #define GH_HALF_PI 1.57079632679489661923
 
+/* Gauss-Legendre roots and weights rounded once from 90-digit arithmetic. */
 static const double GH_NODES[GH_QUAD_HALF] = {
-    1.222369896061576387e-02, 3.666379096873349785e-02, 6.108196960413957155e-02, 8.546364050451549232e-02,
-    1.097942311276437488e-01, 1.340591994611878002e-01, 1.582440427142249306e-01, 1.823343059853371750e-01,
+    1.222369896061576387e-02, 3.666379096873349092e-02, 6.108196960413957155e-02, 8.546364050451549232e-02,
+    1.097942311276437488e-01, 1.340591994611877724e-01, 1.582440427142249306e-01, 1.823343059853371750e-01,
     2.063155909020792100e-01, 2.301735642266599935e-01, 2.538939664226942949e-01, 2.774626201779044066e-01,
     3.008654388776771937e-01, 3.240884350244133683e-01, 3.471177285976355109e-01, 3.699395553498590061e-01,
     3.925402750332674384e-01, 4.149063795522749953e-01, 4.370245010371041627e-01, 4.588814198335521843e-01,
-    4.804640724041719935e-01, 5.017595591361444507e-01, 5.227551520511755090e-01, 5.434383024128103257e-01,
+    4.804640724041720490e-01, 5.017595591361444507e-01, 5.227551520511755090e-01, 5.434383024128103257e-01,
     5.637966482266181245e-01, 5.838180216287630619e-01, 6.034904561585485716e-01, 6.228021939105848892e-01,
     6.417416925623075086e-01, 6.602976322726460401e-01, 6.784589224477192149e-01, 6.962147083695143790e-01,
     7.135543776835874263e-01, 7.304675667419088247e-01, 7.469441667970619925e-01, 7.629743300440947618e-01,
     7.785484755064119300e-01, 7.936572947621932661e-01, 8.082917575079137107e-01, 8.224431169556438714e-01,
     8.361029150609068372e-01, 8.492629875779689197e-01, 8.619154689395485125e-01, 8.740527969580318413e-01,
-    8.856677173453971763e-01, 8.967532880491582148e-01, 9.073028834017567990e-01, 9.173101980809605926e-01,
-    9.267692508789479033e-01, 9.356743882779163801e-01, 9.440202878302201839e-01, 9.518019613412643798e-01,
+    8.856677173453971763e-01, 8.967532880491582148e-01, 9.073028834017567990e-01, 9.173101980809604816e-01,
+    9.267692508789477923e-01, 9.356743882779163801e-01, 9.440202878302201839e-01, 9.518019613412643798e-01,
     9.590147578536999395e-01, 9.656543664319652276e-01, 9.717168187471365570e-01, 9.771984914639073594e-01,
     9.820961084357184845e-01, 9.864067427245861719e-01, 9.901278184917343683e-01, 9.932571129002129018e-01,
     9.957927585349811705e-01, 9.977332486255140465e-01, 9.990774599773758480e-01, 9.998248879471318684e-01,
 };
 
+/* cosh of the rounded quadrature points, rounded once at 90 digits. */
+static const double GH_COSH_T[2 * GH_QUAD_HALF] = {
+    1.351625693835092989e+03, 1.643597151084759162e+03, 1.111585545013301498e+03, 1.998522046836209483e+03,
+    9.143353077262028137e+02, 2.429664883069600819e+03, 7.523067380511216697e+02, 2.952955972285766620e+03,
+    6.192441505939320905e+02, 3.587485032329280330e+03, 5.099844244609860766e+02, 4.356073809785611957e+03,
+    4.202719043542060149e+02, 5.285936964492848347e+03, 3.466031455119993439e+02, 6.409440582006255681e+03,
+    2.860970664863858133e+02, 7.764967505252857336e+03, 2.363866423840425171e+02, 9.397898092598716175e+03,
+    1.955287890656592253e+02, 1.136171390436522961e+04, 1.619295545870180604e+02, 1.371923006771221299e+04,
+    1.342821486409589227e+02, 1.654395953452925824e+04, 1.115157061350433878e+02, 1.992160898598119456e+04,
+    9.275300048007561315e+01, 2.395170160778301943e+04, 7.727559939762377894e+01, 2.874931622721353415e+04,
+    6.449519507654927963e+01, 3.444692524993918778e+04, 5.393004536598859033e+01, 4.119630537718740379e+04,
+    4.518563732793018062e+01, 4.917048518413853162e+04, 3.793883262088298380e+01, 5.856568232589583204e+04,
+    3.192487930819641306e+01, 6.960317051942746912e+04, 2.692677993280416970e+01, 8.253100274387359968e+04,
+    2.276659390515335346e+01, 9.762550264642170805e+04, 1.929832592416758530e+01, 1.151924214161048294e+05,
+    1.640211349759955439e+01, 1.355676430266567040e+05, 1.397947756752346748e+01, 1.591173075456506049e+05,
+    1.194944243675470830e+01, 1.862372111123493232e+05, 1.024536605459966765e+01, 2.173513332970392075e+05,
+    8.812350467787705810e+00, 2.529093390826490067e+05, 7.605125902614343403e+00, 2.933829049406187842e+05,
+    6.586321384548650570e+00, 3.392607277047498501e+05, 5.725050750450034087e+00, 3.910420924107776373e+05,
+    4.995755975776224211e+00, 4.492289020371092483e+05, 4.377260433057009514e+00, 5.143161089579794789e+05,
+    3.851993440874631691e+00, 5.867805353255498921e+05, 3.405354604617799819e+00, 6.670681274544104235e+05,
+    3.025192280546847190e+00, 7.555797569026313722e+05, 2.701375251564290370e+00, 8.526557569390489953e+05,
+    2.425440582510949739e+00, 9.585594653018515091e+05, 2.190303785606433351e+00, 1.073460129645528272e+06,
+    1.990020004501893425e+00, 1.197415617136377143e+06, 1.819587025942034586e+00, 1.330355449911318021e+06,
+    1.674782639073320700e+00, 1.472064758657645667e+06, 1.552030255561858141e+00, 1.622169802194301272e+06,
+    1.448287837166174485e+00, 1.780125736405077158e+06, 1.360956098657681412e+00, 1.945207326262609102e+06,
+    1.287802701575489150e+00, 2.116503275732969400e+06, 1.226899759670601719e+00, 2.292914798857031856e+06,
+    1.176572465695096215e+00, 2.473158969470393844e+06, 1.135357042446481168e+00, 2.655777266781423241e+06,
+    1.101966535997920715e+00, 2.839149581273743417e+06, 1.075263220181716273e+00, 3.021513764131502248e+06,
+    1.054236580634132059e+00, 3.200990599693694618e+06, 1.037986004150512231e+00, 3.375613862368185073e+06,
+    1.025707423308437782e+00, 3.543364896662166808e+06, 1.016683264605168224e+00, 3.702210942399943713e+06,
+    1.010275126977060456e+00, 3.850146228325038683e+06, 1.005918681855751950e+00, 3.985234687666206155e+06,
+    1.003120340372509522e+00, 4.105653019939592574e+06, 1.001455281683308440e+00, 4.209732744982476346e+06,
+    1.000566481659339813e+00, 4.295999882070852444e+06, 1.000164425683169434e+00, 4.363210983805750497e+06,
+    1.000027234686607480e+00, 4.410384797383859754e+06, 1.000000981255554366e+00, 4.436835357769745402e+06,
+};
+
 static const double GH_WEIGHTS[GH_QUAD_HALF] = {
-    2.444618019626242436e-02, 2.443156909784994016e-02, 2.440235563384947348e-02, 2.435855726469051200e-02,
-    2.430020016797176594e-02, 2.422731922281515585e-02, 2.413995798901917914e-02, 2.403816868102394769e-02,
-    2.392201213670334947e-02, 2.379155778100327037e-02, 2.364688358444753946e-02, 2.348807601653577631e-02,
-    2.331522999406268962e-02, 2.312844882438691921e-02, 2.292784414368674584e-02, 2.271353585023641597e-02,
-    2.248565203274485030e-02, 2.224432889379970163e-02, 2.198971066846042502e-02, 2.172194953805202389e-02,
-    2.144120553920841193e-02, 2.114764646822127336e-02, 2.084144778075098375e-02, 2.052279248696007100e-02,
-    2.019187104212986916e-02, 1.984888123283080549e-02, 1.949402805870655009e-02, 1.912752360995090620e-02,
-    1.874958694054473102e-02, 1.836044393733124794e-02, 1.796032718500876688e-02, 1.754947582711756729e-02,
-    1.712813542311122580e-02, 1.669655780158906325e-02, 1.625500090978507575e-02, 1.580372865939914592e-02,
-    1.534301076886531931e-02, 1.487312260214741430e-02, 1.439434500416653280e-02, 1.390696413295178582e-02,
-    1.341127128861625828e-02, 1.290756273926747452e-02, 1.239613954395058990e-02, 1.187730737273994495e-02,
-    1.135137632408065277e-02, 1.081866073950285730e-02, 1.027947901583225500e-02, 9.734153415006684129e-03,
-    9.183009871660277601e-03, 8.626377798616769246e-03, 8.064589890486088125e-03, 7.497981925634576716e-03,
-    6.926892566898738487e-03, 6.351663161706925208e-03, 5.772637542865975864e-03, 5.190161832676730078e-03,
-    4.604584256703736500e-03, 4.016254983739319523e-03, 3.425526040910785094e-03, 2.832751471459144833e-03,
-    2.238288430963638644e-03, 1.642503018668153413e-03, 1.045812679344212959e-03, 4.493809602893054683e-04,
+    2.444618019626251804e-02, 2.443156909785004424e-02, 2.440235563384958103e-02, 2.435855726469062649e-02,
+    2.430020016797186655e-02, 2.422731922281524952e-02, 2.413995798901928669e-02, 2.403816868102405177e-02,
+    2.392201213670345702e-02, 2.379155778100340221e-02, 2.364688358444761579e-02, 2.348807601653591162e-02,
+    2.331522999406275901e-02, 2.312844882438702676e-02, 2.292784414368684645e-02, 2.271353585023646107e-02,
+    2.248565203274496827e-02, 2.224432889379976408e-02, 2.198971066846049094e-02, 2.172194953805207593e-02,
+    2.144120553920846051e-02, 2.114764646822134969e-02, 2.084144778075115029e-02, 2.052279248696007100e-02,
+    2.019187104213004263e-02, 1.984888123283086100e-02, 1.949402805870660213e-02, 1.912752360995094436e-02,
+    1.874958694054471020e-02, 1.836044393733134161e-02, 1.796032718500868708e-02, 1.754947582711770607e-02,
+    1.712813542311137846e-02, 1.669655780158920549e-02, 1.625500090978518677e-02, 1.580372865939934715e-02,
+    1.534301076886514410e-02, 1.487312260214731369e-02, 1.439434500416684679e-02, 1.390696413295198532e-02,
+    1.341127128861633287e-02, 1.290756273926734789e-02, 1.239613954395092296e-02, 1.187730737274027976e-02,
+    1.135137632408041684e-02, 1.081866073950307587e-02, 1.027947901583215785e-02, 9.734153415006805560e-03,
+    9.183009871660874346e-03, 8.626377798616750164e-03, 8.064589890486058635e-03, 7.497981925634728505e-03,
+    6.926892566898813948e-03, 6.351663161707188886e-03, 5.772637542865698308e-03, 5.190161832676330224e-03,
+    4.604584256702955007e-03, 4.016254983738642113e-03, 3.425526040910215671e-03, 2.832751471457991242e-03,
+    2.238288430962618626e-03, 1.642503018669029449e-03, 1.045812679340348862e-03, 4.493809602920903500e-04,
 };
 
 typedef struct {
     const double *nodes;
     const double *weights;
+    const double *cosh_t;
     size_t half_count;
 } gh_quadrature_rule_t;
 
@@ -62,10 +100,12 @@ static gh_quadrature_rule_t quadrature_rule(double order)
     if (fabs(order) > 15.0) {
         rule.nodes = GH_HIGH_NODES;
         rule.weights = GH_HIGH_WEIGHTS;
+        rule.cosh_t = GH_HIGH_COSH_T;
         rule.half_count = GH_HIGH_QUAD_HALF;
     } else {
         rule.nodes = GH_NODES;
         rule.weights = GH_WEIGHTS;
+        rule.cosh_t = GH_COSH_T;
         rule.half_count = GH_QUAD_HALF;
     }
     return rule;
@@ -279,24 +319,8 @@ static int log_bessel_k1_fast(double x, double *value,
     double correction;
     double correction_first;
     double correction_second;
-    if (x > 100.0) {
-        const double inv = 1.0 / x;
-        const double inv2 = inv * inv;
-        const double inv3 = inv2 * inv;
-        const double inv4 = inv3 * inv;
-        const double series = 1.0 + 0.375 * inv
-            - 0.1171875 * inv2 + 0.1025390625 * inv3
-            - 0.144195556640625 * inv4;
-        const double series_first = -0.375 * inv2
-            + 0.234375 * inv3 - 0.3076171875 * inv4
-            + 0.5767822265625 * inv4 * inv;
-        const double series_second = 0.75 * inv3
-            - 0.703125 * inv4 + 1.23046875 * inv4 * inv
-            - 2.8839111328125 * inv4 * inv2;
-        correction = log(series);
-        correction_first = series_first / series;
-        correction_second = series_second / series
-            - correction_first * correction_first;
+    if (x >= GH_BESSEL_FIXED_ONE_MIN_ARGUMENT) {
+        return gh_bessel_fixed_one_unplanned(7, x, value, first, second);
     } else {
         const double u = log(x);
         size_t interval = 0;
@@ -336,7 +360,19 @@ static double log_bessel_k_scalar(double order, double argument)
     }
     if (fabs(fabs(order) - 1.0) < 1e-14) {
         double value, first, second;
+        if (argument >= GH_BESSEL_FIXED_ONE_MIN_ARGUMENT) {
+            if (gh_bessel_fixed_one_unplanned(1, argument, &value, NULL, NULL)) return value;
+            return NAN;
+        }
         if (log_bessel_k1_fast(argument, &value, &first, &second)) return value;
+    }
+    if (isfinite(argument) && argument >= GH_BESSEL_EXPANSION_MIN_ARGUMENT
+        && fabs(order) <= GH_BESSEL_EXPANSION_MAX_ORDER) {
+        double coefficient[GH_BESSEL_EXPANSION_TERMS + 1], value;
+        gh_bessel_expansion_prepare(order, coefficient, NULL, NULL);
+        if (gh_bessel_expansion_evaluate(1, coefficient, NULL, NULL,
+                argument, &value, NULL, NULL, NULL, NULL, NULL)) return value;
+        return NAN;
     }
     const gh_quadrature_rule_t rule = quadrature_rule(order);
     double max_term = -INFINITY;
@@ -349,7 +385,7 @@ static double log_bessel_k_scalar(double order, double argument)
         const double t_values[2] = {t_left, t_right};
         for (size_t side = 0; side < 2; ++side) {
             const double t = t_values[side];
-            const double term = log_weight - argument * cosh(t)
+            const double term = log_weight - argument * rule.cosh_t[2 * i + side]
                               + log_cosh_scalar(order * t);
             if (term > max_term) {
                 sum *= isfinite(max_term) ? exp(max_term - term) : 0.0;
@@ -367,6 +403,20 @@ static void log_bessel_k_moments(
     double *d_order_order, double *d_order_argument,
     double *d_argument_argument)
 {
+    if (isfinite(argument) && argument >= GH_BESSEL_EXPANSION_MIN_ARGUMENT
+        && fabs(order) <= GH_BESSEL_EXPANSION_MAX_ORDER) {
+        double coefficient[GH_BESSEL_EXPANSION_TERMS + 1];
+        double first[GH_BESSEL_EXPANSION_TERMS + 1];
+        double second[GH_BESSEL_EXPANSION_TERMS + 1];
+        gh_bessel_expansion_prepare(order, coefficient, first, second_order ? second : NULL);
+        if (!gh_bessel_expansion_evaluate(second_order ? 7 : 3, coefficient,
+                first, second_order ? second : NULL, argument, value, d_order,
+                d_argument, d_order_order, d_order_argument, d_argument_argument)) {
+            *value = *d_order = *d_argument = NAN;
+            if (second_order) *d_order_order = *d_order_argument = *d_argument_argument = NAN;
+        }
+        return;
+    }
     const gh_quadrature_rule_t rule = quadrature_rule(order);
     double max_term = -INFINITY;
     double weight_sum = 0.0;
@@ -385,7 +435,7 @@ static void log_bessel_k_moments(
         };
         for (size_t side = 0; side < 2; ++side) {
             const double t = t_values[side];
-            const double cosh_t = cosh(t);
+            const double cosh_t = rule.cosh_t[2 * i + side];
             const double tanh_order_t = tanh(order * t);
             const double order_score = t * tanh_order_t;
             const double argument_score = -cosh_t;
@@ -448,6 +498,10 @@ int gh_log_bessel_k_first(double order, double argument,
         return isfinite(*value) && isfinite(*d_argument);
     }
     if (!differentiate_order && fabs(fabs(order) - 1.0) < 1e-14) {
+        if (argument >= GH_BESSEL_FIXED_ONE_MIN_ARGUMENT) {
+            *d_order = 0.0;
+            return gh_bessel_fixed_one_unplanned(3, argument, value, d_argument, NULL);
+        }
         double second;
         if (log_bessel_k1_fast(argument, value, d_argument, &second)) {
             *d_order = 0.0;
@@ -464,7 +518,8 @@ int gh_log_bessel_k_first(double order, double argument,
 }
 
 static int gh_bessel_value_plan_initialize(double order, int allow_fixed,
-                                           gh_bessel_value_plan_t *plan)
+                                           gh_bessel_value_plan_t *plan,
+                                           double *first, double *second)
 {
     if (!plan || !isfinite(order)) return 0;
     memset(plan, 0, sizeof(*plan));
@@ -474,11 +529,19 @@ static int gh_bessel_value_plan_initialize(double order, int allow_fixed,
     }
     if (allow_fixed && fabs(fabs(order) - 1.0) < 1e-14) {
         plan->fixed_kind = 2;
+        plan->expansion_ready = 1;
+        gh_bessel_expansion_prepare_terms(GH_BESSEL_FIXED_ONE_TERMS,
+            order, plan->expansion, NULL, NULL);
         return 1;
     }
+    plan->differentiate_order = first != NULL;
+    plan->expansion_ready = fabs(order) <= GH_BESSEL_EXPANSION_MAX_ORDER;
+    if (plan->expansion_ready)
+        gh_bessel_expansion_prepare(order, plan->expansion, first, second);
 
     const gh_quadrature_rule_t rule = quadrature_rule(order);
     if (2 * rule.half_count > GH_BESSEL_PLAN_MAX_TERMS) return 0;
+    plan->cosh_t = rule.cosh_t;
     for (size_t i = 0; i < rule.half_count; ++i) {
         const double offset = GH_QUAD_MIDPOINT * rule.nodes[i];
         const double log_weight = log(GH_QUAD_MIDPOINT * rule.weights[i]);
@@ -490,7 +553,6 @@ static int gh_bessel_value_plan_initialize(double order, int allow_fixed,
             const size_t index = 2 * i + side;
             const double t = t_values[side];
             const double order_t = order * t;
-            plan->cosh_t[index] = cosh(t);
             plan->base[index] = log_weight + log_cosh_scalar(order_t);
         }
     }
@@ -501,7 +563,7 @@ static int gh_bessel_value_plan_initialize(double order, int allow_fixed,
 int gh_bessel_value_plan_init(double order,
                               gh_bessel_value_plan_t *plan)
 {
-    return gh_bessel_value_plan_initialize(order, 1, plan);
+    return gh_bessel_value_plan_initialize(order, 1, plan, NULL, NULL);
 }
 
 int gh_log_bessel_k_value_planned(const gh_bessel_value_plan_t *plan,
@@ -514,11 +576,16 @@ int gh_log_bessel_k_value_planned(const gh_bessel_value_plan_t *plan,
         return isfinite(*value);
     }
     if (plan->fixed_kind == 2) {
+        if (argument >= GH_BESSEL_FIXED_ONE_MIN_ARGUMENT)
+            return gh_bessel_fixed_one_evaluate(1, plan->expansion, argument, value, NULL, NULL);
         double first;
         double second;
         return log_bessel_k1_fast(argument, value, &first, &second);
     }
-    if (plan->count == 0 || plan->count > GH_BESSEL_PLAN_MAX_TERMS)
+    if (plan->expansion_ready && argument >= GH_BESSEL_EXPANSION_MIN_ARGUMENT)
+        return gh_bessel_expansion_evaluate(1, plan->expansion, NULL, NULL,
+            argument, value, NULL, NULL, NULL, NULL, NULL);
+    if (plan->count == 0 || plan->count > GH_BESSEL_PLAN_MAX_TERMS || !plan->cosh_t)
         return 0;
 
     double max_term = -INFINITY;
@@ -526,26 +593,32 @@ int gh_log_bessel_k_value_planned(const gh_bessel_value_plan_t *plan,
     for (size_t index = 0; index < plan->count; ++index) {
         const double term = plan->base[index]
             - argument * plan->cosh_t[index];
+        double weight;
         if (term > max_term) {
             const double scale = isfinite(max_term)
                 ? exp(max_term - term)
                 : 0.0;
             weight_sum *= scale;
             max_term = term;
+            weight = 1.0;  /* The new maximum has exp(term - max_term) == 1. */
+        } else {
+            weight = exp(term - max_term);
         }
-        weight_sum += exp(term - max_term);
+        weight_sum += weight;
     }
     *value = max_term + log(weight_sum);
     return isfinite(*value);
 }
 
-int gh_bessel_first_plan_init(double order, int differentiate_order,
-                              gh_bessel_first_plan_t *plan)
+static int gh_bessel_first_plan_initialize(double order, int differentiate_order,
+                                          gh_bessel_first_plan_t *plan,
+                                          double *second)
 {
     if (!plan || !isfinite(order)) return 0;
     memset(plan, 0, sizeof(*plan));
     if (!gh_bessel_value_plan_initialize(
-            order, !differentiate_order, &plan->value)) {
+            order, !differentiate_order, &plan->value,
+            differentiate_order ? plan->expansion_first : NULL, second)) {
         return 0;
     }
     if (plan->value.fixed_kind != 0)
@@ -568,6 +641,12 @@ int gh_bessel_first_plan_init(double order, int differentiate_order,
     return 1;
 }
 
+int gh_bessel_first_plan_init(double order, int differentiate_order,
+                              gh_bessel_first_plan_t *plan)
+{
+    return gh_bessel_first_plan_initialize(order, differentiate_order, plan, NULL);
+}
+
 int gh_log_bessel_k_first_planned(const gh_bessel_first_plan_t *plan,
                                   double argument,
                                   double *value, double *d_order,
@@ -583,14 +662,23 @@ int gh_log_bessel_k_first_planned(const gh_bessel_first_plan_t *plan,
         return isfinite(*value) && isfinite(*d_argument);
     }
     if (value_plan->fixed_kind == 2) {
+        if (argument >= GH_BESSEL_FIXED_ONE_MIN_ARGUMENT) {
+            *d_order = 0.0;
+            return gh_bessel_fixed_one_evaluate(3, value_plan->expansion,
+                argument, value, d_argument, NULL);
+        }
         double second;
         if (!log_bessel_k1_fast(argument, value, d_argument, &second))
             return 0;
         *d_order = 0.0;
         return 1;
     }
+    if (value_plan->expansion_ready && argument >= GH_BESSEL_EXPANSION_MIN_ARGUMENT)
+        return gh_bessel_expansion_evaluate(3, value_plan->expansion,
+            value_plan->differentiate_order ? plan->expansion_first : NULL, NULL,
+            argument, value, d_order, d_argument, NULL, NULL, NULL);
     if (value_plan->count == 0
-        || value_plan->count > GH_BESSEL_PLAN_MAX_TERMS)
+        || value_plan->count > GH_BESSEL_PLAN_MAX_TERMS || !value_plan->cosh_t)
         return 0;
 
     double max_term = -INFINITY;
@@ -600,6 +688,7 @@ int gh_log_bessel_k_first_planned(const gh_bessel_first_plan_t *plan,
     for (size_t index = 0; index < value_plan->count; ++index) {
         const double term = value_plan->base[index]
             - argument * value_plan->cosh_t[index];
+        double weight;
         if (term > max_term) {
             const double scale = isfinite(max_term)
                 ? exp(max_term - term)
@@ -608,8 +697,10 @@ int gh_log_bessel_k_first_planned(const gh_bessel_first_plan_t *plan,
             order_sum *= scale;
             argument_sum *= scale;
             max_term = term;
+            weight = 1.0;
+        } else {
+            weight = exp(term - max_term);
         }
-        const double weight = exp(term - max_term);
         weight_sum += weight;
         order_sum += weight * plan->order_score[index];
         argument_sum -= weight * value_plan->cosh_t[index];
@@ -627,8 +718,9 @@ int gh_bessel_second_plan_init(double order, int differentiate_order,
     if (!plan || !isfinite(order)) return 0;
     memset(plan, 0, sizeof(*plan));
     plan->differentiate_order = differentiate_order != 0;
-    if (!gh_bessel_first_plan_init(
-            order, differentiate_order, &plan->first)) {
+    if (!gh_bessel_first_plan_initialize(
+            order, differentiate_order, &plan->first,
+            differentiate_order ? plan->expansion_second : NULL)) {
         return 0;
     }
     if (!plan->differentiate_order
@@ -683,11 +775,20 @@ int gh_log_bessel_k_second_planned(
         *d_order = 0.0;
         *d_order_order = 0.0;
         *d_order_argument = 0.0;
+        if (argument >= GH_BESSEL_FIXED_ONE_MIN_ARGUMENT)
+            return gh_bessel_fixed_one_evaluate(7, value_plan->expansion,
+                argument, value, d_argument, d_argument_argument);
         return log_bessel_k1_fast(
             argument, value, d_argument, d_argument_argument);
     }
+    if (value_plan->expansion_ready && argument >= GH_BESSEL_EXPANSION_MIN_ARGUMENT)
+        return gh_bessel_expansion_evaluate(7, value_plan->expansion,
+            plan->differentiate_order ? plan->first.expansion_first : NULL,
+            plan->differentiate_order ? plan->expansion_second : NULL,
+            argument, value, d_order, d_argument, d_order_order,
+            d_order_argument, d_argument_argument);
     if (value_plan->count == 0
-        || value_plan->count > GH_BESSEL_PLAN_MAX_TERMS) {
+        || value_plan->count > GH_BESSEL_PLAN_MAX_TERMS || !value_plan->cosh_t) {
         return 0;
     }
 
@@ -788,7 +889,12 @@ static gh_jet_t jet_log_bessel_k(gh_jet_t order, gh_jet_t argument)
         );
     }
     if (fixed_order && fabs(fabs(order.value) - 1.0) < 1e-14) {
-        double value, first, second;
+        double value, first, second = 0.0;
+        if (argument.value >= GH_BESSEL_FIXED_ONE_MIN_ARGUMENT) {
+            if (gh_bessel_fixed_one_unplanned(argument.second_order ? 7 : 3,
+                    argument.value, &value, &first, &second))
+                return jet_unary(argument, value, first, second);
+        }
         if (log_bessel_k1_fast(argument.value, &value, &first, &second)) {
             return jet_unary(argument, value, first, second);
         }
@@ -882,6 +988,7 @@ int gh_shape_value_cache_init(double rho, double zeta, double lambda,
                           - cache->beta * cache->beta;
     if (!(gamma_sq > 0.0) || !isfinite(gamma_sq)) return 0;
     const double gamma = sqrt(gamma_sq);
+    cache->log_alpha = log(cache->alpha);
     cache->log_normalizer = lambda * (log(gamma) - log(cache->delta))
                           - 0.5 * LOG_2PI
                           - log_bessel_k_scalar(
@@ -933,6 +1040,7 @@ static int gh_shape_cache_init_order(
     );
     if (!(alpha_sq.value > 0.0) || !isfinite(alpha_sq.value)) return 0;
     cache->alpha = jet_sqrt(alpha_sq);
+    cache->log_kernel_scale = jet_log(cache->alpha);
     cache->beta = jet_mul(cache->alpha, cache->rho);
     cache->delta = jet_div(cache->zeta, jet_mul(cache->alpha, jet_sqrt(rho2)));
     cache->mu = jet_scale(
@@ -997,6 +1105,17 @@ static int vg_shape_cache_init_order(
     cache->vg_argument_scale = jet_sqrt(
         jet_add(theta2, jet_constant(2.0))
     );
+    const gh_jet_t order = jet_sub(cache->zeta, jet_constant(0.5));
+    cache->log_kernel_scale = jet_log(cache->vg_argument_scale);
+    cache->log_normalizer = jet_sub(
+        jet_add(jet_log(cache->vg_scale), jet_constant(GH_LOG_2 - 0.5 * LOG_2PI)),
+        jet_lgamma(cache->zeta));
+    cache->vg_center = jet_add(
+        jet_add(jet_scale(jet_sub(order, jet_constant(1.0)), GH_LOG_2), jet_lgamma(order)),
+        jet_scale(jet_mul(order, cache->log_kernel_scale), -2.0));
+    cache->vg_curvature = jet_div(
+        jet_mul(cache->vg_argument_scale, cache->vg_argument_scale),
+        jet_scale(jet_sub(jet_constant(1.0), order), 2.0));
     return isfinite(cache->vg_scale.value)
         && isfinite(cache->vg_argument_scale.value);
 }
@@ -1023,10 +1142,17 @@ int vg_shape_value_cache_init(double rho, double lambda,
     cache->lambda = lambda;
     const double rho2 = 1.0 - rho * rho;
     if (!(rho2 > 0.0)) return 0;
-    cache->theta = rho * sqrt(2.0 / rho2);
+    /* Match the first/second-order preparation, including reciprocal rounding. */
+    cache->theta = (sqrt(2.0) * rho) * (1.0 / sqrt(rho2));
     const double theta2 = cache->theta * cache->theta;
     cache->scale = sqrt(lambda * (1.0 + theta2));
     cache->argument_scale = sqrt(theta2 + 2.0);
+    const double order = lambda - 0.5;
+    cache->log_argument_scale = log(cache->argument_scale);
+    cache->log_normalizer = log(cache->scale) + (GH_LOG_2 - 0.5 * LOG_2PI) - lgamma(lambda);
+    cache->center = (order - 1.0) * GH_LOG_2 + lgamma(order)
+        - 2.0 * order * cache->log_argument_scale;
+    cache->curvature = cache->argument_scale * cache->argument_scale / (2.0 * (1.0 - order));
     return isfinite(cache->scale) && isfinite(cache->argument_scale);
 }
 
@@ -1057,32 +1183,12 @@ static gh_jet_t vg_logpdf_jet(
         jet_mul(cache->vg_scale, x),
         jet_mul(cache->vg_theta, cache->zeta)
     );
-    gh_jet_t logpdf = jet_add(
-        jet_sub(
-            jet_add(
-                jet_log(cache->vg_scale),
-                jet_constant(GH_LOG_2 - 0.5 * LOG_2PI)
-            ),
-            jet_lgamma(cache->zeta)
-        ),
-        jet_mul(cache->vg_theta, y)
-    );
+    gh_jet_t logpdf = jet_add(cache->log_normalizer, jet_mul(cache->vg_theta, y));
 
     if (cache->vg_argument_scale.value * fabs(y.value) < 1e-4) {
-        const gh_jet_t center = jet_add(
-            jet_add(
-                jet_scale(jet_sub(order, jet_constant(1.0)), GH_LOG_2),
-                jet_lgamma(order)
-            ),
-            jet_scale(jet_mul(order, jet_log(cache->vg_argument_scale)), -2.0)
-        );
-        const gh_jet_t curvature = jet_div(
-            jet_mul(cache->vg_argument_scale, cache->vg_argument_scale),
-            jet_scale(jet_sub(jet_constant(1.0), order), 2.0)
-        );
         return jet_add(
-            jet_add(logpdf, center),
-            jet_scale(jet_mul(curvature, jet_mul(y, y)), 0.5)
+            jet_add(logpdf, cache->vg_center),
+            jet_scale(jet_mul(cache->vg_curvature, jet_mul(y, y)), 0.5)
         );
     }
 
@@ -1091,7 +1197,7 @@ static gh_jet_t vg_logpdf_jet(
     const gh_jet_t bessel_product = jet_add(
         jet_mul(
             order,
-            jet_sub(jet_log(abs_y), jet_log(cache->vg_argument_scale))
+            jet_sub(jet_log(abs_y), cache->log_kernel_scale)
         ),
         plan
             ? jet_log_bessel_k_planned(order, argument, plan)
@@ -1107,6 +1213,7 @@ static void shape_cache_use_first_order(gh_shape_cache_t *cache)
         &cache->alpha, &cache->beta, &cache->delta,
         &cache->mu, &cache->log_normalizer, &cache->vg_theta,
         &cache->vg_scale, &cache->vg_argument_scale,
+        &cache->log_kernel_scale, &cache->vg_center, &cache->vg_curvature,
     };
     for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); ++i) {
         fields[i]->second_order = 0;
@@ -1155,7 +1262,7 @@ static int gh_obs_jet_active(double residual, double variance,
         ),
         jet_mul(
             jet_sub(jet_constant(0.5), cache->lambda),
-            jet_sub(jet_log(radius), jet_log(cache->alpha))
+            jet_sub(jet_log(radius), cache->log_kernel_scale)
         )
     );
     const gh_jet_t nll = jet_sub(
@@ -1241,19 +1348,22 @@ double gh_obs_nll_scalar(double residual, double variance,
     if (!cache || !isfinite(residual) || !isfinite(variance)
         || !(variance > 0.0)) return INFINITY;
     const double h = variance;
-    const double z = residual / sqrt(h);
     if (cache->family_kind == GH_FAMILY_VARIANCE_GAMMA) {
-        return 0.5 * log(h) - vg_standardized_logpdf_scalar(
-            z, cache->rho.value, cache->zeta.value
-        );
+        const vg_shape_value_cache_t values = {
+            cache->rho.value, cache->zeta.value, cache->vg_theta.value,
+            cache->vg_scale.value, cache->vg_argument_scale.value,
+            cache->log_normalizer.value, cache->log_kernel_scale.value,
+            cache->vg_center.value, cache->vg_curvature.value};
+        return vg_obs_nll_value(residual, variance, &values);
     }
+    const double z = residual / sqrt(h);
     const double centered = z - cache->mu.value;
     const double radius = hypot(cache->delta.value, centered);
     const double argument = cache->alpha.value * radius;
     const double log_kernel = cache->beta.value * centered
         + log_bessel_k_scalar(cache->lambda.value - 0.5, argument)
         - (0.5 - cache->lambda.value)
-          * (log(radius) - log(cache->alpha.value));
+          * (log(radius) - cache->log_kernel_scale.value);
     return 0.5 * log(h) - cache->log_normalizer.value - log_kernel;
 }
 
@@ -1269,7 +1379,7 @@ double gh_obs_nll_value(double residual, double variance,
     const double log_kernel = cache->beta * centered
         + log_bessel_k_scalar(cache->lambda - 0.5, argument)
         - (0.5 - cache->lambda)
-          * (log(radius) - log(cache->alpha));
+          * (log(radius) - cache->log_alpha);
     return 0.5 * log(variance) - cache->log_normalizer - log_kernel;
 }
 
@@ -1289,7 +1399,7 @@ double gh_obs_nll_value_planned(double residual, double variance,
     }
     const double log_kernel = cache->beta * centered + log_bessel
         - (0.5 - cache->lambda)
-          * (log(radius) - log(cache->alpha));
+          * (log(radius) - cache->log_alpha);
     return 0.5 * log(variance) - cache->log_normalizer - log_kernel;
 }
 
@@ -1302,19 +1412,14 @@ double vg_obs_nll_value(double residual, double variance,
     const double order = cache->lambda - 0.5;
     const double y = cache->scale * standardized
         + cache->theta * cache->lambda;
-    double logpdf = log(cache->scale) + GH_LOG_2 - 0.5 * LOG_2PI
-        - lgamma(cache->lambda) + cache->theta * y;
+    double logpdf = cache->log_normalizer + cache->theta * y;
     if (cache->argument_scale * fabs(y) < 1e-4) {
-        const double center = (order - 1.0) * GH_LOG_2 + lgamma(order)
-            - 2.0 * order * log(cache->argument_scale);
-        const double curvature = cache->argument_scale
-            * cache->argument_scale / (2.0 * (1.0 - order));
-        logpdf += center + 0.5 * curvature * y * y;
+        logpdf += cache->center + 0.5 * cache->curvature * y * y;
     } else {
         const double absolute_y = fabs(y);
         const double argument = cache->argument_scale * absolute_y;
         logpdf += order * (
-            log(absolute_y) - log(cache->argument_scale))
+            log(absolute_y) - cache->log_argument_scale)
             + log_bessel_k_scalar(order, argument);
     }
     return 0.5 * log(variance) - logpdf;
@@ -1330,14 +1435,9 @@ double vg_obs_nll_value_planned(double residual, double variance,
     const double order = cache->lambda - 0.5;
     const double y = cache->scale * standardized
         + cache->theta * cache->lambda;
-    double logpdf = log(cache->scale) + GH_LOG_2 - 0.5 * LOG_2PI
-        - lgamma(cache->lambda) + cache->theta * y;
+    double logpdf = cache->log_normalizer + cache->theta * y;
     if (cache->argument_scale * fabs(y) < 1e-4) {
-        const double center = (order - 1.0) * GH_LOG_2 + lgamma(order)
-            - 2.0 * order * log(cache->argument_scale);
-        const double curvature = cache->argument_scale
-            * cache->argument_scale / (2.0 * (1.0 - order));
-        logpdf += center + 0.5 * curvature * y * y;
+        logpdf += cache->center + 0.5 * cache->curvature * y * y;
     } else {
         const double absolute_y = fabs(y);
         const double argument = cache->argument_scale * absolute_y;
@@ -1346,7 +1446,7 @@ double vg_obs_nll_value_planned(double residual, double variance,
             return INFINITY;
         }
         logpdf += order * (
-            log(absolute_y) - log(cache->argument_scale)) + log_bessel;
+            log(absolute_y) - cache->log_argument_scale) + log_bessel;
     }
     return 0.5 * log(variance) - logpdf;
 }
@@ -1362,10 +1462,34 @@ int gh_abs_moment_derivatives(const gh_shape_cache_t *cache,
         GH_DERIV_RHO, GH_DERIV_ZETA, GH_DERIV_LAMBDA
     };
 
-    for (size_t i = 0; i < GH_QUAD_HALF; ++i) {
+    /* VG has a moving density center. Split the positive-magnitude integral
+       there before integrating either sign and its analytical derivatives. */
+    double edges[4] = {0.0, 1.0, 1.0, 1.0};
+    size_t intervals = 1;
+    const double *nodes = GH_NODES, *weights = GH_WEIGHTS;
+    size_t half_count = GH_QUAD_HALF;
+    if (cache->family_kind == GH_FAMILY_VARIANCE_GAMMA) {
+        const double center = fabs(cache->vg_theta.value * cache->lambda.value
+            / cache->vg_scale.value);
+        const double split = atan(center) / GH_HALF_PI;
+        edges[1] = 0.5;
+        intervals = 2;
+        nodes = GH_HIGH_NODES;
+        weights = GH_HIGH_WEIGHTS;
+        half_count = GH_HIGH_QUAD_HALF;
+        if (split > 0.0 && split < 1.0 && split != 0.5) {
+            edges[1] = fmin(split, 0.5);
+            edges[2] = fmax(split, 0.5);
+            intervals = 3;
+        }
+    }
+    for (size_t interval = 0; interval < intervals; ++interval) {
+      const double radius = 0.5 * (edges[interval + 1] - edges[interval]);
+      const double center = 0.5 * (edges[interval + 1] + edges[interval]);
+      for (size_t i = 0; i < half_count; ++i) {
         const double unit_nodes[2] = {
-            0.5 * (1.0 - GH_NODES[i]),
-            0.5 * (1.0 + GH_NODES[i]),
+            center - radius * nodes[i],
+            center + radius * nodes[i],
         };
         for (size_t node = 0; node < 2; ++node) {
             const double x_abs = tan(GH_HALF_PI * unit_nodes[node]);
@@ -1374,7 +1498,7 @@ int gh_abs_moment_derivatives(const gh_shape_cache_t *cache,
                 const double x = sign == 0 ? -x_abs : x_abs;
                 gh_obs_derivs_t obs;
                 if (!gh_obs_derivatives(x, 1.0, cache, &obs)) return 0;
-                const double contribution = 0.5 * GH_WEIGHTS[i] * jacobian
+                const double contribution = radius * weights[i] * jacobian
                                           * x_abs * exp(-obs.value);
                 *moment += contribution;
                 for (size_t s = 0; s < 3; ++s) {
@@ -1390,6 +1514,7 @@ int gh_abs_moment_derivatives(const gh_shape_cache_t *cache,
                 }
             }
         }
+      }
     }
     return isfinite(*moment);
 }

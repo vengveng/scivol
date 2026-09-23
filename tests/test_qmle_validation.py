@@ -16,8 +16,52 @@ import pytest
 import numpy as np
 from numpy.testing import assert_allclose, assert_array_less
 
-from scivol import ARMA, EGARCH, GARCH, GJRGARCH, Normal, StudentT, SkewT
+from scivol import (
+    ARMA, ARX, HARX, APARCH, EGARCH, GARCH, GJRGARCH, Normal, StudentT, SkewT,
+)
 from scivol import _core
+
+
+@pytest.mark.parametrize("direct", (False, True))
+@pytest.mark.parametrize("density", (Normal, StudentT, SkewT))
+@pytest.mark.parametrize(
+    "mean,volatility",
+    (
+        (None, EGARCH),
+        (ARMA, EGARCH),
+        (ARX, GARCH),
+        (HARX, GARCH),
+        (ARX, GJRGARCH),
+        (HARX, GJRGARCH),
+        (ARX, EGARCH),
+        (HARX, EGARCH),
+        (None, APARCH),
+        (ARMA, APARCH),
+        (ARX, APARCH),
+        (HARX, APARCH),
+    ),
+)
+def test_qmle_rejects_unsupported_models_before_selecting_a_kernel(
+    direct, density, mean, volatility, monkeypatch
+):
+    from scivol import _qmle
+
+    spec = volatility() + density()
+    if mean is not None:
+        orders = {ARMA: (1, 1), ARX: (1,), HARX: ([1, 3],)}
+        spec = mean(*orders[mean]) + spec
+    rng = np.random.default_rng(2785)
+    data, x = rng.normal(size=128), rng.normal(size=(128, 2))
+
+    def unexpected_kernel(*args, **kwargs):
+        pytest.fail("An unsupported QMLE model must not select a substitute kernel.")
+
+    monkeypatch.setattr(_qmle, "get_routine", unexpected_kernel)
+    with pytest.raises(NotImplementedError, match="QMLE.*not.*(shipped|implemented)"):
+        if direct:
+            _qmle.fit_qmle(spec, data, x=x)
+        else:
+            spec.fit(data, x=x if mean in (ARX, HARX) else None, method="qmle")
 
 
 # =============================================================================

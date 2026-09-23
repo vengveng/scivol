@@ -6,9 +6,10 @@ from typing import Callable, Dict, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.optimize import LinearConstraint, minimize
+from scipy.optimize import minimize
 
 from .. import _core
+from .._optimizer import resolve_initial_params, resolve_optimizer_budget
 from ..components.density import GED, Normal, SkewT, StudentT
 from ..components.mean import ARX, HARX
 from ..components.vol import GJRGARCH
@@ -135,7 +136,7 @@ def _build(mean: ARX | HARX, p: int, q: int, density_name: str) -> Routine:
         verbose: bool = False,
         *,
         x: NDArray[np.float64] | None = None,
-        **_,
+        **kwargs,
     ) -> EstimationResult:
         y_arr = np.ascontiguousarray(y, dtype=np.float64)
         x_arr = None if x is None else np.ascontiguousarray(x, dtype=np.float64)
@@ -203,17 +204,18 @@ def _build(mean: ARX | HARX, p: int, q: int, density_name: str) -> Routine:
         mean_start = mean.default_start(y_arr)
         vol_start = np.asarray(vol.default_start(y_arr), dtype=np.float64)
         dens_start = np.asarray(dens.default_start(y_arr), dtype=np.float64)
-        start = np.concatenate([mean_start, vol_start, dens_start])
+        start, warm_started = resolve_initial_params(
+            kwargs.get("initial_params"), np.concatenate([mean_start, vol_start, dens_start]), n_params, uid
+        )
+        maxiter, maxfev = resolve_optimizer_budget(kwargs.get("maxiter"), kwargs.get("maxfev"))
+        fit_info.update(warm_started=warm_started, maxiter=maxiter)
 
         bounds = list(mean.bounds()) + list(vol.bounds()) + list(dens.bounds())
 
-        A = np.zeros((1, n_params), dtype=np.float64)
-        A[0, n_mean + 1:n_mean + 1 + p] = 1.0
-        A[0, n_mean + 1 + p:n_mean + 1 + 2 * p] = 1.0
-        A[0, n_mean + 1 + 2 * p:n_mean + 1 + 2 * p + q] = 1.0
-        lc = LinearConstraint(A, lb=0.0, ub=0.9999)
-
         if not log_mode:
+            from .._joint_mean_fit import JointMeanModel
+
+            lc = JointMeanModel(spec, y_arr, x_arr).scipy_inequalities()
             objective = lambda theta: call_nll(theta) / n
             gradient = lambda theta: call_grad(theta) / n
             hessian = lambda theta: call_hess(theta) / n
@@ -224,7 +226,7 @@ def _build(mean: ARX | HARX, p: int, q: int, density_name: str) -> Routine:
                     start,
                     method="Nelder-Mead",
                     bounds=bounds,
-                    options={"disp": verbose, "maxfev": 50000, "fatol": 1e-10},
+                    options={"disp": verbose, "maxfev": maxfev, "fatol": 1e-10},
                 )
             elif solver.lower() == "slsqp":
                 res = minimize(
@@ -234,7 +236,7 @@ def _build(mean: ARX | HARX, p: int, q: int, density_name: str) -> Routine:
                     jac=gradient,
                     bounds=bounds,
                     constraints=lc,
-                    options={"disp": verbose, "maxiter": 5000, "ftol": 1e-12},
+                    options={"disp": verbose, "maxiter": maxiter, "ftol": 1e-12},
                 )
             elif solver.lower() in {"trust", "trust-constr"}:
                 res = minimize(
@@ -245,7 +247,7 @@ def _build(mean: ARX | HARX, p: int, q: int, density_name: str) -> Routine:
                     hess=hessian,
                     bounds=bounds,
                     constraints=lc,
-                    options={"disp": verbose, "maxiter": 5000},
+                    options={"disp": verbose, "maxiter": maxiter},
                 )
             else:
                 raise ValueError(f"Unknown solver: {solver}")
@@ -285,7 +287,7 @@ def _build(mean: ARX | HARX, p: int, q: int, density_name: str) -> Routine:
                     z0,
                     method="Nelder-Mead",
                     tol=1e-12,
-                    options={"disp": verbose, "maxiter": 5000, "maxfev": 50000, "xatol": 1e-8, "fatol": 1e-12, "adaptive": True},
+                    options={"disp": verbose, "maxiter": maxiter, "maxfev": maxfev, "xatol": 1e-8, "fatol": 1e-12, "adaptive": True},
                 )
             elif solver.lower() == "slsqp":
                 res = minimize(
@@ -294,7 +296,7 @@ def _build(mean: ARX | HARX, p: int, q: int, density_name: str) -> Routine:
                     method="SLSQP",
                     jac=lambda z: jac_log(z) / n,
                     tol=1e-16,
-                    options={"disp": verbose, "ftol": 1e-16, "maxiter": 5000},
+                    options={"disp": verbose, "ftol": 1e-16, "maxiter": maxiter},
                 )
                 res.fun *= n
             elif solver.lower() in {"trust", "trust-constr", "trust-exact"}:
@@ -305,7 +307,7 @@ def _build(mean: ARX | HARX, p: int, q: int, density_name: str) -> Routine:
                     jac=lambda z: jac_log(z) / n,
                     hess=lambda z: hess_log(z) / n,
                     tol=1e-12,
-                    options={"disp": verbose, "maxiter": 5000},
+                    options={"disp": verbose, "maxiter": maxiter},
                 )
                 res.fun *= n
             else:
@@ -342,7 +344,7 @@ def _build(mean: ARX | HARX, p: int, q: int, density_name: str) -> Routine:
         return EstimationResult(
             spec,
             res,
-            resid.copy(),
+            y_arr.copy(),
             sigma2=sigma2.copy(),
             hessian=hessian_theta,
             cov_matrix=cov_matrix,

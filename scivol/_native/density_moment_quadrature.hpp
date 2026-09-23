@@ -26,6 +26,19 @@ struct Jet {
 inline constexpr double half_pi = 1.57079632679489661923;
 inline constexpr unsigned maximum_depth = 20u;
 
+template<class Density, class Prepared>
+double negative_branch_distance(const Prepared& prepared, const double* shape) noexcept
+{
+    if constexpr (std::is_same_v<Density, SkewTDensity>)
+        return prepared.a.value / prepared.b.value;
+    else if constexpr (std::is_same_v<Density, VarianceGammaDensity>) {
+        const double rho=shape[0], lambda=shape[1];
+        const double theta=std::sqrt(2.0)*rho/std::sqrt(1.0-rho*rho);
+        return theta*lambda/std::sqrt(lambda*(1.0+theta*theta));
+    }
+    return 0.0;
+}
+
 template<int Order>
 inline constexpr double integration_tolerance =
     Order >= 2 ? 5.0e-9 : Order == 1 ? 5.0e-10 : 2.0e-10;
@@ -245,6 +258,142 @@ template<int Order, std::size_t ShapeParameters, class Integrand>
             return {};
         }
     }
+    return result;
+}
+
+enum class NormalMoment { absolute, negative_second };
+
+template<class Number, class Scalar>
+Number moment_constant(Scalar value) noexcept
+{
+    if constexpr (requires { Number::constant(value); })
+        return Number::constant(value);
+    else
+        return Number(value);
+}
+
+// For Y=theta*G+sqrt(G)*N, G~Gamma(lambda,1), integration by parts
+// expresses E|Y-lambda*theta| as a positive integral with weight
+// 2*(1+theta^2/2)*G + lambda*theta^2. This linear-G form keeps the
+// shape derivatives integrable at zero skew, unlike its inverse-G counterpart.
+// The map is G=lambda*(u/(1-u))^8, including its shape-dependent Jacobian.
+template<class Number>
+struct VarianceGammaAbsoluteIntegrand {
+    Number lambda, skew_mass, left_exponent, right_exponent, log_normalizer;
+
+    VarianceGammaAbsoluteIntegrand(
+        Number rho, Number shape, Number log_two_pi) noexcept : lambda(shape)
+    {
+        using std::log;
+        using std::lgamma;
+        const auto one=moment_constant<Number>(1),half=moment_constant<Number>(0.5);
+        skew_mass=moment_constant<Number>(2)*lambda*rho*rho/(one-rho*rho);
+        const auto exponent=moment_constant<Number>(8)*(lambda-half);
+        left_exponent=exponent-one;
+        right_exponent=exponent+one;
+        log_normalizer=log(moment_constant<Number>(8))-lgamma(lambda)
+            +(lambda-half)*log(lambda)-half*(log_two_pi+log(lambda+skew_mass));
+    }
+
+    template<class Scalar>
+    Number operator()(Scalar unit) const noexcept
+    {
+        using std::log;
+        using std::exp;
+        const auto ratio=unit/(Scalar(1)-unit),square=ratio*ratio;
+        const auto fourth=square*square,r=fourth*fourth;
+        const auto log_mass=log_normalizer
+            +left_exponent*moment_constant<Number>(log(unit))
+            -right_exponent*moment_constant<Number>(log(Scalar(1)-unit))
+            -lambda*moment_constant<Number>(r)
+            -skew_mass*moment_constant<Number>(
+                (r-Scalar(1))*(r-Scalar(1))/(Scalar(2)*r));
+        const auto weight=moment_constant<Number>(2)*lambda*moment_constant<Number>(r)
+            +skew_mass*moment_constant<Number>(r+Scalar(1));
+        return weight*exp(log_mass);
+    }
+};
+
+template<int Order>
+[[nodiscard]] Jet<2> variance_gamma_absolute(const double* shape) noexcept
+{
+    // Validated mathematical candidate; not the default fitting policy until
+    // amplified-precision and matched-solution gates pass together.
+    if (!VarianceGammaDensity::valid_shape(shape)) return {};
+    using Number=ad::Differential<Order,2>;
+    const VarianceGammaAbsoluteIntegrand<Number> point(
+        Number::variable(shape[0],0),Number::variable(shape[1],1),
+        Number::constant(LOG_2PI));
+    const auto integrand=[&](double unit) noexcept {
+        const auto value=point(unit);
+        Jet<2> result;
+        result.valid=ad::finite(value);
+        result.value=value.value;
+        if constexpr (Order>=1) result.gradient=value.gradient;
+        if constexpr (Order>=2) result.hessian=value.hessian;
+        return result;
+    };
+    constexpr double boundaries[] {0,0.5,1};
+    auto result=integrate<Order,2>(integrand,boundaries,3);
+    result.valid=result.valid && result.value>0 && result.value<1;
+    return result;
+}
+
+template<int Order, NormalMoment Moment>
+[[nodiscard]] Jet<2> variance_gamma_mixture(const double* shape) noexcept
+{
+    if (!VarianceGammaDensity::valid_shape(shape)) return {};
+    using Number = ad::Differential<Order, 2>;
+    const Number one = Number::constant(1.0);
+    const Number rho = Number::variable(shape[0], 0);
+    const Number lambda = Number::variable(shape[1], 1);
+    const Number theta = Number::constant(std::sqrt(2.0))
+        * rho / ad::sqrt(one - rho * rho);
+    const Number variance = lambda * (one + theta * theta);
+    const Number log_normalizer = ad::lgamma(lambda);
+    const Number scale = [&]() {
+        if constexpr (Moment == NormalMoment::absolute) return ad::sqrt(variance);
+        else return one;
+    }();
+
+    // Given G~Gamma(lambda,1), the unstandardized innovation is
+    // theta*(G-lambda) + sqrt(G)*N. Integrate the requested exact Normal moment.
+    const auto integrand = [&](double unit) noexcept {
+        const double root = std::tan(half_pi * unit);
+        const double mixing = root * root;
+        const Number mean = theta * (Number::constant(mixing) - lambda);
+        const Number standardized = mean / Number::constant(root);
+        const Number pdf = Number::constant(0.39894228040143267794)
+            * ad::exp(Number::constant(-0.5) * standardized * standardized);
+        Number partial;
+        if constexpr (Moment == NormalMoment::absolute) {
+            const Number erf = ad::unary(standardized,
+                std::erf(standardized.value / std::sqrt(2.0)),
+                2.0 * pdf.value, -2.0 * standardized.value * pdf.value);
+            partial = (Number::constant(2.0 * root) * pdf + mean * erf) / scale;
+        } else {
+            const Number cdf = ad::unary(-standardized,
+                0.5 * std::erfc(standardized.value / std::sqrt(2.0)),
+                pdf.value, standardized.value * pdf.value);
+            partial = ((mean * mean + Number::constant(mixing)) * cdf
+                - mean * Number::constant(root) * pdf) / variance;
+        }
+        const double log_jacobian = std::log(2.0 * half_pi * root * (1.0 + mixing));
+        const Number mass = ad::exp(
+            (lambda - one) * Number::constant(std::log(mixing))
+            - Number::constant(mixing) - log_normalizer
+            + Number::constant(log_jacobian));
+        const Number value = mass * partial;
+        Jet<2> result;
+        result.valid = ad::finite(value);
+        result.value = value.value;
+        if constexpr (Order >= 1) result.gradient = value.gradient;
+        if constexpr (Order >= 2) result.hessian = value.hessian;
+        return result;
+    };
+    constexpr double boundaries[] {0.0, 0.5, 1.0};
+    auto result = integrate<Order, 2>(integrand, boundaries, 3);
+    if (!(result.valid && result.value > 0.0 && result.value < 1.0)) return {};
     return result;
 }
 

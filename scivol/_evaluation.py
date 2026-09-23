@@ -415,7 +415,7 @@ def _has_explicit_arma_density_variance(spec: Any) -> bool:
     return (
         isinstance(mean_comp, ARMA)
         and vol is None
-        and isinstance(dens, (GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma))
+        and isinstance(dens, (StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma))
     )
 
 
@@ -447,7 +447,7 @@ def _apply_theta_to_spec(spec: Any, theta: NDArray[np.float64]) -> None:
         mean_comp = spec.get_component(Role.MEAN)
         dens = spec.get_component(Role.DENSITY)
         assert isinstance(mean_comp, ARMA)
-        assert isinstance(dens, (GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma))
+        assert isinstance(dens, (StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma))
         n_mean = 1 + mean_comp.p + mean_comp.q
         mean_comp.unpack(theta[:n_mean])
         dens.unpack(theta[n_mean + 1:])
@@ -488,7 +488,7 @@ def _coerce_params(spec: Any, params: Any) -> NDArray[np.float64]:
             mean_comp = spec.get_component(Role.MEAN)
             dens = spec.get_component(Role.DENSITY)
             assert isinstance(mean_comp, ARMA)
-            assert isinstance(dens, (GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma))
+            assert isinstance(dens, (StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma))
             if "sigma2" not in params:
                 raise ValueError("Standalone ARMA non-Normal parameter dictionaries must include `sigma2`.")
             mean_params = _component_param_dict(mean_comp, params)
@@ -662,13 +662,16 @@ def _compute_arma_resid_sigma2(
     resid = np.zeros_like(y)
     p = mean_comp.p
     q = mean_comp.q
+    first_scored = max(p, q, 1)
+    if y.size <= first_scored:
+        raise ValueError("ARMA requires observations beyond its conditioning lags.")
     if p == 1 and q == 1:
         _core._arma_nll_11_normal(_as_cptr(mean_theta), _as_cptr(y), _as_cptr(resid), y.size)
     else:
         e0 = np.zeros(max(q, 1), dtype=np.float64)
         _core._arma_nll_pq_normal(_as_cptr(mean_theta), _as_cptr(y), _as_cptr(resid), _as_cptr(e0), y.size, p, q)
-    n_eff = max(y.size - 1, 1)
-    sigma2 = np.full(y.size, max(float(np.sum(resid[1:] ** 2) / n_eff), 1e-12), dtype=np.float64)
+    n_eff = y.size - first_scored
+    sigma2 = np.full(y.size, max(float(np.sum(resid[first_scored:] ** 2) / n_eff), 1e-12), dtype=np.float64)
     return y - resid, resid, sigma2
 
 
@@ -1261,6 +1264,9 @@ def _filter_arma(spec: Any, data: NDArray[np.float64], theta: NDArray[np.float64
     resid = np.zeros_like(y)
     e0 = np.zeros(max(q, 1), dtype=np.float64)
     n = y.size
+    first_scored = max(p, q, 1)
+    if n <= first_scored:
+        raise ValueError("ARMA requires observations beyond its conditioning lags.")
 
     special = p == 1 and q == 1
     if special:
@@ -1286,10 +1292,13 @@ def _filter_arma(spec: Any, data: NDArray[np.float64], theta: NDArray[np.float64
             _core._arma_hess_pq_normal(_as_cptr(theta), _as_cptr(y), _as_cptr(resid), _as_cptr(e0), _as_cptr(hess_mat), n, p, q)
         hess = -hess_mat
 
-    n_eff = max(n - 1, 1)
-    sigma2_hat = float(np.sum(resid[1:] ** 2) / n_eff)
+    n_eff = n - first_scored
+    sigma2_hat = float(np.sum(resid[first_scored:] ** 2) / n_eff)
     sigma2 = np.full(n, sigma2_hat, dtype=np.float64)
     mean = y - resid
+    nll = n_eff * (nll + _HALF_LOG_2PI)
+    score = None if score is None else score * n_eff
+    hess = None if hess is None else hess * n_eff
     return FilteredState(y, mean, resid, sigma2, -nll, score, hess, "Normal")
 
 
@@ -1306,6 +1315,9 @@ def _filter_arma_ged(spec: Any, data: NDArray[np.float64], theta: NDArray[np.flo
     n = y.size
     special = p == 1 and q == 1
 
+    n_eff = n - max(p, q, 1)
+    if n_eff <= 0:
+        raise ValueError("ARMA requires observations beyond its conditioning lags.")
     if special:
         nll = float(_core._arma_nll_11_ged(_as_cptr(theta), _as_cptr(y), _as_cptr(resid), n))
     else:
@@ -1331,6 +1343,9 @@ def _filter_arma_ged(spec: Any, data: NDArray[np.float64], theta: NDArray[np.flo
 
     sigma2 = np.full(n, float(theta[1 + p + q]), dtype=np.float64)
     mean = y - resid
+    nll *= n_eff
+    score = None if score is None else score * n_eff
+    hess = None if hess is None else hess * n_eff
     return FilteredState(y, mean, resid, sigma2, -nll, score, hess, "GED", nu=float(theta[-1]))
 
 
@@ -2159,6 +2174,22 @@ def filter_spec(
     vol = spec.get_component(Role.VOLATILITY)
     dens = spec.get_component(Role.DENSITY)
 
+    from ._mean_fit import supports_mean, filter_mean_spec
+
+    if supports_mean(spec):
+        return filter_mean_spec(
+            spec, data_np, theta, x=x_np,
+            compute_score=compute_score, compute_hessian=compute_hessian,
+        )
+
+    from ._joint_mean_fit import supports_joint_mean, filter_joint_mean_spec
+
+    if supports_joint_mean(spec):
+        return filter_joint_mean_spec(
+            spec, data_np, theta, x=x_np,
+            compute_score=compute_score, compute_hessian=compute_hessian,
+        )
+
     if isinstance(vol, APARCH):
         if mean_comp is not None and not isinstance(mean_comp, ARMA):
             raise NotImplementedError(
@@ -2405,6 +2436,8 @@ def _variance_forecast(
     shape_lambda: Optional[float],
     negative_second_moment: float,
 ) -> NDArray[np.float64]:
+    if not np.isfinite(sigma2).all() or np.any(sigma2 <= 0):
+        raise ValueError("Variance forecasts require a finite positive conditioning path.")
     if isinstance(vol, APARCH):
         omega = float(vol.fitted_params["omega"])  # type: ignore[index]
         alpha = np.asarray(vol.fitted_params["alpha"], dtype=np.float64)  # type: ignore[index]
@@ -2412,6 +2445,7 @@ def _variance_forecast(
         beta = np.asarray(vol.fitted_params["beta"], dtype=np.float64)  # type: ignore[index]
         delta = float(vol.fitted_params["delta"])  # type: ignore[index]
         p, q = alpha.size, beta.size
+        active_shocks = np.flatnonzero(alpha != 0.0)
         n_paths = 4000
         rng = np.random.default_rng(0)
         draws = _draw_standardized_innovations(
@@ -2436,14 +2470,14 @@ def _variance_forecast(
 
         for step in range(horizon):
             power = np.full(n_paths, omega, dtype=np.float64)
-            for lag in range(p):
+            for lag in active_shocks:
                 residual_lag = path_residuals[:, -1 - lag]
                 shock = np.abs(residual_lag) - float(gamma[lag]) * residual_lag
                 power += float(alpha[lag]) * shock ** delta
             for lag in range(q):
                 power += float(beta[lag]) * path_powers[:, -1 - lag]
-            path_variance = np.maximum(power, 1e-16) ** (2.0 / delta)
-            forecasts[step] = max(float(np.mean(path_variance)), 1e-12)
+            path_variance = power ** (2.0 / delta)
+            forecasts[step] = float(np.mean(path_variance))
             if q:
                 path_powers = np.roll(path_powers, -1, axis=1)
                 path_powers[:, -1] = power
@@ -2465,10 +2499,10 @@ def _variance_forecast(
 
         forecasts = np.empty(horizon, dtype=np.float64)
         z_hist = [
-            float(residuals[-p + i]) / np.sqrt(max(float(sigma2[-p + i]), 1e-12))
+            float(residuals[-p + i]) / np.sqrt(float(sigma2[-p + i]))
             for i in range(p)
         ] if p else []
-        x_hist = [float(np.log(max(v, 1e-12))) for v in sigma2[-q:]] if q else []
+        x_hist = [float(np.log(v)) for v in sigma2[-q:]] if q else []
 
         def _egarch_forecast_step(z_lags: list[float], x_lags: list[float]) -> float:
             value = omega
@@ -2480,7 +2514,7 @@ def _variance_forecast(
             return float(value)
 
         x1 = _egarch_forecast_step(z_hist, x_hist)
-        forecasts[0] = max(float(np.exp(x1)), 1e-12)
+        forecasts[0] = float(np.exp(x1))
         if horizon == 1:
             return forecasts
 
@@ -2507,19 +2541,19 @@ def _variance_forecast(
             shape_lambda,
         ).reshape(n_paths, horizon - 1)
         for h in range(1, horizon):
+            if p:
+                path_z_history = np.roll(path_z_history, -1, axis=1)
+                path_z_history[:, -1] = draws[:, h - 1]
             path_x = np.full(n_paths, omega, dtype=np.float64)
             for i in range(p):
                 z_prev = path_z_history[:, -1 - i]
                 path_x += float(alpha[i]) * (np.abs(z_prev) - abs_moment) + float(gamma[i]) * z_prev
             for j in range(q):
                 path_x += float(beta[j]) * path_x_history[:, -1 - j]
-            forecasts[h] = max(float(np.mean(np.exp(path_x))), 1e-12)
+            forecasts[h] = float(np.mean(np.exp(path_x)))
             if q:
                 path_x_history = np.roll(path_x_history, -1, axis=1)
                 path_x_history[:, -1] = path_x
-            if p:
-                path_z_history = np.roll(path_z_history, -1, axis=1)
-                path_z_history[:, -1] = draws[:, h - 1]
         return forecasts
 
     omega = float(vol.fitted_params["omega"])  # type: ignore[index]
@@ -2558,7 +2592,7 @@ def _variance_forecast(
         for j in range(q):
             idx = h - 1 - j
             value += float(beta[j]) * (forecasts[idx] if idx >= 0 else float(sigma2[idx]))
-        forecasts[h] = max(value, 1e-12)
+        forecasts[h] = value
     return forecasts
 
 
@@ -2616,7 +2650,7 @@ def forecast_from_state(
             total = 0.0
             for k in range(h + 1):
                 total += float(psi[k] ** 2) * float(residual_variance[h - k])
-            variance[h] = max(total, 1e-12)
+            variance[h] = total
     elif isinstance(mean_comp, ARX):
         expected = getattr(mean_comp, "n_exog", 0)
         future_x = np.zeros((horizon, 0), dtype=np.float64) if expected == 0 else np.asarray(x, dtype=np.float64)
@@ -2641,6 +2675,9 @@ def forecast_from_state(
         mean = np.zeros(horizon, dtype=np.float64)
         variance = residual_variance.copy()
 
+    if (not np.isfinite(residual_variance).all() or np.any(residual_variance <= 0)
+        or not np.isfinite(variance).all() or np.any(variance <= 0)):
+        raise ValueError("The forecast variance is not positive and representable; no variance floor was applied.")
     return ForecastResult(
         mean=mean,
         variance=variance,
@@ -2679,6 +2716,20 @@ def fixed_result_from_spec(
     result._resid = state.residuals.copy()
     result._filtered_state_cache = state
     result._fit_x = None if x is None else np.ascontiguousarray(np.asarray(x, dtype=np.float64), dtype=np.float64)
+    from ._mean_fit import supports_mean
+
+    if supports_mean(spec):
+        mean = spec.get_component(Role.MEAN)
+        first = max(mean.p, mean.q, 1) if isinstance(mean, ARMA) else 0
+        result.fit_info.engine = "native-mean-jet"
+        result.fit_info.likelihood_n_obs = len(state.data) - first
+        result.fit_info.profiled_parameters = int(
+            isinstance(spec.get_component(Role.DENSITY), Normal)
+        )
+        if result.fit_info.profiled_parameters:
+            result.fit_info.add_warning(
+                "Mean parameters are fixed; Normal innovation variance is profiled on this sample."
+            )
     return result
 
 
@@ -2822,8 +2873,10 @@ def simulate_spec(
         beta = np.asarray(vol.fitted_params["beta"], dtype=np.float64)  # type: ignore[index]
         gamma = np.asarray(vol.fitted_params["gamma"], dtype=np.float64)  # type: ignore[index]
         delta = float(vol.fitted_params["delta"])  # type: ignore[index]
+        domain_spec = vol + sim_spec.get_component(Role.DENSITY) if isinstance(mean_comp, (ARX, HARX)) else sim_spec
+        domain_theta = theta[mean_comp.n_params:] if isinstance(mean_comp, (ARX, HARX)) else theta
         violation, feasible, persistence = _aparch_volatility_domain(
-            _describe_model(sim_spec), theta
+            _describe_model(domain_spec), domain_theta
         )
         if not feasible:
             raise ValueError(

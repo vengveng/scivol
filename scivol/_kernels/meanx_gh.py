@@ -264,7 +264,11 @@ def _build(uid: str) -> Routine:
             result.x = theta_hat
         else:
             constraint = ()
-            if vol is not None and not is_egarch:
+            if is_gjr:
+                from .._joint_mean_fit import JointMeanModel
+
+                constraint = JointMeanModel(spec, y, x).scipy_inequalities()
+            elif vol is not None and not is_egarch:
                 matrix = np.zeros((1, n_params), dtype=np.float64)
                 matrix[0, n_mean + 1:n_mean + n_vol] = 1.0
                 constraint = LinearConstraint(matrix, 1e-12, 1.0 - 1e-8)

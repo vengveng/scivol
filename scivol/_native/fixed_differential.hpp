@@ -10,6 +10,34 @@ extern "C" {
 #include "math_and_helpers.h"
 }
 
+namespace vlk::experiment::positive_coordinate {
+
+inline double softplus(double value) noexcept
+{
+    return value > 0.0 ? value + std::log1p(std::exp(-value))
+                       : std::log1p(std::exp(value));
+}
+
+inline double inverse_softplus(double value) noexcept
+{
+    return value > 0.69314718055994530942
+        ? value + std::log1p(-std::exp(-value))
+        : std::log(std::expm1(value));
+}
+
+inline double softplus_first_from_positive(double value) noexcept
+{
+    return -std::expm1(-value);
+}
+
+inline double softplus_second_from_positive(double value) noexcept
+{
+    // 1 - first loses the curvature once first rounds to one.
+    return softplus_first_from_positive(value) * std::exp(-value);
+}
+
+}  // namespace vlk::experiment::positive_coordinate
+
 namespace vlk::experiment::ad {
 
 template<int Order, std::size_t Width>
@@ -256,24 +284,14 @@ template<int Order, std::size_t Width>
 inline Differential<Order, Width> softplus(
     const Differential<Order, Width>& operand) noexcept
 {
-    double value;
-    double first;
-    double second;
-    if (operand.value > 20.0) {
-        value = operand.value;
-        first = 1.0;
-        second = 0.0;
-    } else if (operand.value < -20.0) {
-        value = std::exp(operand.value);
-        first = value;
-        second = value;
+    const double value = positive_coordinate::softplus(operand.value);
+    if constexpr (Order == 0) {
+        return Differential<Order, Width>::constant(value);
     } else {
-        const double exponential = std::exp(operand.value);
-        value = std::log1p(exponential);
-        first = exponential / (1.0 + exponential);
-        second = first * (1.0 - first);
+        const double first = positive_coordinate::softplus_first_from_positive(value);
+        const double second = Order >= 2 ? first * std::exp(-value) : 0.0;
+        return unary(operand, value, first, second);
     }
-    return unary(operand, value, first, second);
 }
 
 template<int Order, std::size_t Width>

@@ -2,7 +2,7 @@
 """
 ARMA(p,q) with Normal errors (constant variance).
 
-Uses concentrated likelihood: σ² = (1/n) Σ ε_t²
+Uses concentrated likelihood: σ² = (1/n_eff) Σ ε_t² on the scored sample.
 Parameters: [c, φ_1, ..., φ_p, θ_1, ..., θ_q]
 """
 from __future__ import annotations
@@ -19,8 +19,6 @@ from ..spec.composite import CompositeSpec
 from ..result import EstimationResult
 from .routine import Routine
 from .transforms import (
-    compute_se_via_logspace,
-    jacobian_arma_normal,
     log_hessian_arma_normal,
     pack_arma_normal,
     unpack_arma_normal,
@@ -42,6 +40,7 @@ def _build(p: int, q: int) -> Routine:
     spec = CompositeSpec(mean, dens)
     
     n_params = 1 + p + q  # c, phi_1...phi_p, theta_1...theta_q
+    first_scored = max(p, q, 1)
     
     # Check for specialized (1,1) functions
     use_specialized = (p == 1 and q == 1)
@@ -58,6 +57,8 @@ def _build(p: int, q: int) -> Routine:
         
         y = np.ascontiguousarray(y, dtype=np.float64)
         n = len(y)
+        if n <= first_scored:
+            raise ValueError("ARMA requires observations beyond its conditioning lags.")
         
         resid = np.zeros(n, dtype=np.float64)
         e0 = np.zeros(max(q, 1), dtype=np.float64)
@@ -215,8 +216,8 @@ def _build(p: int, q: int) -> Routine:
             _core._arma_nll_pq_normal(_as_cptr(theta_hat), y_ptr, resid_ptr, e0_ptr, n, p, q)
         
         # Concentrated variance estimate
-        n_eff = n - 1
-        sigma2_hat = np.sum(resid[1:] ** 2) / n_eff
+        n_eff = n - first_scored
+        sigma2_hat = np.sum(resid[first_scored:] ** 2) / n_eff
         
         # Create result wrapper
         class ScaledResult:
@@ -227,22 +228,13 @@ def _build(p: int, q: int) -> Routine:
                 self.nit = opt_res.nit if hasattr(opt_res, 'nit') else 0
                 self.message = opt_res.message if hasattr(opt_res, 'message') else ""
         
-        scaled_res = ScaledResult(res, nll_final)
+        scaled_res = ScaledResult(res, n_eff * (nll_final + 0.5 * np.log(2 * np.pi)))
         
-        hessian = None
-        cov_matrix = None
-        if log_mode:
-            def nll_theta(theta: NDArray[np.float64]) -> float:
-                return call_nll(theta)
+        from .._native_fit import _covariance_from_hessian
 
-            hessian, cov_matrix = compute_se_via_logspace(
-                theta_hat=theta_hat,
-                nll_theta=nll_theta,
-                unpack_fn=lambda th: unpack_arma_normal(th, p, q),
-                jacobian_fn=lambda th: jacobian_arma_normal(th, p, q),
-                pack_fn=lambda z: pack_arma_normal(z, p, q),
-                hess_z_fn=analytical_hess_z,
-            )
+        hessian = n_eff * call_hess(theta_hat)
+        cov_matrix = _covariance_from_hessian(hessian)
+        fit_info.update(likelihood_n_obs=n_eff, profiled_parameters=1)
 
         result = EstimationResult(
             spec=spec,

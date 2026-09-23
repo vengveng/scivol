@@ -98,16 +98,33 @@ def _native_surface(
             "egarch": "egarch",
         }[volatility_kind]
         nll = getattr(_core, f"_{stem}_gh_nll_pq")(
-            theta.ctypes.data, resid.ctypes.data, sigma2.ctypes.data,
-            Y.size, p_vol, q_vol, native_fixed_lambda,
+            theta.ctypes.data,
+            resid.ctypes.data,
+            sigma2.ctypes.data,
+            Y.size,
+            p_vol,
+            q_vol,
+            native_fixed_lambda,
         )
         getattr(_core, f"_{stem}_gh_nll_grad_pq")(
-            theta.ctypes.data, resid.ctypes.data, sigma2.ctypes.data,
-            grad.ctypes.data, Y.size, p_vol, q_vol, native_fixed_lambda,
+            theta.ctypes.data,
+            resid.ctypes.data,
+            sigma2.ctypes.data,
+            grad.ctypes.data,
+            Y.size,
+            p_vol,
+            q_vol,
+            native_fixed_lambda,
         )
         getattr(_core, f"_{stem}_gh_nll_hess_pq")(
-            theta.ctypes.data, resid.ctypes.data, sigma2.ctypes.data,
-            hess.ctypes.data, Y.size, p_vol, q_vol, native_fixed_lambda,
+            theta.ctypes.data,
+            resid.ctypes.data,
+            sigma2.ctypes.data,
+            hess.ctypes.data,
+            Y.size,
+            p_vol,
+            q_vol,
+            native_fixed_lambda,
         )
         return float(nll), grad, hess
 
@@ -121,19 +138,42 @@ def _native_surface(
             "egarch": "linear_mean_egarch",
         }[volatility_kind]
         nll = getattr(_core, f"_{stem}_nll_pq_gh")(
-            theta.ctypes.data, Y.ctypes.data, FEATURES.ctypes.data,
-            resid.ctypes.data, sigma2.ctypes.data, Y.size, n_mean,
-            p_vol, q_vol, native_fixed_lambda,
+            theta.ctypes.data,
+            Y.ctypes.data,
+            FEATURES.ctypes.data,
+            resid.ctypes.data,
+            sigma2.ctypes.data,
+            Y.size,
+            n_mean,
+            p_vol,
+            q_vol,
+            native_fixed_lambda,
         )
         getattr(_core, f"_{stem}_nll_grad_pq_gh")(
-            theta.ctypes.data, Y.ctypes.data, FEATURES.ctypes.data,
-            resid.ctypes.data, sigma2.ctypes.data, grad.ctypes.data,
-            Y.size, n_mean, p_vol, q_vol, native_fixed_lambda,
+            theta.ctypes.data,
+            Y.ctypes.data,
+            FEATURES.ctypes.data,
+            resid.ctypes.data,
+            sigma2.ctypes.data,
+            grad.ctypes.data,
+            Y.size,
+            n_mean,
+            p_vol,
+            q_vol,
+            native_fixed_lambda,
         )
         getattr(_core, f"_{stem}_hess_pq_gh")(
-            theta.ctypes.data, Y.ctypes.data, FEATURES.ctypes.data,
-            resid.ctypes.data, sigma2.ctypes.data, hess.ctypes.data,
-            Y.size, n_mean, p_vol, q_vol, native_fixed_lambda,
+            theta.ctypes.data,
+            Y.ctypes.data,
+            FEATURES.ctypes.data,
+            resid.ctypes.data,
+            sigma2.ctypes.data,
+            hess.ctypes.data,
+            Y.size,
+            n_mean,
+            p_vol,
+            q_vol,
+            native_fixed_lambda,
         )
         return float(nll), grad, hess
 
@@ -142,20 +182,50 @@ def _native_surface(
     h0 = np.full(max_lag, np.mean(Y * Y))
     kind = {"constant": 0, "garch": 0, "gjr": 1, "egarch": 2}[volatility_kind]
     nll = _core._arma_vol_gh_nll_pq(
-        theta.ctypes.data, Y.ctypes.data, resid.ctypes.data,
-        sigma2.ctypes.data, e0.ctypes.data, h0.ctypes.data,
-        Y.size, 1, 1, p_vol, q_vol, kind, native_fixed_lambda,
+        theta.ctypes.data,
+        Y.ctypes.data,
+        resid.ctypes.data,
+        sigma2.ctypes.data,
+        e0.ctypes.data,
+        h0.ctypes.data,
+        Y.size,
+        1,
+        1,
+        p_vol,
+        q_vol,
+        kind,
+        native_fixed_lambda,
     )
     _core._arma_vol_gh_nll_grad_pq(
-        theta.ctypes.data, Y.ctypes.data, resid.ctypes.data,
-        sigma2.ctypes.data, e0.ctypes.data, h0.ctypes.data,
-        grad.ctypes.data, Y.size, 1, 1, p_vol, q_vol, kind,
+        theta.ctypes.data,
+        Y.ctypes.data,
+        resid.ctypes.data,
+        sigma2.ctypes.data,
+        e0.ctypes.data,
+        h0.ctypes.data,
+        grad.ctypes.data,
+        Y.size,
+        1,
+        1,
+        p_vol,
+        q_vol,
+        kind,
         native_fixed_lambda,
     )
     _core._arma_vol_gh_nll_hess_pq(
-        theta.ctypes.data, Y.ctypes.data, resid.ctypes.data,
-        sigma2.ctypes.data, e0.ctypes.data, h0.ctypes.data,
-        hess.ctypes.data, Y.size, 1, 1, p_vol, q_vol, kind,
+        theta.ctypes.data,
+        Y.ctypes.data,
+        resid.ctypes.data,
+        sigma2.ctypes.data,
+        e0.ctypes.data,
+        h0.ctypes.data,
+        hess.ctypes.data,
+        Y.size,
+        1,
+        1,
+        p_vol,
+        q_vol,
+        kind,
         native_fixed_lambda,
     )
     return float(nll), grad, hess
@@ -221,9 +291,7 @@ def test_native_gh_density_matches_scipy_across_bounds_and_tails(
     actual = _core._gh_standardized_nll(
         params.ctypes.data, values.ctypes.data, values.size
     )
-    expected = -standardized_gh_logpdf(
-        values, rho, zeta, shape_lambda
-    ).sum()
+    expected = -standardized_gh_logpdf(values, rho, zeta, shape_lambda).sum()
 
     assert actual == pytest.approx(expected, rel=3e-10, abs=3e-10)
 
@@ -253,13 +321,21 @@ def test_standardized_shape_derivatives_match_ad(estimate_lambda: bool) -> None:
     hess = np.empty((params.size, params.size))
     if estimate_lambda:
         _core._gh_standardized_nll_grad_hess(
-            params.ctypes.data, Y.ctypes.data, value.ctypes.data,
-            grad.ctypes.data, hess.ctypes.data, Y.size,
+            params.ctypes.data,
+            Y.ctypes.data,
+            value.ctypes.data,
+            grad.ctypes.data,
+            hess.ctypes.data,
+            Y.size,
         )
     else:
         _core._nig_standardized_nll_grad_hess(
-            params.ctypes.data, Y.ctypes.data, value.ctypes.data,
-            grad.ctypes.data, hess.ctypes.data, Y.size,
+            params.ctypes.data,
+            Y.ctypes.data,
+            value.ctypes.data,
+            grad.ctypes.data,
+            hess.ctypes.data,
+            Y.size,
         )
 
     np.testing.assert_allclose(value[0], expected[0], rtol=2e-10, atol=2e-10)
@@ -319,6 +395,37 @@ def test_native_variance_gamma_density_matches_reference_in_tails(
     expected = -standardized_vg_logpdf(values, rho, shape_lambda).sum()
 
     assert actual == pytest.approx(expected, rel=3e-10, abs=3e-10)
+
+
+def test_variance_gamma_large_argument_shape_curvature() -> None:
+    params = np.array([-0.9949103835917059, 47.417166676811])
+    values = np.array([-1.9715420758466602])
+    nll, gradient, hessian = np.empty(1), np.empty(2), np.empty((2, 2))
+    _core._vg_standardized_nll_grad_hess(
+        params.ctypes.data,
+        values.ctypes.data,
+        nll.ctypes.data,
+        gradient.ctypes.data,
+        hessian.ctypes.data,
+        values.size,
+    )
+    # Independent MP70 differentiation; retain the existing VG density tolerances.
+    np.testing.assert_allclose(nll[0], 2.809912968217987, rtol=3e-9, atol=3e-9)
+    np.testing.assert_allclose(
+        gradient,
+        [0.00016476975930620224, 0.00028445018668820776],
+        rtol=3e-7,
+        atol=3e-8,
+    )
+    np.testing.assert_allclose(
+        hessian,
+        [
+            [0.032751980335175346, -6.21370489040693e-7],
+            [-6.21370489040693e-7, -4.485173603012623e-6],
+        ],
+        rtol=3e-6,
+        atol=3e-7,
+    )
 
 
 def test_variance_gamma_center_has_finite_observed_hessian() -> None:
@@ -387,9 +494,7 @@ def test_all_shared_gh_tensor_cores_match_ad(
     mean_kind: str, volatility_kind: str
 ) -> None:
     theta, p_vol, q_vol = _surface_theta(mean_kind, volatility_kind)
-    actual = _native_surface(
-        theta, mean_kind, volatility_kind, p_vol, q_vol
-    )
+    actual = _native_surface(theta, mean_kind, volatility_kind, p_vol, q_vol)
     expected = gh_surface_value_grad_hess(
         theta,
         Y,
@@ -427,12 +532,8 @@ def test_all_shared_gh_tensor_cores_match_ad(
 def test_all_shared_variance_gamma_tensor_cores_match_ad(
     mean_kind: str, volatility_kind: str
 ) -> None:
-    theta, p_vol, q_vol = _surface_theta(
-        mean_kind, volatility_kind, VG_SHAPE
-    )
-    actual = _native_surface(
-        theta, mean_kind, volatility_kind, p_vol, q_vol, np.inf
-    )
+    theta, p_vol, q_vol = _surface_theta(mean_kind, volatility_kind, VG_SHAPE)
+    actual = _native_surface(theta, mean_kind, volatility_kind, p_vol, q_vol, np.inf)
     expected = vg_surface_value_grad_hess(
         theta,
         Y,
@@ -514,7 +615,7 @@ def test_garch_gh_log_transform_matches_ad_chain_rule(
 
     def pack(z_j):
         omega = jnp.log1p(jnp.exp(z_j[0]))
-        logits = jnp.concatenate((z_j[1:1 + p + q], jnp.zeros(1)))
+        logits = jnp.concatenate((z_j[1 : 1 + p + q], jnp.zeros(1)))
         dynamic = jax.nn.softmax(logits)[:-1]
         offset = 1 + p + q
         rho = 0.995 * jnp.tanh(z_j[offset])
@@ -531,9 +632,7 @@ def test_garch_gh_log_transform_matches_ad_chain_rule(
     expected_grad = np.asarray(jax.grad(local_objective)(jnp.asarray(z)))
     expected_hess = np.asarray(jax.hessian(local_objective)(jnp.asarray(z)))
     actual_grad = jacobian_garch_gh(theta, p, q, estimate_lambda).T @ grad
-    actual_hess = log_hessian_garch_gh(
-        theta, grad, hess, p, q, estimate_lambda
-    )
+    actual_hess = log_hessian_garch_gh(theta, grad, hess, p, q, estimate_lambda)
     np.testing.assert_allclose(actual_grad, expected_grad, rtol=2e-10, atol=2e-10)
     np.testing.assert_allclose(actual_hess, expected_hess, rtol=2e-9, atol=2e-9)
     np.testing.assert_allclose(pack_garch_gh(z, p, q, estimate_lambda), theta)
@@ -546,28 +645,24 @@ def test_garch_variance_gamma_log_transform_matches_ad_chain_rule() -> None:
 
     jax.config.update("jax_enable_x64", True)
     theta, p, q = _surface_theta("none", "garch", VG_SHAPE)
-    value, grad, hess = _native_surface(
-        theta, "none", "garch", p, q, np.inf
-    )
-    z = unpack_garch_gh(
-        theta, p, q, False, VG_LAMBDA_MIN, VG_LAMBDA_MAX
-    )
+    value, grad, hess = _native_surface(theta, "none", "garch", p, q, np.inf)
+    z = unpack_garch_gh(theta, p, q, False, VG_LAMBDA_MIN, VG_LAMBDA_MAX)
     theta_j = jnp.asarray(theta)
     grad_j = jnp.asarray(grad)
     hess_j = jnp.asarray(hess)
 
     def pack(z_j):
         omega = jnp.log1p(jnp.exp(z_j[0]))
-        logits = jnp.concatenate((z_j[1:1 + p + q], jnp.zeros(1)))
+        logits = jnp.concatenate((z_j[1 : 1 + p + q], jnp.zeros(1)))
         dynamic = jax.nn.softmax(logits)[:-1]
         offset = 1 + p + q
         rho = 0.995 * jnp.tanh(z_j[offset])
-        shape_lambda = VG_LAMBDA_MIN + (
-            VG_LAMBDA_MAX - VG_LAMBDA_MIN
-        ) * jax.nn.sigmoid(z_j[offset + 1])
-        return jnp.concatenate((
-            jnp.array([omega]), dynamic, jnp.array([rho, shape_lambda])
-        ))
+        shape_lambda = VG_LAMBDA_MIN + (VG_LAMBDA_MAX - VG_LAMBDA_MIN) * jax.nn.sigmoid(
+            z_j[offset + 1]
+        )
+        return jnp.concatenate(
+            (jnp.array([omega]), dynamic, jnp.array([rho, shape_lambda]))
+        )
 
     def local_objective(z_j):
         delta = pack(z_j) - theta_j
@@ -575,9 +670,9 @@ def test_garch_variance_gamma_log_transform_matches_ad_chain_rule() -> None:
 
     expected_grad = np.asarray(jax.grad(local_objective)(jnp.asarray(z)))
     expected_hess = np.asarray(jax.hessian(local_objective)(jnp.asarray(z)))
-    actual_grad = jacobian_garch_gh(
-        theta, p, q, False, VG_LAMBDA_MIN, VG_LAMBDA_MAX
-    ).T @ grad
+    actual_grad = (
+        jacobian_garch_gh(theta, p, q, False, VG_LAMBDA_MIN, VG_LAMBDA_MAX).T @ grad
+    )
     actual_hess = log_hessian_garch_gh(
         theta, grad, hess, p, q, False, VG_LAMBDA_MIN, VG_LAMBDA_MAX
     )
@@ -647,9 +742,9 @@ def test_public_variance_gamma_workflow() -> None:
 def test_auto_density_and_oos_log_score_accept_variance_gamma() -> None:
     rng = np.random.default_rng(82)
     data = 0.01 * standardized_vg_rvs(rng, 180, 0.15, 3.0)
-    result = (GARCH(1, 1) + AutoDensity(
-        candidates=["VarianceGamma"]
-    )).fit(data, n_jobs=1)
+    result = (GARCH(1, 1) + AutoDensity(candidates=["VarianceGamma"])).fit(
+        data, n_jobs=1
+    )
     state = result.filter()
     expected = standardized_vg_logpdf(
         state.std_resid,
@@ -675,9 +770,9 @@ def test_auto_density_and_oos_log_score_accept_variance_gamma() -> None:
 def test_auto_density_accepts_nig_as_an_explicit_candidate() -> None:
     rng = np.random.default_rng(81)
     data = 0.01 * rng.standard_t(8, 160)
-    result = (GARCH(1, 1) + AutoDensity(
-        candidates=["NormalInverseGaussian"]
-    )).fit(data, n_jobs=1)
+    result = (GARCH(1, 1) + AutoDensity(candidates=["NormalInverseGaussian"])).fit(
+        data, n_jobs=1
+    )
 
     assert result.density.signature == "NormalInverseGaussian"
     assert result.selection.best is not None
@@ -689,10 +784,7 @@ def test_oos_log_score_uses_the_standardized_gh_density() -> None:
     sigma2 = np.array([0.8, 1.2, 0.9])
     rho, zeta, shape_lambda = 0.2, 1.5, -0.4
     z = resid / np.sqrt(sigma2)
-    expected = (
-        standardized_gh_logpdf(z, rho, zeta, shape_lambda)
-        - 0.5 * np.log(sigma2)
-    )
+    expected = standardized_gh_logpdf(z, rho, zeta, shape_lambda) - 0.5 * np.log(sigma2)
 
     actual = _per_observation_loglik(
         "GeneralizedHyperbolic",
@@ -709,9 +801,7 @@ def test_oos_log_score_uses_the_standardized_gh_density() -> None:
 
 def test_qmle_rejects_unshipped_gh_robust_covariance() -> None:
     with pytest.raises(NotImplementedError, match="QMLE is not shipped"):
-        (GARCH(1, 1) + GeneralizedHyperbolic()).fit(
-            Y, method="qmle"
-        )
+        (GARCH(1, 1) + GeneralizedHyperbolic()).fit(Y, method="qmle")
 
 
 def test_gh_diagnostics_and_serialization_report_shape_parameters(
@@ -719,9 +809,7 @@ def test_gh_diagnostics_and_serialization_report_shape_parameters(
 ) -> None:
     params = np.array([0.12, 0.08, 0.72, 0.2, 1.5, -0.4])
     result = (GARCH(1, 1) + GeneralizedHyperbolic()).fix(Y, params)
-    diagnostics = result.diagnostic_tests(
-        n_cells=3, lags=1, print_results=True
-    )
+    diagnostics = result.diagnostic_tests(n_cells=3, lags=1, print_results=True)
     serialized = result.to_dict()["dist_params"]
 
     assert diagnostics["dist_params"]["rho"] == pytest.approx(0.2)

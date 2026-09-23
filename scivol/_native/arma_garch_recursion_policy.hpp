@@ -16,10 +16,17 @@ namespace vlk::experiment::generated {
 
 namespace arma_garch_equation {
 
-VLK_ARMA_RECURSION_INLINE void subtract_product(
-    double& state, double coefficient, double lagged_state)
+VLK_ARMA_RECURSION_INLINE double shock_coefficient(
+    double alpha, double gamma, bool negative)
 {
-    state -= coefficient * lagged_state;
+    return alpha+gamma*static_cast<double>(negative);
+}
+
+template<class Scalar, class Lagged>
+VLK_ARMA_RECURSION_INLINE void subtract_product(
+    Scalar& state, double coefficient, Lagged lagged_state)
+{
+    state -= Scalar(coefficient) * Scalar(lagged_state);
 }
 
 VLK_ARMA_RECURSION_INLINE void add_product(
@@ -67,15 +74,26 @@ VLK_ARMA_RECURSION_INLINE void initialize_variance_first(
     current[omega_index] = 1.0;
 }
 
+template<class First>
 VLK_ARMA_RECURSION_INLINE void add_arch_first(
     double* current,
     std::size_t width,
     std::size_t alpha_index,
     double alpha,
     double lagged_residual,
-    const double* residual_first)
+    const First& residual_first)
 {
     const double multiplier = 2.0 * alpha * lagged_residual;
+    // Current sensitivities and the lagged input occupy disjoint storage.
+    constexpr unsigned interleave=[] {
+        if constexpr (requires { First::interleave; }) return First::interleave;
+        else return 4u;
+    }();
+#if defined(__clang__)
+#pragma clang loop vectorize(assume_safety) interleave_count(interleave)
+#elif defined(__GNUC__)
+#pragma GCC ivdep
+#endif
     for (std::size_t parameter = 0; parameter < width; ++parameter)
         current[parameter] += multiplier * residual_first[parameter];
     current[alpha_index] += lagged_residual * lagged_residual;
@@ -84,9 +102,11 @@ VLK_ARMA_RECURSION_INLINE void add_arch_first(
 VLK_ARMA_RECURSION_INLINE void add_shock_coefficient_first(
     double* current,
     std::size_t coefficient_index,
-    double lagged_residual)
+    double lagged_residual,
+    bool active = true)
 {
-    current[coefficient_index] += lagged_residual * lagged_residual;
+    current[coefficient_index] += static_cast<double>(active)
+        * lagged_residual * lagged_residual;
 }
 
 VLK_ARMA_RECURSION_INLINE void add_garch_first(
@@ -97,6 +117,11 @@ VLK_ARMA_RECURSION_INLINE void add_garch_first(
     double lagged_variance,
     const double* variance_first)
 {
+#if defined(__clang__)
+#pragma clang loop vectorize(assume_safety)
+#elif defined(__GNUC__)
+#pragma GCC ivdep
+#endif
     for (std::size_t parameter = 0; parameter < width; ++parameter)
         current[parameter] += beta * variance_first[parameter];
     current[beta_index] += lagged_variance;
@@ -128,21 +153,34 @@ VLK_ARMA_RECURSION_INLINE void add_ma_second(
     }
 }
 
+template<bool AffineResidual = false, class First>
 VLK_ARMA_RECURSION_INLINE void add_arch_second(
     double* current,
     std::size_t width,
     std::size_t alpha_index,
     double alpha,
     double lagged_residual,
-    const double* residual_first,
-    const double* residual_second)
+    const First& residual_first,
+    const double* residual_second,
+    std::size_t residual_width = 0u)
 {
+    if constexpr (AffineResidual) {
+        for (std::size_t row=0; row<residual_width; ++row) {
+            for (std::size_t column=row; column<residual_width; ++column)
+                current[packed_index(width,row,column)] +=
+                    2.0*alpha*residual_first[row]*residual_first[column];
+            current[packed_index(width,row,alpha_index)] +=
+                2.0*lagged_residual*residual_first[row];
+        }
+        return;
+    }
     for (std::size_t row = 0; row < width; ++row) {
         for (std::size_t column = row; column < width; ++column) {
             const std::size_t packed = packed_index(width, row, column);
-            current[packed] += 2.0 * alpha
-                * (residual_first[row] * residual_first[column]
-                   + lagged_residual * residual_second[packed]);
+            double sensitivity = residual_first[row] * residual_first[column];
+            if constexpr (!AffineResidual)
+                sensitivity += lagged_residual * residual_second[packed];
+            current[packed] += 2.0 * alpha * sensitivity;
             if (row == alpha_index)
                 current[packed] += 2.0 * lagged_residual * residual_first[column];
             if (column == alpha_index)
@@ -151,13 +189,21 @@ VLK_ARMA_RECURSION_INLINE void add_arch_second(
     }
 }
 
+template<bool AffineResidual = false, class First>
 VLK_ARMA_RECURSION_INLINE void add_shock_coefficient_second(
     double* current,
     std::size_t width,
     std::size_t coefficient_index,
     double lagged_residual,
-    const double* residual_first)
+    const First& residual_first,
+    std::size_t residual_width = 0u)
 {
+    if constexpr (AffineResidual) {
+        for (std::size_t row=0; row<residual_width; ++row)
+            current[packed_index(width,row,coefficient_index)] +=
+                2.0*lagged_residual*residual_first[row];
+        return;
+    }
     for (std::size_t row = 0; row < width; ++row) {
         for (std::size_t column = row; column < width; ++column) {
             const std::size_t packed = packed_index(width, row, column);
@@ -177,16 +223,14 @@ VLK_ARMA_RECURSION_INLINE void add_garch_second(
     const double* previous_first,
     const double* previous_second)
 {
-    for (std::size_t row = 0; row < width; ++row) {
-        for (std::size_t column = row; column < width; ++column) {
-            const std::size_t packed = packed_index(width, row, column);
-            current[packed] += beta * previous_second[packed];
-            if (row == beta_index)
-                current[packed] += previous_first[column];
-            if (column == beta_index)
-                current[packed] += previous_first[row];
-        }
-    }
+    const std::size_t packed=width*(width+1u)/2u;
+    for (std::size_t index=0; index<packed; ++index)
+        current[index] += beta*previous_second[index];
+    for (std::size_t row=0; row<beta_index; ++row)
+        current[packed_index(width,row,beta_index)] += previous_first[row];
+    for (std::size_t column=beta_index; column<width; ++column)
+        current[packed_index(width,beta_index,column)] += previous_first[column];
+    current[packed_index(width,beta_index,beta_index)] += previous_first[beta_index];
 }
 
 }  // namespace arma_garch_equation
@@ -255,9 +299,8 @@ struct ArmaGarchRecursion {
             const double residual =
                 residual_history[(time - 1u - lag) % maximum_lag];
             if constexpr (Leverage) {
-                const double coefficient = theta[alpha_start + lag]
-                    + (residual < 0.0
-                        ? theta[gamma_start + lag] : 0.0);
+                const double coefficient = arma_garch_equation::shock_coefficient(
+                    theta[alpha_start+lag],theta[gamma_start+lag],residual<0.0);
                 arma_garch_equation::add_squared_product(
                     variance, coefficient, residual);
             } else {
@@ -308,8 +351,8 @@ struct ArmaGarchRecursion {
             const auto& previous = residual_first_history[slot];
             const std::size_t alpha = alpha_start + lag;
             const bool negative = Leverage && residual < 0.0;
-            const double coefficient = theta[alpha]
-                + (negative ? theta[gamma_start + lag] : 0.0);
+            const double coefficient = arma_garch_equation::shock_coefficient(
+                theta[alpha],Leverage?theta[gamma_start+lag]:0.0,negative);
             arma_garch_equation::add_arch_first(
                 variance_first.data(), K, alpha, coefficient, residual,
                 previous.data());
@@ -358,8 +401,8 @@ struct ArmaGarchRecursion {
             const auto& second = residual_second_history[slot];
             const std::size_t alpha = alpha_start + lag;
             const bool negative = Leverage && residual < 0.0;
-            const double coefficient = theta[alpha]
-                + (negative ? theta[gamma_start + lag] : 0.0);
+            const double coefficient = arma_garch_equation::shock_coefficient(
+                theta[alpha],Leverage?theta[gamma_start+lag]:0.0,negative);
             arma_garch_equation::add_arch_second(
                 variance_second.data(), K, alpha, coefficient, residual,
                 first.data(), second.data());
@@ -381,6 +424,7 @@ struct ArmaGarchRecursion {
     }
 
     VLK_ARMA_RECURSION_INLINE static bool differentiable(
+        const double* theta,
         std::size_t time,
         const ValueHistory& residual_history,
         const FirstHistory& residual_first_history)
@@ -389,7 +433,7 @@ struct ArmaGarchRecursion {
             return true;
         for (std::size_t lag = 0; lag < PVol; ++lag) {
             const std::size_t slot = (time - 1u - lag) % maximum_lag;
-            if (residual_history[slot] != 0.0)
+            if (residual_history[slot] != 0.0 || theta[gamma_start+lag] == 0.0)
                 continue;
             for (double derivative : residual_first_history[slot]) {
                 if (derivative != 0.0)

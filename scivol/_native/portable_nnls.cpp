@@ -7,11 +7,8 @@
 #endif
 
 #if defined(_MSC_VER)
-#  include <malloc.h>
-#  define VLK_STACK_ALLOCATE(bytes) _alloca(bytes)
 #  define VLK_NNLS_RESTRICT __restrict
 #else
-#  define VLK_STACK_ALLOCATE(bytes) __builtin_alloca(bytes)
 #  define VLK_NNLS_RESTRICT __restrict__
 #endif
 
@@ -33,44 +30,14 @@ extern "C" {
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-
-namespace {
-
-constexpr std::size_t maximum_stack_bytes = 128u * 1024u;
-
-bool planned_stack_bytes(
-    std::size_t rows, std::size_t columns, std::size_t& bytes)
-{
-    if (columns == 0u
-        || rows > maximum_stack_bytes / sizeof(double) / columns) {
-        return false;
-    }
-    const std::size_t matrix_elements = rows * columns;
-    const std::size_t rhs_elements = std::max(rows, columns);
-    const std::size_t work_elements = matrix_elements + 3u * columns + 1u;
-    const std::size_t double_elements =
-        columns + matrix_elements + rhs_elements + work_elements;
-    if (double_elements > maximum_stack_bytes / sizeof(double))
-        return false;
-    const std::size_t double_bytes = double_elements * sizeof(double);
-    const std::size_t integer_bytes = 2u * columns * sizeof(CBLAS_INT);
-    const std::size_t flag_bytes = columns * sizeof(unsigned char);
-    if (integer_bytes > maximum_stack_bytes - double_bytes
-        || flag_bytes > maximum_stack_bytes - double_bytes - integer_bytes) {
-        return false;
-    }
-    bytes = double_bytes + integer_bytes + flag_bytes;
-    return true;
-}
-
-}  // namespace
+#include "nnls_workspace.hpp"
 
 /*
  * Refactorized Lawson-Hanson NNLS.
  *
  * Rebuilding the small passive least-squares problem avoids the backend-
  * dependent cycling seen with incremental QR updates. Scratch storage is
- * bounded, automatic, and rejected before the stack pointer moves.
+ * caller-owned, checked before use, and reused throughout the solve.
  */
 extern "C" void __nnls(
     const CBLAS_INT m,
@@ -83,38 +50,34 @@ extern "C" void __nnls(
     CBLAS_INT* VLK_NNLS_RESTRICT passive,
     const std::int64_t maxiter,
     double* rnorm,
-    std::int64_t* info)
+    std::int64_t* info,
+    ScivolNnlsWorkspace workspace)
 {
     *info = 1;
     *rnorm = 0.0;
-    if (m <= 0 || n <= 0) {
+    if (m <= 0 || n <= 0 || !a || !b || !x || !dual || !residual || !passive
+        || maxiter > (std::numeric_limits<std::int64_t>::max()-32)/32) {
         *info = 2;
         return;
     }
 
     const std::size_t rows = static_cast<std::size_t>(m);
     const std::size_t columns = static_cast<std::size_t>(n);
-    std::size_t stack_bytes = 0u;
-    if (!planned_stack_bytes(rows, columns, stack_bytes)) {
+    const auto required=vlk::experiment::nnls::workspace_bytes(rows,columns);
+    if (!required || !workspace.memory || workspace.bytes<required
+        || reinterpret_cast<std::uintptr_t>(workspace.memory)%alignof(double)) {
         *info = 2;
         return;
     }
-    static_cast<void>(stack_bytes);
-
-    auto* candidate = static_cast<double*>(
-        VLK_STACK_ALLOCATE(columns * sizeof(double)));
-    auto* active_matrix = static_cast<double*>(
-        VLK_STACK_ALLOCATE(rows * columns * sizeof(double)));
-    auto* active_rhs = static_cast<double*>(
-        VLK_STACK_ALLOCATE(std::max(rows, columns) * sizeof(double)));
-    auto* least_squares_work = static_cast<double*>(VLK_STACK_ALLOCATE(
-        (rows * columns + 3u * columns + 1u) * sizeof(double)));
-    auto* active_permutation = static_cast<CBLAS_INT*>(
-        VLK_STACK_ALLOCATE(columns * sizeof(CBLAS_INT)));
-    auto* active_to_original = static_cast<CBLAS_INT*>(
-        VLK_STACK_ALLOCATE(columns * sizeof(CBLAS_INT)));
-    auto* eligible = static_cast<unsigned char*>(
-        VLK_STACK_ALLOCATE(columns * sizeof(unsigned char)));
+    vlk::experiment::runtime::WorkspaceArena arena(workspace.memory,workspace.bytes);
+    auto* candidate=arena.take<double>(columns);
+    auto* active_matrix=arena.take<double>(rows*columns);
+    auto* active_rhs=arena.take<double>(std::max(rows,columns));
+    auto* least_squares_work=arena.take<double>(rows*columns+3*columns+1);
+    auto* active_permutation=arena.take<CBLAS_INT>(columns);
+    auto* active_to_original=arena.take<CBLAS_INT>(columns);
+    auto* eligible=arena.take<unsigned char>(columns);
+    if (!eligible) { *info=2; return; }
 
     for (CBLAS_INT column = 0; column < n; ++column) {
         x[column] = 0.0;
@@ -273,5 +236,4 @@ finish:
     }
 }
 
-#undef VLK_STACK_ALLOCATE
 #undef VLK_NNLS_RESTRICT

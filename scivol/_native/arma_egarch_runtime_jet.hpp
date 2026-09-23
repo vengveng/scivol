@@ -11,17 +11,20 @@
 #include "garch_extended_density_policy.hpp"
 #include "runtime_reflection.hpp"
 #include "runtime_workspace.hpp"
+#include "mean_equation.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 
 namespace vlk::experiment::runtime::arma_egarch {
 
 template<class Density>
-[[nodiscard]] bool make_layout(
+[[nodiscard]] bool make_mean_layout(
+    std::size_t mean,
     std::size_t p_ar,
     std::size_t q_ma,
     std::size_t p_vol,
@@ -30,14 +33,11 @@ template<class Density>
 {
     if (p_vol == 0u || q_vol == 0u)
         return false;
-    std::size_t mean = 0u;
     std::size_t twice_p = 0u;
     std::size_t model = 0u;
     std::size_t parameters = 0u;
     std::size_t packed_product = 0u;
-    if (!checked_sum(1u, p_ar, mean)
-        || !checked_sum(mean, q_ma, mean)
-        || !checked_product(p_vol, 2u, twice_p)
+    if (!checked_product(p_vol, 2u, twice_p)
         || !checked_sum(mean, 1u, model)
         || !checked_sum(model, twice_p, model)
         || !checked_sum(model, q_vol, model)
@@ -71,7 +71,25 @@ template<class Density>
     return true;
 }
 
+template<class Density>
+[[nodiscard]] bool make_layout(std::size_t p_ar, std::size_t q_ma,
+    std::size_t p, std::size_t q, Layout& layout) noexcept
+{
+    std::size_t mean;
+    return checked_sum(1u,p_ar,mean) && checked_sum(mean,q_ma,mean)
+        && make_mean_layout<Density>(mean,p_ar,q_ma,p,q,layout);
+}
+
+template<class Density>
+[[nodiscard]] bool make_linear_layout(std::size_t columns,
+    std::size_t p, std::size_t q, Layout& layout) noexcept
+{
+    return make_mean_layout<Density>(columns,0u,0u,p,q,layout);
+}
+
 struct RuntimeOrders {
+    static constexpr bool linear = false;
+    static constexpr std::size_t columns = 0u;
     static constexpr bool fixed = false;
     static constexpr std::size_t p_ar = 0u;
     static constexpr std::size_t q_ma = 0u;
@@ -83,6 +101,8 @@ struct RuntimeOrders {
 template<std::size_t PAr, std::size_t QMa,
          std::size_t PVol, std::size_t QVol>
 struct FixedOrders {
+    static constexpr bool linear = false;
+    static constexpr std::size_t columns = 0u;
     static_assert(PVol > 0u && QVol > 0u);
     static constexpr bool fixed = true;
     static constexpr std::size_t p_ar = PAr;
@@ -95,7 +115,7 @@ struct FixedOrders {
 
 template<class Orders>
 inline constexpr std::size_t static_model_width = Orders::fixed
-    ? 2u + Orders::p_ar + Orders::q_ma
+    ? 1u + (Orders::linear ? Orders::columns : 1u + Orders::p_ar + Orders::q_ma)
         + 2u * Orders::p_vol + Orders::q_vol
     : 0u;
 
@@ -123,6 +143,8 @@ template<std::size_t StaticWidth>
 template<class Orders>
 [[nodiscard]] constexpr std::size_t p_ar(const Layout& layout) noexcept
 {
+    if constexpr (Orders::linear)
+        return 0u;
     if constexpr (Orders::fixed)
         return Orders::p_ar;
     return layout.p_ar;
@@ -131,6 +153,8 @@ template<class Orders>
 template<class Orders>
 [[nodiscard]] constexpr std::size_t q_ma(const Layout& layout) noexcept
 {
+    if constexpr (Orders::linear)
+        return 0u;
     if constexpr (Orders::fixed)
         return Orders::q_ma;
     return layout.q_ma;
@@ -164,26 +188,56 @@ template<class Orders>
 template<class Orders>
 [[nodiscard]] bool matches_orders(const Layout& layout) noexcept
 {
+    if constexpr (Orders::linear) {
+        if (layout.p_ar || layout.q_ma)
+            return false;
+        if constexpr (Orders::columns != mean::dynamic)
+            if (layout.mean_parameters != Orders::columns)
+                return false;
+    }
     if constexpr (!Orders::fixed) {
         return true;
     } else {
         return layout.p_ar == Orders::p_ar && layout.q_ma == Orders::q_ma
+            && (!Orders::linear || layout.mean_parameters == Orders::columns)
             && layout.p_vol == Orders::p_vol
             && layout.q_vol == Orders::q_vol;
     }
 }
 
-struct State {
-    double value = 0.0;
+// Scalar precision controls recursive values only. Sensitivities and local
+// density assembly remain binary64; this is not a full-precision certificate.
+template<class Scalar>
+struct ScalarState {
+    Scalar value = 0.0;
     double* gradient = nullptr;
     double* hessian = nullptr;
+
+    decltype(auto) rounded() const noexcept
+    {
+        if constexpr (std::is_same_v<Scalar,double>)
+            return (*this);
+        else
+            return ScalarState<double>{static_cast<double>(value),gradient,hessian};
+    }
 };
 
-template<int Order>
+using State = ScalarState<double>;
+
+struct Binary64PointState {
+    using Scalar = double;
+    template<int Order, class Density>
+    auto absolute_moment(const double* shape) const noexcept
+    { return generated::absolute_moment<Order,Density>(shape); }
+};
+
+template<int Order, class Scalar = double>
 struct Scratch {
-    double* residual_values = nullptr;
-    double* standardized_values = nullptr;
-    double* log_variance_values = nullptr;
+    static_assert(std::is_trivially_copyable_v<Scalar>
+        && std::is_trivially_destructible_v<Scalar>);
+    Scalar* residual_values = nullptr;
+    Scalar* standardized_values = nullptr;
+    Scalar* log_variance_values = nullptr;
     double* residual_gradients = nullptr;
     double* standardized_gradients = nullptr;
     double* log_variance_gradients = nullptr;
@@ -201,16 +255,16 @@ struct Scratch {
     double* reflection_next = nullptr;
 };
 
-template<int Order>
+template<int Order, class Scalar = double>
 [[nodiscard]] std::size_t core_workspace_bytes(
     const Layout& layout) noexcept
 {
     if (!layout.valid)
         return 0u;
     WorkspaceSizer sizer;
-    if (!sizer.add<double>(layout.maximum_lag)
-        || !sizer.add<double>(layout.p_vol)
-        || !sizer.add<double>(layout.q_vol)) {
+    if (!sizer.add<Scalar>(layout.q_ma)
+        || !sizer.add<Scalar>(layout.p_vol)
+        || !sizer.add<Scalar>(layout.q_vol)) {
         return 0u;
     }
     if constexpr (Order >= 1) {
@@ -218,7 +272,7 @@ template<int Order>
         std::size_t standardized = 0u;
         std::size_t log_variance = 0u;
         if (!checked_product(
-                layout.maximum_lag, layout.parameters, residual)
+                layout.q_ma, layout.parameters, residual)
             || !checked_product(
                 layout.p_vol, layout.parameters, standardized)
             || !checked_product(
@@ -236,7 +290,7 @@ template<int Order>
         std::size_t residual = 0u;
         std::size_t standardized = 0u;
         std::size_t log_variance = 0u;
-        if (!checked_product(layout.maximum_lag, layout.packed, residual)
+        if (!checked_product(layout.q_ma, layout.packed, residual)
             || !checked_product(layout.p_vol, layout.packed, standardized)
             || !checked_product(layout.q_vol, layout.packed, log_variance)
             || !sizer.add<double>(residual)
@@ -254,20 +308,20 @@ template<int Order>
         ? sizer.size() : 0u;
 }
 
-template<int Order>
+template<int Order, class Scalar>
 [[nodiscard]] bool bind_scratch(
     const Layout& layout,
     void* workspace,
     std::size_t workspace_bytes,
-    Scratch<Order>& scratch) noexcept
+    Scratch<Order,Scalar>& scratch) noexcept
 {
     WorkspaceArena arena(workspace, workspace_bytes);
-    scratch.residual_values = arena.take<double>(layout.maximum_lag);
-    scratch.standardized_values = arena.take<double>(layout.p_vol);
-    scratch.log_variance_values = arena.take<double>(layout.q_vol);
+    scratch.residual_values = arena.take<Scalar>(layout.q_ma);
+    scratch.standardized_values = arena.take<Scalar>(layout.p_vol);
+    scratch.log_variance_values = arena.take<Scalar>(layout.q_vol);
     if constexpr (Order >= 1) {
         scratch.residual_gradients = arena.take<double>(
-            layout.maximum_lag * layout.parameters);
+            layout.q_ma * layout.parameters);
         scratch.standardized_gradients = arena.take<double>(
             layout.p_vol * layout.parameters);
         scratch.log_variance_gradients = arena.take<double>(
@@ -280,7 +334,7 @@ template<int Order>
     }
     if constexpr (Order >= 2) {
         scratch.residual_hessians = arena.take<double>(
-            layout.maximum_lag * layout.packed);
+            layout.q_ma * layout.packed);
         scratch.standardized_hessians = arena.take<double>(
             layout.p_vol * layout.packed);
         scratch.log_variance_hessians = arena.take<double>(
@@ -315,9 +369,9 @@ template<int Order>
             && scratch.objective_hessian != nullptr));
 }
 
-template<int Order>
-[[nodiscard]] State history_state(
-    double* values,
+template<int Order, class Scalar>
+[[nodiscard]] ScalarState<Scalar> history_state(
+    Scalar* values,
     double* gradients,
     double* hessians,
     std::size_t slot,
@@ -331,17 +385,19 @@ template<int Order>
     };
 }
 
-template<int Order, class Orders, class Density>
+template<int Order, class Orders, class Density,
+         class Moment = generated::AbsoluteMoment<Density::shape_parameters>,
+         class Scalar = double>
 struct EgarchAlgebra {
     static constexpr std::size_t StaticWidth =
         static_parameter_width<Orders, Density>;
     const Layout& layout;
-    Scratch<Order>& scratch;
-    const generated::AbsoluteMoment<Density::shape_parameters>& moment;
+    Scratch<Order,Scalar>& scratch;
+    const Moment& moment;
     const double* parameters;
-    State residual;
-    State log_variance;
-    State standardized;
+    ScalarState<Scalar> residual;
+    ScalarState<Scalar> log_variance;
+    ScalarState<Scalar> standardized;
 
     std::size_t omega_index() const noexcept { return layout.omega_index; }
     std::size_t shock_count() const noexcept { return p_vol<Orders>(layout); }
@@ -382,7 +438,7 @@ struct EgarchAlgebra {
     {
         const std::size_t slot =
             (time - 1u - lag) % p_vol<Orders>(layout);
-        const State previous = history_state<Order>(
+        const auto previous = history_state<Order>(
             scratch.standardized_values,
             scratch.standardized_gradients,
             scratch.standardized_hessians,
@@ -403,7 +459,7 @@ struct EgarchAlgebra {
     {
         const std::size_t slot =
             (time - 1u - lag) % q_vol<Orders>(layout);
-        const State previous = history_state<Order>(
+        const auto previous = history_state<Order>(
             scratch.log_variance_values,
             scratch.log_variance_gradients,
             scratch.log_variance_hessians,
@@ -420,18 +476,34 @@ struct EgarchAlgebra {
     }
 };
 
-template<int Order, class Orders, std::size_t StaticWidth>
+template<int Order, class Orders, std::size_t StaticWidth, class Scalar>
 void advance_residual(
     const Layout& layout,
     const double* parameters,
     const double* observations,
     std::size_t time,
-    Scratch<Order>& scratch,
-    State& residual) noexcept
+    Scratch<Order,Scalar>& scratch,
+    ScalarState<Scalar>& residual, const double* features = nullptr) noexcept
 {
     const std::size_t width = derivative_width<StaticWidth>(layout.parameters);
     const std::size_t packed = packed_width<StaticWidth>(layout.packed);
-    residual.value = observations[time] - parameters[0];
+    if constexpr (Orders::linear) {
+        const mean::LinearDesign<Orders::columns> design{features,layout.mean_parameters};
+        if constexpr (std::is_same_v<Scalar,double>) {
+            mean::State state{0.0,residual.gradient,residual.hessian};
+            mean::advance<Order,0u,StaticWidth ? StaticWidth : mean::dynamic>(
+                state,{},design,parameters,observations[time],time,0u,width);
+            residual.value=state.value;
+        } else {
+            residual.value=mean::compensated_residual<Scalar>(
+                design,parameters,observations[time],time);
+            if constexpr (Order>=1)
+                for (std::size_t column=0;column<design.columns();++column)
+                    residual.gradient[column]=-design.at(time,column);
+        }
+        return;
+    }
+    residual.value = Scalar(observations[time]) - parameters[0];
     for (std::size_t lag = 0; lag < p_ar<Orders>(layout); ++lag) {
         generated::arma_garch_equation::subtract_product(
             residual.value, parameters[layout.ar_start + lag],
@@ -439,7 +511,7 @@ void advance_residual(
     }
     for (std::size_t lag = 0; lag < q_ma<Orders>(layout); ++lag) {
         const std::size_t slot =
-            (time - 1u - lag) % maximum_lag<Orders>(layout);
+            (time - 1u - lag) % q_ma<Orders>(layout);
         generated::arma_garch_equation::subtract_product(
             residual.value, parameters[layout.ma_start + lag],
             scratch.residual_values[slot]);
@@ -454,11 +526,11 @@ void advance_residual(
         }
         for (std::size_t lag = 0; lag < q_ma<Orders>(layout); ++lag) {
             const std::size_t slot =
-                (time - 1u - lag) % maximum_lag<Orders>(layout);
+                (time - 1u - lag) % q_ma<Orders>(layout);
             const std::size_t ma = layout.ma_start + lag;
             generated::arma_garch_equation::add_ma_first(
                 residual.gradient, width, ma, parameters[ma],
-                scratch.residual_values[slot],
+                static_cast<double>(scratch.residual_values[slot]),
                 scratch.residual_gradients + slot * width);
         }
     }
@@ -466,7 +538,7 @@ void advance_residual(
         std::fill_n(residual.hessian, packed, 0.0);
         for (std::size_t lag = 0; lag < q_ma<Orders>(layout); ++lag) {
             const std::size_t slot =
-                (time - 1u - lag) % maximum_lag<Orders>(layout);
+                (time - 1u - lag) % q_ma<Orders>(layout);
             const std::size_t ma = layout.ma_start + lag;
             generated::arma_garch_equation::add_ma_second(
                 residual.hessian, width, ma, parameters[ma],
@@ -476,36 +548,36 @@ void advance_residual(
     }
 }
 
-template<int Order, class Orders, std::size_t StaticWidth>
+template<int Order, class Orders, std::size_t StaticWidth, class Scalar>
 void publish_state(
     const Layout& layout,
     std::size_t time,
-    Scratch<Order>& scratch,
-    const State& residual,
-    const State& log_variance,
-    const State& standardized) noexcept
+    Scratch<Order,Scalar>& scratch,
+    const ScalarState<Scalar>& residual,
+    const ScalarState<Scalar>& log_variance,
+    const ScalarState<Scalar>& standardized) noexcept
 {
     const std::size_t width = derivative_width<StaticWidth>(layout.parameters);
     const std::size_t packed = packed_width<StaticWidth>(layout.packed);
-    const std::size_t residual_slot = time % maximum_lag<Orders>(layout);
     const std::size_t standardized_slot = time % p_vol<Orders>(layout);
     const std::size_t log_variance_slot = time % q_vol<Orders>(layout);
-    scratch.residual_values[residual_slot] = residual.value;
+    if (q_ma<Orders>(layout) != 0u) {
+        const std::size_t slot = time % q_ma<Orders>(layout);
+        scratch.residual_values[slot] = residual.value;
+        if constexpr (Order >= 1)
+            std::copy_n(residual.gradient, width, scratch.residual_gradients + slot * width);
+        if constexpr (Order >= 2)
+            std::copy_n(residual.hessian, packed, scratch.residual_hessians + slot * packed);
+    }
     scratch.standardized_values[standardized_slot] = standardized.value;
     scratch.log_variance_values[log_variance_slot] = log_variance.value;
     if constexpr (Order >= 1) {
-        std::copy_n(
-            residual.gradient, width,
-            scratch.residual_gradients + residual_slot * width);
         std::copy_n(
             log_variance.gradient, width,
             scratch.log_variance_gradients
                 + log_variance_slot * width);
     }
     if constexpr (Order >= 2) {
-        std::copy_n(
-            residual.hessian, packed,
-            scratch.residual_hessians + residual_slot * packed);
         std::copy_n(
             log_variance.hessian, packed,
             scratch.log_variance_hessians
@@ -514,7 +586,7 @@ void publish_state(
 }
 
 template<int Order, bool EmitValue, bool EmitGradient, bool EmitHessian,
-         class Orders, class Density>
+         class Orders, class Density, class PointState = Binary64PointState>
 [[nodiscard]] bool evaluate_theta_order(
     const Layout& layout,
     const double* parameters,
@@ -525,24 +597,30 @@ template<int Order, bool EmitValue, bool EmitGradient, bool EmitHessian,
     std::size_t workspace_bytes,
     double* value,
     double* gradient,
-    double* hessian) noexcept
+    double* hessian, const double* features = nullptr,
+    double* residual_output = nullptr, double* variance_output = nullptr,
+    const PointState& point_state = {}) noexcept
 {
+    using Scalar = typename PointState::Scalar;
+    using LocalState = ScalarState<Scalar>;
+    using std::log;
+    using std::exp;
     constexpr std::size_t StaticWidth =
         static_parameter_width<Orders, Density>;
-    Scratch<Order> scratch;
+    Scratch<Order,Scalar> scratch;
     if (!matches_orders<Orders>(layout)
         || !bind_scratch(layout, workspace, workspace_bytes, scratch)) {
         return false;
     }
-    std::fill_n(scratch.residual_values, layout.maximum_lag, 0.0);
+    std::fill_n(scratch.residual_values, layout.q_ma, 0.0);
     std::fill_n(scratch.standardized_values, layout.p_vol, 0.0);
     std::fill_n(
         scratch.log_variance_values, layout.q_vol,
-        std::log(initial_variance));
+        log(Scalar(initial_variance)));
     if constexpr (Order >= 1) {
         std::fill_n(
             scratch.residual_gradients,
-            layout.maximum_lag * layout.parameters, 0.0);
+            layout.q_ma * layout.parameters, 0.0);
         std::fill_n(
             scratch.standardized_gradients,
             layout.p_vol * layout.parameters, 0.0);
@@ -554,7 +632,7 @@ template<int Order, bool EmitValue, bool EmitGradient, bool EmitHessian,
     if constexpr (Order >= 2) {
         std::fill_n(
             scratch.residual_hessians,
-            layout.maximum_lag * layout.packed, 0.0);
+            layout.q_ma * layout.packed, 0.0);
         std::fill_n(
             scratch.standardized_hessians,
             layout.p_vol * layout.packed, 0.0);
@@ -564,11 +642,18 @@ template<int Order, bool EmitValue, bool EmitGradient, bool EmitHessian,
         std::fill_n(scratch.objective_hessian, layout.packed, 0.0);
     }
 
-    const std::size_t scored = observation_count - layout.maximum_lag;
+    if constexpr (Orders::linear) {
+        mean::State residual{0.0,scratch.current_residual_gradient,scratch.current_residual_hessian};
+        mean::prepare_linear_state<Order,0u,mean::LinearDesign<Orders::columns>>(
+            residual,layout.parameters);
+    }
+    const std::size_t start = Orders::linear ? 0u : layout.maximum_lag;
+    const std::size_t scored = observation_count - start;
+    constexpr bool ActiveMean = !(Orders::linear && Orders::columns == 0u);
     const auto prepared = Density::template prepare<
-        EmitValue, Order >= 1, EmitHessian, Order >= 1>(
+        EmitValue, Order >= 1, EmitHessian, ActiveMean && Order >= 1>(
             parameters + layout.model_parameters, scored);
-    const auto moment = generated::absolute_moment<Order, Density>(
+    const auto moment = point_state.template absolute_moment<Order, Density>(
         parameters + layout.model_parameters);
     if (!prepared.valid || !moment.valid)
         return false;
@@ -584,25 +669,24 @@ template<int Order, bool EmitValue, bool EmitGradient, bool EmitHessian,
             EmitGradient ? objective.gradient : nullptr,
             EmitHessian ? objective.hessian : nullptr);
 
-    for (std::size_t time = layout.maximum_lag;
-         time < observation_count; ++time) {
+    const auto advance = [&]<bool Startup>(std::size_t time) VLK_MEAN_LOOP_INLINE noexcept -> bool {
         const std::size_t standardized_slot =
             time % p_vol<Orders>(layout);
         const std::size_t width =
             derivative_width<StaticWidth>(layout.parameters);
         const std::size_t packed =
             packed_width<StaticWidth>(layout.packed);
-        State residual {
+        LocalState residual {
             0.0,
             Order >= 1 ? scratch.current_residual_gradient : nullptr,
             Order >= 2 ? scratch.current_residual_hessian : nullptr,
         };
-        State log_variance {
+        LocalState log_variance {
             0.0,
             Order >= 1 ? scratch.current_log_variance_gradient : nullptr,
             Order >= 2 ? scratch.current_log_variance_hessian : nullptr,
         };
-        State standardized {
+        LocalState standardized {
             0.0,
             Order >= 1
                 ? scratch.standardized_gradients + standardized_slot * width
@@ -612,25 +696,65 @@ template<int Order, bool EmitValue, bool EmitGradient, bool EmitHessian,
                 : nullptr,
         };
         advance_residual<Order, Orders, StaticWidth>(
-            layout, parameters, observations, time, scratch, residual);
-        EgarchAlgebra<Order, Orders, Density> algebra {
+            layout, parameters, observations, time, scratch, residual, features);
+        EgarchAlgebra<Order, Orders, Density, decltype(moment), Scalar> algebra {
             layout, scratch, moment, parameters,
             residual, log_variance, standardized,
         };
-        if (!model::advance_egarch<false>(algebra, time)
-            || !model::egarch_observation::accumulate_joint<
+        bool advanced;
+        if constexpr (Orders::linear && Startup) {
+            if (time==0u) {
+                algebra.log_variance.value=log(Scalar(initial_variance));
+                if constexpr (Order>=1) std::fill_n(algebra.log_variance.gradient,width,0.0);
+                if constexpr (Order>=2) std::fill_n(algebra.log_variance.hessian,packed,0.0);
+                advanced=algebra.finish_state(time);
+            } else advanced=model::advance_egarch<true>(algebra,time);
+        } else advanced=model::advance_egarch<false>(algebra,time);
+        if (!advanced) return false;
+        bool fixed_residual = false;
+        if constexpr (Orders::linear && Order >= 1)
+            fixed_residual = residual.value == 0.0
+                && mean::LinearDesign<Orders::columns>{features,layout.mean_parameters}.zero_row(time);
+        bool observation_valid;
+        if constexpr (ActiveMean) {
+            observation_valid = model::egarch_observation::accumulate_joint<
                 EmitValue, EmitGradient, EmitHessian,
                 Order, StaticWidth, Density>(
-                    prepared, algebra.residual, algebra.log_variance,
+                    prepared, algebra.residual.rounded(), algebra.log_variance.rounded(),
                     objective_value, objective,
                     Orders::fixed ? static_model_width<Orders>
                                   : layout.model_parameters,
-                    layout.parameters)) {
-            return false;
+                    layout.parameters, fixed_residual);
+        } else {
+            observation_valid = model::egarch_observation::accumulate<
+                EmitValue, EmitGradient, EmitHessian,
+                Order, StaticWidth, Density>(
+                    prepared, static_cast<double>(algebra.residual.value),
+                    static_cast<double>(algebra.residual.value * algebra.residual.value),
+                    algebra.log_variance.rounded(), objective_value, objective,
+                    layout.model_parameters, layout.parameters);
         }
+        if (!observation_valid) return false;
         publish_state<Order, Orders, StaticWidth>(
             layout, time, scratch, algebra.residual,
             algebra.log_variance, algebra.standardized);
+        if constexpr (requires {
+            point_state.observe_recursion(time, algebra.residual.value,
+                algebra.log_variance.value, algebra.standardized.value);
+        }) {
+            point_state.observe_recursion(time, algebra.residual.value,
+                algebra.log_variance.value, algebra.standardized.value);
+        }
+        if (residual_output) residual_output[time]=static_cast<double>(algebra.residual.value);
+        if (variance_output) variance_output[time]=static_cast<double>(exp(algebra.log_variance.value));
+        return true;
+    };
+    const std::size_t startup_end=std::min(observation_count,layout.maximum_lag);
+    for (std::size_t time=start;time<startup_end;++time) {
+        if (!advance.template operator()<true>(time)) return false;
+    }
+    for (std::size_t time=std::max(start,startup_end);time<observation_count;++time) {
+        if (!advance.template operator()<false>(time)) return false;
     }
 
     if constexpr (EmitValue) {
@@ -664,7 +788,7 @@ template<int Order, bool EmitValue, bool EmitGradient, bool EmitHessian,
     return true;
 }
 
-template<class Density, class Orders>
+template<class Density, class Orders, class Scalar = double>
 [[nodiscard]] std::size_t theta_workspace_bytes(
     const Layout& layout,
     std::uint32_t request) noexcept
@@ -672,19 +796,19 @@ template<class Density, class Orders>
     if (!matches_orders<Orders>(layout))
         return 0u;
     return (request & VLK_JET_H) != 0u
-        ? core_workspace_bytes<2>(layout)
+        ? core_workspace_bytes<2, Scalar>(layout)
         : (request & VLK_JET_G) != 0u
-            ? core_workspace_bytes<1>(layout)
-            : core_workspace_bytes<0>(layout);
+            ? core_workspace_bytes<1, Scalar>(layout)
+            : core_workspace_bytes<0, Scalar>(layout);
 }
 
-template<class Density, class ShapeTransform, class Orders>
+template<class Density, class ShapeTransform, class Orders, class Scalar = double>
 [[nodiscard]] std::size_t workspace_bytes(
     const Layout& layout,
     bool transformed,
     std::uint32_t request) noexcept
 {
-    const std::size_t core = theta_workspace_bytes<Density, Orders>(
+    const std::size_t core = theta_workspace_bytes<Density, Orders, Scalar>(
         layout, request | ((request & VLK_JET_H) != 0u ? VLK_JET_G : 0u));
     return transformed
         ? arma_egarch_transform::workspace_bytes(layout, core, request)
@@ -692,7 +816,8 @@ template<class Density, class ShapeTransform, class Orders>
 }
 
 template<int Order, bool EmitValue, bool EmitGradient, bool EmitHessian,
-         class Orders, class Density, class ShapeTransform>
+         class Orders, class Density, class ShapeTransform,
+         class PointState = Binary64PointState>
 [[nodiscard]] bool evaluate_transformed_order(
     const Layout& layout,
     const double* coordinates,
@@ -704,9 +829,11 @@ template<int Order, bool EmitValue, bool EmitGradient, bool EmitHessian,
     std::size_t workspace_bytes,
     double* value,
     double* gradient,
-    double* hessian) noexcept
+    double* hessian, const double* features = nullptr,
+    double* residual_output = nullptr, double* variance_output = nullptr,
+    const PointState& point_state = {}) noexcept
 {
-    const std::size_t core = core_workspace_bytes<Order>(layout);
+    const std::size_t core = core_workspace_bytes<Order, typename PointState::Scalar>(layout);
     arma_egarch_transform::Scratch transform;
     if (!arma_egarch_transform::bind_scratch(
             layout, core, request, workspace, workspace_bytes, transform)
@@ -721,7 +848,8 @@ template<int Order, bool EmitValue, bool EmitGradient, bool EmitHessian,
                 layout, transform.theta, observations, observation_count,
                 initial_variance, workspace, core, value,
                 NeedThetaGradient ? transform.theta_gradient : nullptr,
-                EmitHessian ? transform.theta_hessian : nullptr)) {
+                EmitHessian ? transform.theta_hessian : nullptr,
+                features,residual_output,variance_output,point_state)) {
         return false;
     }
     if constexpr (EmitGradient) {
@@ -738,7 +866,7 @@ template<int Order, bool EmitValue, bool EmitGradient, bool EmitHessian,
 }
 
 template<class Density, class ShapeTransform, class Orders,
-         bool ValidateData = true>
+         bool ValidateData = true, class PointState = Binary64PointState>
 [[nodiscard]] std::int32_t evaluate(
     const Layout& layout,
     const double* parameters,
@@ -753,14 +881,17 @@ template<class Density, class ShapeTransform, class Orders,
     double* value,
     double* gradient,
     double* hessian,
-    std::uint32_t* valid_mask) noexcept
+    std::uint32_t* valid_mask, const double* features = nullptr,
+    double* residual_output = nullptr, double* variance_output = nullptr,
+    const PointState& point_state = {}) noexcept
 {
     if (valid_mask != nullptr)
         *valid_mask = 0u;
     if (!layout.valid || !matches_orders<Orders>(layout)
         || parameter_count != layout.parameters || parameters == nullptr
         || observations == nullptr || valid_mask == nullptr
-        || observation_count <= layout.maximum_lag
+        || observation_count <= (Orders::linear ? 0u : layout.maximum_lag)
+        || (Orders::linear && layout.mean_parameters && !features)
         || !std::isfinite(initial_variance) || !(initial_variance > 0.0)
         || request == 0u
         || (request & ~(VLK_JET_F | VLK_JET_G | VLK_JET_H)) != 0u
@@ -778,13 +909,20 @@ template<class Density, class ShapeTransform, class Orders,
             if (!std::isfinite(observations[time]))
                 return VLK_JET_INVALID_ARGUMENT;
         }
+        if constexpr (Orders::linear) {
+            std::size_t count;
+            if (!checked_product(observation_count,layout.mean_parameters,count))
+                return VLK_JET_INVALID_ARGUMENT;
+            for (std::size_t i=0;i<count;++i)
+                if (!std::isfinite(features[i])) return VLK_JET_INVALID_ARGUMENT;
+        }
     }
     const std::size_t required = arma_egarch::workspace_bytes<
-        Density, ShapeTransform, Orders>(layout, transformed, request);
+        Density, ShapeTransform, Orders, typename PointState::Scalar>(layout, transformed, request);
     if (required == 0u || workspace == nullptr || workspace_bytes < required)
         return VLK_JET_INSUFFICIENT_WORKSPACE;
     if (!transformed) {
-        Scratch<0> validation;
+        Scratch<0, typename PointState::Scalar> validation;
         if (!bind_scratch(layout, workspace, workspace_bytes, validation))
             return VLK_JET_INSUFFICIENT_WORKSPACE;
         if (!Density::valid_shape(parameters + layout.model_parameters)
@@ -813,12 +951,12 @@ template<class Density, class ShapeTransform, class Orders,
                 Orders, Density, ShapeTransform>( \
                     layout, parameters, observations, observation_count, \
                     initial_variance, request, workspace, workspace_bytes, \
-                    value, gradient, hessian) \
+                    value, gradient, hessian, features, residual_output, variance_output, point_state) \
             : evaluate_theta_order< \
                 ORDER, EMIT_F, EMIT_G, EMIT_H, Orders, Density>( \
                     layout, parameters, observations, observation_count, \
                     initial_variance, workspace, workspace_bytes, \
-                    value, gradient, hessian); \
+                    value, gradient, hessian, features, residual_output, variance_output, point_state); \
         break
     switch (request) {
     VLK_ARMA_EGARCH_CASE(VLK_JET_F, 0, true, false, false);
@@ -885,7 +1023,7 @@ template<class Density, class Orders>
             scratch.reflection_next)) {
         return VLK_JET_DOMAIN_ERROR;
     }
-    std::fill_n(scratch.residual_values, layout.maximum_lag, 0.0);
+    std::fill_n(scratch.residual_values, layout.q_ma, 0.0);
     std::fill_n(scratch.standardized_values, layout.p_vol, 0.0);
     std::fill_n(
         scratch.log_variance_values, layout.q_vol,

@@ -133,7 +133,7 @@ def _gh_abs_moment_grad_hess(
     hess_ptr: _IntPtr,
     fixed_lambda: float,
 ) -> None:
-    """Compute standardized GH absolute moment and shape derivatives."""
+    """Compute moment with three gradient and nine Hessian output slots, also for fixed-lambda/VG calls."""
     ...
 
 def _nig_standardized_nll(

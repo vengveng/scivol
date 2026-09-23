@@ -193,9 +193,10 @@ bool arma_garch_coordinate_forward(
     std::fill_n(parameters, width, 0.0);
     if (need_jacobian)
         std::fill_n(jacobian, width * width, 0.0);
-    parameters[0] = coordinates[0];
+    std::copy_n(coordinates, layout.mean_parameters, parameters);
     if (need_jacobian)
-        jacobian[0] = 1.0;
+        for (std::size_t i=0; i<layout.mean_parameters; ++i)
+            jacobian[i*width+i] = 1.0;
     if (!map_reflection_block(
             coordinates, 1u, layout.p_ar, 1.0, width, scratch,
             parameters, need_jacobian ? jacobian : nullptr)
@@ -268,7 +269,7 @@ bool arma_garch_coordinate_inverse(
     MapScratch scratch;
     if (!take_map_scratch(layout, workspace, workspace_bytes, scratch))
         return false;
-    coordinates[0] = parameters[0];
+    std::copy_n(parameters, layout.mean_parameters, coordinates);
     if (!inverse_reflection_block(
             parameters, 1u, layout.p_ar, 1.0, scratch, coordinates)
         || !inverse_reflection_block(
@@ -444,9 +445,10 @@ bool arma_gjr_garch_coordinate_forward(
     std::fill_n(parameters, total, 0.0);
     if (need_jacobian)
         std::fill_n(jacobian, total * total, 0.0);
-    parameters[0] = coordinates[0];
+    std::copy_n(coordinates, layout.mean_parameters, parameters);
     if (need_jacobian)
-        jacobian[0] = 1.0;
+        for (std::size_t i=0; i<layout.mean_parameters; ++i)
+            jacobian[i*total+i] = 1.0;
     if (!map_reflection_block(
             coordinates, 1u, layout.p_ar, 1.0, total, scratch,
             parameters, need_jacobian ? jacobian : nullptr)
@@ -494,7 +496,7 @@ bool arma_gjr_garch_coordinate_inverse(
     const std::size_t base_bytes = arma_garch_map_workspace_bytes(layout);
     if (!take_map_scratch(layout, workspace, base_bytes, scratch))
         return false;
-    coordinates[0] = parameters[0];
+    std::copy_n(parameters, layout.mean_parameters, coordinates);
     if (!inverse_reflection_block(
             parameters, 1u, layout.p_ar, 1.0, scratch, coordinates)
         || !inverse_reflection_block(

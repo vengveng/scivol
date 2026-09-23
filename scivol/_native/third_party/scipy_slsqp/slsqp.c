@@ -1,9 +1,9 @@
 #include "slsqp.h"
 
-static void ldp(CBLAS_INT m, CBLAS_INT n, double* restrict g, double* restrict h, double* restrict x, double* restrict buffer, CBLAS_INT* indices, double* xnorm, int64_t* mode);
-static void lsi(CBLAS_INT ma, CBLAS_INT mg, CBLAS_INT n, double* restrict a, double* restrict b, double* restrict g, double* restrict h, double* restrict x, double* restrict buffer, CBLAS_INT* jw, double* xnorm, int64_t* mode);
-static void lsei(CBLAS_INT ma, CBLAS_INT me, CBLAS_INT mg, CBLAS_INT n, double* restrict a, double* restrict b, double* restrict e, double* restrict f, double* restrict g, double* restrict h, double* restrict x, double* restrict buffer, CBLAS_INT* jw, double* xnorm, int64_t* mode);
-static void lsq(CBLAS_INT m, CBLAS_INT meq, CBLAS_INT n, CBLAS_INT augment, double aug_weight, double* restrict Lf, double* restrict gradx, double* restrict C, double* restrict d, double* restrict xl, double* restrict xu, double* restrict x, double* restrict y, double* buffer, CBLAS_INT* jw, int64_t* mode);
+static void ldp(CBLAS_INT m, CBLAS_INT n, double* restrict g, double* restrict h, double* restrict x, double* restrict buffer, CBLAS_INT* indices, double* xnorm, int64_t* mode, struct ScivolNnlsWorkspace nnls_workspace);
+static void lsi(CBLAS_INT ma, CBLAS_INT mg, CBLAS_INT n, double* restrict a, double* restrict b, double* restrict g, double* restrict h, double* restrict x, double* restrict buffer, CBLAS_INT* jw, double* xnorm, int64_t* mode, struct ScivolNnlsWorkspace nnls_workspace);
+static void lsei(CBLAS_INT ma, CBLAS_INT me, CBLAS_INT mg, CBLAS_INT n, double* restrict a, double* restrict b, double* restrict e, double* restrict f, double* restrict g, double* restrict h, double* restrict x, double* restrict buffer, CBLAS_INT* jw, double* xnorm, int64_t* mode, struct ScivolNnlsWorkspace nnls_workspace);
+static void lsq(CBLAS_INT m, CBLAS_INT meq, CBLAS_INT n, CBLAS_INT augment, double aug_weight, double* restrict Lf, double* restrict gradx, double* restrict C, double* restrict d, double* restrict xl, double* restrict xu, double* restrict x, double* restrict y, double* buffer, CBLAS_INT* jw, int64_t* mode, struct ScivolNnlsWorkspace nnls_workspace);
 static void ldl_update(CBLAS_INT n, double* restrict a, double* restrict z, double sigma, double* restrict w);
 
 /*
@@ -45,7 +45,7 @@ __slsqp_body(
     struct SLSQP_vars* S, double* funx, double* restrict gradx,
     double* restrict C, double* restrict d, double* restrict sol,
     double* restrict mult, double* restrict xl, double* restrict xu, double* buffer,
-    CBLAS_INT* indices)
+    CBLAS_INT* indices, struct ScivolNnlsWorkspace nnls_workspace)
 {
 
     CBLAS_INT one = 1, lda = (S->m > 0 ? S->m : 1);
@@ -75,7 +75,7 @@ __slsqp_body(
     // clean separation.
     if (S->mode ==  0) { goto MODE0; }
     if (S->mode == -1) { goto MODEM1; }
-    if (S->mode == 1) { goto MODE1; }
+    if (S->mode == 1 || S->mode == VLK_SLSQP_REJECT_OBJECTIVE) { goto MODE1; }
 
 MODE0:
     // We always use inexact line search, since exact search is broken in the
@@ -85,6 +85,7 @@ MODE0:
     S->tol = 10*S->acc;
     S->iter = 0;
     S->reset = 0;
+    scivol_sqp_reset_begin(&S->curvature_reset);
     for (int64_t i = 0; i < n; i++) { s[i] = 0.0; }
     for (int64_t i = 0; i < m; i++) { mu[i] = 0.0; }
 
@@ -102,6 +103,9 @@ RESET_BFGS:
     // 120
 
 ITER_START:
+    if (S->reset == 1 && scivol_sqp_reset_take(&S->curvature_reset)) {
+        goto RESET_BFGS;
+    }
     // Main iteration: Search direction, steplength, LDL'-update
     // 130
     S->mode = 9;
@@ -117,7 +121,7 @@ ITER_START:
 
     S->h4 = 1.0;
     // augment and aug_weight are not used and hence 0.
-    lsq(m, S->meq, n, 0, 0, bfgs, gradx, C, d, u, v, s, mult, lsq_buffer, indices, &S->mode);
+    lsq(m, S->meq, n, 0, 0, bfgs, gradx, C, d, u, v, s, mult, lsq_buffer, indices, &S->mode, nnls_workspace);
 
     // Augmented problem for inconsistent linearization
 
@@ -148,7 +152,7 @@ ITER_START:
         S->inconsistent = 0;
         while (1)
         {
-            lsq(m, S->meq, n, 1, rho, bfgs, gradx, C, d, u, v, s, mult, lsq_buffer, indices, &S->mode);
+            lsq(m, S->meq, n, 1, rho, bfgs, gradx, C, d, u, v, s, mult, lsq_buffer, indices, &S->mode, nnls_workspace);
             S->h4 = 1.0 - s[n];
             if (S->mode == 4)
             {
@@ -221,6 +225,11 @@ LINE_SEARCH:
     for (int64_t i = 0; i < n; i++) { sol[i] = x0[i]; }
     BLAS_FUNC(daxpy)(&n, &done, s, &one, sol, &one);
 
+    if (S->curvature_reset.enabled && S->reset == 1 && S->line == 1) {
+        scivol_sqp_reset_predict(&S->curvature_reset, n, m, d, C, mult,
+                                x0, sol, xl, xu);
+    }
+
     S->mode = 1;
     return;
 
@@ -238,6 +247,22 @@ MODE1:
         S->t = S->t + mu[j]*fmax(-d[j], S->h1);
     }
     S->h1 = S->t - S->t0;
+
+    if (S->curvature_reset.enabled && S->reset == 1 && S->line == 1) {
+        scivol_sqp_reset_observe(&S->curvature_reset, n, m, d, mult,
+            S->mode == 1, S->h1, S->h3, S->f0, *funx);
+    }
+
+    if (S->mode == VLK_SLSQP_REJECT_OBJECTIVE) {
+        // The supplied merit guides contraction only. Never accept this point,
+        // test convergence, or update BFGS using its invalid objective request.
+        if (S->line >= VLK_SLSQP_MAX_REJECTED_LINE_STEPS) {
+            S->mode = VLK_SLSQP_INVALID_OBJECTIVE;
+            return;
+        }
+        S->alpha = fmin(0.5, fmax(S->h3/(2.0*(S->h3 - S->h1)), alfmin));
+        goto LINE_SEARCH;
+    }
 
     if (!((S->h1 <= (S->h3 / 10.0)) || (S->line > 10)))
     {
@@ -427,7 +452,7 @@ lsq(
     CBLAS_INT m, CBLAS_INT meq, CBLAS_INT n, CBLAS_INT augment, double aug_weight, double* restrict Lf,
     double* restrict gradx, double* restrict C, double* restrict d,
     double* restrict xl, double* restrict xu, double* restrict x,
-    double* restrict y, double* buffer, CBLAS_INT* jw, int64_t* mode)
+    double* restrict y, double* buffer, CBLAS_INT* jw, int64_t* mode, struct ScivolNnlsWorkspace nnls_workspace)
 {
     CBLAS_INT one = 1, orign = n;
     CBLAS_INT mineq = m - meq;
@@ -589,7 +614,7 @@ lsq(
     // Assign the remaining part of the buffer to the LSEI problem.
     double* restrict lsei_scratch = &wh[mineq + 2*n];
 
-    lsei(ld, meq, n_wG_rows, n, wA, wb, wE, wf, wG, wh, x, lsei_scratch, jw, &xnorm, mode);
+    lsei(ld, meq, n_wG_rows, n, wA, wb, wE, wf, wG, wh, x, lsei_scratch, jw, &xnorm, mode, nnls_workspace);
 
     if (*mode == 1)
     {
@@ -642,7 +667,7 @@ lsei(CBLAS_INT ma, CBLAS_INT me, CBLAS_INT mg, CBLAS_INT n,
      double* restrict a, double* restrict b, double* restrict e,
      double* restrict f, double* restrict g, double* restrict h,
      double* restrict x, double* restrict buffer, CBLAS_INT* jw,
-     double* xnorm, int64_t* mode)
+     double* xnorm, int64_t* mode, struct ScivolNnlsWorkspace nnls_workspace)
 {
     CBLAS_INT one = 1, nvars = 0, info = 0, lde = 0, ldg = 0;
     double done = 1.0, dmone = -1.0, dzero = 0.0, t= 0.0;
@@ -747,7 +772,7 @@ lsei(CBLAS_INT ma, CBLAS_INT me, CBLAS_INT mg, CBLAS_INT n,
     // h -= G1*xe
     BLAS_FUNC(dgemv)("N", &mg, &me, &dmone, &g[mg*nvars], &ldg, &x[nvars], &one, &done, h, &one);
 
-    lsi(ma, mg, nvars, a2, wb, g2, h, x, lsi_scratch, jw, xnorm, mode);
+    lsi(ma, mg, nvars, a2, wb, g2, h, x, lsi_scratch, jw, xnorm, mode, nnls_workspace);
 
     // Copy multipliers from scratch to gmults
     for (int64_t i = 0; i < mg; i++) { gmults[i] = lsi_scratch[i]; }
@@ -800,7 +825,7 @@ ORIGINAL_BASIS:
 static void
 lsi(CBLAS_INT ma, CBLAS_INT mg, CBLAS_INT n, double* restrict a, double* restrict b, double* restrict g,
     double* restrict h, double* restrict x, double* restrict buffer, CBLAS_INT* jw,
-    double* xnorm, int64_t* mode)
+    double* xnorm, int64_t* mode, struct ScivolNnlsWorkspace nnls_workspace)
 {
     CBLAS_INT one = 1, tmp_int = 0, info = 0;
     double done = 1.0, dmone = -1.0, tmp_dbl = 0.0;
@@ -831,7 +856,7 @@ lsi(CBLAS_INT ma, CBLAS_INT mg, CBLAS_INT n, double* restrict a, double* restric
     BLAS_FUNC(dgemv)("N", &mg, &n, &dmone, g, &mg, b, &one, &done, h, &one);
 
     // Solve the LDP problem.
-    ldp(mg, n, g, h, x, buffer, jw, xnorm, mode);
+    ldp(mg, n, g, h, x, buffer, jw, xnorm, mode, nnls_workspace);
     if (*mode != 1) { return; }
 
     // Convert to the solution of the original problem.
@@ -866,7 +891,7 @@ lsi(CBLAS_INT ma, CBLAS_INT mg, CBLAS_INT n, double* restrict a, double* restric
 */
 static void
 ldp(CBLAS_INT m, CBLAS_INT n, double* restrict g, double* restrict h, double* restrict x,
-    double* restrict buffer, CBLAS_INT* indices, double* xnorm, int64_t* mode)
+    double* restrict buffer, CBLAS_INT* indices, double* xnorm, int64_t* mode, struct ScivolNnlsWorkspace nnls_workspace)
 {
     CBLAS_INT one = 1;
     double dzero = 0.0, rnorm = 0.0;
@@ -901,7 +926,7 @@ ldp(CBLAS_INT m, CBLAS_INT n, double* restrict g, double* restrict h, double* re
     b[n] = 1.0;
 
     // Solve the dual problem
-    __nnls(n+1, m, a, b, y, w, zz, indices, 3*m, &rnorm, mode);
+    __nnls(n+1, m, a, b, y, w, zz, indices, 3*(int64_t)m, &rnorm, mode, nnls_workspace);
     if (*mode != 1) { return; }
     *mode = 4;
     if (rnorm <= 0.0) { return; }

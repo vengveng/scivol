@@ -137,13 +137,23 @@ VLK_APARCH_INLINE void add_fixed_shock(
     const std::size_t parameters_count = width<StaticWidth>(runtime_width);
     if (residual == 0.0)
         return;
+    if constexpr (Order == 0) {
+        if (parameters[alpha] == 0.0)
+            return;
+    }
     const double delta = parameters[delta_index];
-    const double base = std::abs(residual) - parameters[gamma] * residual;
+    const double multiplier = (residual < 0.0 ? -1.0 : 1.0) - parameters[gamma];
+    const double base = multiplier * residual;
     const double log_base = std::log(base);
     const double shock = std::exp(delta * log_base);
-    const double log_gamma = -residual / base;
-    const double log_gamma_gamma =
-        -residual * residual / (base * base);
+    if constexpr (Order == 1) {
+        if (parameters[alpha] == 0.0) {
+            power.gradient[alpha] += shock;
+            return;
+        }
+    }
+    const double log_gamma = -1.0 / multiplier;
+    const double log_gamma_gamma = -log_gamma * log_gamma;
     const double shock_gamma = shock * delta * log_gamma;
     const double shock_delta = shock * log_base;
     power.value += parameters[alpha] * shock;
@@ -176,7 +186,8 @@ VLK_APARCH_INLINE void add_fixed_shock(
     }
 }
 
-template<int Order, std::size_t StaticWidth>
+template<int Order, std::size_t StaticWidth, bool SparseResidual = false,
+         std::size_t StaticResidualWidth = 0u>
 [[nodiscard]] VLK_APARCH_INLINE bool add_joint_shock(
     State& power,
     const State& residual,
@@ -185,20 +196,38 @@ template<int Order, std::size_t StaticWidth>
     std::size_t alpha,
     std::size_t gamma,
     std::size_t delta_index,
-    std::size_t runtime_width) noexcept
+    std::size_t runtime_width,
+    std::size_t runtime_residual_width = 0u) noexcept
 {
     const std::size_t parameters_count = width<StaticWidth>(runtime_width);
+    // Residual derivatives occupy the leading mean block. The shock additionally
+    // depends on its own alpha/gamma and on delta, not other lags or the density.
+    const std::size_t residual_width = width<StaticResidualWidth>(runtime_residual_width);
+    const std::size_t active_count = SparseResidual ? residual_width + 3u : parameters_count;
+    const auto coordinate = [&](std::size_t index) noexcept {
+        if constexpr (!SparseResidual) return index;
+        if (index < residual_width) return index;
+        if (index == residual_width) return alpha;
+        return index == residual_width + 1u ? gamma : delta_index;
+    };
     const double delta = parameters[delta_index];
     const double asymmetry = parameters[gamma];
+    if constexpr (Order == 0) {
+        if (parameters[alpha] == 0.0)
+            return true;
+    }
     if (residual.value == 0.0) {
         if (conditioned_zero || Order == 0 || delta > 2.0)
+            return true;
+        if (parameters[alpha] == 0.0 && (Order == 1 || delta > 1.0))
             return true;
         if constexpr (Order == 1)
             return delta > 1.0;
         if (delta == 2.0 && asymmetry == 0.0) {
-            for (std::size_t row = 0; row < parameters_count; ++row) {
+            const std::size_t active_residuals = SparseResidual ? residual_width : parameters_count;
+            for (std::size_t row = 0; row < active_residuals; ++row) {
                 for (std::size_t column = row;
-                     column < parameters_count; ++column) {
+                     column < active_residuals; ++column) {
                     power.hessian[packed_index(
                         parameters_count, row, column)] +=
                         2.0 * parameters[alpha]
@@ -218,10 +247,18 @@ template<int Order, std::size_t StaticWidth>
         return false;
     const double log_base = std::log(base);
     const double shock = std::exp(delta * log_base);
+    // At zero weight only d(alpha*shock)/dalpha survives at first order.
+    if constexpr (Order == 1) {
+        if (parameters[alpha] == 0.0) {
+            power.gradient[alpha] += shock;
+            return std::isfinite(shock) && std::isfinite(power.value);
+        }
+    }
     const double inverse_base = 1.0 / base;
     power.value += parameters[alpha] * shock;
     if constexpr (Order >= 1) {
-        for (std::size_t index = 0; index < parameters_count; ++index) {
+        for (std::size_t active = 0; active < active_count; ++active) {
+            const std::size_t index = coordinate(active);
             const double base_first =
                 multiplier * residual.gradient[index]
                 - (index == gamma ? residual.value : 0.0);
@@ -235,14 +272,16 @@ template<int Order, std::size_t StaticWidth>
         }
     }
     if constexpr (Order >= 2) {
-        for (std::size_t row = 0; row < parameters_count; ++row) {
+        for (std::size_t active_row = 0; active_row < active_count; ++active_row) {
+            const std::size_t row = coordinate(active_row);
             const double base_row = multiplier * residual.gradient[row]
                 - (row == gamma ? residual.value : 0.0);
             const double exponent_row =
                 (row == delta_index ? log_base : 0.0)
                 + delta * base_row * inverse_base;
-            for (std::size_t column = row;
-                 column < parameters_count; ++column) {
+            for (std::size_t active_column = active_row;
+                 active_column < active_count; ++active_column) {
+                const std::size_t column = coordinate(active_column);
                 const std::size_t packed = packed_index(
                     parameters_count, row, column);
                 const double base_column =

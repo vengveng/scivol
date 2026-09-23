@@ -464,6 +464,16 @@ def fit_qmle(
 
     if vol is None:
         raise ValueError("Spec must include a volatility component (e.g., GARCH)")
+    if type(vol) not in (GARCH, GJRGARCH):
+        raise NotImplementedError(
+            f"QMLE is not shipped for {vol.signature}; use method='mle'. "
+            "Robust OPG/Hessian support is required for the requested volatility model."
+        )
+    if mean is not None and not isinstance(mean, ARMA):
+        raise NotImplementedError(
+            f"QMLE is not shipped for the {mean.signature} mean; use method='mle'. "
+            "Joint robust OPG/Hessian support is required for the requested mean model."
+        )
 
     is_gjr = isinstance(vol, GJRGARCH)
     P_arch, Q_garch = vol.p, vol.q

@@ -7,6 +7,7 @@
 
 #include "math_and_helpers.h"
 #include "gh_math.h"
+#include "gh_high_order_quadrature.h"
 
 #if defined(__GNUC__) || defined(__clang__)
 #  define VLK_INLINE static inline __attribute__((always_inline))
@@ -157,7 +158,8 @@ VLK_INLINE void lmegarch_hess_accumulate(double *restrict H, size_t i, size_t j,
     }
 }
 
-VLK_INLINE int lm_studentt_obs_derivs(double e, double h, double nu, lm_studentt_obs_derivs_t *out)
+VLK_INLINE int lm_studentt_obs_derivs(double e, double h, double nu,
+    const vlk_student_normalization_t *normalization, lm_studentt_obs_derivs_t *out)
 {
     if (!(h > H_FLOOR) || !(nu > NU_MIN) || !isfinite(e) || !isfinite(h) || !isfinite(nu)) {
         return 0;
@@ -179,23 +181,14 @@ VLK_INLINE int lm_studentt_obs_derivs(double e, double h, double nu, lm_studentt
     const double inv_B2 = inv_B * inv_B;
     const double one_plus = 1.0 + e2 * inv_h * inv_a;
     const double one_plus2 = one_plus * one_plus;
-    const double digamma_half_nu = digamma_approx(0.5 * nu);
-    const double digamma_half_nu_plus_1 = digamma_approx(0.5 * (nu + 1.0));
-    const double trigamma_half_nu = trigamma_approx(0.5 * nu);
-    const double trigamma_half_nu_plus_1 = trigamma_approx(0.5 * (nu + 1.0));
-    const double c_log = lgamma_approx(0.5 * (nu + 1.0))
-                       - lgamma_approx(0.5 * nu)
-                       - 0.5 * log(M_PI * nu_m2);
+    const double log_tail = log1p(e2 * inv_h * inv_a);
     const double q = nu + 1.0;
     const double tmp = e2 * inv_h;
 
-    out->value = 0.5 * log(h) + 0.5 * q * log(one_plus) - c_log;
+    out->value = 0.5 * log(h) + 0.5 * q * log_tail - normalization->value;
     out->ell_e = q * e * inv_B;
     out->ell_h = 0.5 * inv_h - 0.5 * q * e2 * inv_a * inv_h2 / one_plus;
-    out->ell_nu = -0.5 * digamma_half_nu_plus_1
-                + 0.5 * digamma_half_nu
-                + 0.5 * inv_a
-                + 0.5 * log(one_plus)
+    out->ell_nu = -normalization->first + 0.5 * log_tail
                 - 0.5 * q * e2 * inv_a2 * inv_h / one_plus;
     out->ell_ee = q * (B - 2.0 * e2) * inv_B2;
     out->ell_eh = -q * e * nu_m2 * inv_B2;
@@ -204,9 +197,7 @@ VLK_INLINE int lm_studentt_obs_derivs(double e, double h, double nu, lm_studentt
                 - 0.5 * q * tmp * tmp * inv_a2 * inv_h2 / one_plus2;
     out->ell_e_nu = e * inv_B - q * e * h * inv_B2;
     out->ell_h_nu = -0.5 * e2 * inv_h2 / one_plus * (inv_a - q * inv_a2 / one_plus);
-    out->ell_nu_nu = -0.25 * trigamma_half_nu_plus_1
-                   + 0.25 * trigamma_half_nu
-                   - 0.5 * inv_a2
+    out->ell_nu_nu = -normalization->second
                    - e2 * inv_a2 * inv_h / one_plus
                    + 0.5 * q * e2 * inv_a3 * inv_h * (1.0 + one_plus) / one_plus2;
     return 1;
@@ -282,14 +273,11 @@ VLK_INLINE int lm_skewt_precompute_full(double nu, double lam, lm_skewt_cache_t 
         return 0;
     }
 
-    const double c_log = lgamma_approx(0.5 * (nu + 1.0)) - lgamma_approx(0.5 * nu) - 0.5 * log(M_PI * nu_m2);
+    const vlk_student_normalization_t normalization = vlk_student_normalization(nu, 1, 1, 1);
+    const double c_log = normalization.value;
     const double c = exp(c_log);
-    const double dc_log_dnu = 0.5 * digamma_approx(0.5 * (nu + 1.0))
-                            - 0.5 * digamma_approx(0.5 * nu)
-                            - 0.5 / nu_m2;
-    const double d2c_log_dnu2 = 0.25 * trigamma_approx(0.5 * (nu + 1.0))
-                              - 0.25 * trigamma_approx(0.5 * nu)
-                              + 0.5 / (nu_m2 * nu_m2);
+    const double dc_log_dnu = normalization.first;
+    const double d2c_log_dnu2 = normalization.second;
     const double dc_dnu = c * dc_log_dnu;
     const double d2c_dnu2 = c * (dc_log_dnu * dc_log_dnu + d2c_log_dnu2);
     const double f = c * nu_m2 / nu_m1;
@@ -408,10 +396,11 @@ VLK_INLINE int lm_skewt_obs_derivs(double e, double h, double nu, double lam, co
     const double R_nu_lam = 2.0 * (v_nu * v_lam + v * v_nu_lam);
     const double R_lam_lam = 2.0 * (v_lam * v_lam + v * v_lam_lam);
 
-    out->value = 0.5 * log(h) - cache->c_log - log(cache->b) + q * (log(R) - log(nu_m2));
+    const double log_tail = vlk_student_log_tail(v*v, nu_m2, R, log(nu_m2));
+    out->value = 0.5 * log(h) - cache->c_log - log(cache->b) + q * log_tail;
     out->ell_e = q * R_e * inv_R;
     out->ell_h = 0.5 * inv_h + q * R_h * inv_R;
-    out->ell_nu = -cache->dc_log_dnu - cache->b_nu * inv_b + 0.5 * (log(R) - log(nu_m2)) + q * (R_nu * inv_R - 1.0 / nu_m2);
+    out->ell_nu = -cache->dc_log_dnu - cache->b_nu * inv_b + 0.5 * log_tail + q * (R_nu * inv_R - 1.0 / nu_m2);
     out->ell_lam = -cache->b_lam * inv_b + q * R_lam * inv_R;
     out->ell_ee = q * (R_ee * inv_R - R_e * R_e * inv_R2);
     out->ell_eh = q * (R_eh * inv_R - R_e * R_h * inv_R2);
@@ -438,15 +427,10 @@ VLK_INLINE int egarch_studentt_abs_moment(double nu, double *m, double *m_nu, do
         return 0;
     }
 
-    const double dc_log_dnu = 0.5 * digamma_approx(0.5 * (nu + 1.0))
-                            - 0.5 * digamma_approx(0.5 * nu)
-                            - 0.5 / nu_m2;
-    const double d2c_log_dnu2 = 0.25 * trigamma_approx(0.5 * (nu + 1.0))
-                              - 0.25 * trigamma_approx(0.5 * nu)
-                              + 0.5 / (nu_m2 * nu_m2);
-    const double c_log = lgamma_approx(0.5 * (nu + 1.0))
-                       - lgamma_approx(0.5 * nu)
-                       - 0.5 * log(M_PI * nu_m2);
+    const vlk_student_normalization_t normalization = vlk_student_normalization(nu, 1, 1, 1);
+    const double dc_log_dnu = normalization.first;
+    const double d2c_log_dnu2 = normalization.second;
+    const double c_log = normalization.value;
     const double m_local = 2.0 * exp(c_log) * nu_m2 / nu_m1;
     const double g = dc_log_dnu + 1.0 / nu_m2 - 1.0 / nu_m1;
     const double g_nu = d2c_log_dnu2 - 1.0 / (nu_m2 * nu_m2) + 1.0 / (nu_m1 * nu_m1);
@@ -526,14 +510,11 @@ VLK_INLINE int egarch_skewt_precompute_full(double nu, double lam, egarch_skewt_
 {
     const double nu_m1 = nu - 1.0;
     const double nu_m2 = nu - 2.0;
-    const double c_log = lgamma_approx(0.5 * (nu + 1.0)) - lgamma_approx(0.5 * nu) - 0.5 * log(M_PI * nu_m2);
+    const vlk_student_normalization_t normalization = vlk_student_normalization(nu, 1, 1, 1);
+    const double c_log = normalization.value;
     const double c = exp(c_log);
-    const double dc_log_dnu = 0.5 * digamma_approx(0.5 * (nu + 1.0))
-                            - 0.5 * digamma_approx(0.5 * nu)
-                            - 0.5 / nu_m2;
-    const double d2c_log_dnu2 = 0.25 * trigamma_approx(0.5 * (nu + 1.0))
-                              - 0.25 * trigamma_approx(0.5 * nu)
-                              + 0.5 / (nu_m2 * nu_m2);
+    const double dc_log_dnu = normalization.first;
+    const double d2c_log_dnu2 = normalization.second;
     const double dc_dnu = c * dc_log_dnu;
     const double d2c_dnu2 = c * (dc_log_dnu * dc_log_dnu + d2c_log_dnu2);
 
@@ -578,47 +559,47 @@ VLK_INLINE int egarch_skewt_precompute_full(double nu, double lam, egarch_skewt_
     return 1;
 }
 
-VLK_INLINE double egarch_skewt_kappa_value(double nu, double lam)
+VLK_INLINE void egarch_skewt_kappa_full(double nu, double lam,
+    const lm_skewt_cache_t *cache, double *kappa, double *kappa_nu,
+    double *kappa_lam, double *kappa_nunu, double *kappa_nulam, double *kappa_lamlam)
 {
-    return hansen_skewt_abs_moment(nu, lam);
-}
-
-VLK_INLINE void egarch_skewt_kappa_full(double nu, double lam, double *kappa, double *kappa_nu, double *kappa_lam, double *kappa_nunu, double *kappa_nulam, double *kappa_lamlam)
-{
-    const double nu_margin = MAX(nu - NU_MIN, 1e-4);
-    double h_nu = 1e-3 * MAX(1.0, nu);
-    if (h_nu >= 0.5 * nu_margin) {
-        h_nu = 0.25 * nu_margin;
+    double total[6] = {0};
+    const double half_pi = 0.5 * M_PI;
+    const double split = atan(fabs(cache->a / cache->b)) / half_pi;
+    const double edges[3] = {0.0, split, 1.0};
+    /* Integrate analytical shape derivatives on each smooth density branch.
+       Density and first derivatives agree at the join, so boundary terms cancel. */
+    for (size_t interval = 0; interval < 2; ++interval) {
+        const double radius = 0.5 * (edges[interval + 1] - edges[interval]);
+        const double center = 0.5 * (edges[interval + 1] + edges[interval]);
+        if (!(radius > 0.0)) continue;
+        for (size_t i = 0; i < GH_HIGH_QUAD_HALF; ++i) {
+            for (int side = -1; side <= 1; side += 2) {
+                const double x = tan(half_pi * (center + side * radius * GH_HIGH_NODES[i]));
+                const double weight = radius * GH_HIGH_WEIGHTS[i] * half_pi * (1.0 + x*x) * x;
+                for (int sign = -1; sign <= 1; sign += 2) {
+                    lm_skewt_obs_derivs_t obs;
+                    if (!lm_skewt_obs_derivs(sign*x, 1.0, nu, lam, cache, &obs)) {
+                        *kappa = NAN;
+                        return;
+                    }
+                    const double mass = weight * exp(-obs.value);
+                    total[0] += mass;
+                    total[1] -= mass * obs.ell_nu;
+                    total[2] -= mass * obs.ell_lam;
+                    total[3] += mass * (obs.ell_nu*obs.ell_nu - obs.ell_nu_nu);
+                    total[4] += mass * (obs.ell_nu*obs.ell_lam - obs.ell_nu_lam);
+                    total[5] += mass * (obs.ell_lam*obs.ell_lam - obs.ell_lam_lam);
+                }
+            }
+        }
     }
-    if (h_nu < 1e-6) {
-        h_nu = 1e-6;
-    }
-
-    const double lam_margin = LAM_MAX - fabs(lam);
-    double h_lam = 1e-3 * MAX(1.0, lam_margin);
-    if (h_lam >= 0.5 * lam_margin) {
-        h_lam = 0.25 * lam_margin;
-    }
-    if (h_lam < 1e-6) {
-        h_lam = 1e-6;
-    }
-
-    const double f00 = egarch_skewt_kappa_value(nu, lam);
-    const double fp0 = egarch_skewt_kappa_value(nu + h_nu, lam);
-    const double fm0 = egarch_skewt_kappa_value(nu - h_nu, lam);
-    const double f0p = egarch_skewt_kappa_value(nu, lam + h_lam);
-    const double f0m = egarch_skewt_kappa_value(nu, lam - h_lam);
-    const double fpp = egarch_skewt_kappa_value(nu + h_nu, lam + h_lam);
-    const double fpm = egarch_skewt_kappa_value(nu + h_nu, lam - h_lam);
-    const double fmp = egarch_skewt_kappa_value(nu - h_nu, lam + h_lam);
-    const double fmm = egarch_skewt_kappa_value(nu - h_nu, lam - h_lam);
-
-    *kappa = f00;
-    *kappa_nu = (fp0 - fm0) / (2.0 * h_nu);
-    *kappa_lam = (f0p - f0m) / (2.0 * h_lam);
-    *kappa_nunu = (fp0 - 2.0 * f00 + fm0) / (h_nu * h_nu);
-    *kappa_lamlam = (f0p - 2.0 * f00 + f0m) / (h_lam * h_lam);
-    *kappa_nulam = (fpp - fpm - fmp + fmm) / (4.0 * h_nu * h_lam);
+    *kappa = total[0];
+    *kappa_nu = total[1];
+    *kappa_lam = total[2];
+    *kappa_nunu = total[3];
+    *kappa_nulam = total[4];
+    *kappa_lamlam = total[5];
 }
 
 VLK_INLINE int lmegarch_fill_obs(
@@ -627,6 +608,7 @@ VLK_INLINE int lmegarch_fill_obs(
     double h,
     double nu,
     double lam,
+    const vlk_student_normalization_t *student_cache,
     const lm_ged_cache_t *ged_cache,
     const lm_skewt_cache_t *skewt_cache,
     lm_egarch_obs_t *out
@@ -652,7 +634,7 @@ VLK_INLINE int lmegarch_fill_obs(
 
     if (dist == LM_EGARCH_DIST_STUDENTT) {
         lm_studentt_obs_derivs_t obs;
-        if (!lm_studentt_obs_derivs(e, h, nu, &obs)) {
+        if (!lm_studentt_obs_derivs(e, h, nu, student_cache, &obs)) {
             return 0;
         }
         out->value = obs.value;
@@ -753,6 +735,7 @@ static double linear_mean_egarch_core(
     double kappa_nulam = 0.0;
     double kappa_lamlam = 0.0;
     lm_ged_cache_t ged_obs_cache;
+    vlk_student_normalization_t student_obs_cache;
     lm_skewt_cache_t skewt_obs_cache;
     egarch_ged_cache_t ged_abs_cache;
 
@@ -778,7 +761,8 @@ static double linear_mean_egarch_core(
         }
     }
     for (size_t j = 0; j < q; ++j) {
-        if (!isfinite(beta[j]) || fabs(beta[j]) >= 0.999) {
+        /* Conditional evaluation; the fitting domain owns polynomial stability. */
+        if (!isfinite(beta[j])) {
             return 1e12;
         }
     }
@@ -791,6 +775,7 @@ static double linear_mean_egarch_core(
         if (!egarch_studentt_abs_moment(nu, &kappa, &kappa_nu, &kappa_nunu)) {
             return 1e12;
         }
+        student_obs_cache = vlk_student_normalization(nu, 1, 1, 1);
     } else if (dist == LM_EGARCH_DIST_GED) {
         nu = params[nu_idx];
         if (!lm_ged_precompute(nu, &ged_obs_cache)
@@ -804,7 +789,7 @@ static double linear_mean_egarch_core(
         if (!lm_skewt_precompute_full(nu, lam, &skewt_obs_cache)) {
             return 1e12;
         }
-        egarch_skewt_kappa_full(nu, lam, &kappa, &kappa_nu, &kappa_lam, &kappa_nunu, &kappa_nulam, &kappa_lamlam);
+        egarch_skewt_kappa_full(nu, lam, &skewt_obs_cache, &kappa, &kappa_nu, &kappa_lam, &kappa_nunu, &kappa_nulam, &kappa_lamlam);
         if (!isfinite(kappa)) {
             return 1e12;
         }
@@ -982,6 +967,7 @@ static double linear_mean_egarch_core(
         }
 
         if (!lmegarch_fill_obs(dist, resid[t], h_t, nu, lam,
+                               dist == LM_EGARCH_DIST_STUDENTT ? &student_obs_cache : NULL,
                                dist == LM_EGARCH_DIST_GED ? &ged_obs_cache : NULL,
                                dist == LM_EGARCH_DIST_SKEWT ? &skewt_obs_cache : NULL,
                                &obs)) {
@@ -1039,7 +1025,7 @@ static double linear_mean_egarch_core(
     free(zero_vec);
     free(d2x_buf);
     free(zero_mat);
-    return nll;
+    return nll + (dist == LM_EGARCH_DIST_NORMAL ? 0.5 * (double)n * LOG_2PI : 0.0);
 }
 
 #define DEFINE_LINEAR_MEAN_EGARCH_FNS(SUFFIX, DIST_ENUM) \
@@ -1129,7 +1115,7 @@ static double linear_mean_egarch_core_gh(
         if (!isfinite(alpha[i]) || !isfinite(gamma[i])) return 1e12;
     }
     for (size_t i = 0; i < q; ++i) {
-        if (!isfinite(beta[i]) || fabs(beta[i]) >= 0.999) return 1e12;
+        if (!isfinite(beta[i])) return 1e12;
     }
     if (!isfinite(params[omega_index]) || n == 0) return n == 0 ? 0.0 : 1e12;
     if (!(sigma2[0] > H_FLOOR) || !isfinite(sigma2[0])) sigma2[0] = H_FLOOR;

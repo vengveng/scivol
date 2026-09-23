@@ -3,7 +3,7 @@
 **Last Updated:** 2026-08-29
 **Purpose:** Essential architectural rules, patterns, and constraints for developing the scivol time series volatility modeling library.
 
-**Reference implementations:** `localdev/arma_garch_estimator.py` contains verified Python+Numba implementations with analytical gradients/Hessians for ARMA-GARCH models (Normal, Student-t, Skew-t). `localdev/gjr_garch_estimator.py` contains the GJR-GARCH reference implementation. Use as ground truth when porting to C.
+**Reference implementations:** `localdev/arma_garch_estimator.py` contains Python+Numba implementations with analytical gradients/Hessians for ARMA-GARCH models (Normal, Student-t, Skew-t). `localdev/gjr_garch_estimator.py` contains the GJR-GARCH reference implementation. Use these as independent comparison implementations, not unquestionable ground truth. Resolve disagreements against the declared model equations, normalization, conditioning, scored sample and parameter domain. AD verifies derivatives of the supplied objective; it does not prove that objective implements the intended model. Correct confirmed reference bugs with independent regression evidence rather than reproducing them in new kernels.
 
 **Derivative validation:** Use AD-based development oracles as the primary validation path. Prefer `scivol._devtools.ad_oracle` and the shipped AD-backed tests over finite differences. Keep finite differences only as a coarse backup smoke test when an AD oracle is not yet available.
 
@@ -328,6 +328,9 @@ order axis of the model, such as `(p, q)` for GARCH and
      `F` when the derivative request is invalid. Because even a one-ULP fused-value
      difference can alter a nonconvex solve, matched-start likelihood and KKT gates
      must pass for the complete speculative policy, not only at isolated points.
+     Clear trial validity for each new point or request plan. A first-order solver
+     must reject a trial known to lack its required gradient; a failed fused plan
+     may still recover through separate `F` and `G` requests.
    - Preparation must have an explicit derivative order. Value and first-order
      requests may not construct, copy, or downgrade a second-order point cache.
    - Parameter-independent sample constants are formed once per solve or added once
@@ -372,6 +375,9 @@ order axis of the model, such as `(p, q)` for GARCH and
    - Native builds enforce a 16 KiB stack-frame ceiling. Treat the ceiling as a
      gate, not a target: inspect common fixed specializations after materially
      changing prepared state, request routing, or template instantiation.
+     Compiler frame warnings alone do not cover dynamic `alloca` storage. Audit
+     shared numerical backends too; their variable-size scratch belongs in the
+     caller-owned arena, including augmented solver subproblems.
    - A pure `F` request streams the minimum state. Add derivative rings for `G` and
      `H` only as needed, and materialize sample-length paths only for an explicit
      evidence request.
@@ -400,6 +406,10 @@ order axis of the model, such as `(p, q)` for GARCH and
      sensitivities are materially larger than ordinary test points. Audit the
      oracle itself for hidden clipping, floors, smoothing, and floating-point
      cancellation before attributing a stress-case discrepancy to the jet.
+   - Run rounding-sensitive regressions with production optimization and contraction
+     flags. Passing a lower-optimization header test does not verify the shipped
+     arithmetic. Compensated algorithms must preserve their required intermediate
+     rounding even when the surrounding kernel permits FMA contraction.
    - Match the established production likelihood at identical points and benchmark
      objective requests separately from complete solves. Python-boundary savings do
      not excuse a slower objective kernel.
@@ -410,14 +420,43 @@ order axis of the model, such as `(p, q)` for GARCH and
 9. **Replacement likelihood optimality**
    - Mathematical jet completion and optimizer replacement readiness are separate
      claims. Exact derivatives do not prove that a solver reaches an equally good
-     estimate.
+     estimate. Promotion requires preserved or improved solution quality, the
+     performance gate below, and honest failure reporting, not universal convergence.
    - On deterministic representative samples, fit the established and replacement
      paths from matched starts and evaluate both estimates with both evaluators.
      Record all four values. Differences in additive constants or scaling may be
      normalized explicitly; an unexplained ranking reversal or material loss blocks
      replacement promotion.
-   - Require external feasibility and KKT credibility at the returned theta point.
-     A historical solver success code is evidence, not a substitute for this gate.
+   - Assess external feasibility and applicable stationarity at every returned
+     theta point. A solver success code does not certify either. Rescore all finite,
+     feasible estimates, including uncertified ones; excluding them must not hide
+     a likelihood regression.
+   - Apply smooth KKT only where the mathematical objective is differentiable.
+     At a genuine kink, use an appropriate nonsmooth stationarity condition and
+     label that evidence separately. Limiting-gradient evidence at a nearby point
+     must report its parameter backward error and likelihood discrepancy; it does
+     not prove differentiability or smooth KKT at the returned doubles. Without a
+     validated certificate, keep the fit uncertified. Never smooth the kernel,
+     snap fitted residuals to zero, or weaken a smooth tolerance to manufacture a
+     pass. A demonstrated inapplicable gate is an explicit research finding, not
+     automatic permission to promote a replacement engine.
+   - Distinguish inherited model or numerical limitations from replacement
+     regressions using the actual established fitting path on matched data,
+     conditioning, domains, starts, and explicit work budgets. SciPy on a new jet
+     is an independent solver control, not an original-engine comparison.
+   - An inherited difficult fit need not block promotion when matched evidence
+     establishes no regression in likelihood, feasibility, or applicable credibility,
+     the speed gate passes, and the limitation and reporting behavior have regression
+     coverage. Warnings cannot excuse avoidable native regressions or replace
+     missing comparative evidence. Do not weaken mathematical or derivative tests.
+   - Return the best available finite, feasible estimate from the declared fitting
+     path unchanged when it remains uncertified, with an explicit status and a
+     persistent warning through the existing quiet reporting machinery.
+     No finite, feasible estimate means fit failure, not a
+     successful result with a warning. Keep optimizer termination, stationarity
+     evidence, and inference reliability distinct in `fit_info`; mark unavailable
+     or invalid inference explicitly rather than presenting ordinary Hessian-based
+     standard errors as reliable at an unsupported kink or ill-conditioned point.
    - When no established implementation exists, compare the native optimizer with
      a trusted independent optimizer on the identical jet and parameterization.
    - Use a tiered cadence: pointwise and tiny seeded tests after kernel changes; a
@@ -447,14 +486,21 @@ order axis of the model, such as `(p, q)` for GARCH and
    - Keep a tracked, deterministic promotion benchmark that finishes within the
      routine benchmark budget. It must report sparse request costs, optimizer
      request counts, matched-start complete-fit time, matched-point likelihood,
-     feasibility, and projected KKT credibility.
+     feasibility, applicable stationarity evidence, and warning/inference status.
+     For variable-width models, include narrow and wider parameter/design layouts;
+     an improvement at one width must not conceal a regression at another.
    - Run promotion microbenchmarks without concurrent tests or builds. Alternate
      native and production order, use repeated paired measurements, and report a
      robust central pair. A single timing sample or a fixed first-run advantage is
      not admissible performance evidence.
-   - Performance evidence is admissible only when mathematical and credibility
-     gates pass. A faster result with worse likelihood, feasibility, or KKT does
-     not satisfy this gate.
+   - Benchmark consumers must observe every requested output so the compiler cannot
+     discard unconsumed derivatives. Prepare the baseline for its actual request;
+     a derivative-prepared plan must not disable an exact value-only shortcut and
+     inflate the claimed speedup.
+   - Performance evidence must satisfy the mathematical and comparative quality
+     rules above. Report credible and uncertified cases separately. A faster result
+     with worse likelihood, feasibility, or applicable credibility is not a pass;
+     adding a warning does not remove that regression.
 
 Additional optimizer-interface rules:
 
@@ -466,13 +512,34 @@ Additional optimizer-interface rules:
   that would instantiate duplicate recursions.
 - Coordinate maps expose value-only and value-plus-Jacobian intentions. Line-search
   `F` trials must not construct a dense transform Jacobian.
+- Validate preconditioner round-trips at active constraints. Reject an infeasible
+  scaled start or retry with a domain-preserving scaling; never pad the model.
+- Normalize solver trials consistently across objective, derivative, constraint
+  and constraint-Jacobian callbacks, including independent comparison adapters.
+  Do not evaluate clipped F/G alongside constraints at an unclipped point. Report
+  the same normalized point that was evaluated, without changing model bounds.
 - Point-dependent quadrature plans belong in request-specific prepared state and
   are formed once per parameter point. Observation loops may consume the plan but
   may not reconstruct its order terms, nodes, weights, or derivative tables.
 - Constraint evaluators should return finite violated constraints for infeasible
   optimizer trials whenever the mathematics permits it. A line-search domain
-  failure is handled by a generic finite rejection policy in the optimizer; never
-  alter the likelihood or insert a hidden model restriction to make the trial fit.
+  failure is handled by explicit, bounded rejection in the optimizer; never alter
+  the likelihood or insert a hidden model restriction to make the trial fit.
+  An invalid requested value or derivative may not enter merit acceptance,
+  convergence, or a curvature update. A finite penalty is not a valid likelihood.
+  Test rejection through both derivative-request and final-success transitions,
+  including small steps and exhausted line-search budgets.
+- Constraint requests must preserve unrequested output buffers: Jacobian-only
+  evaluation may not overwrite cached constraint values, and value-only evaluation
+  may not overwrite the Jacobian. Constraint adapters must preserve this contract
+  and the ordering of equality rows before inequality rows. Test composed adapters,
+  including coordinate scaling, rather than only each adapter in isolation.
+- Exact constrained Newton or trust-region refinement uses Lagrangian curvature:
+  for inequalities `c(theta) >= 0`, `H_L = H_f - sum(lambda_i * H_c_i)`.
+  Keep multiplier, coordinate and objective/constraint scaling conventions aligned.
+  An objective-Hessian metric is an explicit approximation; unavailable constraint
+  curvature is not zero curvature. Validate active-face trial points and assess
+  stationarity in the full original domain, not only the reduced subproblem.
 - Assess transformed solutions in the original parameter domain. Reconstruct active
   theta-constraint and bound multipliers from the returned point, theta gradient,
   and constraint Jacobian; do not substitute zero multipliers or reuse multipliers
@@ -670,32 +737,25 @@ not raw coefficients whose feasible range silently changes when the density chan
 - Diagnostics may warn about boundary estimates, near integration, weak
   identification, or unreliable long-run moments. They must not repair parameters
   or alter the objective.
-- `result.success` requires finite requested quantities, theoretical-domain
-  feasibility, solver termination, and an original-parameter scaled KKT check.
-  Keep the raw solver status separately for diagnosis.
+- `result.success` requires finite fit quantities, theoretical-domain feasibility,
+  solver termination, and a validated original-parameter stationarity assessment.
+  Use scaled KKT for smooth fits; nonsmooth evidence must be validated and labeled
+  separately under the completion contract. Keep raw solver status and inference
+  reliability separate from the fit's credibility.
 - Report the KKT residual and threshold separately. Unless the API exposes a
   dedicated threshold, use
   `max(sqrt(solver_accuracy), sqrt(machine_epsilon))`; this ties first-order
   credibility to the requested solve accuracy without a model-specific magic
   tolerance.
 
-Every native jet and optimizer path must pass three promotion gates:
+The **Native Tensor-Jet Completion Contract** above is the canonical promotion
+gate: mathematical correctness, comparative solution quality and reporting, and
+objective/complete-fit performance must all pass. Returning a correctly warned
+uncertified fit is distinct from certifying that fit or waiving a regression.
 
-1. **Mathematical parity**: value, gradient, and Hessian match an independent AD
-   oracle and any established production kernel.
-2. **Domain and credibility parity**: all public solvers target the same declared
-   theoretical domain and pass matched-point feasibility and KKT checks.
-3. **Performance superiority**: sparse objective requests are at least as fast as
-   the production path they replace, and matched-domain solve benchmarks improve
-   convergence or throughput without weakening the first two gates.
-
-Complete-fit promotion also requires a matched solution-quality comparison. Rescore
-all candidates with one common theta-space likelihood and KKT assessor, compare
-objective values only among credible fits, and reject a new default that is worse
-than production beyond the requested numerical tolerance. Test matched starts to
-separate optimizer quality from basin coverage. Alternative starts, coordinate
-charts, and exact positive objective scalings are optimizer policies; keep their
-budgets and effective path visible. A high-reliability portfolio may be slower than
+Alternative starts, coordinate charts, and exact positive objective scalings are
+optimizer policies; keep their budgets and effective path visible. A high-reliability
+portfolio may be slower than
 the default, but it must select only from credible candidates and must not replace
 independent public fitting paths silently.
 
@@ -1171,8 +1231,11 @@ The native path stays quiet during fitting. It records historical Kraft mode,
 strict KKT residual and tolerance, maximum violation, refinement restarts,
 curvature and scientific-coordinate projection steps, request plan, and matched
 production-objective error in `result.fit_info`. A failed strict check returns a
-normal result with a persistent warning. APARCH, exogenous joint models, and
-QMLE remain on the established engine until their native contracts are promoted.
+normal result with a persistent warning. Joint ARX/HARX with GARCH or GJR-GARCH
+also uses the native default. Joint ARX/HARX with EGARCH or APARCH remains an
+explicit prototype pending its precision, solution-quality and speed gates.
+QMLE promotion is separate. The surface manifest, not this summary, owns the
+per-entry completion and default-routing claims.
 
 Files under `scivol/_native/` marked `SCIVOL-NATIVE: CORE` are production sources.
 The SciPy SLSQP translation under `third_party/` is pinned upstream code.
@@ -1297,7 +1360,8 @@ following are true:
 9. **Defaults are earned, not assumed**
    - Benchmark solver/log-mode choices on the same parameter domain and real data
    - Run DGP recovery tests
-   - Require mathematical parity, domain/KKT credibility, and objective-level speed
+   - Apply the canonical Native Tensor-Jet Completion Contract, including matched
+     solution quality, applicable credibility, failure reporting, and speed
 
 10. **Add one model family at a time**
    - Keep commits and validation isolated by model family/distribution

@@ -38,12 +38,14 @@ integrate(const double* shape) noexcept
 
     std::array<double, 4u> boundaries {0.0, 0.5, 1.0, 1.0};
     std::size_t boundary_count = 3u;
-    if constexpr (std::is_same_v<Density, SkewTDensity>) {
-        const double branch = prepared.a.value / prepared.b.value;
+    if constexpr (std::is_same_v<Density, SkewTDensity>
+                  || std::is_same_v<Density, VarianceGammaDensity>) {
+        const double branch = density_moment::negative_branch_distance<Density>(prepared,shape);
         if (branch > 0.0 && std::isfinite(branch)) {
             const double unit = std::atan(branch) / density_moment::half_pi;
-            if (unit > 0.0 && unit < 0.5) {
+            if (unit > 0.0 && unit < 1.0 && unit != 0.5) {
                 boundaries = {0.0, unit, 0.5, 1.0};
+                std::sort(boundaries.begin(),boundaries.end());
                 boundary_count = 4u;
             }
         }
@@ -71,6 +73,9 @@ negative_second_moment(const double* shape) noexcept
         result.value = 0.5;
         return result;
     }
+    if constexpr (std::is_same_v<Density, VarianceGammaDensity>)
+        return density_moment::variance_gamma_mixture<
+            Order, density_moment::NormalMoment::negative_second>(shape);
     return gjr_moment_detail::integrate<Order, Density>(shape);
 }
 

@@ -3,6 +3,7 @@
 #define SCIVOL_EXPERIMENT_GARCH_DENSITY_POLICY_HPP
 
 #include "math_and_helpers.h"
+#include "student_normalization.hpp"
 
 #include <array>
 #include <cmath>
@@ -95,14 +96,14 @@ struct NormalDensity {
 
     template<bool NeedValue, bool NeedGradient, bool NeedHessian,
              bool NeedResidualDerivatives = false>
-    VLK_DENSITY_INLINE static DensityObservation<0u> observe(
-        const Prepared&, double variance, double residual, double residual2)
+    VLK_DENSITY_INLINE static DensityObservation<0u> observe_prepared_scale(
+        const Prepared&, double inverse, double log_variance,
+        double residual, double residual2)
     {
         DensityObservation<0u> observation;
         if constexpr (NeedValue)
-            observation.value = std::log(variance) + residual2 / variance;
+            observation.value = log_variance + residual2 * inverse;
         if constexpr (NeedGradient || NeedHessian) {
-            const double inverse = 1.0 / variance;
             const double inverse2 = inverse * inverse;
             observation.variance_gradient = 0.5 * (inverse - residual2 * inverse2);
             if constexpr (NeedResidualDerivatives)
@@ -117,6 +118,18 @@ struct NormalDensity {
                 }
             }
         }
+        return observation;
+    }
+
+    template<bool NeedValue, bool NeedGradient, bool NeedHessian,
+             bool NeedResidualDerivatives = false>
+    VLK_DENSITY_INLINE static DensityObservation<0u> observe(
+        const Prepared& prepared, double variance, double residual, double residual2)
+    {
+        auto observation=observe_prepared_scale<false,NeedGradient,NeedHessian,NeedResidualDerivatives>(
+            prepared,1.0/variance,0.0,residual,residual2);
+        if constexpr (NeedValue)
+            observation.value=std::log(variance)+residual2/variance;
         return observation;
     }
 
@@ -141,10 +154,8 @@ struct StudentTDensity {
         double nu = 0.0;
         double inverse_nu_minus_two = 0.0;
         double constant = 0.0;
-        double digamma_half_nu_plus_one = 0.0;
-        double digamma_half_nu = 0.0;
-        double trigamma_half_nu_plus_one = 0.0;
-        double trigamma_half_nu = 0.0;
+        double normalizer_first = 0.0;
+        double normalizer_second = 0.0;
     };
     struct ValueAccumulator {
         double log_variance_sum = 0.0;
@@ -163,22 +174,10 @@ struct StudentTDensity {
         Prepared prepared;
         prepared.nu = shape[0];
         prepared.inverse_nu_minus_two = 1.0 / (prepared.nu - 2.0);
-        if constexpr (NeedValue) {
-            prepared.constant = static_cast<double>(n) * (
-                std::lgamma(0.5 * (prepared.nu + 1.0))
-                - std::lgamma(0.5 * prepared.nu)
-                - 0.5 * std::log(M_PI * (prepared.nu - 2.0)));
-        }
-        if constexpr (NeedGradient) {
-            prepared.digamma_half_nu_plus_one =
-                digamma_approx(0.5 * (prepared.nu + 1.0));
-            prepared.digamma_half_nu = digamma_approx(0.5 * prepared.nu);
-        }
-        if constexpr (NeedHessian) {
-            prepared.trigamma_half_nu_plus_one =
-                trigamma_approx(0.5 * (prepared.nu + 1.0));
-            prepared.trigamma_half_nu = trigamma_approx(0.5 * prepared.nu);
-        }
+        const auto normalizer = student_normalization<NeedValue,NeedGradient,NeedHessian>(prepared.nu);
+        prepared.constant = static_cast<double>(n)*normalizer.value;
+        prepared.normalizer_first = normalizer.first;
+        prepared.normalizer_second = normalizer.second;
         return prepared;
     }
 
@@ -263,10 +262,8 @@ struct StudentTDensity {
 
         if constexpr (NeedGradient) {
             observation.shape_gradient[0] =
-                -0.5 * prepared.digamma_half_nu_plus_one
-                + 0.5 * prepared.digamma_half_nu
-                + 0.5 * prepared.inverse_nu_minus_two
-                + 0.5 * std::log(one_plus_tail)
+                -prepared.normalizer_first
+                + 0.5 * stable_log_tail(tail,one_plus_tail)
                 - 0.5 * weighted_tail * prepared.inverse_nu_minus_two;
         }
 
@@ -286,9 +283,7 @@ struct StudentTDensity {
                 * (3.0 - scaled_residual);
 
             observation.shape_hessian[0] =
-                -0.25 * prepared.trigamma_half_nu_plus_one
-                + 0.25 * prepared.trigamma_half_nu
-                - 0.5 * inverse_nu_minus_two2
+                -prepared.normalizer_second
                 - tail * prepared.inverse_nu_minus_two
                     * inverse_one_plus_tail
                 + 0.5 * weighted_tail * (2.0 + tail)

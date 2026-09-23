@@ -2728,6 +2728,68 @@ class TestDCCStudentT:
 
 
 # -----------------------------------------------------------------------------
+# Standalone native mean tensor
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("density", range(8))
+@pytest.mark.parametrize("family", ("ARMA", "ARX", "HARX"))
+def test_standalone_mean_tensor_recovery(family, density):
+    from scivol import ARMA, ARX, HARX
+    from scivol._mean_fit import DENSITIES, MeanModel, fit_mean_spec
+
+    rng = np.random.default_rng(8471)
+    n = 2200
+    if density == 0:
+        innovations = rng.normal(size=n)
+        shape = []
+    elif density in (1, 2):
+        shape = [7.0] if density == 1 else [7.0, 0.2]
+        innovations = (
+            rng.standard_t(7, n) * np.sqrt(5 / 7)
+            if density == 1
+            else _hansen_skewt_ppf(rng.uniform(size=n), 7.0, 0.2)
+        )
+    elif density == 3:
+        shape = [1.7]
+        scale = np.exp(0.5 * (gammaln(1 / 1.7) - gammaln(3 / 1.7)))
+        innovations = gennorm.rvs(1.7, scale=scale, size=n, random_state=rng)
+    elif density == 7:
+        shape = [0.12, 2.0]
+        innovations = standardized_vg_rvs(rng, n, *shape)
+    else:
+        shape = [0.12, 1.8, 0.4] if density == 4 else [0.12, 1.8]
+        lam = 0.4 if density == 4 else -0.5 if density == 5 else 1.0
+        innovations = standardized_gh_rvs(rng, n, 0.12, 1.8, lam)
+    mean = {"ARMA": ARMA(2, 1), "ARX": ARX(2), "HARX": HARX([1, 5])}[family]
+    x = None if family == "ARMA" else rng.normal(size=(n, 1))
+    coefficients = (
+        np.array([0.2, 0.45, -0.12, 0.35])
+        if family == "ARMA"
+        else np.array([0.2, 0.3, 0.15, 0.4])
+    )
+    errors = np.sqrt(1.2) * innovations
+    data = np.zeros(n)
+    for t in range(5, n):
+        if family == "ARMA":
+            state = [1.0, data[t - 1], data[t - 2], errors[t - 1]]
+        elif family == "ARX":
+            state = [1.0, data[t - 1], data[t - 2], x[t, 0]]
+        else:
+            state = [1.0, data[t - 1], np.mean(data[t - 5 : t]), x[t, 0]]
+        data[t] = np.dot(coefficients, state) + errors[t]
+    data = data[200:]
+    x = None if x is None else x[200:]
+    result = fit_mean_spec(mean + DENSITIES[density](), data, x=x)
+    assert result.converged, result.convergence_message
+    np.testing.assert_allclose(result.params[:4], coefficients, atol=0.12, rtol=0)
+    assert abs(result._sigma2[0] - 1.2) < 0.25
+    model = MeanModel(result.spec, data, x)
+    truth = np.r_[coefficients, 1.2, shape]
+    assert -result.log_likelihood <= model.evaluate(truth, 1)[0] + 1e-6
+
+
+# -----------------------------------------------------------------------------
 # Run tests directly
 # -----------------------------------------------------------------------------
 

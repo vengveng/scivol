@@ -145,6 +145,78 @@ def _call_meanx_egarch_kernel(
     return nll
 
 
+@pytest.mark.parametrize("dist,shape", [
+    ("normal", []), ("studentt", [7.0]), ("ged", [1.7]),
+    ("skewt", [7.0, 0.2]), ("skewt", [7.0, -0.2]),
+])
+def test_linear_egarch_stable_polynomial_is_not_a_coefficient_box(dist, shape):
+    rng = np.random.default_rng(82951)
+    y = rng.normal(size=90)
+    features = np.ascontiguousarray(np.column_stack([np.ones_like(y), rng.normal(size=y.size)]))
+    theta = np.array([0.02, 0.04, -0.02, 0.03, 0.02, -0.01, -0.01, 1.2, -0.4, *shape])
+    assert np.max(np.abs(np.roots([1.0, -1.2, 0.4]))) < 1.0
+    residuals, variances = np.empty_like(y), np.full_like(y, np.mean(y*y))
+    gradient, hessian = np.empty_like(theta), np.empty((theta.size, theta.size))
+    value = _call_meanx_egarch_kernel(
+        dist, False, theta, y, features, residuals, variances,
+        gradient, hessian, n_mean=2, p=2, q=2,
+    )
+    expected = linear_mean_egarch_value_grad_hess(theta, y, features, 2, 2, dist)
+    np.testing.assert_allclose(value, expected[0], rtol=1e-10, atol=1e-9)
+    np.testing.assert_allclose(gradient, expected[1], rtol=1e-7, atol=1e-7)
+    np.testing.assert_allclose(hessian, expected[2], rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.parametrize("rho", [-0.12, 0.0, 0.12])
+def test_legacy_vg_absolute_moment_split_matches_independent_ad(rho):
+    from scivol._devtools.ad_oracle import _jax_modules, _jax_vg_abs_moment
+
+    jax, jnp, jsp = _jax_modules()
+    shape = np.array([rho, 2.0])
+    value, gradient, hessian = np.empty(1), np.empty(3), np.empty((3, 3))
+    _c._gh_abs_moment_grad_hess(
+        shape.ctypes.data, value.ctypes.data, gradient.ctypes.data,
+        hessian.ctypes.data, np.inf,
+    )
+    objective = lambda s: _jax_vg_abs_moment(jnp, jsp, s[0], s[1])
+    expected_value, expected_gradient = jax.value_and_grad(objective)(jnp.asarray(shape))
+    expected_hessian = jax.hessian(objective)(jnp.asarray(shape))
+    np.testing.assert_allclose(value[0], expected_value, rtol=1e-8, atol=1e-9)
+    np.testing.assert_allclose(gradient[:2], expected_gradient, rtol=1e-6, atol=1e-7)
+    np.testing.assert_allclose(hessian[:2, :2], expected_hessian, rtol=2e-5, atol=2e-6)
+
+
+@pytest.mark.parametrize("shape", [
+    [-0.08590362405556805, 3.6453348340489273], [0.0, 3.0],
+    [-0.7, 1.501], [0.7, 3.0], [0.98, 10.0], [-0.98, 50.0],
+    [0.9949, 1.5001], [-0.9949, 50.0],
+])
+def test_vg_absolute_moment_oracle_has_resolved_shape_derivatives(shape):
+    from scivol._devtools.ad_oracle import (
+        _jax_modules, _jax_vg_mixture_absolute_moment, _jax_vg_power_moment,
+    )
+
+    jax, jnp, jsp = _jax_modules()
+    point = jnp.asarray(shape)
+    references = []
+    for nodes in (256, 512):
+        objective = lambda s: _jax_vg_mixture_absolute_moment(
+            jnp, jsp, s, nodes_per_interval=nodes
+        )
+        value, gradient = jax.value_and_grad(objective)(point)
+        hessian = jax.hessian(objective)(point)
+        references.append(np.r_[value, gradient, np.asarray(hessian).ravel()])
+    np.testing.assert_allclose(references[0], references[1], rtol=3e-8, atol=3e-10)
+    if abs(shape[0]) <= 0.7:
+        density_integral = lambda s: _jax_vg_power_moment(
+            jnp, jsp, 0.0, 1.0, *s, nodes_count=256
+        )
+        value, gradient = jax.value_and_grad(density_integral)(point)
+        hessian = jax.hessian(density_integral)(point)
+        density_reference = np.r_[value, gradient, np.asarray(hessian).ravel()]
+        np.testing.assert_allclose(references[1], density_reference, rtol=3e-6, atol=3e-7)
+
+
 @pytest.fixture(scope="module")
 def arx_egarch_series_11() -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     return _simulate_meanx_egarch(

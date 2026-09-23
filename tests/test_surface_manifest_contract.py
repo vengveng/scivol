@@ -34,7 +34,7 @@ def _generated_block(text: str, name: str) -> str:
 def test_manifest_declares_current_univariate_surface_tensor() -> None:
     surface_ids = [surface.surface_id for surface in SURFACES]
 
-    assert len(SURFACES) == 134
+    assert len(SURFACES) == 136
     assert len(surface_ids) == len(set(surface_ids))
     assert len(SURFACES) + len(ABSENT_SURFACE_IDS) == 136
     assert set(ABSENT_SURFACE_IDS).isdisjoint(surface_ids)
@@ -111,6 +111,8 @@ def test_native_defaults_cover_the_promoted_fixed_mle_rows() -> None:
             surface.mean in (None, "ARMA")
             and surface.volatility in ("GARCH", "GJR-GARCH", "APARCH")
         ) or surface.volatility == "EGARCH" and surface.mean in (None, "ARMA")
+        or surface.volatility is None and surface.mean in ("ARMA","ARX","HARX")
+        or surface.mean in ("ARX", "HARX") and surface.volatility in ("GARCH", "GJR-GARCH")
     }
 
     assert native_defaults == expected
@@ -124,6 +126,8 @@ def test_complete_native_jets_have_machine_checked_completion_evidence() -> None
             surface.volatility in ("GARCH", "GJR-GARCH", "APARCH")
             and surface.mean in (None, "ARMA")
         ) or surface.volatility == "EGARCH" and surface.mean in (None, "ARMA")
+        or surface.volatility is None and surface.mean in ("ARMA","ARX","HARX")
+        or surface.mean in ("ARX", "HARX") and surface.volatility in ("GARCH", "GJR-GARCH")
     }
     assert {contract.surface_id for contract in NATIVE_JETS} == expected
 

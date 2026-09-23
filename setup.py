@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import shlex
 import sys
 import sysconfig
@@ -45,7 +46,13 @@ def _compile_args() -> list[str]:
     if _portable_build():
         return ["-O3"]
 
-    return ["-O3", "-ffast-math", "-ffp-contract=fast", "-funroll-loops", "-march=native"]
+    return [
+        "-O3",
+        "-ffast-math",
+        "-ffp-contract=fast",
+        "-funroll-loops",
+        "-march=native",
+    ]
 
 
 def _native_compile_args() -> list[str]:
@@ -68,6 +75,15 @@ def _libraries() -> list[str]:
     if sys.platform.startswith("win"):
         return []
     return ["m"]
+
+
+def _included_files(directory: str, suffixes: tuple[str, ...]) -> list[str]:
+    root = Path(__file__).resolve().parent
+    return sorted(
+        path.relative_to(root).as_posix()
+        for path in (root / directory).rglob("*")
+        if path.is_file() and path.suffix in suffixes
+    )
 
 
 ext_modules = [
@@ -103,6 +119,7 @@ ext_modules = [
             "scivol/_csrc/dcc_gaussian.c",
         ],
         include_dirs=["scivol/_csrc"],
+        depends=_included_files("scivol/_csrc", (".h",)),
         extra_compile_args=_compile_args(),
         libraries=_libraries(),
     ),
@@ -110,6 +127,10 @@ ext_modules = [
         "scivol._native_core",
         sources=[
             "scivol/_native/native_core.cpp",
+            "scivol/_native/mean_runtime.cpp",
+            "scivol/_native/linear_joint_runtime.cpp",
+            "scivol/_native/linear_garch_runtime.cpp",
+            "scivol/_native/linear_power_runtime.cpp",
             "scivol/_native/garch_generated_api.cpp",
             "scivol/_native/garch_runtime.cpp",
             "scivol/_native/egarch_runtime.cpp",
@@ -122,7 +143,17 @@ ext_modules = [
             "scivol/_native/slsqp_translation.cpp",
             "scivol/_native/gh_math_translation.cpp",
         ],
-        include_dirs=["scivol/_native", "scivol/_csrc"],
+        include_dirs=[
+            "scivol/_native",
+            "scivol/_csrc",
+            "scivol/_native/third_party/boost",
+            "scivol/_native/third_party/tlfloat",
+        ],
+        depends=(
+            _included_files("scivol/_native", (".h", ".hpp", ".c"))
+            + _included_files("scivol/_csrc", (".h",))
+            + ["scivol/_csrc/gh_math.c"]
+        ),
         extra_compile_args=_native_compile_args(),
         libraries=_libraries(),
         language="c++",
