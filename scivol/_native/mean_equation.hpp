@@ -9,10 +9,13 @@
 #include <limits>
 #include <type_traits>
 
-#if defined(__GNUC__) || defined(__clang__)
-#define VLK_MEAN_LOOP_INLINE __attribute__((always_inline))
+// GNU lambda attributes have different noexcept placement in Clang and GCC.
+#if defined(__clang__)
+#define VLK_MEAN_LOOP_NOEXCEPT __attribute__((always_inline)) noexcept
+#elif defined(__GNUC__)
+#define VLK_MEAN_LOOP_NOEXCEPT noexcept __attribute__((always_inline))
 #else
-#define VLK_MEAN_LOOP_INLINE
+#define VLK_MEAN_LOOP_NOEXCEPT noexcept
 #endif
 
 namespace vlk::experiment::mean {
@@ -37,6 +40,59 @@ constexpr std::size_t extent(std::size_t runtime) noexcept
         return runtime;
     return Static;
 }
+
+template<class Layout, const Layout* Fixed = nullptr>
+constexpr const Layout& arma_layout(const Layout& supplied) noexcept
+{
+    if constexpr (Fixed != nullptr) return *Fixed;
+    return supplied;
+}
+
+template<class Layout>
+constexpr bool valid_arma_mean_layout(const Layout& layout) noexcept
+{
+    constexpr auto maximum = std::numeric_limits<std::size_t>::max();
+    if (!layout.valid || !layout.joint || layout.ar_start != 1u
+        || layout.p_ar == maximum || layout.ma_start != 1u + layout.p_ar
+        || layout.q_ma > maximum - layout.ma_start) return false;
+    return layout.mean_parameters == layout.ma_start + layout.q_ma
+        && layout.mean_parameters <= layout.parameters
+        && layout.maximum_lag >= std::max(layout.p_ar, layout.q_ma);
+}
+
+// The caller owns conditioning and storage. Scalar selects arithmetic, not equations.
+#if defined(_MSC_VER)
+#define VLK_MEAN_VALUE_INLINE __forceinline
+#else
+#define VLK_MEAN_VALUE_INLINE inline __attribute__((always_inline))
+#endif
+
+template<class Scalar, class Layout, const Layout* Fixed = nullptr, class Lagged>
+VLK_MEAN_VALUE_INLINE Scalar inverse_ma_value(
+    Scalar forcing, const Layout& supplied, const double* parameters,
+    const Lagged& residual) noexcept
+{
+    const auto& layout = arma_layout<Layout, Fixed>(supplied);
+    for (std::size_t lag = 0; lag < layout.q_ma; ++lag)
+        generated::arma_garch_equation::subtract_product(
+            forcing, parameters[layout.ma_start + lag], residual(lag));
+    return forcing;
+}
+
+template<class Scalar, class Layout, const Layout* Fixed = nullptr, class Lagged>
+VLK_MEAN_VALUE_INLINE Scalar arma_residual_value(
+    const Layout& supplied, const double* parameters, const double* observations,
+    std::size_t time, const Lagged& residual) noexcept
+{
+    const auto& layout = arma_layout<Layout, Fixed>(supplied);
+    Scalar value = Scalar(observations[time]) - Scalar(parameters[0]);
+    for (std::size_t lag = 0; lag < layout.p_ar; ++lag)
+        generated::arma_garch_equation::subtract_product(
+            value, parameters[layout.ar_start + lag], observations[time - 1u - lag]);
+    return inverse_ma_value<Scalar, Layout, Fixed>(value, layout, parameters, residual);
+}
+
+#undef VLK_MEAN_VALUE_INLINE
 
 template<std::size_t P = dynamic>
 struct ArmaDesign {
@@ -95,8 +151,8 @@ struct LinearSensitivity {
     { return -design.at(time,column); }
 };
 
-template<class Scalar = double, class Design>
-Scalar compensated_residual(const Design& design, const double* parameters,
+template<class Scalar, class Design>
+Scalar generic_compensated_residual(const Design& design, const double* parameters,
     double observed, std::size_t time) noexcept
 {
     using std::fma;
@@ -117,6 +173,22 @@ Scalar compensated_residual(const Design& design, const double* parameters,
         sum=next;
     }
     return sum+correction;
+}
+
+// Numeric representations may specialize the error transform, not the mean model.
+template<class Scalar>
+struct ResidualArithmetic {
+    template<class Design>
+    static Scalar evaluate(const Design& design,const double* parameters,
+        double observed,std::size_t time) noexcept {
+        return generic_compensated_residual<Scalar>(design,parameters,observed,time);
+    }
+};
+
+template<class Scalar = double, class Design>
+Scalar compensated_residual(const Design& design,const double* parameters,
+    double observed,std::size_t time) noexcept {
+    return ResidualArithmetic<Scalar>::evaluate(design,parameters,observed,time);
 }
 
 template<int Order, std::size_t Q, class Design>
@@ -154,59 +226,11 @@ void advance(
     if constexpr (Order >= 2 && !(Design::linear && Q==0))
         std::fill_n(current.second, packed, 0.0);
     if constexpr (Design::linear) {
-        // Value reductions need more independent chains than derivative passes.
-        constexpr std::size_t lanes_count=Order>=1?2u:
-            (Design::sensitivity_interleave==2u?4u:8u);
-        double lanes[lanes_count]{};
-        std::size_t column=0;
-        if constexpr (lanes_count>2u) {
-#if defined(__clang__)
-#pragma clang loop vectorize(disable)
-#endif
-            for (;column+lanes_count<=ma_start;column+=lanes_count) {
-#if defined(__clang__)
-#pragma clang loop unroll(full)
-#endif
-                for (std::size_t lane=0;lane<lanes_count;++lane) {
-                    const double feature=design.at(time,column+lane);
-                    add_product(lanes[lane],parameters[column+lane],feature);
-                    if constexpr (Order>=1 && MaterializeFirst)
-                        add_ar_first(current.first,column+lane,feature);
-                }
-            }
-        }
-#if defined(__clang__)
-#pragma clang loop vectorize(disable)
-#endif
-        for (;column+1u<ma_start;column+=2u) {
-            const double left=design.at(time,column);
-            const double right=design.at(time,column+1u);
-            add_product(lanes[0],parameters[column],left);
-            add_product(lanes[1],parameters[column+1u],right);
-            if constexpr (Order>=1 && MaterializeFirst) {
-                add_ar_first(current.first,column,left);
-                add_ar_first(current.first,column+1u,right);
-            }
-        }
-        if (column<ma_start) {
-            const double feature=design.at(time,column);
-            add_product(lanes[0],parameters[column],feature);
-            if constexpr (Order>=1 && MaterializeFirst) add_ar_first(current.first,column,feature);
-        }
-        double fitted=lanes[0]+lanes[1];
-        if constexpr (lanes_count>=4) fitted+=lanes[2]+lanes[3];
-        if constexpr (lanes_count>=8)
-            fitted+=(lanes[4]+lanes[5])+(lanes[6]+lanes[7]);
-        current.value-=fitted;
-        // Near cancellation, an ordinary dot product can create or erase a kink.
-        constexpr double cancellation_trigger=1.490116119384765625e-8;
-        const bool cancelled = std::abs(current.value) <= cancellation_trigger
-                * std::max(std::abs(observed),std::abs(fitted));
-        if constexpr (Compensate) {
-            if (cancelled)
-                current.value=compensated_residual(design,parameters,observed,time);
-        } else {
-            current.needs_compensation |= cancelled;
+        // Conditional scales can amplify small dot-product errors even away from a kink.
+        current.value=compensated_residual(design,parameters,observed,time);
+        if constexpr (Order>=1 && MaterializeFirst) {
+            for (std::size_t column=0;column<ma_start;++column)
+                add_ar_first(current.first,column,design.at(time,column));
         }
     } else {
         for (std::size_t column = 0; column < ma_start; ++column) {

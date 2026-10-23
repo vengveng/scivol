@@ -31,7 +31,7 @@ VLK_INLINE double gjr_sigma2_11(double omega, double alpha, double gamma,
 {
     const double e2 = e_prev * e_prev;
     const double ind = (e_prev < 0.0) ? 1.0 : 0.0;
-    return omega + alpha * e2 + gamma * ind * e2 + beta * h_prev;
+    return omega + (alpha + gamma * ind) * e2 + beta * h_prev;
 }
 
 VLK_INLINE void hessian_accumulate(double *H, size_t i, size_t j, size_t K, double v)
@@ -74,14 +74,11 @@ VLK_INLINE int gjr_skewt_precompute_full(double nu, double lam, gjr_skewt_cache_
 {
     const double nu_m1 = nu - 1.0;
     const double nu_m2 = nu - 2.0;
-    const double c_log = lgamma_approx(0.5 * (nu + 1.0)) - lgamma_approx(0.5 * nu) - 0.5 * log(M_PI * nu_m2);
+    const vlk_student_normalization_t normalizer = vlk_student_normalization(nu, 1, 1, 1);
+    const double c_log = normalizer.value;
     const double c = exp(c_log);
-    const double dc_log_dnu = 0.5 * digamma_approx(0.5 * (nu + 1.0))
-                            - 0.5 * digamma_approx(0.5 * nu)
-                            - 0.5 / nu_m2;
-    const double d2c_log_dnu2 = 0.25 * trigamma_approx(0.5 * (nu + 1.0))
-                              - 0.25 * trigamma_approx(0.5 * nu)
-                              + 0.5 / (nu_m2 * nu_m2);
+    const double dc_log_dnu = normalizer.first;
+    const double d2c_log_dnu2 = normalizer.second;
     const double dc_dnu = c * dc_log_dnu;
     const double d2c_dnu2 = c * (dc_log_dnu * dc_log_dnu + d2c_log_dnu2);
 
@@ -184,24 +181,20 @@ VLK_INLINE int gjr_skewt_obs_derivs(
     const double v_lam_lam = u_lam_lam * inv_s - 2.0 * u_lam * s_lam * inv_s2 + 2.0 * u * s_lam * s_lam * inv_s3;
 
     const double R_h = 2.0 * v * v_h;
-    const double R_nu = 1.0 + 2.0 * v * v_nu;
     const double R_lam = 2.0 * v * v_lam;
     const double R_hh = 2.0 * (v_h * v_h + v * v_hh);
-    const double R_h_nu = 2.0 * (v_h * v_nu + v * v_h_nu);
     const double R_h_lam = 2.0 * (v_h * v_lam + v * v_h_lam);
-    const double R_nu_nu = 2.0 * (v_nu * v_nu + v * v_nu_nu);
-    const double R_nu_lam = 2.0 * (v_nu * v_lam + v * v_nu_lam);
     const double R_lam_lam = 2.0 * (v_lam * v_lam + v * v_lam_lam);
 
-    out->value = 0.5 * log(h) + q * (log(R) - log(nu_m2));
+    out->value = 0.5 * log(h) + q * vlk_student_log_tail(v*v, nu_m2, R, log(nu_m2));
     out->ell_h = 0.5 * inv_h + q * R_h * inv_R;
-    out->ell_nu = 0.5 * (log(R) - log(nu_m2)) + q * (R_nu * inv_R - 1.0 / nu_m2);
+    out->ell_nu = vlk_skewt_tail_shape_first(nu, v, v_nu);
     out->ell_lam = q * R_lam * inv_R;
     out->ell_hh = -0.5 * inv_h2 + q * (R_hh * inv_R - R_h * R_h * inv_R2);
-    out->ell_h_nu = 0.5 * R_h * inv_R + q * (R_h_nu * inv_R - R_h * R_nu * inv_R2);
+    out->ell_h_nu = vlk_skewt_tail_shape_cross(nu, v, v_nu, v_h, v_h_nu);
     out->ell_h_lam = q * (R_h_lam * inv_R - R_h * R_lam * inv_R2);
-    out->ell_nu_nu = (R_nu * inv_R - 1.0 / nu_m2) + q * (R_nu_nu * inv_R - R_nu * R_nu * inv_R2 + 1.0 / (nu_m2 * nu_m2));
-    out->ell_nu_lam = 0.5 * R_lam * inv_R + q * (R_nu_lam * inv_R - R_nu * R_lam * inv_R2);
+    out->ell_nu_nu = vlk_skewt_tail_shape_second(nu, v, v_nu, v_nu_nu);
+    out->ell_nu_lam = vlk_skewt_tail_shape_cross(nu, v, v_nu, v_lam, v_nu_lam);
     out->ell_lam_lam = q * (R_lam_lam * inv_R - R_lam * R_lam * inv_R2);
     return 1;
 }
@@ -254,7 +247,7 @@ void gjr_garch_ll_grad_11_normal(const double* __restrict params,
         const double e2_prev = e_prev * e_prev;
         const double ind     = (e_prev < 0.0) ? 1.0 : 0.0;
 
-        sigma2[t] = omega + alpha * e2_prev + gamma * ind * e2_prev + beta * sigma2[t - 1];
+        sigma2[t] = omega + (alpha + gamma * ind) * e2_prev + beta * sigma2[t - 1];
 
         // First-order sensitivities ∂h/∂θ
         double d_curr[4];
@@ -298,7 +291,7 @@ void gjr_garch_ll_hess_11_normal(const double* __restrict params,
         const double e2_prev = e_prev * e_prev;
         const double ind     = (e_prev < 0.0) ? 1.0 : 0.0;
 
-        sigma2[t] = omega + alpha * e2_prev + gamma * ind * e2_prev + beta * sigma2[t - 1];
+        sigma2[t] = omega + (alpha + gamma * ind) * e2_prev + beta * sigma2[t - 1];
 
         // First derivatives
         double d_curr[4];
@@ -362,7 +355,7 @@ double gjr_garch_ll_11_studentt(const double* __restrict params,
     const double nu    = params[4];
 
     const double inv_nu_m2 = 1.0 / (nu - 2.0);
-    const double constant  = n * (lgamma(0.5 * (nu + 1)) - lgamma(0.5 * nu) - 0.5 * log(M_PI / inv_nu_m2));
+    const double constant  = n * (vlk_student_normalization(nu, 1, 0, 0).value);
 
     double var1 = log(sigma2[0]);
     double var2 = log1p(residuals[0] * residuals[0] / sigma2[0] * inv_nu_m2);
@@ -393,8 +386,7 @@ void gjr_garch_ll_grad_11_studentt(const double* __restrict params,
     const double nu    = params[4];
 
     const double inv_nu_m2 = 1.0 / (nu - 2.0);
-    const double psi_half_nu1 = digamma_approx(0.5 * (nu + 1.0));
-    const double psi_half_nu  = digamma_approx(0.5 * nu);
+    const double student_normalizer_first = vlk_student_normalization(nu, 0, 1, 0).first;
 
     dzeros(grad, 5);
     double d_prev[4] = {0.0, 0.0, 0.0, 0.0};
@@ -404,13 +396,8 @@ void gjr_garch_ll_grad_11_studentt(const double* __restrict params,
         const double e2_0   = residuals[0] * residuals[0];
         const double r_os   = e2_0 * inv_s2;
         const double tail   = 1.0 + r_os * inv_nu_m2;
-        const double g_nu0 = -0.5 * psi_half_nu1
-                           + 0.5 * psi_half_nu
-                           + 0.5 * inv_nu_m2
-                           + 0.5 * log(tail)
-                           - 0.5 * (nu + 1.0) * e2_0
-                                 * inv_nu_m2 * inv_nu_m2
-                                 * inv_s2 / tail;
+        const double g_nu0 = -student_normalizer_first
+            + vlk_student_tail_shape_first(nu, r_os);
         grad[4] += g_nu0;
     }
 
@@ -419,7 +406,7 @@ void gjr_garch_ll_grad_11_studentt(const double* __restrict params,
         const double e2_prev = e_prev * e_prev;
         const double ind     = (e_prev < 0.0) ? 1.0 : 0.0;
 
-        sigma2[t] = omega + alpha * e2_prev + gamma * ind * e2_prev + beta * sigma2[t - 1];
+        sigma2[t] = omega + (alpha + gamma * ind) * e2_prev + beta * sigma2[t - 1];
 
         double d_curr[4];
         d_curr[0] = 1.0                  + beta * d_prev[0];
@@ -441,13 +428,8 @@ void gjr_garch_ll_grad_11_studentt(const double* __restrict params,
             grad[k] += S_h * d_curr[k];
 
         // ∂ℓ/∂ν
-        const double g_nu = -0.5 * psi_half_nu1
-                           + 0.5 * psi_half_nu
-                           + 0.5 * inv_nu_m2
-                           + 0.5 * log(tail)
-                           - 0.5 * (nu + 1.0) * e2_t
-                                 * inv_nu_m2 * inv_nu_m2
-                                 * inv_s2 / tail;
+        const double g_nu = -student_normalizer_first
+            + vlk_student_tail_shape_first(nu, r_os);
         grad[4] += g_nu;
 
         memcpy(d_prev, d_curr, 4 * sizeof(double));
@@ -472,8 +454,7 @@ void gjr_garch_ll_hess_11_studentt(const double* __restrict params,
     const double inv_nu_m2_2 = inv_nu_m2 * inv_nu_m2;
     const double inv_nu_m2_3 = inv_nu_m2_2 * inv_nu_m2;
 
-    const double tri_half_nu1 = trigamma_approx(0.5 * (nu + 1.0));
-    const double tri_half_nu  = trigamma_approx(0.5 * nu);
+    const double student_normalizer_second = vlk_student_normalization(nu, 0, 0, 1).second;
 
     const size_t K = 5;
     dzeros(hess, K * K);
@@ -488,12 +469,8 @@ void gjr_garch_ll_hess_11_studentt(const double* __restrict params,
         const double zi     = r_os * inv_nu_m2;
         const double tail   = 1.0 + zi;
         const double tail2  = tail * tail;
-        const double H_nu_nu = -0.25 * tri_half_nu1
-                              + 0.25 * tri_half_nu
-                              - 0.5  * inv_nu_m2_2
-                              - zi   * inv_nu_m2 / tail
-                              + 0.5  * (nu + 1.0) * zi * (2.0 + zi)
-                                * inv_nu_m2_2 / tail2;
+        const double H_nu_nu = -student_normalizer_second
+            + vlk_student_tail_shape_second(nu, r_os);
         hessian_accumulate(hess, 4, 4, K, H_nu_nu);
     }
 
@@ -502,7 +479,7 @@ void gjr_garch_ll_hess_11_studentt(const double* __restrict params,
         const double e2_prev = e_prev * e_prev;
         const double ind     = (e_prev < 0.0) ? 1.0 : 0.0;
 
-        sigma2[t] = omega + alpha * e2_prev + gamma * ind * e2_prev + beta * sigma2[t - 1];
+        sigma2[t] = omega + (alpha + gamma * ind) * e2_prev + beta * sigma2[t - 1];
 
         // First derivatives
         double d_curr[4];
@@ -564,12 +541,8 @@ void gjr_garch_ll_hess_11_studentt(const double* __restrict params,
             hessian_accumulate(hess, i, 4, K, dS_dnu * d_curr[i]);
 
         // H_nu_nu
-        const double H_nu_nu = -0.25 * tri_half_nu1
-                              + 0.25 * tri_half_nu
-                              - 0.5  * inv_nu_m2_2
-                              - zi   * inv_nu_m2 / tail
-                              + 0.5  * (nu + 1.0) * zi * (2.0 + zi)
-                                * inv_nu_m2_2 / tail2;
+        const double H_nu_nu = -student_normalizer_second
+            + vlk_student_tail_shape_second(nu, r_os);
         hessian_accumulate(hess, 4, 4, K, H_nu_nu);
 
         memcpy(d_prev, d_curr, 4 * sizeof(double));
@@ -604,7 +577,7 @@ double gjr_garch_ll_pq_normal(const double* __restrict params,
                 const double e = residuals[t - 1 - j];
                 const double e2 = e * e;
                 const double ind = (e < 0.0) ? 1.0 : 0.0;
-                s += alpha[j] * e2 + gam[j] * ind * e2;
+                s += (alpha[j] + gam[j] * ind) * e2;
             }
         }
         for (size_t k = 0; k < q; ++k) {
@@ -624,7 +597,7 @@ double gjr_garch_ll_pq_normal(const double* __restrict params,
             const double e = residuals[t - 1 - j];
             const double e2 = e * e;
             const double ind = (e < 0.0) ? 1.0 : 0.0;
-            s += alpha[j] * e2 + gam[j] * ind * e2;
+            s += (alpha[j] + gam[j] * ind) * e2;
         }
         for (size_t k = 0; k < q; ++k)
             s += beta[k] * sigma2[t - 1 - k];
@@ -670,7 +643,7 @@ void gjr_garch_ll_grad_pq_normal(const double* __restrict params,
                 const double e = residuals[t - 1 - j];
                 const double e2 = e * e;
                 const double ind = (e < 0.0) ? 1.0 : 0.0;
-                s += alpha[j] * e2 + gam[j] * ind * e2;
+                s += (alpha[j] + gam[j] * ind) * e2;
             }
         }
         for (size_t k = 0; k < q; ++k) {
@@ -712,7 +685,7 @@ void gjr_garch_ll_grad_pq_normal(const double* __restrict params,
             const double e = residuals[t - 1 - j];
             const double e2 = e * e;
             const double ind = (e < 0.0) ? 1.0 : 0.0;
-            s += alpha[j] * e2 + gam[j] * ind * e2;
+            s += (alpha[j] + gam[j] * ind) * e2;
         }
         for (size_t k = 0; k < q; ++k)
             s += beta[k] * sigma2[t - 1 - k];
@@ -782,7 +755,7 @@ void gjr_garch_ll_hess_pq_normal(const double* __restrict params,
                 const double e = residuals[t - 1 - j];
                 const double e2 = e * e;
                 const double ind = (e < 0.0) ? 1.0 : 0.0;
-                s += alpha[j] * e2 + gam[j] * ind * e2;
+                s += (alpha[j] + gam[j] * ind) * e2;
             }
         }
         for (size_t k = 0; k < q; ++k) {
@@ -844,7 +817,7 @@ void gjr_garch_ll_hess_pq_normal(const double* __restrict params,
             const double e = residuals[t - 1 - j];
             const double e2 = e * e;
             const double ind = (e < 0.0) ? 1.0 : 0.0;
-            s += alpha[j] * e2 + gam[j] * ind * e2;
+            s += (alpha[j] + gam[j] * ind) * e2;
         }
         for (size_t k = 0; k < q; ++k)
             s += beta[k] * sigma2[t - 1 - k];
@@ -919,7 +892,7 @@ double gjr_garch_ll_pq_studentt(const double* __restrict params,
     const double  nu    = params[1 + 2 * p + q];
 
     const double inv_nu_m2 = 1.0 / (nu - 2.0);
-    const double constant  = n * (lgamma(0.5 * (nu + 1)) - lgamma(0.5 * nu) - 0.5 * log(M_PI / inv_nu_m2));
+    const double constant  = n * (vlk_student_normalization(nu, 1, 0, 0).value);
 
     const size_t max_lag = MAX(p, q);
     double var1 = log(sigma2[0]);
@@ -933,7 +906,7 @@ double gjr_garch_ll_pq_studentt(const double* __restrict params,
                 const double e = residuals[t - 1 - j];
                 const double e2 = e * e;
                 const double ind = (e < 0.0) ? 1.0 : 0.0;
-                s += alpha[j] * e2 + gam[j] * ind * e2;
+                s += (alpha[j] + gam[j] * ind) * e2;
             }
         }
         for (size_t k = 0; k < q; ++k) {
@@ -954,7 +927,7 @@ double gjr_garch_ll_pq_studentt(const double* __restrict params,
             const double e = residuals[t - 1 - j];
             const double e2 = e * e;
             const double ind = (e < 0.0) ? 1.0 : 0.0;
-            s += alpha[j] * e2 + gam[j] * ind * e2;
+            s += (alpha[j] + gam[j] * ind) * e2;
         }
         for (size_t k = 0; k < q; ++k)
             s += beta[k] * sigma2[t - 1 - k];
@@ -991,8 +964,7 @@ void gjr_garch_ll_grad_pq_studentt(const double* __restrict params,
 
     const size_t max_lag = MAX(p, q);
     const double inv_nu_m2 = 1.0 / (nu - 2.0);
-    const double psi_half_nu1 = digamma_approx(0.5 * (nu + 1.0));
-    const double psi_half_nu  = digamma_approx(0.5 * nu);
+    const double student_normalizer_first = vlk_student_normalization(nu, 0, 1, 0).first;
 
     dzeros(grad, K);
 
@@ -1005,13 +977,8 @@ void gjr_garch_ll_grad_pq_studentt(const double* __restrict params,
         const double e2_0   = residuals[0] * residuals[0];
         const double r_os   = e2_0 * inv_s2;
         const double tail   = 1.0 + r_os * inv_nu_m2;
-        const double g_nu0 = -0.5 * psi_half_nu1
-                           + 0.5 * psi_half_nu
-                           + 0.5 * inv_nu_m2
-                           + 0.5 * log(tail)
-                           - 0.5 * (nu + 1.0) * e2_0
-                                 * inv_nu_m2 * inv_nu_m2
-                                 * inv_s2 / tail;
+        const double g_nu0 = -student_normalizer_first
+            + vlk_student_tail_shape_first(nu, r_os);
         grad[K - 1] += g_nu0;
     }
 
@@ -1023,7 +990,7 @@ void gjr_garch_ll_grad_pq_studentt(const double* __restrict params,
                 const double e = residuals[t - 1 - j];
                 const double e2 = e * e;
                 const double ind = (e < 0.0) ? 1.0 : 0.0;
-                s += alpha[j] * e2 + gam[j] * ind * e2;
+                s += (alpha[j] + gam[j] * ind) * e2;
             }
         }
         for (size_t k = 0; k < q; ++k) {
@@ -1059,13 +1026,8 @@ void gjr_garch_ll_grad_pq_studentt(const double* __restrict params,
                            * inv_s2 * inv_s2 / tail;
         for (size_t i = 0; i < K_garch; ++i)
             grad[i] += S_h * d_t[i];
-        const double g_nu = -0.5 * psi_half_nu1
-                           + 0.5 * psi_half_nu
-                           + 0.5 * inv_nu_m2
-                           + 0.5 * log(tail)
-                           - 0.5 * (nu + 1.0) * e2_t
-                                 * inv_nu_m2 * inv_nu_m2
-                                 * inv_s2 / tail;
+        const double g_nu = -student_normalizer_first
+            + vlk_student_tail_shape_first(nu, r_os);
         grad[K - 1] += g_nu;
     }
 
@@ -1076,7 +1038,7 @@ void gjr_garch_ll_grad_pq_studentt(const double* __restrict params,
             const double e = residuals[t - 1 - j];
             const double e2 = e * e;
             const double ind = (e < 0.0) ? 1.0 : 0.0;
-            s += alpha[j] * e2 + gam[j] * ind * e2;
+            s += (alpha[j] + gam[j] * ind) * e2;
         }
         for (size_t k = 0; k < q; ++k)
             s += beta[k] * sigma2[t - 1 - k];
@@ -1110,13 +1072,8 @@ void gjr_garch_ll_grad_pq_studentt(const double* __restrict params,
                            * inv_s2 * inv_s2 / tail;
         for (size_t i = 0; i < K_garch; ++i)
             grad[i] += S_h * d_t[i];
-        const double g_nu = -0.5 * psi_half_nu1
-                           + 0.5 * psi_half_nu
-                           + 0.5 * inv_nu_m2
-                           + 0.5 * log(tail)
-                           - 0.5 * (nu + 1.0) * e2_t
-                                 * inv_nu_m2 * inv_nu_m2
-                                 * inv_s2 / tail;
+        const double g_nu = -student_normalizer_first
+            + vlk_student_tail_shape_first(nu, r_os);
         grad[K - 1] += g_nu;
     }
 
@@ -1149,8 +1106,7 @@ void gjr_garch_ll_hess_pq_studentt(const double* __restrict params,
     const double inv_nu_m2_2 = inv_nu_m2 * inv_nu_m2;
     const double inv_nu_m2_3 = inv_nu_m2_2 * inv_nu_m2;
 
-    const double tri_half_nu1 = trigamma_approx(0.5 * (nu + 1.0));
-    const double tri_half_nu  = trigamma_approx(0.5 * nu);
+    const double student_normalizer_second = vlk_student_normalization(nu, 0, 0, 1).second;
 
     dzeros(hess, K * K);
 
@@ -1166,12 +1122,8 @@ void gjr_garch_ll_hess_pq_studentt(const double* __restrict params,
         const double zi     = r_os * inv_nu_m2;
         const double tail   = 1.0 + zi;
         const double tail2  = tail * tail;
-        const double H_nu_nu = -0.25 * tri_half_nu1
-                              + 0.25 * tri_half_nu
-                              - 0.5  * inv_nu_m2_2
-                              - zi   * inv_nu_m2 / tail
-                              + 0.5  * (nu + 1.0) * zi * (2.0 + zi)
-                                * inv_nu_m2_2 / tail2;
+        const double H_nu_nu = -student_normalizer_second
+            + vlk_student_tail_shape_second(nu, r_os);
         hessian_accumulate(hess, K - 1, K - 1, K, H_nu_nu);
     }
 
@@ -1183,7 +1135,7 @@ void gjr_garch_ll_hess_pq_studentt(const double* __restrict params,
                 const double e = residuals[t - 1 - j];
                 const double e2 = e * e;
                 const double ind = (e < 0.0) ? 1.0 : 0.0;
-                s += alpha[j] * e2 + gam[j] * ind * e2;
+                s += (alpha[j] + gam[j] * ind) * e2;
             }
         }
         for (size_t k = 0; k < q; ++k) {
@@ -1251,12 +1203,8 @@ void gjr_garch_ll_hess_pq_studentt(const double* __restrict params,
                               * (3.0 * tail - (nu + 1.0) * zi);
         for (size_t i = 0; i < K_garch; ++i)
             hessian_accumulate(hess, i, K - 1, K, dS_dnu * d_t[i]);
-        const double H_nu_nu = -0.25 * tri_half_nu1
-                              + 0.25 * tri_half_nu
-                              - 0.5  * inv_nu_m2_2
-                              - zi   * inv_nu_m2 / tail
-                              + 0.5  * (nu + 1.0) * zi * (2.0 + zi)
-                                * inv_nu_m2_2 / tail2;
+        const double H_nu_nu = -student_normalizer_second
+            + vlk_student_tail_shape_second(nu, r_os);
         hessian_accumulate(hess, K - 1, K - 1, K, H_nu_nu);
     }
 
@@ -1267,7 +1215,7 @@ void gjr_garch_ll_hess_pq_studentt(const double* __restrict params,
             const double e = residuals[t - 1 - j];
             const double e2 = e * e;
             const double ind = (e < 0.0) ? 1.0 : 0.0;
-            s += alpha[j] * e2 + gam[j] * ind * e2;
+            s += (alpha[j] + gam[j] * ind) * e2;
         }
         for (size_t k = 0; k < q; ++k)
             s += beta[k] * sigma2[t - 1 - k];
@@ -1333,12 +1281,8 @@ void gjr_garch_ll_hess_pq_studentt(const double* __restrict params,
                               * (3.0 * tail - (nu + 1.0) * zi);
         for (size_t i = 0; i < K_garch; ++i)
             hessian_accumulate(hess, i, K - 1, K, dS_dnu * d_t[i]);
-        const double H_nu_nu = -0.25 * tri_half_nu1
-                              + 0.25 * tri_half_nu
-                              - 0.5  * inv_nu_m2_2
-                              - zi   * inv_nu_m2 / tail
-                              + 0.5  * (nu + 1.0) * zi * (2.0 + zi)
-                                * inv_nu_m2_2 / tail2;
+        const double H_nu_nu = -student_normalizer_second
+            + vlk_student_tail_shape_second(nu, r_os);
         hessian_accumulate(hess, K - 1, K - 1, K, H_nu_nu);
     }
 
@@ -1436,7 +1380,7 @@ void gjr_garch_ll_grad_pq_skewt(const double* __restrict params,
                 const double e = residuals[t - 1 - j];
                 const double e2 = e * e;
                 const double ind = (e < 0.0) ? 1.0 : 0.0;
-                s += alpha[j] * e2 + gam[j] * ind * e2;
+                s += (alpha[j] + gam[j] * ind) * e2;
             }
         }
         for (size_t k = 0; k < q; ++k) {
@@ -1485,7 +1429,7 @@ void gjr_garch_ll_grad_pq_skewt(const double* __restrict params,
             const double e = residuals[t - 1 - j];
             const double e2 = e * e;
             const double ind = (e < 0.0) ? 1.0 : 0.0;
-            s += alpha[j] * e2 + gam[j] * ind * e2;
+            s += (alpha[j] + gam[j] * ind) * e2;
         }
         for (size_t k = 0; k < q; ++k) {
             s += beta[k] * sigma2[t - 1 - k];
@@ -1596,7 +1540,7 @@ void gjr_garch_ll_hess_pq_skewt(const double* __restrict params,
                 const double e = residuals[t - 1 - j];
                 const double e2 = e * e;
                 const double ind = (e < 0.0) ? 1.0 : 0.0;
-                s += alpha[j] * e2 + gam[j] * ind * e2;
+                s += (alpha[j] + gam[j] * ind) * e2;
             }
         }
         for (size_t k = 0; k < q; ++k) {
@@ -1668,7 +1612,7 @@ void gjr_garch_ll_hess_pq_skewt(const double* __restrict params,
             const double e = residuals[t - 1 - j];
             const double e2 = e * e;
             const double ind = (e < 0.0) ? 1.0 : 0.0;
-            s += alpha[j] * e2 + gam[j] * ind * e2;
+            s += (alpha[j] + gam[j] * ind) * e2;
         }
         for (size_t k = 0; k < q; ++k) {
             s += beta[k] * sigma2[t - 1 - k];

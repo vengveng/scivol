@@ -12,18 +12,30 @@ template<class Density, bool F, bool G, bool H, bool Mean=true,
 struct ConstantScaleDensity {
     using Prepared = decltype(Density::template prepare<F, G, H, Mean>(nullptr, 0u));
     Prepared density;
+    double residual_scale;
     double inverse_scale;
     double inverse_variance;
-    double scale_constant;
     double variance;
+    bool normalized_range;
+    double log_variance;
+    double scale_constant;
 
     ConstantScaleDensity(const double* shape, double variance, std::size_t n)
         : density(Density::template prepare<F, G, H, Mean>(shape, n)),
-          inverse_scale(1.0 / std::sqrt(variance)),
+          residual_scale(std::sqrt(variance)),
+          inverse_scale(1.0 / residual_scale),
           inverse_variance(1.0 / variance),
-          scale_constant(F && (Mean || std::is_same_v<Density,generated::NormalDensity>)
-              ? 0.5 * static_cast<double>(n) * std::log(variance) : 0.0),
-          variance(variance)
+          variance(variance),
+          normalized_range(variance > 0x1p500 || variance < 0x1p-500),
+          log_variance((F && (Mean || std::is_same_v<Density,generated::NormalDensity>
+                                  || normalized_range))
+                       || (std::is_same_v<Density,generated::GedDensity> && normalized_range)
+              ? std::log(variance) : 0.0),
+          scale_constant(F && (Mean || std::is_same_v<Density,generated::NormalDensity>
+                                || normalized_range)
+                              && !(std::is_same_v<Density,generated::GedDensity> && normalized_range)
+                              && !(std::is_same_v<Density,generated::StudentTDensity> && normalized_range)
+              ? 0.5 * static_cast<double>(n) * log_variance : 0.0)
     {}
 
 #if defined(_MSC_VER)
@@ -33,9 +45,41 @@ struct ConstantScaleDensity {
 #endif
     auto observe(double residual) const noexcept
     {
+        if constexpr (std::is_same_v<Density,generated::GedDensity>) {
+            if (normalized_range)
+                return Density::template observe_prepared_variance<F,G,H,Mean>(
+                    density,variance,log_variance,residual,residual*residual);
+        }
+        if constexpr (std::is_same_v<Density,generated::StudentTDensity>) {
+            if (normalized_range) {
+                const double z = residual * inverse_scale;
+                const double square = z * z;
+                if (std::isfinite(square)) {
+                    auto result = Density::template observe<F,G,H,Mean>(
+                        density,1.0,z,square);
+                    result = generated::freeze_density_scale<G,H,Mean>(
+                        result,variance,residual_scale);
+                    if constexpr (F) result.value = log_variance;
+                    return result;
+                }
+                return Density::template observe<F,G,H,Mean>(
+                    density,variance,residual,residual*residual);
+            }
+        }
         if constexpr (std::is_same_v<Density,generated::NormalDensity>) {
-            auto result=Density::template observe_prepared_scale<false,G,H,Mean>(
-                density,inverse_variance,0.0,residual,residual*residual);
+            auto result = [&] {
+                if constexpr (G || H) {
+                    if (normalized_range) {
+                        const double z = residual * inverse_scale;
+                        auto local = Density::template observe_prepared_scale<false,G,H,Mean>(
+                            density,1.0,0.0,z,z*z);
+                        return generated::freeze_density_scale<G,H,Mean>(
+                            local,variance,residual_scale);
+                    }
+                }
+                return Density::template observe_prepared_scale<false,G,H,Mean>(
+                    density,inverse_variance,0.0,residual,residual*residual);
+            }();
             if constexpr (F) {
                 if constexpr (ScaledNormalValue) {
                     const double z=residual*inverse_scale;
@@ -46,12 +90,22 @@ struct ConstantScaleDensity {
             }
             return result;
         } else if constexpr (!Mean) {
+            if (normalized_range) {
+                const double z = residual * inverse_scale;
+                auto result = Density::template observe<F,G,H,false>(
+                    density,1.0,z,z*z);
+                return generated::freeze_density_scale<G,H,false>(
+                    result,variance,residual_scale);
+            }
             return Density::template observe<F,G,H,false>(
                 density,variance,residual,residual*residual);
         } else {
         const double z = residual * inverse_scale;
         auto result = Density::template observe<F, G, H, true>(
             density, 1.0, z, z * z);
+        if (normalized_range)
+            return generated::freeze_density_scale<G,H,true>(
+                result,variance,residual_scale);
         if constexpr (G || H) {
             const double local_first = result.residual_gradient;
             result.residual_gradient = local_first * inverse_scale;

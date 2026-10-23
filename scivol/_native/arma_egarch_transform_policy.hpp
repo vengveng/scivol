@@ -11,14 +11,39 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 namespace vlk::experiment::runtime::arma_egarch_transform {
 
 using arma_egarch::Layout;
 
-[[nodiscard]] inline std::size_t maximum_reflection_order(
-    const Layout& layout) noexcept
+template<const Layout* StaticLayout>
+[[nodiscard]] constexpr const Layout& evaluation_layout(
+    const Layout& runtime) noexcept
 {
+    if constexpr (StaticLayout == nullptr) {
+        return runtime;
+    } else {
+        static_assert(StaticLayout->valid);
+        return *StaticLayout;
+    }
+}
+
+// Preserve block metadata in the type when a map lambda is outlined.
+template<const Layout* StaticLayout, std::size_t Layout::* Field>
+[[nodiscard]] constexpr auto layout_field(const Layout& runtime) noexcept
+{
+    if constexpr (StaticLayout == nullptr)
+        return runtime.*Field;
+    else
+        return std::integral_constant<std::size_t, ((*StaticLayout).*Field)>{};
+}
+
+template<const Layout* StaticLayout = nullptr>
+[[nodiscard]] inline std::size_t maximum_reflection_order(
+    const Layout& supplied_layout) noexcept
+{
+    const Layout& layout = evaluation_layout<StaticLayout>(supplied_layout);
     return std::max({layout.p_ar, layout.q_ma, layout.q_vol});
 }
 
@@ -28,27 +53,31 @@ struct MapScratch {
     double* next = nullptr;
 };
 
+template<const Layout* StaticLayout = nullptr>
 [[nodiscard]] inline std::size_t map_workspace_bytes(
-    const Layout& layout) noexcept
+    const Layout& supplied_layout) noexcept
 {
+    const Layout& layout = evaluation_layout<StaticLayout>(supplied_layout);
     if (!layout.valid)
         return 0u;
     WorkspaceSizer sizer;
-    const std::size_t order = maximum_reflection_order(layout);
+    const std::size_t order = maximum_reflection_order<StaticLayout>(layout);
     return sizer.add<double>(order)
             && sizer.add<double>(order)
             && sizer.add<double>(order)
         ? sizer.size() : 0u;
 }
 
+template<const Layout* StaticLayout = nullptr>
 [[nodiscard]] inline bool bind_map_scratch(
-    const Layout& layout,
+    const Layout& supplied_layout,
     void* workspace,
     std::size_t workspace_bytes,
     MapScratch& scratch) noexcept
 {
+    const Layout& layout = evaluation_layout<StaticLayout>(supplied_layout);
     WorkspaceArena arena(workspace, workspace_bytes);
-    const std::size_t order = maximum_reflection_order(layout);
+    const std::size_t order = maximum_reflection_order<StaticLayout>(layout);
     scratch.reflection = arena.take<double>(order);
     scratch.current = arena.take<double>(order);
     scratch.next = arena.take<double>(order);
@@ -56,19 +85,21 @@ struct MapScratch {
         && scratch.current != nullptr && scratch.next != nullptr;
 }
 
-template<class ShapeTransform>
+template<class ShapeTransform, const Layout* StaticLayout = nullptr>
 [[nodiscard]] bool map_values(
-    const Layout& layout,
+    const Layout& supplied_layout,
     const double* source,
     bool forward,
     MapScratch& scratch,
     double* destination) noexcept
 {
+    const Layout& layout = evaluation_layout<StaticLayout>(supplied_layout);
     if (source == nullptr || destination == nullptr)
         return false;
     std::copy_n(source, layout.parameters, destination);
-    const auto map_block = [&](std::size_t start, std::size_t order,
-                               double sign) {
+    const auto map_block = [&](auto start_tag, auto order_tag, double sign) {
+        const std::size_t start = start_tag;
+        const std::size_t order = order_tag;
         if (order == 0u)
             return true;
         if (forward) {
@@ -94,9 +125,12 @@ template<class ShapeTransform>
             destination[start + index] = std::atanh(scratch.reflection[index]);
         return true;
     };
-    if (!map_block(layout.ar_start, layout.p_ar, 1.0)
-        || !map_block(layout.ma_start, layout.q_ma, -1.0)
-        || !map_block(layout.beta_start, layout.q_vol, 1.0)) {
+    if (!map_block(layout_field<StaticLayout, &Layout::ar_start>(layout),
+            layout_field<StaticLayout, &Layout::p_ar>(layout), 1.0)
+        || !map_block(layout_field<StaticLayout, &Layout::ma_start>(layout),
+            layout_field<StaticLayout, &Layout::q_ma>(layout), -1.0)
+        || !map_block(layout_field<StaticLayout, &Layout::beta_start>(layout),
+            layout_field<StaticLayout, &Layout::q_vol>(layout), 1.0)) {
         return false;
     }
     const bool shape_valid = forward
@@ -124,14 +158,16 @@ struct Scratch {
     double* curvature_scratch = nullptr;
 };
 
+template<const Layout* StaticLayout = nullptr>
 [[nodiscard]] inline std::size_t workspace_bytes(
-    const Layout& layout,
+    const Layout& supplied_layout,
     std::size_t core_bytes,
     std::uint32_t request) noexcept
 {
+    const Layout& layout = evaluation_layout<StaticLayout>(supplied_layout);
     if (!layout.valid || core_bytes == 0u)
         return 0u;
-    const std::size_t order = maximum_reflection_order(layout);
+    const std::size_t order = maximum_reflection_order<StaticLayout>(layout);
     std::size_t square = 0u;
     std::size_t local_square = 0u;
     if (!checked_product(layout.parameters, layout.parameters, square)
@@ -163,17 +199,19 @@ struct Scratch {
         ? sizer.size() : 0u;
 }
 
+template<const Layout* StaticLayout = nullptr>
 [[nodiscard]] inline bool bind_scratch(
-    const Layout& layout,
+    const Layout& supplied_layout,
     std::size_t core_bytes,
     std::uint32_t request,
     void* workspace,
     std::size_t workspace_bytes,
     Scratch& scratch) noexcept
 {
+    const Layout& layout = evaluation_layout<StaticLayout>(supplied_layout);
     if (workspace == nullptr || workspace_bytes < core_bytes)
         return false;
-    const std::size_t order = maximum_reflection_order(layout);
+    const std::size_t order = maximum_reflection_order<StaticLayout>(layout);
     const std::size_t square = layout.parameters * layout.parameters;
     const bool derivatives = (request & (VLK_JET_G | VLK_JET_H)) != 0u;
     const bool hessian = (request & VLK_JET_H) != 0u;
@@ -209,13 +247,14 @@ struct Scratch {
             && scratch.curvature_scratch != nullptr));
 }
 
-template<class ShapeTransform>
+template<class ShapeTransform, const Layout* StaticLayout = nullptr>
 [[nodiscard]] bool map_coordinates(
-    const Layout& layout,
+    const Layout& supplied_layout,
     const double* coordinates,
     bool derivatives,
     Scratch& scratch) noexcept
 {
+    const Layout& layout = evaluation_layout<StaticLayout>(supplied_layout);
     if (coordinates == nullptr)
         return false;
     std::copy_n(coordinates, layout.parameters, scratch.theta);
@@ -225,8 +264,11 @@ template<class ShapeTransform>
         for (std::size_t index = 0; index < layout.parameters; ++index)
             scratch.jacobian[index * layout.parameters + index] = 1.0;
     }
-    const auto map_block = [&](std::size_t start, std::size_t order,
-                               double sign) {
+    const auto map_block = [&](auto start_tag, auto order_tag, double sign) {
+        const std::size_t start = start_tag;
+        const std::size_t order = order_tag;
+        const Layout& block_layout =
+            evaluation_layout<StaticLayout>(supplied_layout);
         if (order == 0u)
             return true;
         for (std::size_t index = 0; index < order; ++index)
@@ -245,21 +287,23 @@ template<class ShapeTransform>
             if (!derivatives)
                 continue;
             std::fill_n(
-                scratch.jacobian + (start + row) * layout.parameters,
-                layout.parameters, 0.0);
+                scratch.jacobian + (start + row) * block_layout.parameters,
+                block_layout.parameters, 0.0);
             for (std::size_t column = 0; column < order; ++column) {
-                const double first = 1.0
-                    - scratch.reflection[column] * scratch.reflection[column];
-                scratch.jacobian[(start + row) * layout.parameters
+                const double first = ad::coordinate_tanh_first(coordinates[start + column]);
+                scratch.jacobian[(start + row) * block_layout.parameters
                                  + start + column] = sign
                     * scratch.local_jacobian[row * order + column] * first;
             }
         }
         return true;
     };
-    if (!map_block(layout.ar_start, layout.p_ar, 1.0)
-        || !map_block(layout.ma_start, layout.q_ma, -1.0)
-        || !map_block(layout.beta_start, layout.q_vol, 1.0)) {
+    if (!map_block(layout_field<StaticLayout, &Layout::ar_start>(layout),
+            layout_field<StaticLayout, &Layout::p_ar>(layout), 1.0)
+        || !map_block(layout_field<StaticLayout, &Layout::ma_start>(layout),
+            layout_field<StaticLayout, &Layout::q_ma>(layout), -1.0)
+        || !map_block(layout_field<StaticLayout, &Layout::beta_start>(layout),
+            layout_field<StaticLayout, &Layout::q_vol>(layout), 1.0)) {
         return false;
     }
     ShapeTransform::pack(
@@ -273,7 +317,7 @@ template<class ShapeTransform>
                 layout.parameters, 0.0);
         }
         ShapeTransform::fill_jacobian(
-            scratch.theta + layout.model_parameters,
+            coordinates + layout.model_parameters,
             scratch.jacobian, layout.parameters, layout.model_parameters);
     }
     return std::all_of(
@@ -281,12 +325,14 @@ template<class ShapeTransform>
         [](double value) { return std::isfinite(value); });
 }
 
+template<const Layout* StaticLayout = nullptr>
 inline void pullback_gradient(
-    const Layout& layout,
+    const Layout& supplied_layout,
     const Scratch& scratch,
     const double* theta_gradient,
     double* gradient) noexcept
 {
+    const Layout& layout = evaluation_layout<StaticLayout>(supplied_layout);
     for (std::size_t column = 0; column < layout.parameters; ++column) {
         double entry = 0.0;
         for (std::size_t row = 0; row < layout.parameters; ++row) {
@@ -297,13 +343,14 @@ inline void pullback_gradient(
     }
 }
 
-template<class ShapeTransform>
+template<class ShapeTransform, const Layout* StaticLayout = nullptr>
 [[nodiscard]] bool pullback_hessian(
-    const Layout& layout,
+    const Layout& supplied_layout,
     const double* coordinates,
     Scratch& scratch,
     double* hessian) noexcept
 {
+    const Layout& layout = evaluation_layout<StaticLayout>(supplied_layout);
     const std::size_t width = layout.parameters;
     for (std::size_t row = 0; row < width; ++row) {
         for (std::size_t column = 0; column < width; ++column) {
@@ -325,21 +372,27 @@ template<class ShapeTransform>
             hessian[row * width + column] = entry;
         }
     }
-    const auto add_reflection_curvature = [&](std::size_t start,
-                                               std::size_t order,
+    const auto add_reflection_curvature = [&](auto start_tag, auto order_tag,
                                                double sign) {
+        const std::size_t order = order_tag;
         return order == 0u || reflection_add_contracted_curvature(
-            coordinates, start, order, sign, scratch.theta_gradient,
-            width, hessian, scratch.curvature_scratch);
+            coordinates, start_tag, order_tag, sign, scratch.theta_gradient,
+            layout_field<StaticLayout, &Layout::parameters>(layout),
+            hessian, scratch.curvature_scratch);
     };
-    if (!add_reflection_curvature(layout.ar_start, layout.p_ar, 1.0)
-        || !add_reflection_curvature(layout.ma_start, layout.q_ma, -1.0)
+    if (!add_reflection_curvature(
+            layout_field<StaticLayout, &Layout::ar_start>(layout),
+            layout_field<StaticLayout, &Layout::p_ar>(layout), 1.0)
         || !add_reflection_curvature(
-            layout.beta_start, layout.q_vol, 1.0)) {
+            layout_field<StaticLayout, &Layout::ma_start>(layout),
+            layout_field<StaticLayout, &Layout::q_ma>(layout), -1.0)
+        || !add_reflection_curvature(
+            layout_field<StaticLayout, &Layout::beta_start>(layout),
+            layout_field<StaticLayout, &Layout::q_vol>(layout), 1.0)) {
         return false;
     }
     ShapeTransform::add_curvature(
-        scratch.theta + layout.model_parameters,
+        coordinates + layout.model_parameters,
         scratch.theta_gradient + layout.model_parameters,
         hessian, width, layout.model_parameters);
     for (std::size_t row = 0; row < width; ++row) {

@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.20)
+project(scivolapi_installed_consumer LANGUAGES CXX)
+find_package(scivolapi CONFIG REQUIRED)
+add_executable(installed_jet ../../../examples/native/jet.cpp)
+target_link_libraries(installed_jet PRIVATE scivolapi::scivolapi)
+enable_testing()
+add_test(NAME installed_jet COMMAND installed_jet)

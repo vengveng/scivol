@@ -68,6 +68,14 @@ void reject_invalid_workspace()
 
 int main()
 {
+    for (double scale : {1e-200,1e200}) {
+        double a[]{1,0},b[]{0,scale},x[1],dual[1],residual[2],norm;
+        CBLAS_INT passive[1]; std::int64_t mode;
+        const auto bytes=nnls::workspace_bytes(2,1);
+        std::vector<std::byte> arena(bytes);
+        __nnls(2,1,a,b,x,dual,residual,passive,0,&norm,&mode,{arena.data(),bytes});
+        assert(mode==1 && x[0]==0. && norm==scale && residual[1]==scale);
+    }
     reject_invalid_workspace();
     for (auto n : {1u,2u,5u,32u,64u,128u}) {
         solve_diagonal(n,false);

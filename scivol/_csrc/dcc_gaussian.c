@@ -12,6 +12,7 @@
 #include <math.h>
 #include <string.h>
 #include <float.h>
+#include <stdint.h>
 #include "math_and_helpers.h"
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -20,7 +21,51 @@
 #  define DCC_INLINE  static inline
 #endif
 
-#define H_FLOOR_DCC 1e-12
+/* Bit classification remains valid in the legacy fast-math build. */
+DCC_INLINE int positive_finite(double value)
+{
+    uint64_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits > 0 && bits < UINT64_C(0x7ff0000000000000);
+}
+
+DCC_INLINE void dcc_fail(double *nll, double *gradient, double *hessian,
+                         double *scores, size_t width, size_t observations)
+{
+    *nll = INFINITY;
+    if (gradient) for (size_t i = 0; i < width; ++i) gradient[i] = NAN;
+    if (hessian) for (size_t i = 0; i < width*width; ++i) hessian[i] = NAN;
+    if (scores) for (size_t i = 0; i < observations*width; ++i) scores[i] = NAN;
+}
+
+static vlk_student_normalization_t dcc_student_constant(
+    double nu, size_t dimension, int need_first, int need_second)
+{
+    vlk_student_normalization_t result = {0.,0.,0.};
+    if (nu < VLK_STUDENT_ASYMPTOTIC_NU) {
+        const double joint=.5*(nu+dimension), marginal=.5*(nu+1.), half=.5*nu;
+        result.value=-lgamma(joint)+(1.-dimension)*lgamma(half)+dimension*lgamma(marginal);
+        if (need_first) result.first=.5*(-digamma_approx(joint)
+            +(1.-dimension)*digamma_approx(half)+dimension*digamma_approx(marginal));
+        if (need_second) result.second=.25*(-trigamma_approx(joint)
+            +(1.-dimension)*trigamma_approx(half)+dimension*trigamma_approx(marginal));
+        return result;
+    }
+    const double inverse=1./nu;
+    const size_t parity=dimension%2;
+    const vlk_student_normalization_t ratio=vlk_student_ratio_polynomial(inverse,need_first,need_second);
+    result.value=(dimension-parity)*ratio.value;
+    if (need_first) result.first=-(double)(dimension-parity)*inverse*inverse*ratio.first;
+    if (need_second) result.second=(dimension-parity)*inverse*inverse*inverse
+        *(2.*ratio.first+inverse*ratio.second);
+    for (size_t j=0; j<dimension/2; ++j) {
+        const double shift=2.*j+parity, reciprocal=1./(nu+shift);
+        result.value-=log1p(shift*inverse);
+        if (need_first) result.first+=shift*inverse*reciprocal;
+        if (need_second) result.second-=shift*inverse*reciprocal*(inverse+reciprocal);
+    }
+    return result;
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
  *  Small-N linear algebra helpers
@@ -34,7 +79,7 @@ static int chol_decomp(const double *A, double *L, size_t N)
             double s = A[i*N+j];
             for (size_t k = 0; k < j; k++) s -= L[i*N+k] * L[j*N+k];
             if (i == j) {
-                if (s <= 0.0) return -1;
+                if (!positive_finite(s)) return -1;
                 L[i*N+j] = sqrt(s);
             } else {
                 L[i*N+j] = s / L[j*N+j];
@@ -145,17 +190,18 @@ DCC_INLINE double vec_dot(const double *a, const double *b, size_t N)
  *  DCC normalisation helpers
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-DCC_INLINE void dcc_normalise(const double *Q, double *R, double *qd,
+DCC_INLINE int dcc_normalise(const double *Q, double *R, double *qd,
                               double *si, size_t N)
 {
     for (size_t i = 0; i < N; i++) {
         qd[i] = Q[i*N+i];
-        if (qd[i] < H_FLOOR_DCC) qd[i] = H_FLOOR_DCC;
+        if (!positive_finite(qd[i])) return -1;
         si[i] = 1.0 / sqrt(qd[i]);
     }
     for (size_t i = 0; i < N; i++)
         for (size_t j = 0; j < N; j++)
             R[i*N+j] = Q[i*N+j] * si[i] * si[j];
+    return 0;
 }
 
 DCC_INLINE void dcc_dR_from_dQ(const double *dQ, const double *R,
@@ -223,8 +269,7 @@ double dcc_nll_11_gaussian(const double *theta, const double *eps,
                 for (size_t j = 0; j < N; j++)
                     Q[i*N+j] += a * e_prev[i] * e_prev[j];
 
-        dcc_normalise(Q, R, qd, si, N);
-        if (chol_decomp(R, L, N) != 0) { nll = 1e10; goto cleanup_nll; }
+        if (dcc_normalise(Q, R, qd, si, N) != 0 || chol_decomp(R, L, N) != 0) { nll = INFINITY; goto cleanup_nll; }
         chol_solve(L, e, v, stmp, N);
         nll += 0.5 * (chol_logdet(L, N) + vec_dot(e, v, N) - vec_dot(e, e, N));
 
@@ -289,9 +334,9 @@ void dcc_nll_grad_11_gaussian(const double *theta, const double *eps,
                     dQa[i*N+j] += ee;
                 }
 
-        dcc_normalise(Q, R, qd, si, N);
-        if (chol_decomp(R, L, N) != 0) {
-            *nll_out = 1e10; grad[0] = 0; grad[1] = 0; goto cleanup_grad;
+        if (dcc_normalise(Q, R, qd, si, N) != 0 || chol_decomp(R, L, N) != 0) {
+            dcc_fail(nll_out, grad, NULL, scores, 2, T);
+            goto cleanup_grad;
         }
         chol_inv(L, Rinv, N);
         mat_vec(Rinv, e, v, N);
@@ -399,9 +444,8 @@ void dcc_nll_grad_hess_11_gaussian(const double *theta, const double *eps,
                     dQa[i*N+j] += ee;
                 }
 
-        dcc_normalise(Q, R, qd, si, N);
-        if (chol_decomp(R, L, N) != 0) {
-            *nll_out = 1e10; dzeros(grad,2); dzeros(hess,4);
+        if (dcc_normalise(Q, R, qd, si, N) != 0 || chol_decomp(R, L, N) != 0) {
+            dcc_fail(nll_out, grad, hess, scores, 2, T);
             goto cleanup_hess;
         }
         chol_inv(L, Rinv, N);
@@ -514,8 +558,7 @@ double dcc_nll_pq_gaussian(const double *theta, const double *eps,
         }
         for (size_t j = 0; j < q; j++) mat_add_scaled(Q, b_p[j], Q_buf+j*nn, nn);
 
-        dcc_normalise(Q, R, qd, si, N);
-        if (chol_decomp(R, L, N) != 0) { nll = 1e10; goto cleanup_nll_pq; }
+        if (dcc_normalise(Q, R, qd, si, N) != 0 || chol_decomp(R, L, N) != 0) { nll = INFINITY; goto cleanup_nll_pq; }
         chol_solve(L, e, v, stmp, N);
         nll += 0.5*(chol_logdet(L,N) + vec_dot(e,v,N) - vec_dot(e,e,N));
 
@@ -585,9 +628,9 @@ void dcc_nll_grad_pq_gaussian(const double *theta, const double *eps,
         }
         for (size_t j = 0; j < q; j++) mat_add_scaled(Q, b_p[j], Q_buf+j*nn, nn);
 
-        dcc_normalise(Q, R, qd, si, N);
-        if (chol_decomp(R, L, N) != 0) {
-            *nll_out = 1e10; dzeros(grad, K); goto cleanup_grad_pq;
+        if (dcc_normalise(Q, R, qd, si, N) != 0 || chol_decomp(R, L, N) != 0) {
+            dcc_fail(nll_out, grad, NULL, scores, K, T);
+            goto cleanup_grad_pq;
         }
         chol_inv(L, Rinv, N);
         mat_vec(Rinv, e, v, N);
@@ -726,9 +769,8 @@ void dcc_nll_grad_hess_pq_gaussian(
         }
 
         /* 3. R, Cholesky, inverse */
-        dcc_normalise(Q, R, qd, si, N);
-        if (chol_decomp(R, L, N) != 0) {
-            *nll_out = 1e10; dzeros(grad,K); dzeros(hess,KK);
+        if (dcc_normalise(Q, R, qd, si, N) != 0 || chol_decomp(R, L, N) != 0) {
+            dcc_fail(nll_out, grad, hess, scores, K, T);
             goto cleanup_hess_pq;
         }
         chol_inv(L, Rinv, N);
@@ -828,30 +870,17 @@ static void dcc_studentt_core(
     const double nu = theta[D], scale = nu - 2.0;
     const double joint_half = 0.5 * (nu + (double)N);
     const double marginal_half = 0.5 * (nu + 1.0);
-    const double nu_half = 0.5 * nu;
 
-    if (!(nu > 2.0) || !isfinite(nu)) {
-        *nll_out = 1e10;
-        if (need_grad) dzeros(grad, K);
-        if (need_hess) dzeros(hess, KK);
+    if (!(nu > 2.0) || !positive_finite(nu)) {
+        dcc_fail(nll_out, need_grad ? grad : NULL, need_hess ? hess : NULL, scores, K, T);
         return;
     }
 
     double sum_ab = 0.0;
     for (size_t k = 0; k < D; k++) sum_ab += theta[k];
     const double coeff = 1.0 - sum_ab;
-    const double constant =
-        -lgamma(joint_half)
-        + (1.0 - (double)N) * lgamma(nu_half)
-        + (double)N * lgamma(marginal_half);
-    const double constant_grad =
-        -0.5 * digamma_approx(joint_half)
-        + 0.5 * (1.0 - (double)N) * digamma_approx(nu_half)
-        + 0.5 * (double)N * digamma_approx(marginal_half);
-    const double constant_hess =
-        -0.25 * trigamma_approx(joint_half)
-        + 0.25 * (1.0 - (double)N) * trigamma_approx(nu_half)
-        + 0.25 * (double)N * trigamma_approx(marginal_half);
+    const vlk_student_normalization_t normalizer=dcc_student_constant(nu,N,need_grad,need_hess);
+    const double constant=normalizer.value,constant_grad=normalizer.first,constant_hess=normalizer.second;
 
     double *Q_buf = (double *)malloc(maxq * nn * sizeof(double));
     double *eps_buf = (double *)calloc(maxp * N, sizeof(double));
@@ -924,11 +953,8 @@ static void dcc_studentt_core(
             }
         }
 
-        dcc_normalise(Q, R, qd, si, N);
-        if (chol_decomp(R, L, N) != 0) {
-            *nll_out = 1e10;
-            if (need_grad) dzeros(grad, K);
-            if (need_hess) dzeros(hess, KK);
+        if (dcc_normalise(Q, R, qd, si, N) != 0 || chol_decomp(R, L, N) != 0) {
+            dcc_fail(nll_out, need_grad ? grad : NULL, need_hess ? hess : NULL, scores, K, T);
             goto cleanup_studentt;
         }
         chol_inv(L, Rinv, N);
@@ -962,13 +988,9 @@ static void dcc_studentt_core(
                 if (scores) scores[t * K + k] = -gk;
             }
 
-            double gnu = constant_grad
-                + 0.5 * log(joint_u / scale)
-                + joint_half * (1.0 / joint_u - 1.0 / scale);
+            double gnu = constant_grad + vlk_student_tail_shape_first_shift(nu,delta,(double)N+2.);
             for (size_t i = 0; i < N; i++) {
-                const double marginal_u = scale + e[i] * e[i];
-                gnu -= 0.5 * log(marginal_u / scale)
-                    + marginal_half * (1.0 / marginal_u - 1.0 / scale);
+                gnu -= vlk_student_tail_shape_first(nu,e[i]*e[i]);
             }
             grad[D] += gnu;
             if (scores) scores[t * K + D] = -gnu;
@@ -1021,21 +1043,14 @@ static void dcc_studentt_core(
                     }
 
                     const double cross =
-                        (joint_half - 0.5 * joint_u)
-                        / (joint_u * joint_u) * dquad[k];
+                        (.5*((double)N+2.-delta)/joint_u) / joint_u * dquad[k];
                     hess[k * K + D] += cross;
                     hess[D * K + k] += cross;
                 }
 
-                double hnu = constant_hess
-                    + (1.0 / joint_u - 1.0 / scale)
-                    + joint_half * (-1.0 / (joint_u * joint_u)
-                                    + 1.0 / (scale * scale));
+                double hnu = constant_hess + vlk_student_tail_shape_second_shift(nu,delta,(double)N+2.);
                 for (size_t i = 0; i < N; i++) {
-                    const double marginal_u = scale + e[i] * e[i];
-                    hnu -= (1.0 / marginal_u - 1.0 / scale)
-                        + marginal_half * (-1.0 / (marginal_u * marginal_u)
-                                           + 1.0 / (scale * scale));
+                    hnu -= vlk_student_tail_shape_second(nu,e[i]*e[i]);
                 }
                 hess[D * K + D] += hnu;
             }

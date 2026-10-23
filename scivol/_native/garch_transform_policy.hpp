@@ -36,6 +36,90 @@ using positive_coordinate::inverse_softplus;
 using positive_coordinate::softplus_first_from_positive;
 using positive_coordinate::softplus_second_from_positive;
 
+struct SimplexTailPoint {
+    std::size_t dominant = 0u;
+    double maximum = 0.0;
+    double denominator = 1.0;
+    double dominant_complement = 1.0;
+    const double* shifted_weights = nullptr;
+
+    SimplexTailPoint() noexcept = default;
+
+    template<class Coordinate>
+    explicit SimplexTailPoint(
+        std::size_t count, Coordinate coordinate, double* weights) noexcept
+    {
+        shifted_weights = weights;
+        for (std::size_t index = 0; index < count; ++index) {
+            if (coordinate(index) > maximum) {
+                maximum = coordinate(index);
+                dominant = index;
+            }
+        }
+        denominator = std::exp(-maximum);
+        double remainder = denominator;
+        for (std::size_t index = 0; index < count; ++index) {
+            const double exponential = std::exp(coordinate(index) - maximum);
+            weights[index] = exponential;
+            denominator += exponential;
+            if (index != dominant)
+                remainder += exponential;
+        }
+        // The dominant weight can round to one while this tail remains nonzero.
+        dominant_complement = remainder / denominator;
+    }
+
+    [[nodiscard]] static SimplexTailPoint from_shifted(
+        std::size_t count, std::size_t dominant_index,
+        double divisor, double slack, const double* weights) noexcept
+    {
+        SimplexTailPoint point;
+        point.dominant = dominant_index;
+        point.denominator = divisor;
+        point.shifted_weights = weights;
+        double remainder = slack;
+        for (std::size_t index = 0; index < count; ++index)
+            if (index != dominant_index) remainder += weights[index];
+        point.dominant_complement = remainder / divisor;
+        return point;
+    }
+
+    [[nodiscard]] double weight(std::size_t index) const noexcept
+    {
+        return shifted_weights[index] / denominator;
+    }
+
+    [[nodiscard]] double contribution(std::size_t index, double limit) const noexcept
+    {
+        return shifted_weights[index] * (limit / denominator);
+    }
+
+    [[nodiscard]] double contrast(
+        std::size_t output, std::size_t input, double input_weight) const noexcept
+    {
+        if (output != input)
+            return -input_weight;
+        return input == dominant ? dominant_complement : 1.0 - input_weight;
+    }
+
+    [[nodiscard]] double first(
+        std::size_t output, std::size_t input,
+        double output_value, double input_weight) const noexcept
+    {
+        return output_value * contrast(output, input, input_weight);
+    }
+
+    [[nodiscard]] double second(
+        std::size_t output, std::size_t left, std::size_t right,
+        double output_value, double left_weight, double right_weight) const noexcept
+    {
+        return output_value * (
+            contrast(output, right, right_weight)
+                * contrast(output, left, left_weight)
+            - left_weight * contrast(left, right, right_weight));
+    }
+};
+
 template<class Bound>
 struct ShiftedSoftplusMap {
     static constexpr double lower = Bound::value;
@@ -61,6 +145,16 @@ struct ShiftedSoftplusMap {
     static double second(double parameter)
     {
         return softplus_second_from_positive(parameter - lower);
+    }
+
+    static double first_at(double coordinate)
+    {
+        return softplus_first_from_positive(softplus(coordinate));
+    }
+
+    static double second_at(double coordinate)
+    {
+        return softplus_second_from_positive(softplus(coordinate));
     }
 
     template<class Number>
@@ -90,12 +184,22 @@ struct ScaledTanhMap {
     static double first(double parameter)
     {
         const double ratio = parameter / limit;
-        return limit * (1.0 - ratio * ratio);
+        return (limit - std::abs(parameter)) * (1.0 + std::abs(ratio));
     }
 
     static double second(double parameter)
     {
         return -2.0 * (parameter / limit) * first(parameter);
+    }
+
+    static double first_at(double coordinate)
+    {
+        return limit * ad::tanh_first(coordinate);
+    }
+
+    static double second_at(double coordinate)
+    {
+        return -2.0 * std::tanh(coordinate) * first_at(coordinate);
     }
 
     template<class Number>
@@ -114,10 +218,9 @@ struct BoundedLogisticMap {
 
     static double forward(double coordinate)
     {
-        const double probability = coordinate >= 0.0
-            ? 1.0 / (1.0 + std::exp(-coordinate))
-            : std::exp(coordinate) / (1.0 + std::exp(coordinate));
-        return lower + range * probability;
+        const double tail = std::exp(-std::abs(coordinate));
+        const double distance = range * (tail / (1.0 + tail));
+        return coordinate >= 0.0 ? upper - distance : lower + distance;
     }
 
     static bool inverse(double parameter, double& coordinate)
@@ -125,28 +228,41 @@ struct BoundedLogisticMap {
         if (!std::isfinite(parameter) || parameter <= lower
             || parameter >= upper)
             return false;
-        const double probability = (parameter - lower) / range;
-        coordinate = std::log(probability) - std::log1p(-probability);
+        coordinate = std::log(parameter - lower) - std::log(upper - parameter);
         return std::isfinite(coordinate);
     }
 
     static double first(double parameter)
     {
-        const double probability = (parameter - lower) / range;
-        return range * probability * (1.0 - probability);
+        return (parameter - lower) * ((upper - parameter) / range);
     }
 
     static double second(double parameter)
     {
-        const double probability = (parameter - lower) / range;
-        return first(parameter) * (1.0 - 2.0 * probability);
+        return first(parameter) * (((upper - parameter) - (parameter - lower)) / range);
+    }
+
+    static double first_at(double coordinate)
+    {
+        return range * ad::logistic_first(coordinate);
+    }
+
+    static double second_at(double coordinate)
+    {
+        const double tail = std::exp(-std::abs(coordinate));
+        return (coordinate >= 0.0 ? -1.0 : 1.0)
+            * first_at(coordinate) * ((1.0-tail)/(1.0+tail));
     }
 
     template<class Number>
     static Number forward_differential(const Number& coordinate)
     {
-        return Number::constant(lower)
-            + Number::constant(range) * ad::logistic(coordinate);
+        const double tail = std::exp(-std::abs(coordinate.value));
+        const double denominator = 1.0 + tail;
+        const double slope = range * (tail / (denominator * denominator));
+        const double sign = coordinate.value >= 0.0 ? -1.0 : 1.0;
+        return ad::unary(coordinate, forward(coordinate.value), slope,
+                         sign * slope * ((1.0 - tail) / denominator));
     }
 };
 
@@ -160,10 +276,8 @@ void representable_coordinate_bounds(double& lower, double& upper) noexcept
         upper = std::atanh(std::nextafter(1.0,0.0));
         lower = -upper;
     } else if constexpr (requires { Map::upper; }) {
-        const double head = (std::nextafter(Map::lower,Map::upper)-Map::lower)/Map::range;
-        const double tail = (Map::upper-std::nextafter(Map::upper,Map::lower))/Map::range;
-        lower = std::log(head)-std::log1p(-head);
-        upper = std::log1p(-tail)-std::log(tail);
+        Map::inverse(std::nextafter(Map::lower,Map::upper), lower);
+        Map::inverse(std::nextafter(Map::upper,Map::lower), upper);
         // Rounding plateaus can span trillions of coordinate ULPs. Bisect
         // against the representable chart midpoint instead of walking them.
         if (!(Map::forward(lower)>Map::lower)) {
@@ -209,36 +323,38 @@ struct DiagonalShapeTransform {
         return unpack_impl(theta, z, std::index_sequence_for<Maps...> {});
     }
 
+    template<class Dimension = std::size_t, class Offset = std::size_t>
     static void fill_jacobian(
-        const double* theta,
+        const double* coordinates,
         double* jacobian,
-        std::size_t dimension,
-        std::size_t offset)
+        Dimension dimension_tag,
+        Offset offset_tag)
     {
         fill_jacobian_impl(
-            theta, jacobian, dimension, offset,
+            coordinates, jacobian, dimension_tag, offset_tag,
             std::index_sequence_for<Maps...> {});
     }
 
     static void transform_gradient(
-        const double* theta,
+        const double* coordinates,
         const double* theta_gradient,
         double* z_gradient)
     {
         transform_gradient_impl(
-            theta, theta_gradient, z_gradient,
+            coordinates, theta_gradient, z_gradient,
             std::index_sequence_for<Maps...> {});
     }
 
+    template<class Dimension = std::size_t, class Offset = std::size_t>
     static void add_curvature(
-        const double* theta,
+        const double* coordinates,
         const double* theta_gradient,
         double* z_hessian,
-        std::size_t dimension,
-        std::size_t offset)
+        Dimension dimension_tag,
+        Offset offset_tag)
     {
         add_curvature_impl(
-            theta, theta_gradient, z_hessian, dimension, offset,
+            coordinates, theta_gradient, z_hessian, dimension_tag, offset_tag,
             std::index_sequence_for<Maps...> {});
     }
 
@@ -283,40 +399,44 @@ private:
         return (Map<Indices>::inverse(theta[Indices], z[Indices]) && ...);
     }
 
-    template<std::size_t... Indices>
+    template<class Dimension, class Offset, std::size_t... Indices>
     static void fill_jacobian_impl(
-        const double* theta,
+        const double* coordinates,
         double* jacobian,
-        std::size_t dimension,
-        std::size_t offset,
+        Dimension dimension_tag,
+        Offset offset_tag,
         std::index_sequence<Indices...>)
     {
+        const std::size_t dimension = dimension_tag;
+        const std::size_t offset = offset_tag;
         ((jacobian[(offset + Indices) * dimension + offset + Indices] =
-              Map<Indices>::first(theta[Indices])), ...);
+              Map<Indices>::first_at(coordinates[Indices])), ...);
     }
 
     template<std::size_t... Indices>
     static void transform_gradient_impl(
-        const double* theta,
+        const double* coordinates,
         const double* theta_gradient,
         double* z_gradient,
         std::index_sequence<Indices...>)
     {
-        ((z_gradient[Indices] = Map<Indices>::first(theta[Indices])
+        ((z_gradient[Indices] = Map<Indices>::first_at(coordinates[Indices])
               * theta_gradient[Indices]), ...);
     }
 
-    template<std::size_t... Indices>
+    template<class Dimension, class Offset, std::size_t... Indices>
     static void add_curvature_impl(
-        const double* theta,
+        const double* coordinates,
         const double* theta_gradient,
         double* z_hessian,
-        std::size_t dimension,
-        std::size_t offset,
+        Dimension dimension_tag,
+        Offset offset_tag,
         std::index_sequence<Indices...>)
     {
+        const std::size_t dimension = dimension_tag;
+        const std::size_t offset = offset_tag;
         ((z_hessian[(offset + Indices) * dimension + offset + Indices] +=
-              theta_gradient[Indices] * Map<Indices>::second(theta[Indices])),
+              theta_gradient[Indices] * Map<Indices>::second_at(coordinates[Indices])),
          ...);
     }
 };
@@ -393,15 +513,26 @@ struct GarchTransform {
     static_assert(P > 0u && Q > 0u);
     static constexpr std::size_t variance_parameters = 1u + P + Q;
     static constexpr std::size_t coefficient_parameters = P + Q;
+    static constexpr std::size_t simplex_parameters = coefficient_parameters;
     static constexpr std::size_t shape_parameters = ShapeTransform::parameters;
     static constexpr std::size_t parameters =
         variance_parameters + shape_parameters;
     using Domain = domain::StationaryGarchDomain<coefficient_parameters>;
     static constexpr double persistence_limit = Domain::persistence_limit();
 
-    static void pack(const double* z, double* theta)
+    static void pack(const double* z, double* theta,
+        SimplexTailPoint* simplex = nullptr, double* shifted_weights = nullptr)
     {
         theta[0] = Domain::positive_floor + softplus(z[0]);
+
+        if (simplex != nullptr) {
+            *simplex = SimplexTailPoint(coefficient_parameters,
+                [&](std::size_t index) { return z[1u + index]; }, shifted_weights);
+            for (std::size_t index = 0; index < coefficient_parameters; ++index)
+                theta[1u + index] = simplex->contribution(index, persistence_limit);
+            ShapeTransform::pack(z + variance_parameters, theta + variance_parameters);
+            return;
+        }
 
         double maximum = 0.0;
         for (std::size_t index = 0; index < coefficient_parameters; ++index)
@@ -446,7 +577,16 @@ struct GarchTransform {
                 theta + variance_parameters, z + variance_parameters);
     }
 
-    static void fill_jacobian(const double* theta, double* jacobian)
+    static void fill_jacobian(const double* theta, const double* z, double* jacobian)
+    {
+        std::array<double, coefficient_parameters> weights;
+        const SimplexTailPoint simplex(coefficient_parameters,
+            [&](std::size_t index) { return z[1u + index]; }, weights.data());
+        fill_jacobian_prepared(theta, z, jacobian, simplex);
+    }
+
+    static void fill_jacobian_prepared(const double* theta, const double* z,
+        double* jacobian, const SimplexTailPoint& simplex)
     {
         std::fill_n(jacobian, parameters * parameters, 0.0);
         jacobian[0] = softplus_first_from_positive(
@@ -454,14 +594,13 @@ struct GarchTransform {
         for (std::size_t row = 0; row < coefficient_parameters; ++row) {
             const double row_value = theta[1u + row];
             for (std::size_t column = 0; column < coefficient_parameters; ++column) {
-                const double delta = row == column ? 1.0 : 0.0;
                 jacobian[(1u + row) * parameters + 1u + column] =
-                    row_value * (
-                        delta - theta[1u + column] / persistence_limit);
+                    simplex.first(row, column, row_value,
+                        simplex.weight(column));
             }
         }
         ShapeTransform::fill_jacobian(
-            theta + variance_parameters,
+            z + variance_parameters,
             jacobian,
             parameters,
             variance_parameters);
@@ -469,35 +608,53 @@ struct GarchTransform {
 
     static void transform_gradient(
         const double* theta,
+        const double* z,
         const double* theta_gradient,
-        double* z_gradient)
+        double* z_gradient, const SimplexTailPoint* prepared = nullptr)
     {
+        std::array<double, coefficient_parameters> weights;
+        SimplexTailPoint local;
+        if (prepared == nullptr) {
+            local = SimplexTailPoint(coefficient_parameters,
+                [&](std::size_t index) { return z[1u + index]; }, weights.data());
+            prepared = &local;
+        }
+        const auto& simplex = *prepared;
         z_gradient[0] = softplus_first_from_positive(
             theta[0] - Domain::positive_floor) * theta_gradient[0];
         for (std::size_t column = 0; column < coefficient_parameters; ++column) {
             double value = 0.0;
+            const double weight = simplex.weight(column);
             for (std::size_t row = 0; row < coefficient_parameters; ++row) {
-                const double delta = row == column ? 1.0 : 0.0;
-                value += theta_gradient[1u + row] * theta[1u + row]
-                    * (delta - theta[1u + column] / persistence_limit);
+                value += theta_gradient[1u + row]
+                    * simplex.first(row, column, theta[1u + row], weight);
             }
             z_gradient[1u + column] = value;
         }
         ShapeTransform::transform_gradient(
-            theta + variance_parameters,
+            z + variance_parameters,
             theta_gradient + variance_parameters,
             z_gradient + variance_parameters);
     }
 
     static void transform_hessian(
         const double* theta,
+        const double* z,
         const double* theta_gradient,
         const double* theta_hessian,
-        double* z_hessian)
+        double* z_hessian, const SimplexTailPoint* prepared = nullptr)
     {
+        std::array<double, coefficient_parameters> weights;
+        SimplexTailPoint local;
+        if (prepared == nullptr) {
+            local = SimplexTailPoint(coefficient_parameters,
+                [&](std::size_t index) { return z[1u + index]; }, weights.data());
+            prepared = &local;
+        }
+        const auto& simplex = *prepared;
         std::array<double, parameters * parameters> jacobian {};
         std::array<double, parameters * parameters> intermediate {};
-        fill_jacobian(theta, jacobian.data());
+        fill_jacobian_prepared(theta, z, jacobian.data(), simplex);
 
         for (std::size_t row = 0; row < parameters; ++row) {
             for (std::size_t column = 0; column < parameters; ++column) {
@@ -525,24 +682,18 @@ struct GarchTransform {
         for (std::size_t output = 0; output < coefficient_parameters; ++output) {
             const double output_value = theta[1u + output];
             for (std::size_t row = 0; row < coefficient_parameters; ++row) {
-                const double delta_output_row = output == row ? 1.0 : 0.0;
-                const double row_value = theta[1u + row] / persistence_limit;
+                const double row_value = simplex.weight(row);
                 for (std::size_t column = 0; column < coefficient_parameters; ++column) {
-                    const double delta_output_column = output == column ? 1.0 : 0.0;
-                    const double delta_row_column = row == column ? 1.0 : 0.0;
-                    const double column_value =
-                        theta[1u + column] / persistence_limit;
-                    const double second = output_value * (
-                        (delta_output_column - column_value)
-                            * (delta_output_row - row_value)
-                        - row_value * (delta_row_column - column_value));
+                    const double column_value = simplex.weight(column);
+                    const double second = simplex.second(
+                        output, row, column, output_value, row_value, column_value);
                     z_hessian[(1u + row) * parameters + 1u + column] +=
                         theta_gradient[1u + output] * second;
                 }
             }
         }
         ShapeTransform::add_curvature(
-            theta + variance_parameters,
+            z + variance_parameters,
             theta_gradient + variance_parameters,
             z_hessian,
             parameters,

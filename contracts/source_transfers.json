@@ -1,0 +1,586 @@
+{
+  "schema_version": 1,
+  "status": "prototype/incomplete",
+  "discovery": {
+    "compiler": "clang++",
+    "method": "C++20 preprocessor Make dependency records",
+    "seeds": [
+      "scivol/_native/garch_runtime.cpp",
+      "scivol/_native/garch_generated_api.cpp",
+      "scivol/_native/gh_math_translation.cpp"
+    ]
+  },
+  "source_revision": "bb30f26f36adda7cfd3400443b1a541569c5ab1b",
+  "source_state": "Working-tree contents, including pre-existing repaired math; hashes are authoritative.",
+  "license": "Repository MIT license; no third-party numerical dependency is present in this compiler-discovered closure.",
+  "sample_contract": {
+    "default_first_scored": 0,
+    "stop": "n passed to evaluation is the exclusive scoring stop. ScoreSelection limits accumulation, not the training information cutoff; default seeds and their provenance use the complete retained training sample.",
+    "scored_count": "n - first_scored",
+    "traversal": "Shared recurrence with segmented unscored/scored traversal; no prefix subtraction.",
+    "validation": "Checked and prevalidated selected entries share one evaluator and mathematical kernel. Public prepared inputs use the prevalidated entry."
+  },
+  "build_contract": {
+    "version_source": "scivol/_version.py currently declares 0.3.0; no independent version change.",
+    "backend_flags": "C++20 -fno-fast-math -O3 -ffp-contract=fast -fno-math-errno -fno-exceptions -fno-rtti -fvisibility=hidden",
+    "native_arch_option": "SCIVOLAPI_NATIVE_ARCH defaults OFF; ON adds backend -funroll-loops -march=native.",
+    "frame_gate": "16384-byte frame warning treated as error; VLA and alloca warnings treated as errors. Binary evidence remains pending.",
+    "solvers": "None extracted or linked."
+  },
+  "transfers": [
+    {
+      "source": "scivol/_csrc/gh_bessel_expansion.h",
+      "destination": "core/src/math/gh_bessel_expansion.h",
+      "source_sha256": "003a3f210cb9f4b4f32e707c270b66081400ec2db697ec9adb3b5546e7f539aa",
+      "relocated_sha256": "003a3f210cb9f4b4f32e707c270b66081400ec2db697ec9adb3b5546e7f539aa",
+      "current_sha256": "003a3f210cb9f4b4f32e707c270b66081400ec2db697ec9adb3b5546e7f539aa",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": []
+    },
+    {
+      "source": "scivol/_csrc/gh_high_order_quadrature.h",
+      "destination": "core/src/math/gh_high_order_quadrature.h",
+      "source_sha256": "5918e1a9d3d865f0d2f79c268576d405eb924704f769c28c7b1c774a0f2b75bf",
+      "relocated_sha256": "5918e1a9d3d865f0d2f79c268576d405eb924704f769c28c7b1c774a0f2b75bf",
+      "current_sha256": "5918e1a9d3d865f0d2f79c268576d405eb924704f769c28c7b1c774a0f2b75bf",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": []
+    },
+    {
+      "source": "scivol/_csrc/gh_math.c",
+      "destination": "core/src/math/gh_math.c",
+      "source_sha256": "61b28674e3262914c8bcba307e997244232a49fcd520540e2e407e92000fa20d",
+      "relocated_sha256": "421f4c5cc0fff36278799de3d2f9a2eae848300a261f2e209ad9bd88dfe59494",
+      "current_sha256": "421f4c5cc0fff36278799de3d2f9a2eae848300a261f2e209ad9bd88dfe59494",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "gh_high_order_quadrature.h",
+          "destination": "gh_high_order_quadrature.h"
+        },
+        {
+          "source": "gh_math.h",
+          "destination": "gh_math.h"
+        },
+        {
+          "source": "math_and_helpers.h",
+          "destination": "math_and_helpers.h"
+        },
+        {
+          "source": "../_native/gh_equations.hpp",
+          "destination": "gh_equations.hpp"
+        },
+        {
+          "source": "../_native/gh_equations.hpp",
+          "destination": "gh_equations.hpp"
+        },
+        {
+          "source": "../_native/gh_equations.hpp",
+          "destination": "gh_equations.hpp"
+        },
+        {
+          "source": "../_native/vg_equations.hpp",
+          "destination": "vg_equations.hpp"
+        },
+        {
+          "source": "../_native/vg_equations.hpp",
+          "destination": "vg_equations.hpp"
+        },
+        {
+          "source": "../_native/vg_equations.hpp",
+          "destination": "vg_equations.hpp"
+        },
+        {
+          "source": "../_native/gh_equations.hpp",
+          "destination": "gh_equations.hpp"
+        },
+        {
+          "source": "../_native/gh_equations.hpp",
+          "destination": "gh_equations.hpp"
+        },
+        {
+          "source": "../_native/gh_equations.hpp",
+          "destination": "gh_equations.hpp"
+        },
+        {
+          "source": "../_native/gh_equations.hpp",
+          "destination": "gh_equations.hpp"
+        },
+        {
+          "source": "../_native/vg_equations.hpp",
+          "destination": "vg_equations.hpp"
+        },
+        {
+          "source": "../_native/vg_equations.hpp",
+          "destination": "vg_equations.hpp"
+        },
+        {
+          "source": "../_native/gh_equations.hpp",
+          "destination": "gh_equations.hpp"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_csrc/gh_math.h",
+      "destination": "core/src/math/gh_math.h",
+      "source_sha256": "c958db31ffd6ebc40878219e2b74ff22a8ac0d038328018ef95536af1254f206",
+      "relocated_sha256": "c958db31ffd6ebc40878219e2b74ff22a8ac0d038328018ef95536af1254f206",
+      "current_sha256": "c958db31ffd6ebc40878219e2b74ff22a8ac0d038328018ef95536af1254f206",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "gh_bessel_expansion.h",
+          "destination": "gh_bessel_expansion.h"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_csrc/math_and_helpers.h",
+      "destination": "core/src/math/math_and_helpers.h",
+      "source_sha256": "c07d00f260b16b29a755b766e2c9007d133dbf19c9cac5c626b67aeeb59dc569",
+      "relocated_sha256": "c07d00f260b16b29a755b766e2c9007d133dbf19c9cac5c626b67aeeb59dc569",
+      "current_sha256": "c07d00f260b16b29a755b766e2c9007d133dbf19c9cac5c626b67aeeb59dc569",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": []
+    },
+    {
+      "source": "scivol/_native/density_moment_quadrature.hpp",
+      "destination": "core/src/models/density_moment_quadrature.hpp",
+      "source_sha256": "65c37f284dcbfbb5af9694983865cb4f79a078cace022e72c6e26d90cb59e858",
+      "relocated_sha256": "65c37f284dcbfbb5af9694983865cb4f79a078cace022e72c6e26d90cb59e858",
+      "current_sha256": "65c37f284dcbfbb5af9694983865cb4f79a078cace022e72c6e26d90cb59e858",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "garch_extended_density_policy.hpp",
+          "destination": "garch_extended_density_policy.hpp"
+        },
+        {
+          "source": "garch_observation_assembly.hpp",
+          "destination": "garch_observation_assembly.hpp"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/fixed_differential.hpp",
+      "destination": "core/src/math/fixed_differential.hpp",
+      "source_sha256": "089ea5beb942652dfcf4305dfb8603cf5a2df2e295407fd45a97ab28b5e3732a",
+      "relocated_sha256": "089ea5beb942652dfcf4305dfb8603cf5a2df2e295407fd45a97ab28b5e3732a",
+      "current_sha256": "089ea5beb942652dfcf4305dfb8603cf5a2df2e295407fd45a97ab28b5e3732a",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "math_and_helpers.h",
+          "destination": "math_and_helpers.h"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/garch_density_policy.hpp",
+      "destination": "core/src/models/garch_density_policy.hpp",
+      "source_sha256": "11c6cfcfc3c1998983e8a770a1b184add9cd56e6a98a2d9426fc3f0ca3fa85bf",
+      "relocated_sha256": "930cf9950e497fd99683e0a91c8486be017dc180034832de5d8da364ce3316d2",
+      "current_sha256": "6f9886a2a00d05dfecc582e58f6b6b2c68f190fbbd84cf395678ca554ffac9fe",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "math_and_helpers.h",
+          "destination": "../math/math_and_helpers.h"
+        },
+        {
+          "source": "student_normalization.hpp",
+          "destination": "../math/student_normalization.hpp"
+        },
+        {
+          "source": "student_tail.hpp",
+          "destination": "../math/student_tail.hpp"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/garch_extended_density_policy.hpp",
+      "destination": "core/src/models/garch_extended_density_policy.hpp",
+      "source_sha256": "9db0e2779f82e703f21887e95cbda9dfc9bc93fb30fe91facd866bcf001fba65",
+      "relocated_sha256": "1ada300b4975e06b0dae5100a488748023fb59d3074569dcc3d61cd8ba2ec503",
+      "current_sha256": "1ada300b4975e06b0dae5100a488748023fb59d3074569dcc3d61cd8ba2ec503",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "fixed_differential.hpp",
+          "destination": "../math/fixed_differential.hpp"
+        },
+        {
+          "source": "garch_density_policy.hpp",
+          "destination": "garch_density_policy.hpp"
+        },
+        {
+          "source": "gh_first_order.hpp",
+          "destination": "../math/gh_first_order.hpp"
+        },
+        {
+          "source": "gh_math.h",
+          "destination": "../math/gh_math.h"
+        },
+        {
+          "source": "vg_equations.hpp",
+          "destination": "../math/vg_equations.hpp"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/garch_generated_api.cpp",
+      "destination": "core/src/models/garch_generated_api.cpp",
+      "source_sha256": "f354378917fab63aba6d72340bbb9046b9f414c53dddb4ff66684c8fd68137e4",
+      "relocated_sha256": "f354378917fab63aba6d72340bbb9046b9f414c53dddb4ff66684c8fd68137e4",
+      "current_sha256": "e7e39a702c9c42078e45611b0504617aaf26965dfb4d1e279d7175adf8feb02d",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "garch_generated_api.hpp",
+          "destination": "garch_generated_api.hpp"
+        },
+        {
+          "source": "garch_generated_jet.hpp",
+          "destination": "garch_generated_jet.hpp"
+        },
+        {
+          "source": "gjr_transform_policy.hpp",
+          "destination": "gjr_transform_policy.hpp"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/garch_generated_api.hpp",
+      "destination": "core/src/models/garch_generated_api.hpp",
+      "source_sha256": "a9522dda456ffc58aa2444bf6b7cacf6a19c9e66f58d81ac7eb761ca5ed7fb05",
+      "relocated_sha256": "a9522dda456ffc58aa2444bf6b7cacf6a19c9e66f58d81ac7eb761ca5ed7fb05",
+      "current_sha256": "a34c6078664a0cf7393f8aae27a5cc995c3c2109bd0a4fd552ae2206516a7318",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "jet_contract.hpp",
+          "destination": "jet_contract.hpp"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/garch_generated_jet.hpp",
+      "destination": "core/src/models/garch_generated_jet.hpp",
+      "source_sha256": "7a97957ab89a1f8721fdd26056aad72fe3dc2e560dcc400c66ec3bbda8f17e89",
+      "relocated_sha256": "7a97957ab89a1f8721fdd26056aad72fe3dc2e560dcc400c66ec3bbda8f17e89",
+      "current_sha256": "3b681e53f559d9c753aad9ae1e4f7446254e7502db4845f929d2eb3f81f1620c",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "garch_extended_density_policy.hpp",
+          "destination": "garch_extended_density_policy.hpp"
+        },
+        {
+          "source": "garch_observation_assembly.hpp",
+          "destination": "garch_observation_assembly.hpp"
+        },
+        {
+          "source": "garch_recursion_policy.hpp",
+          "destination": "garch_recursion_policy.hpp"
+        },
+        {
+          "source": "garch_transform_policy.hpp",
+          "destination": "garch_transform_policy.hpp"
+        },
+        {
+          "source": "jet_contract.hpp",
+          "destination": "jet_contract.hpp"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/garch_observation_assembly.hpp",
+      "destination": "core/src/models/garch_observation_assembly.hpp",
+      "source_sha256": "cfabfaa1ac52ebe23024caa21d3060f2895b8a86e311de6d5f1b5d95bbb03e61",
+      "relocated_sha256": "cfabfaa1ac52ebe23024caa21d3060f2895b8a86e311de6d5f1b5d95bbb03e61",
+      "current_sha256": "cfabfaa1ac52ebe23024caa21d3060f2895b8a86e311de6d5f1b5d95bbb03e61",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "garch_density_policy.hpp",
+          "destination": "garch_density_policy.hpp"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/garch_parameter_domain.hpp",
+      "destination": "core/src/models/garch_parameter_domain.hpp",
+      "source_sha256": "da0d716391eb4607746710738419625c3220e5e97478ed1dafb2a23471fe28f3",
+      "relocated_sha256": "da0d716391eb4607746710738419625c3220e5e97478ed1dafb2a23471fe28f3",
+      "current_sha256": "da0d716391eb4607746710738419625c3220e5e97478ed1dafb2a23471fe28f3",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": []
+    },
+    {
+      "source": "scivol/_native/garch_recursion_policy.hpp",
+      "destination": "core/src/models/garch_recursion_policy.hpp",
+      "source_sha256": "424eee79a4d4161d2f7fa590bd4241576157ee5ae371012cfd5885e6046cc744",
+      "relocated_sha256": "424eee79a4d4161d2f7fa590bd4241576157ee5ae371012cfd5885e6046cc744",
+      "current_sha256": "424eee79a4d4161d2f7fa590bd4241576157ee5ae371012cfd5885e6046cc744",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "garch_density_policy.hpp",
+          "destination": "garch_density_policy.hpp"
+        },
+        {
+          "source": "gjr_moment_policy.hpp",
+          "destination": "gjr_moment_policy.hpp"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/garch_runtime.cpp",
+      "destination": "core/src/models/garch_runtime.cpp",
+      "source_sha256": "69fc8d00940bd4a561a910b138c3c42307c7ad41d033c4d6aca9dd4bec2cde3f",
+      "relocated_sha256": "3bedf3dd4cae8dc561be88e9892014db62b7e6cb26d105cfccdcddb94461d6c1",
+      "current_sha256": "4a6cbd3a9e112fa232edbfbe6bd5c12c7332cad8324746b9d029dc3d6999734e",
+      "adaptation": "Selected-sample traversal and shared theoretical/numerical density-shape admission; equations and normalization remain shared with fixed paths.",
+      "includes": [
+        {
+          "source": "garch_runtime.hpp",
+          "destination": "garch_runtime.hpp"
+        },
+        {
+          "source": "garch_extended_density_policy.hpp",
+          "destination": "garch_extended_density_policy.hpp"
+        },
+        {
+          "source": "garch_generated_api.hpp",
+          "destination": "garch_generated_api.hpp"
+        },
+        {
+          "source": "garch_observation_assembly.hpp",
+          "destination": "garch_observation_assembly.hpp"
+        },
+        {
+          "source": "garch_recursion_policy.hpp",
+          "destination": "garch_recursion_policy.hpp"
+        },
+        {
+          "source": "garch_transform_policy.hpp",
+          "destination": "garch_transform_policy.hpp"
+        },
+        {
+          "source": "gjr_moment_policy.hpp",
+          "destination": "gjr_moment_policy.hpp"
+        },
+        {
+          "source": "runtime_workspace.hpp",
+          "destination": "../math/runtime_workspace.hpp"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/garch_runtime.hpp",
+      "destination": "core/src/models/garch_runtime.hpp",
+      "source_sha256": "d0dc3fc5481fce7732c12dc3862600f77e551fa262bc8e5a7fa0e6486718efbb",
+      "relocated_sha256": "d0dc3fc5481fce7732c12dc3862600f77e551fa262bc8e5a7fa0e6486718efbb",
+      "current_sha256": "035c949095157e962f4ad8ec04e0cfe1ddbf43d5899fcacef4eb923236f7f6b9",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "jet_contract.hpp",
+          "destination": "jet_contract.hpp"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/garch_transform_policy.hpp",
+      "destination": "core/src/models/garch_transform_policy.hpp",
+      "source_sha256": "81a780bda0a2502c2e4d083557a9d54ef91f708a1ca8af2789348345f936ce5a",
+      "relocated_sha256": "387175a0154df42c502ffdd4af5b23762e576cfe76172f2e79bab42bf9a4dfa7",
+      "current_sha256": "387175a0154df42c502ffdd4af5b23762e576cfe76172f2e79bab42bf9a4dfa7",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "garch_parameter_domain.hpp",
+          "destination": "garch_parameter_domain.hpp"
+        },
+        {
+          "source": "fixed_differential.hpp",
+          "destination": "../math/fixed_differential.hpp"
+        },
+        {
+          "source": "gh_math.h",
+          "destination": "../math/gh_math.h"
+        },
+        {
+          "source": "math_and_helpers.h",
+          "destination": "../math/math_and_helpers.h"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/gh_equations.hpp",
+      "destination": "core/src/math/gh_equations.hpp",
+      "source_sha256": "c618b215820d622d5319584d44aa9ec84804a8da2519750c5b6e0e16cb0bd8fa",
+      "relocated_sha256": "c618b215820d622d5319584d44aa9ec84804a8da2519750c5b6e0e16cb0bd8fa",
+      "current_sha256": "c618b215820d622d5319584d44aa9ec84804a8da2519750c5b6e0e16cb0bd8fa",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": []
+    },
+    {
+      "source": "scivol/_native/gh_first_order.hpp",
+      "destination": "core/src/math/gh_first_order.hpp",
+      "source_sha256": "dae9ef36b16ec07ebc7003bcccb6f582a37dd55d18cf3516755b491c914dd63e",
+      "relocated_sha256": "dae9ef36b16ec07ebc7003bcccb6f582a37dd55d18cf3516755b491c914dd63e",
+      "current_sha256": "dae9ef36b16ec07ebc7003bcccb6f582a37dd55d18cf3516755b491c914dd63e",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "fixed_differential.hpp",
+          "destination": "fixed_differential.hpp"
+        },
+        {
+          "source": "gh_math.h",
+          "destination": "gh_math.h"
+        },
+        {
+          "source": "gh_equations.hpp",
+          "destination": "gh_equations.hpp"
+        },
+        {
+          "source": "vg_equations.hpp",
+          "destination": "vg_equations.hpp"
+        },
+        {
+          "source": "vg_equations.hpp",
+          "destination": "vg_equations.hpp"
+        },
+        {
+          "source": "gh_equations.hpp",
+          "destination": "gh_equations.hpp"
+        },
+        {
+          "source": "gh_equations.hpp",
+          "destination": "gh_equations.hpp"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/gh_math_translation.cpp",
+      "destination": "core/src/math/gh_math_translation.cpp",
+      "source_sha256": "c29a27512f271f32ab9fff82c6c3a3630b7d41780014bb16eb96ea1f53f491a1",
+      "relocated_sha256": "972e1b13e68b9f051c4b82c272b0ddc6519978b2ad91a03a3c514046d2c12e6a",
+      "current_sha256": "972e1b13e68b9f051c4b82c272b0ddc6519978b2ad91a03a3c514046d2c12e6a",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "../_csrc/gh_math.c",
+          "destination": "gh_math.c"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/gjr_moment_policy.hpp",
+      "destination": "core/src/models/gjr_moment_policy.hpp",
+      "source_sha256": "a34589c8e53c0cb325f212865ce33e68a1228bfb5632ac0ff94e9164ae6fb29e",
+      "relocated_sha256": "a34589c8e53c0cb325f212865ce33e68a1228bfb5632ac0ff94e9164ae6fb29e",
+      "current_sha256": "05e52cc77b6b609a64416dd6bed56c82df8ec309c5032a598398940f83ab6a64",
+      "adaptation": "Skew-t negative second moment uses exact Student tails and a bounded correction through skew_negative_moment.hpp; dedicated MP/AD evidence replaces failing unbounded-tail quadrature. Other density moments unchanged.",
+      "includes": [
+        {
+          "source": "density_moment_quadrature.hpp",
+          "destination": "density_moment_quadrature.hpp"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/gjr_transform_policy.hpp",
+      "destination": "core/src/models/gjr_transform_policy.hpp",
+      "source_sha256": "2f3447b338ed12beeaa0608589601d4e53c0bc5da108cef23368b67a2b26654d",
+      "relocated_sha256": "2f3447b338ed12beeaa0608589601d4e53c0bc5da108cef23368b67a2b26654d",
+      "current_sha256": "2f3447b338ed12beeaa0608589601d4e53c0bc5da108cef23368b67a2b26654d",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "garch_parameter_domain.hpp",
+          "destination": "garch_parameter_domain.hpp"
+        },
+        {
+          "source": "garch_transform_policy.hpp",
+          "destination": "garch_transform_policy.hpp"
+        },
+        {
+          "source": "gjr_moment_policy.hpp",
+          "destination": "gjr_moment_policy.hpp"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/jet_contract.hpp",
+      "destination": "core/src/models/jet_contract.hpp",
+      "source_sha256": "ef3ea003a757f6330ecbb77f010251f759caa71dfa832aae9f9619e8050be8c6",
+      "relocated_sha256": "ef3ea003a757f6330ecbb77f010251f759caa71dfa832aae9f9619e8050be8c6",
+      "current_sha256": "5a0bba8b5722e6e4ddc39d5767fab59322ba14d1ad5d544a8817b1a761fca361",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": []
+    },
+    {
+      "source": "scivol/_native/runtime_workspace.hpp",
+      "destination": "core/src/math/runtime_workspace.hpp",
+      "source_sha256": "1ffb2ddb07e01d5286595545c05a85658557440877d10a29dc463ba509a1a66a",
+      "relocated_sha256": "1ffb2ddb07e01d5286595545c05a85658557440877d10a29dc463ba509a1a66a",
+      "current_sha256": "1ffb2ddb07e01d5286595545c05a85658557440877d10a29dc463ba509a1a66a",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": []
+    },
+    {
+      "source": "scivol/_native/student_normalization.hpp",
+      "destination": "core/src/math/student_normalization.hpp",
+      "source_sha256": "733ff408f3e529e3446019adc31a088bef598ea42eb05076bdf36b244e0953e3",
+      "relocated_sha256": "733ff408f3e529e3446019adc31a088bef598ea42eb05076bdf36b244e0953e3",
+      "current_sha256": "733ff408f3e529e3446019adc31a088bef598ea42eb05076bdf36b244e0953e3",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "fixed_differential.hpp",
+          "destination": "fixed_differential.hpp"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/student_tail.hpp",
+      "destination": "core/src/math/student_tail.hpp",
+      "source_sha256": "f784a0ce0f60179a8bb963b18cce5985e136c40ff1273f320de0f6aa13c33fb1",
+      "relocated_sha256": "f784a0ce0f60179a8bb963b18cce5985e136c40ff1273f320de0f6aa13c33fb1",
+      "current_sha256": "f784a0ce0f60179a8bb963b18cce5985e136c40ff1273f320de0f6aa13c33fb1",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": [
+        {
+          "source": "fixed_differential.hpp",
+          "destination": "fixed_differential.hpp"
+        },
+        {
+          "source": "math_and_helpers.h",
+          "destination": "math_and_helpers.h"
+        }
+      ]
+    },
+    {
+      "source": "scivol/_native/vg_equations.hpp",
+      "destination": "core/src/math/vg_equations.hpp",
+      "source_sha256": "eb60b419b5099bc40ef6608dbd0041317defb127d97d8890eaf79b986719413f",
+      "relocated_sha256": "eb60b419b5099bc40ef6608dbd0041317defb127d97d8890eaf79b986719413f",
+      "current_sha256": "eb60b419b5099bc40ef6608dbd0041317defb127d97d8890eaf79b986719413f",
+      "adaptation": "Literal include relocation only at transfer; subsequent adaptations are tracked in git.",
+      "includes": []
+    }
+  ],
+  "qualification_debt": [
+    "Independent new-core AD and high-precision qualification is pending.",
+    "Production binary dispatch, constant metadata, stack frames and paired request timing are pending.",
+    "Cross-request point preparation reuse is not implemented or qualified. GarchJet prepares Density separately for each evaluation mask; Point retains theta/original z but no persistent density cache. This extraction supports per-request minimal preparation with point constants outside the observation loop, not same-point F-to-G-to-H reuse. A derivative-order-specific prepared-point typed API and independent cache-lifetime evidence remain required for Phase 1 completion.",
+    "Prepared Point mapping and original-z evaluation may repeat mapping and GJR moment work. Original z is retained; a measured actual-theta/original-z prepared entry remains future work.",
+    "Existing GH/VG support validators combine numerical and differentiability bounds. Unsupported points return numerical_range, not a theoretical-feasibility or differentiability certificate. Request-specific support classification remains incomplete.",
+    "Known GH/VG shape-domain violation classification is currently in the native parameter-status adapter; extraction into separate density-owned assessment remains pending. No statistical likelihood or accepted support bound was changed.",
+    "Required native test source transfers were not yet present at worker handoff; CMake must be reconfigured after they land and their temporary pending-source handling removed.",
+    "This slice covers only standalone GARCH and GJR-GARCH, not joint means or fitting."
+  ]
+}

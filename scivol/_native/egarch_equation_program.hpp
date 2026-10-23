@@ -31,7 +31,8 @@ template<std::size_t StaticWidth>
     return row * width - row * (row + 1u) / 2u + column;
 }
 
-template<int Order, std::size_t StaticWidth, class State, class Moment>
+template<int Order, std::size_t StaticWidth, bool ComputeValue = true,
+         class State, class Moment>
 [[nodiscard]] VLK_EGARCH_EQUATION_INLINE bool add_shock(
     State& current,
     const State& standardized,
@@ -61,8 +62,9 @@ template<int Order, std::size_t StaticWidth, class State, class Moment>
     using std::fabs;
     const auto centered = fabs(standardized.value) - moment.value;
     const double propagation = parameters[alpha] * sign + parameters[gamma];
-    current.value += parameters[alpha] * centered
-        + parameters[gamma] * standardized.value;
+    if constexpr (ComputeValue)
+        current.value += parameters[alpha] * centered
+            + parameters[gamma] * standardized.value;
     if constexpr (Order >= 1) {
         for (std::size_t index = 0; index < parameters_count; ++index) {
             current.gradient[index] +=
@@ -112,7 +114,7 @@ template<int Order, std::size_t StaticWidth, class State, class Moment>
     return true;
 }
 
-template<int Order, std::size_t StaticWidth, class State>
+template<int Order, std::size_t StaticWidth, bool ComputeValue = true, class State>
 VLK_EGARCH_EQUATION_INLINE void add_persistence(
     State& current,
     const State& previous,
@@ -122,7 +124,8 @@ VLK_EGARCH_EQUATION_INLINE void add_persistence(
 {
     const std::size_t parameters_count = width<StaticWidth>(runtime_width);
     const double coefficient = parameters[beta];
-    current.value += coefficient * previous.value;
+    if constexpr (ComputeValue)
+        current.value += coefficient * previous.value;
     if constexpr (Order >= 1) {
         for (std::size_t index = 0; index < parameters_count; ++index) {
             current.gradient[index] +=
@@ -181,17 +184,25 @@ template<int Order, std::size_t StaticWidth, class State>
         && std::isfinite(static_cast<double>(standardized.value));
 }
 
-template<int Order, std::size_t StaticWidth, class State>
+template<int Order, std::size_t StaticWidth, bool ComputeValue = true, class State>
 [[nodiscard]] VLK_EGARCH_EQUATION_INLINE bool standardize(
     State& standardized,
     const State& residual,
     const State& log_variance,
-    std::size_t runtime_width) noexcept
+    std::size_t runtime_width,
+    decltype(standardized.value)* inverse_scale_output = nullptr) noexcept
 {
     const std::size_t parameters_count = width<StaticWidth>(runtime_width);
     using std::exp;
-    const auto scalar_inverse_scale = exp(-0.5 * log_variance.value);
-    standardized.value = residual.value * scalar_inverse_scale;
+    // A replay supplies the exact retained scale and standardized value.
+    const auto scalar_inverse_scale = [&] {
+        if constexpr (ComputeValue) return exp(-0.5 * log_variance.value);
+        else return *inverse_scale_output;
+    }();
+    if constexpr (ComputeValue) {
+        if (inverse_scale_output) *inverse_scale_output = scalar_inverse_scale;
+        standardized.value = residual.value * scalar_inverse_scale;
+    }
     const double inverse_scale = static_cast<double>(scalar_inverse_scale);
     const double residual_value = static_cast<double>(residual.value);
     if constexpr (Order >= 1) {

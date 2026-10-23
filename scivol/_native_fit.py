@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import operator
+import sys
 import time
 from typing import Any, Optional
 import warnings
@@ -9,6 +11,12 @@ import numpy as np
 from numpy.typing import NDArray
 
 from . import _native_core
+from ._fit_credibility import observed_covariance
+from ._aparch_fit_policy import (
+    ControllerPhases, ControllerSelection, PhaseOutcome, PhasePoint, PhaseRequest,
+    PhaseStart, PhaseWork, run_aparch_controller,
+)
+from ._aparch_fit_adapters import bind_native_preparation
 from ._optimizer import resolve_initial_params, resolve_optimizer_budget
 from .result import EstimationResult, FitMetadata
 from .roles import Role
@@ -24,6 +32,14 @@ _DENSITY_CODES = {
     "Hyperbolic": 6,
     "VarianceGamma": 7,
 }
+
+_GRADIENT_UNAVAILABLE_WARNING = (
+    "The final objective is finite, but the exact gradient is unavailable at this "
+    "point. Stationarity and inference are unavailable."
+)
+
+# Qualification gate only. Remove after the complete-fit policy passes promotion.
+_APARCH_MEAN_REFINEMENT_ENABLED = False
 
 _MODE_MESSAGES = {
     0: "Native SLSQP terminated successfully.",
@@ -77,7 +93,11 @@ class NativeModel:
                     "requests in C++; optional scientific theta-box projection; "
                     "theta-space F|G then H at the solution"
                 )
-            return "fused F|G during optimization; theta-space F|G|H at the solution"
+            return (
+                "z-space SLSQP: initial F|G, separate F trials and G derivatives; "
+                "optional z-space F|G|H curvature refinement and SLSQP restarts; "
+                "theta-space G for KKT; theta-space F|G then H at the solution"
+            )
         if self.kind == "egarch":
             return (
                 "exact-curvature preconditioning, then typed EGARCH requests "
@@ -115,6 +135,11 @@ class NativeSolve:
     refinement_restarts: int
     curvature_refinement_steps: int
     scientific_projection_steps: int
+    execution_dispatch: Optional[int] = None
+
+    @property
+    def kernel_dispatch(self) -> Optional[int]:
+        return {1: 0, 2: 1}.get(self.execution_dispatch)
 
 
 @dataclass(slots=True)
@@ -146,6 +171,8 @@ def fit_native_spec(
     native_accuracy: float = 1e-10,
     log_mode: Optional[bool] = None,
     x: Any = None,
+    _aparch_phases: Optional[ControllerPhases] = None,
+    _aparch_initial_coordinates: Optional[NDArray[np.float64]] = None,
     **_: Any,
 ) -> EstimationResult:
     """Fit a promoted GARCH tensor entry through the internal C++ engine."""
@@ -167,15 +194,49 @@ def fit_native_spec(
     maximum_iterations, _ = resolve_optimizer_budget(maxiter, maxfev)
 
     started_at = time.perf_counter()
-    coordinates = _theta_to_coordinates(model, initial_theta)
-    solve = _solve_coordinates(
-        model,
-        prepared_data,
-        coordinates,
-        accuracy=float(native_accuracy),
-        maximum_iterations=maximum_iterations,
-    )
-    theta = _coordinates_to_theta(model, coordinates)
+    controller = None
+    if _aparch_phases is not None:
+        if model.kind != "arma_aparch":
+            raise ValueError("The opt-in APARCH controller requires a joint ARMA-APARCH model.")
+        if _aparch_phases.power is None and model.density_code in _aparch_phases.qualified_power_densities:
+            _aparch_phases = bind_native_preparation(
+                model, prepared_data, _aparch_phases, native=sys.modules[__name__])
+        coordinates = (_theta_to_coordinates(model, initial_theta)
+                       if _aparch_initial_coordinates is None
+                       else np.array(_aparch_initial_coordinates, dtype=np.float64, order="C", copy=True))
+        if coordinates.shape != initial_theta.shape or not np.all(np.isfinite(coordinates)):
+            raise ValueError("Initial APARCH coordinates have an invalid shape or value.")
+        if _aparch_initial_coordinates is not None:
+            mapped = _coordinates_to_theta(model, coordinates)
+            if mapped.tobytes() != initial_theta.tobytes():
+                raise ValueError("Initial APARCH theta does not match its supplied original coordinates.")
+        controller = _run_aparch_fit_controller(
+            model, prepared_data, initial_theta, coordinates, _aparch_phases,
+            float(native_accuracy), maximum_iterations,
+        )
+        selected, work = controller.point, controller.total_work()
+        theta = selected.theta.copy()
+        # A theta-chart endpoint is never roundtripped. Only its actual z is reused.
+        coordinates = (selected.coordinates.copy() if selected.coordinates is not None
+                       else np.full(model.n_params, np.nan, dtype=np.float64))
+        solve = replace(selected.solve, iterations=work.iterations,
+                        function_evaluations=work.function_evaluations,
+                        gradient_evaluations=work.gradient_evaluations,
+                        refinement_restarts=sum(row["evidence"].get("refinement_restarts", 0)
+                                                for row in controller.diagnostics),
+                        curvature_refinement_steps=sum(row["evidence"].get("curvature_refinement_steps", 0)
+                                                       for row in controller.diagnostics),
+                        scientific_projection_steps=sum(row["evidence"].get("scientific_projection_steps", 0)
+                                                        for row in controller.diagnostics))
+    else:
+        if _aparch_initial_coordinates is not None:
+            raise ValueError("Original APARCH coordinates require the explicit controller.")
+        coordinates = _theta_to_coordinates(model, initial_theta)
+        solve = _solve_coordinates(
+            model, prepared_data, coordinates, accuracy=float(native_accuracy),
+            maximum_iterations=maximum_iterations,
+        )
+        theta = _coordinates_to_theta(model, coordinates)
     coordinate_kkt_residual = solve.kkt_residual
     coordinate_mode = solve.mode
     refinement = _refine_garch_theta_if_needed(
@@ -195,9 +256,33 @@ def fit_native_spec(
         if refinement is not None
         else None
     )
-    native_nll, gradient, hessian, hessian_warning = _evaluate_theta_solution(
-        model, prepared_data, theta
-    )
+    mean_phase = None
+    postfit_requests: dict[str, int] = {}
+    if controller is not None:
+        postfit_requests.update(controller.total_work().validation_requests)
+        native_nll, gradient, hessian, solution_warning = _complete_theta_solution(
+            model, prepared_data, theta, controller.point.value,
+            controller.point.gradient, requests=postfit_requests,
+        )
+    elif _APARCH_MEAN_REFINEMENT_ENABLED and model.kind == "arma_aparch":
+        native_nll, gradient = _evaluate_theta_first_order(
+            model, prepared_data, theta, requests=postfit_requests
+        )
+        theta, solve, native_nll, gradient, mean_phase = _refine_aparch_mean_if_needed(
+            model, prepared_data, theta, solve, native_nll, gradient,
+            accuracy=float(native_accuracy), maximum_iterations=maximum_iterations,
+            requests=postfit_requests,
+        )
+        native_nll, gradient, hessian, solution_warning = _complete_theta_solution(
+            model, prepared_data, theta, native_nll, gradient, requests=postfit_requests
+        )
+        if mean_phase is not None and mean_phase["retained"]:
+            # This inverse is for boundary reporting only, never jet pullbacks.
+            coordinates = _theta_to_coordinates(model, theta)
+    else:
+        native_nll, gradient, hessian, solution_warning = _evaluate_theta_solution(
+            model, prepared_data, theta
+        )
     filtered_state, parity_error = _cross_check_canonical_filter(
         spec, prepared_data, theta, native_nll
     )
@@ -210,18 +295,23 @@ def fit_native_spec(
     boundary_warning = _boundary_warning(
         model, theta, coordinates, prepared_data, native_accuracy
     )
-    assessment = _assess_theta_solution(
-        model,
-        theta,
-        gradient,
-        prepared_data,
-        native_accuracy,
-        boundary_reached=boundary_warning is not None,
+    assessment = (
+        replace(controller.point.assessment, boundary_reached=boundary_warning is not None)
+        if controller is not None else _assess_theta_solution(
+            model, theta, gradient, prepared_data, native_accuracy,
+            boundary_reached=boundary_warning is not None,
+        )
     )
+    if not assessment.model_feasible:
+        raise RuntimeError("The final native parameter point is infeasible.")
+    gradient_available = _gradient_is_available(model, gradient)
     credible = _solution_is_credible(
         solve, assessment, native_nll, gradient, parity_error, kkt_tolerance
     )
-    covariance = _covariance_from_hessian(hessian)
+    stationary = _solution_is_stationary(
+        assessment, native_nll, gradient, parity_error, kkt_tolerance
+    )
+    covariance = observed_covariance(hessian, stationary=credible)
     message = _convergence_message(
         solve,
         assessment,
@@ -252,7 +342,9 @@ def fit_native_spec(
     )
     fit_info = FitMetadata(
         solver=(
-            "native-slsqp+theta-slsqp"
+            "native-slsqp+anchored-mean"
+            if mean_phase is not None
+            else "native-slsqp+theta-slsqp"
             if refinement_phase == "scaled-theta-slsqp"
             else "native-slsqp+projected-newton"
             if refinement_phase is not None
@@ -262,7 +354,9 @@ def fit_native_spec(
         ),
         log_mode=True,
         optimization_space=(
-            "native-z-then-scaled-theta-space"
+            "native-z-then-anchored-mean-theta-space"
+            if mean_phase is not None
+            else "native-z-then-scaled-theta-space"
             if refinement is not None
             else "native-z-space"
         ),
@@ -270,7 +364,13 @@ def fit_native_spec(
         maxiter=maximum_iterations,
         engine="cpp-function-jet",
         optimizer_mode=solve.mode,
-        kkt_residual=assessment.kkt_residual,
+        optimizer_terminated=solve.mode == 0,
+        stationarity_status=(
+            "unavailable" if not gradient_available
+            else "certified" if stationary else "uncertified"
+        ),
+        inference_status="available" if covariance is not None else "unavailable",
+        kkt_residual=assessment.kkt_residual if gradient_available else None,
         coordinate_kkt_residual=coordinate_kkt_residual,
         kkt_tolerance=kkt_tolerance,
         maximum_constraint_violation=assessment.maximum_violation,
@@ -280,7 +380,26 @@ def fit_native_spec(
         curvature_refinement_steps=solve.curvature_refinement_steps,
         scientific_projection_steps=solve.scientific_projection_steps,
         objective_parity_error=parity_error,
-        jet_request_plan=model.request_plan,
+        jet_request_plan=(
+            model.request_plan + f"; {mean_phase['scope']} anchored F trials and chart F|G|H; "
+            "full theta validation at the retained point"
+            if mean_phase is not None else model.request_plan
+        ),
+        postfit_jet_requests=postfit_requests or None,
+        request_count_scope=(
+            f"Optimizer F/G totals include {mean_phase['scope']} phase requests; postfit jet "
+            "requests include triggering assessment, retained-point validation and inference. "
+            "The initial optimizer does not expose its total H count."
+            if mean_phase is not None else None
+        ),
+        phase_diagnostics=(
+            ((mean_phase,) if mean_phase is not None else ())
+            + ((dict(phase=coordinate_phase, execution_dispatch=solve.execution_dispatch,
+                   kernel_dispatch=solve.kernel_dispatch,
+                   scope="Canonical APARCH objective/curvature callbacks; excludes KKT/filter/inference."),)
+               if solve.execution_dispatch is not None else ())
+        ),
+        kernel_dispatch=solve.kernel_dispatch if mean_phase is None else None,
         boundary_reached=assessment.boundary_reached,
         optimizer_phases=(
             tuple(
@@ -291,6 +410,7 @@ def fit_native_spec(
                     if solve.scientific_projection_steps
                     else None,
                     refinement_phase,
+                    mean_phase["phase"] if mean_phase is not None else None,
                 )
                 if phase is not None
             )
@@ -302,6 +422,7 @@ def fit_native_spec(
                     coordinate_mode,
                     0 if solve.scientific_projection_steps else None,
                     theta_solve.mode if refinement is not None else None,
+                    mean_phase["stop"] if mean_phase is not None else None,
                 )
                 if mode is not None
             )
@@ -312,16 +433,19 @@ def fit_native_spec(
             else 0
         ),
     )
+    if controller is not None:
+        _apply_aparch_controller_metadata(fit_info, controller)
     if not credible:
         fit_info.add_warning(message)
     if boundary_warning is not None:
         fit_info.add_warning(boundary_warning)
-    if hessian_warning is not None:
-        fit_info.add_warning(hessian_warning)
+    if solution_warning is not None:
+        fit_info.add_warning(solution_warning)
+    if not gradient_available:
+        fit_info.add_warning(_GRADIENT_UNAVAILABLE_WARNING)
     if covariance is None:
         fit_info.add_warning(
-            "Standard errors are unavailable because the observed Hessian "
-            "is singular or does not imply a positive covariance matrix."
+            "Standard errors are unavailable: convergence or positive, numerically resolved observed information is not certified."
         )
 
     result = EstimationResult(
@@ -336,6 +460,124 @@ def fit_native_spec(
     )
     result._resid = filtered_state.residuals.copy()
     return result
+
+
+
+def _run_aparch_fit_controller(
+    model: NativeModel,
+    data: NDArray[np.float64],
+    initial_theta: NDArray[np.float64],
+    coordinates: NDArray[np.float64],
+    phases: ControllerPhases,
+    accuracy: float,
+    maximum_iterations: int,
+) -> ControllerSelection:
+    def solve_joint(request: PhaseRequest) -> PhaseOutcome:
+        point = (request.start.coordinates.copy() if request.start.coordinates is not None
+                 else _theta_to_coordinates(model, request.start.theta))
+        solve = _solve_coordinates(model, data, point, accuracy=request.accuracy,
+                                   maximum_iterations=request.budget)
+        theta = _coordinates_to_theta(model, point)
+        requests: dict[str, int] = {}
+        try:
+            assessed = _assess_aparch_phase_point(
+                model, data, theta, solve, request.accuracy, coordinates=point,
+                requests=requests,
+            )
+        except RuntimeError as error:
+            if solve.mode not in {-101, -102}:
+                raise
+            work = PhaseWork(
+                iterations=solve.iterations,
+                function_evaluations=solve.function_evaluations,
+                gradient_evaluations=solve.gradient_evaluations,
+                hessian_evaluations=None, validation_requests=requests,
+            )
+            return PhaseOutcome(work=work, mode=solve.mode,
+                failure=f"Native phase rejected its final objective: {error}",
+                evidence={"execution_dispatch": solve.execution_dispatch,
+                          "kernel_dispatch": solve.kernel_dispatch})
+        work = PhaseWork(
+            iterations=solve.iterations,
+            function_evaluations=solve.function_evaluations,
+            gradient_evaluations=solve.gradient_evaluations,
+            hessian_evaluations=None, validation_requests=requests,
+        )
+        return PhaseOutcome(points=(assessed,), continuation=assessed, work=work,
+                            mode=solve.mode, evidence={
+                                "execution_dispatch": solve.execution_dispatch,
+                                "kernel_dispatch": solve.kernel_dispatch,
+                                "refinement_restarts": solve.refinement_restarts,
+                                "curvature_refinement_steps": solve.curvature_refinement_steps,
+                                "scientific_projection_steps": solve.scientific_projection_steps,
+                            })
+
+    return run_aparch_controller(
+        PhaseStart(initial_theta, coordinates), baseline=solve_joint,
+        released=solve_joint, phases=phases, baseline_budget=maximum_iterations,
+        density_code=model.density_code,
+        power_index=model.n_mean + model.n_vol - 1, accuracy=accuracy,
+    )
+
+
+def _assess_aparch_phase_point(
+    model: NativeModel,
+    data: NDArray[np.float64],
+    theta: NDArray[np.float64],
+    solve: NativeSolve,
+    accuracy: float,
+    *,
+    coordinates: Optional[NDArray[np.float64]] = None,
+    requests: Optional[dict[str, int]] = None,
+) -> PhasePoint:
+    # Reuse the canonical sparse fallback; finite F does not require finite G/H.
+    value, gradient = _evaluate_theta_first_order(model, data, theta, requests=requests)
+    assessment = _assess_theta_solution(model, theta, gradient, data, accuracy,
+                                        boundary_reached=False)
+    if not _mean_parameters_are_feasible(model, theta):
+        assessment = replace(assessment, model_feasible=False)
+    tolerance = max(np.sqrt(accuracy), np.sqrt(np.finfo(np.float64).eps))
+    certified = _solution_is_credible(solve, assessment, value, gradient, 0.0, tolerance)
+    solve = replace(solve, scaled_value=value / model.scored_observations(data.size))
+    return PhasePoint(theta, value, gradient, solve, assessment,
+                      coordinates=coordinates, certified=certified)
+
+
+def _apply_aparch_controller_metadata(
+    fit_info: FitMetadata, controller: ControllerSelection,
+) -> None:
+    work = controller.total_work()
+    fit_info.solver = "native-slsqp+aparch-point-controller"
+    fit_info.optimizer_controller = (
+        "aparch-point-controller; prototype/incomplete; trigger=" + controller.trigger_policy)
+    fit_info.optimization_space = "joint-z; optional power preparation; released-joint-z; joint-theta-charts"
+    fit_info.maxiter = sum(row["budget"] for row in controller.diagnostics)
+    fit_info.optimizer_phases = tuple(row["phase"] for row in controller.diagnostics)
+    fit_info.optimizer_phase_modes = tuple(row["mode"] for row in controller.diagnostics)
+    fit_info.route_iteration_budgets = [row["budget"] for row in controller.diagnostics]
+    fit_info.phase_diagnostics = controller.diagnostics
+    execution = _merge_execution_dispatch(*(
+        row["evidence"].get("execution_dispatch") for row in controller.diagnostics
+    ))
+    fit_info.kernel_dispatch = {1: 0, 2: 1}.get(execution)
+    fit_info.selected_by = controller.selected_phase
+    fit_info.hessian_evaluations = work.hessian_evaluations
+    fit_info.request_count_scope = (
+        "Optimizer F/G totals include every attempted phase, including rejected and "
+        "unavailable phases. Python validation and final inference requests are "
+        "separate in postfit_jet_requests. A missing native H total remains unknown. "
+        "Phase evidence records preparation, constraints and callback failures."
+    )
+    fit_info.jet_request_plan += "; point-first selection; one canonical final filter/inference"
+    if controller.point.coordinates is None:
+        fit_info.add_warning(
+            "Coordinate-edge diagnostics are unavailable for the selected theta-chart "
+            "point; its actual theta was not inverted or roundtripped.")
+    for row in controller.diagnostics:
+        if row["failure"]:
+            fit_info.add_warning(row["failure"] + "; the best finite feasible estimate was retained.")
+    for warning in controller.point.warnings:
+        fit_info.add_warning(warning)
 
 
 def fit_scipy_canonical_spec(
@@ -464,9 +706,12 @@ def fit_scipy_canonical_spec(
             np.isfinite(upper), np.minimum(coordinates, upper), coordinates
         ))
         candidate_theta = _coordinates_to_theta(model, coordinates)
-        _, candidate_gradient, _ = _evaluate_theta_request(
-            model, prepared_data, candidate_theta, request=2
-        )
+        try:
+            _, candidate_gradient, _ = _evaluate_theta_request(
+                model, prepared_data, candidate_theta, request=2
+            )
+        except RuntimeError:
+            candidate_gradient = np.full(model.n_params, np.nan, dtype=np.float64)
         candidate_assessment = _assess_theta_solution(
             model,
             candidate_theta,
@@ -487,7 +732,7 @@ def fit_scipy_canonical_spec(
     theta = _coordinates_to_theta(
         model, coordinates
     )
-    native_nll, gradient, hessian, hessian_warning = _evaluate_theta_solution(
+    native_nll, gradient, hessian, solution_warning = _evaluate_theta_solution(
         model, prepared_data, theta
     )
     filtered_state, parity_error = _cross_check_canonical_filter(
@@ -504,20 +749,21 @@ def fit_scipy_canonical_spec(
         accuracy,
         boundary_reached=boundary_warning is not None,
     )
-    credible = bool(
-        scipy_result.success
-        and assessment.model_feasible
-        and assessment.maximum_violation <= kkt_tolerance
-        and assessment.kkt_residual <= kkt_tolerance
-        and parity_error <= 1e-8 * max(1.0, abs(native_nll))
+    if not assessment.model_feasible:
+        raise RuntimeError("The final canonical parameter point is infeasible.")
+    gradient_available = _gradient_is_available(model, gradient)
+    terminated = bool(scipy_result.success)
+    stationary = _solution_is_stationary(
+        assessment, native_nll, gradient, parity_error, kkt_tolerance
     )
+    credible = terminated and stationary
     message = (
         f"SciPy {method} terminated successfully on the canonical {family} jet."
         if credible
         else f"SciPy {method} did not return a KKT-credible canonical {family} solution: "
         f"{scipy_result.message}"
     )
-    covariance = _covariance_from_hessian(hessian)
+    covariance = observed_covariance(hessian, stationary=credible)
     scipy_result.x = theta
     scipy_result.fun = native_nll
     scipy_result.success = credible
@@ -536,9 +782,15 @@ def fit_scipy_canonical_spec(
         maxiter=maximum_iterations,
         engine="cpp-function-jet",
         optimizer_mode=int(scipy_result.status),
+        optimizer_terminated=terminated,
+        stationarity_status=(
+            "unavailable" if not gradient_available
+            else "certified" if stationary else "uncertified"
+        ),
+        inference_status="available" if covariance is not None else "unavailable",
         optimizer_phases=optimizer_phases,
         optimizer_phase_modes=tuple(phase_modes),
-        kkt_residual=assessment.kkt_residual,
+        kkt_residual=assessment.kkt_residual if gradient_available else None,
         kkt_tolerance=kkt_tolerance,
         maximum_constraint_violation=assessment.maximum_violation,
         function_evaluations=total_function_evaluations,
@@ -555,8 +807,10 @@ def fit_scipy_canonical_spec(
         fit_info.add_warning(message)
     if boundary_warning is not None:
         fit_info.add_warning(boundary_warning)
-    if hessian_warning is not None:
-        fit_info.add_warning(hessian_warning)
+    if solution_warning is not None:
+        fit_info.add_warning(solution_warning)
+    if not gradient_available:
+        fit_info.add_warning(_GRADIENT_UNAVAILABLE_WARNING)
     if rejected_trials:
         fit_info.add_warning(
             f"SciPy proposed {rejected_trials} non-representable {family} trial "
@@ -564,8 +818,7 @@ def fit_scipy_canonical_spec(
         )
     if covariance is None:
         fit_info.add_warning(
-            "Standard errors are unavailable because the observed Hessian "
-            "is singular or does not imply a positive covariance matrix."
+            "Standard errors are unavailable: convergence or positive, numerically resolved observed information is not certified."
         )
 
     result = EstimationResult(
@@ -861,7 +1114,13 @@ def _map_parameters(
 
 
 def _initial_variance(data: NDArray[np.float64]) -> float:
-    return max(float(np.mean(data * data)), np.finfo(np.float64).tiny)
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        variance = float(np.mean(data * data))
+    if not np.isfinite(variance) or variance <= 0.0:
+        raise ValueError(
+            "The conditioning variance must be positive and representable; rescale the data."
+        )
+    return variance
 
 
 def _solve_coordinates(
@@ -1000,6 +1259,124 @@ def _solve_coordinates(
     return _native_solve(raw)
 
 
+def _refine_aparch_mean_if_needed(
+    model: NativeModel,
+    data: NDArray[np.float64],
+    theta: NDArray[np.float64],
+    solve: NativeSolve,
+    value: float,
+    gradient: NDArray[np.float64],
+    *,
+    accuracy: float,
+    maximum_iterations: int,
+    requests: dict[str, int],
+    joint: bool = False,
+) -> tuple[NDArray[np.float64], NativeSolve, float, NDArray[np.float64], Optional[dict[str, Any]]]:
+    """Refine in an anchored mean chart without transferring a phase certificate."""
+    remaining = maximum_iterations - solve.iterations
+    unchanged = (theta, solve, value, gradient, None)
+    if model.kind != "arma_aparch" or model.p_ar == 0 or remaining <= 0:
+        return unchanged
+    if joint and model.density_code != 0:
+        return unchanged  # Full joint phase qualification currently covers Normal.
+    tolerance = max(np.sqrt(accuracy), np.sqrt(np.finfo(np.float64).eps))
+    mean_residual = np.inf
+    if _gradient_is_available(model, gradient):
+        scaled_gradient, _, _ = _scale_theta_gradient(model, data, gradient)
+        mean_residual = float(np.max(np.abs(scaled_gradient[:model.n_mean])))
+        # A conditional phase cannot repair stationarity of the frozen blocks.
+        if not joint and mean_residual <= tolerance:
+            return unchanged
+    assessment = _assess_theta_solution(
+        model, theta, gradient, data, accuracy, boundary_reached=False
+    )
+    if not assessment.model_feasible or assessment.kkt_residual <= tolerance:
+        return unchanged
+    size = _native_core._arma_aparch_mean_refinement_workspace_bytes(
+        model.p_ar, model.q_ma, model.p_vol, model.q_vol, model.density_code, False,
+        *((True,) if joint else ()),
+    )
+    if not size:
+        return unchanged
+    workspace = _aligned_workspace(size)
+    continuation = np.full_like(theta, np.nan)
+    best = np.full_like(theta, np.nan)
+    maximum_steps, radius = min(12 if joint else 6, remaining), 1024
+    maximum_step = 0.1 if joint else 1e-3
+    raw = _native_core._arma_aparch_mean_refine(
+        theta.ctypes.data, theta.size, data.ctypes.data, data.size, _initial_variance(data),
+        model.p_ar, model.q_ma, model.p_vol, model.q_vol, model.density_code,
+        maximum_steps, radius, workspace.address, workspace.size,
+        continuation.ctypes.data, continuation.size, best.ctypes.data, best.size, False,
+        *((True, maximum_step) if joint else ()),
+    )
+    stop, best_value, continuation_value, iterations, accepted, values, curvatures, lattice, proposals, rejected = raw
+    diagnostics = dict(
+        phase="native-theta-anchored-joint" if joint else "native-theta-anchored-mean",
+        scope="joint" if joint else "conditional", stop=int(stop),
+        stop_kind={-3: "numerical-failure", -2: "initial-unavailable", -1: "invalid-input",
+                   0: "budget", 1: "no-accepted-step"}.get(int(stop), "unknown"),
+        initial_value=value, best_value=float(best_value), continuation_value=float(continuation_value),
+        maximum_steps=maximum_steps, maximum_step=maximum_step, radius=radius, iterations=int(iterations),
+        accepted_steps=int(accepted), requests={"F": int(values), "F|G|H": int(curvatures)},
+        lattice_points=int(lattice), proposals=int(proposals), rejected_proposals=int(rejected),
+        retained=False, validation="no-improvement", certificate="none",
+        trigger="joint-kkt" if joint else "mean-gradient", mean_gradient_residual=mean_residual,
+        initial_kkt_residual=assessment.kkt_residual,
+        trigger_tolerance=float(tolerance),
+    )
+    selected_theta, selected_value, selected_gradient = theta, value, gradient
+    if np.isfinite(best_value) and best_value < value and np.all(np.isfinite(best)):
+        # Validate the actual theta, without round-tripping it through z.
+        if not joint and not np.array_equal(best[model.n_mean:], theta[model.n_mean:]):
+            diagnostics["validation"] = "frozen-parameters-changed"
+        elif not _mean_parameters_are_feasible(model, best):
+            diagnostics["validation"] = "infeasible-mean"
+        else:
+            try:
+                candidate_value, candidate_gradient = _evaluate_theta_first_order(
+                    model, data, best, requests=requests
+                )
+            except RuntimeError as error:
+                diagnostics.update(validation="objective-unavailable", error=str(error))
+            else:
+                candidate_assessment = _assess_theta_solution(
+                    model, best, candidate_gradient, data, accuracy, boundary_reached=False
+                )
+                diagnostics["validated_value"] = candidate_value
+                diagnostics["validation"] = "rejected"
+                if (candidate_assessment.model_feasible and candidate_value < value
+                        and abs(candidate_value - best_value) <= 2e-11):
+                    selected_theta, selected_value, selected_gradient = best, candidate_value, candidate_gradient
+                    diagnostics.update(retained=True, validation="finite-feasible-improvement")
+    combined = replace(
+        solve,
+        mode=-105 if diagnostics["retained"] else solve.mode,
+        scaled_value=selected_value / model.scored_observations(data.size),
+        kkt_residual=np.inf if diagnostics["retained"] else solve.kkt_residual,
+        iterations=solve.iterations + int(iterations),
+        function_evaluations=solve.function_evaluations + int(values) + int(curvatures),
+        gradient_evaluations=solve.gradient_evaluations + int(curvatures),
+        curvature_refinement_steps=solve.curvature_refinement_steps + int(iterations),
+    )
+    return selected_theta, combined, selected_value, selected_gradient, diagnostics
+
+
+def _mean_parameters_are_feasible(model: NativeModel, theta: NDArray[np.float64]) -> bool:
+    """Check changed mean coefficients with the shared polynomial-domain owner."""
+    from ._mean_fit import StabilityBlock
+
+    for offset, order, sign in ((1, model.p_ar, 1.0), (1 + model.p_ar, model.q_ma, -1.0)):
+        if not order:
+            continue
+        block = StabilityBlock(offset, sign * np.eye(order))
+        try:
+            block.evaluate(theta, derivatives=False, stable=True)
+        except ValueError:
+            return False
+    return True
+
+
 def _refine_garch_theta_if_needed(
     model: NativeModel,
     data: NDArray[np.float64],
@@ -1011,9 +1388,9 @@ def _refine_garch_theta_if_needed(
     if model.kind != "garch" or remaining_iterations <= 0:
         return None
 
-    baseline_value, gradient, _ = _evaluate_theta_request(
-        model, data, theta, request=3
-    )
+    baseline_value, gradient = _evaluate_theta_first_order(model, data, theta)
+    if not _gradient_is_available(model, gradient):
+        return None
     assessment = _assess_theta_solution(
         model,
         theta,
@@ -1097,6 +1474,16 @@ def _refine_garch_theta_if_needed(
     return (refined_theta, refined_solve) if improved else None
 
 
+def _merge_execution_dispatch(*executions: Optional[int]) -> Optional[int]:
+    observed = 0
+    complete = bool(executions)
+    for execution in executions:
+        observed |= execution or 0
+        complete = complete and execution in (1, 2, 3)
+    # Mixed execution is conclusive; a uniform claim needs every phase witnessed.
+    return observed if complete or observed == 3 else None
+
+
 def _combine_native_solves(
     first: NativeSolve, second: NativeSolve
 ) -> NativeSolve:
@@ -1125,10 +1512,23 @@ def _combine_native_solves(
             first.scientific_projection_steps
             + second.scientific_projection_steps
         ),
+        execution_dispatch=_merge_execution_dispatch(
+            first.execution_dispatch, second.execution_dispatch
+        ),
     )
 
 
 def _native_solve(raw: tuple[Any, ...]) -> NativeSolve:
+    execution = None
+    if len(raw) > 10:
+        try:
+            if isinstance(raw[10], (bool, np.bool_)):
+                raise TypeError("Boolean execution proof is not an integer bitmask.")
+            execution = operator.index(raw[10])
+        except TypeError as error:
+            raise ValueError("Invalid native APARCH execution-dispatch bitmask.") from error
+        if execution not in (0, 1, 2, 3):
+            raise ValueError("Invalid native APARCH execution-dispatch bitmask.")
     return NativeSolve(
         mode=int(raw[0]),
         scaled_value=float(raw[1]),
@@ -1140,6 +1540,7 @@ def _native_solve(raw: tuple[Any, ...]) -> NativeSolve:
         refinement_restarts=int(raw[7]),
         curvature_refinement_steps=int(raw[8]),
         scientific_projection_steps=int(raw[9]),
+        execution_dispatch=execution,
     )
 
 
@@ -1294,8 +1695,24 @@ def _evaluate_theta_solution(
     Optional[NDArray[np.float64]],
     Optional[str],
 ]:
-    value, gradient, _ = _evaluate_theta_request(model, data, theta, request=3)
+    value, gradient = _evaluate_theta_first_order(model, data, theta)
+    return _complete_theta_solution(model, data, theta, value, gradient)
+
+
+def _complete_theta_solution(
+    model: NativeModel,
+    data: NDArray[np.float64],
+    theta: NDArray[np.float64],
+    value: float,
+    gradient: NDArray[np.float64],
+    *,
+    requests: Optional[dict[str, int]] = None,
+) -> tuple[float, NDArray[np.float64], Optional[NDArray[np.float64]], Optional[str]]:
+    if not _gradient_is_available(model, gradient):
+        return value, gradient, None, _GRADIENT_UNAVAILABLE_WARNING
     try:
+        if requests is not None:
+            requests["H"] = requests.get("H", 0) + 1
         _, _, hessian = _evaluate_theta_request(model, data, theta, request=4)
     except RuntimeError as error:
         return (
@@ -1306,6 +1723,45 @@ def _evaluate_theta_solution(
             f"Hessian is unavailable at this point ({error}).",
         )
     return value, gradient, 0.5 * (hessian + hessian.T), None
+
+
+def _evaluate_theta_first_order(
+    model: NativeModel,
+    data: NDArray[np.float64],
+    theta: NDArray[np.float64],
+    *,
+    requests: Optional[dict[str, int]] = None,
+) -> tuple[float, NDArray[np.float64]]:
+    """Recover sparse requests without treating a missing gradient as a value failure."""
+    try:
+        if requests is not None:
+            requests["F|G"] = requests.get("F|G", 0) + 1
+        value, gradient, _ = _evaluate_theta_request(model, data, theta, request=3)
+        if np.isfinite(value) and _gradient_is_available(model, gradient):
+            return value, gradient
+    except RuntimeError:
+        pass
+
+    if requests is not None:
+        requests["F"] = requests.get("F", 0) + 1
+    value, _, _ = _evaluate_theta_request(model, data, theta, request=1)
+    if not np.isfinite(value):
+        raise RuntimeError("The final objective is nonfinite.")
+    try:
+        if requests is not None:
+            requests["G"] = requests.get("G", 0) + 1
+        _, gradient, _ = _evaluate_theta_request(model, data, theta, request=2)
+        if _gradient_is_available(model, gradient):
+            return value, gradient
+    except RuntimeError:
+        pass
+    return value, np.full(model.n_params, np.nan, dtype=np.float64)
+
+
+def _gradient_is_available(
+    model: NativeModel, gradient: NDArray[np.float64]
+) -> bool:
+    return bool(gradient.shape == (model.n_params,) and np.all(np.isfinite(gradient)))
 
 
 def _evaluate_theta_jet(
@@ -1637,9 +2093,22 @@ def _aparch_moment_jets(
     return values, derivatives
 
 
+def _aparch_persistence_evidence(
+    model: NativeModel,
+    theta: NDArray[np.float64],
+) -> tuple[float, float]:
+    """Keep persistence and its resolved slack; neither is a rounded complement."""
+    volatility = np.ascontiguousarray(theta[model.n_mean:], dtype=np.float64)
+    return _native_core._aparch_persistence(
+        volatility.ctypes.data, model.p_vol, model.q_vol, model.density_code
+    )
+
+
 def _aparch_volatility_domain(
     model: NativeModel,
     theta: NDArray[np.float64],
+    *,
+    persistence_evidence: tuple[float, float] | None = None,
 ) -> tuple[float, bool, float]:
     omega = model.n_mean
     alpha_start = omega + 1
@@ -1650,8 +2119,10 @@ def _aparch_volatility_domain(
     gamma = theta[gamma_start:beta_start]
     beta = theta[beta_start:delta_index]
     delta = float(theta[delta_index])
-    moments, _ = _aparch_moment_jets(model, theta, gradient=False)
-    persistence = float(alpha @ moments + np.sum(beta))
+    persistence, slack = (
+        _aparch_persistence_evidence(model, theta)
+        if persistence_evidence is None else persistence_evidence
+    )
     tail_gap = np.inf
     if model.density_code in (1, 2):
         tail_gap = float(theta[delta_index + 1] - delta)
@@ -1662,7 +2133,7 @@ def _aparch_volatility_domain(
         float(np.max(np.abs(gamma) - 1.0, initial=0.0)),
         float(np.max(-beta, initial=0.0)),
         -delta,
-        persistence - 1.0,
+        -slack,
         -tail_gap,
     )
     feasible = bool(
@@ -1671,7 +2142,7 @@ def _aparch_volatility_domain(
         and np.all(np.abs(gamma) < 1.0)
         and np.all(beta >= 0.0)
         and delta > 0.0
-        and persistence < 1.0
+        and slack > 0.0
         and tail_gap > 0.0
     )
     return violation, feasible, persistence
@@ -1694,8 +2165,8 @@ def _aparch_kkt_residual(
     gamma = theta[gamma_start:beta_start]
     beta = theta[beta_start:delta_index]
     delta = float(theta[delta_index])
-    moments, derivatives = _aparch_moment_jets(
-        model, theta, gradient=True
+    moments, _ = _aparch_moment_jets(
+        model, theta, gradient=False
     )
     persistence = float(alpha @ moments + np.sum(beta))
     activity = max(
@@ -1746,14 +2217,17 @@ def _aparch_kkt_residual(
         tail[shape_start] = 1.0
         activate(float(theta[shape_start] - delta), tail)
 
-    stationarity = np.zeros(model.n_params, dtype=np.float64)
-    stationarity[alpha_start:gamma_start] = -moments
-    stationarity[gamma_start:beta_start] = -alpha * derivatives[:, 0]
-    stationarity[beta_start:delta_index] = -1.0
-    stationarity[delta_index] = -float(alpha @ derivatives[:, 1])
-    if shape_start < model.n_params:
-        stationarity[shape_start:] = -(alpha @ derivatives[:, 2:])
-    activate(1.0 - persistence, stationarity)
+    stationarity_slack = 1.0 - persistence
+    if stationarity_slack <= activity * max(1.0, abs(stationarity_slack)):
+        _, derivatives = _aparch_moment_jets(model, theta, gradient=True)
+        stationarity = np.zeros(model.n_params, dtype=np.float64)
+        stationarity[alpha_start:gamma_start] = -moments
+        stationarity[gamma_start:beta_start] = -alpha * derivatives[:, 0]
+        stationarity[beta_start:delta_index] = -1.0
+        stationarity[delta_index] = -float(alpha @ derivatives[:, 1])
+        if shape_start < model.n_params:
+            stationarity[shape_start:] = -(alpha @ derivatives[:, 2:])
+        activate(stationarity_slack, stationarity)
 
     if not normals:
         return float(np.max(np.abs(scaled_gradient), initial=0.0))
@@ -1775,9 +2249,9 @@ def _assess_theta_solution(
     boundary_reached: bool,
 ) -> ThetaAssessment:
     """Assess the optimizer result in the model's scientific coordinates."""
-    if theta.size != model.n_params or gradient.size != model.n_params:
+    if theta.size != model.n_params:
         return ThetaAssessment(np.inf, np.inf, False, boundary_reached)
-    if not np.all(np.isfinite(theta)) or not np.all(np.isfinite(gradient)):
+    if not np.all(np.isfinite(theta)):
         return ThetaAssessment(np.inf, np.inf, False, boundary_reached)
 
     omega_index = model.n_mean
@@ -1816,14 +2290,11 @@ def _assess_theta_solution(
     n_eff = model.scored_observations(data.size)
     if n_eff <= 0:
         return ThetaAssessment(maximum_violation, np.inf, False, boundary_reached)
-    scaled_gradient = np.asarray(gradient, dtype=np.float64) / float(n_eff)
-    parameter_scales = np.ones(model.n_params, dtype=np.float64)
-    data_scale = max(float(np.sqrt(np.mean(data * data))), np.finfo(np.float64).tiny)
-    if model.n_mean:
-        parameter_scales[0] = data_scale
-    if model.kind not in {"egarch", "arma_egarch"}:
-        parameter_scales[omega_index] = data_scale * data_scale
-    scaled_gradient = scaled_gradient * parameter_scales
+    if not _gradient_is_available(model, gradient):
+        return ThetaAssessment(
+            maximum_violation, np.inf, model_feasible, boundary_reached
+        )
+    scaled_gradient, parameter_scales, data_scale = _scale_theta_gradient(model, data, gradient)
 
     if model.kind in {"egarch", "arma_egarch"}:
         kkt_residual = _egarch_kkt_residual(
@@ -1870,6 +2341,20 @@ def _assess_theta_solution(
         model_feasible=model_feasible,
         boundary_reached=boundary_reached,
     )
+
+
+def _scale_theta_gradient(
+    model: NativeModel, data: NDArray[np.float64], gradient: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64], float]:
+    """Use the scientific KKT units for both phase selection and final assessment."""
+    scaled_gradient = np.asarray(gradient, dtype=np.float64) / float(model.scored_observations(data.size))
+    parameter_scales = np.ones(model.n_params, dtype=np.float64)
+    data_scale = max(float(np.sqrt(np.mean(data * data))), np.finfo(np.float64).tiny)
+    if model.n_mean:
+        parameter_scales[0] = data_scale
+    if model.kind not in {"egarch", "arma_egarch"}:
+        parameter_scales[model.n_mean] = data_scale * data_scale
+    return scaled_gradient * parameter_scales, parameter_scales, data_scale
 
 
 def _egarch_stability_domain(
@@ -2288,10 +2773,21 @@ def _solution_is_credible(
     parity_error: float,
     kkt_tolerance: float,
 ) -> bool:
+    return solve.mode == 0 and _solution_is_stationary(
+        assessment, native_nll, gradient, parity_error, kkt_tolerance
+    )
+
+
+def _solution_is_stationary(
+    assessment: ThetaAssessment,
+    native_nll: float,
+    gradient: NDArray[np.float64],
+    parity_error: float,
+    kkt_tolerance: float,
+) -> bool:
     parity_tolerance = 1e-8 * max(1.0, abs(native_nll))
-    return (
-        solve.mode == 0
-        and assessment.model_feasible
+    return bool(
+        assessment.model_feasible
         and np.isfinite(native_nll)
         and np.all(np.isfinite(gradient))
         and assessment.maximum_violation <= kkt_tolerance

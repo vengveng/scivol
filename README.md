@@ -485,6 +485,7 @@ Current default path policy:
 | `ARX/HARX + Normal / StudentT / SkewT / GED` | `theta-space` |
 | `ARX/HARX + GARCH + Normal / StudentT / SkewT / GED` | `theta-space` |
 | `ARX/HARX + EGARCH + Normal / StudentT / SkewT / GED` | `theta-space` |
+| `ARX/HARX + APARCH + any shipped density` | native same-start metric portfolio, initially `theta-space` |
 
 ### QMLE
 

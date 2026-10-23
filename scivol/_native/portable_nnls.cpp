@@ -228,6 +228,10 @@ finish:
         *rnorm += residual[row] * residual[row];
     }
     *rnorm = std::sqrt(*rnorm);
+    if (!std::isfinite(*rnorm) || *rnorm == 0.0) {
+        CBLAS_INT increment = 1, rows = m;
+        *rnorm = BLAS_FUNC(dnrm2)(&rows,residual,&increment);
+    }
     for (CBLAS_INT column = 0; column < n; ++column) {
         double correlation = 0.0;
         for (CBLAS_INT row = 0; row < m; ++row)

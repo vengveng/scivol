@@ -3,6 +3,7 @@
 #include "runtime_workspace.hpp"
 #include "third_party/scipy_slsqp/scipy_blas_defines.h"
 #include <algorithm>
+#include <climits>
 
 namespace vlk::experiment::nnls {
 

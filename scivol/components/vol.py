@@ -93,6 +93,8 @@ class APARCH(Component):
         return float(self.fitted_params["persistence"])
 
     def is_stationary(self) -> bool:
+        if self.fitted_params and "stationarity_slack" in self.fitted_params:
+            return self.fitted_params["stationarity_slack"] > 0.0
         return self.persistence() < 1.0 if self.fitted_params else False
 
 

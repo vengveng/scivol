@@ -54,8 +54,8 @@ static inline double skewt_nll_var(double e, double h, double nu, double a, doub
 
 /* Precompute Skew-t constants a, b from nu, lam */
 static inline void skewt_precompute(double nu, double lam, double *a_out, double *b_out) {
-    double c = lgamma_approx(0.5 * (nu + 1)) - lgamma_approx(0.5 * nu);
-    double a = 4.0 * lam * exp(c) * ((nu - 2.0) / (nu - 1.0)) / sqrt(M_PI * (nu - 2.0));
+    double c = vlk_student_normalization(nu, 1, 0, 0).value;
+    double a = 4.0 * lam * exp(c) * ((nu - 2.0) / (nu - 1.0));
     double b2 = 1.0 + 3.0 * lam * lam - a * a;
     *a_out = a;
     *b_out = sqrt(b2 > 0 ? b2 : 1e-10);
@@ -102,13 +102,12 @@ typedef struct {
 static inline int skewt_precompute_full(double nu, double lam, skewt_cache_t *cache) {
     const double nu_m1 = nu - 1.0;
     const double nu_m2 = nu - 2.0;
-    const double lgamma_c = lgamma_approx(0.5 * (nu + 1.0)) - lgamma_approx(0.5 * nu);
-    const double c_nu = 0.5 * digamma_approx(0.5 * (nu + 1.0)) - 0.5 * digamma_approx(0.5 * nu);
-    const double c_nunu = 0.25 * trigamma_approx(0.5 * (nu + 1.0)) - 0.25 * trigamma_approx(0.5 * nu);
-    const double a_core = 4.0 * exp(lgamma_c) * sqrt(nu_m2 / M_PI) / nu_m1;
+    const vlk_student_normalization_t normalizer = vlk_student_normalization(nu, 1, 1, 1);
+    const double a_core = 4.0 * exp(normalizer.value) * (nu_m2 / nu_m1);
     const double a = lam * a_core;
-    const double g1 = c_nu + 0.5 / nu_m2 - 1.0 / nu_m1;
-    const double g1_nu = c_nunu - 0.5 / (nu_m2 * nu_m2) + 1.0 / (nu_m1 * nu_m1);
+    const double inverse_product = (1.0 / nu_m1) * (1.0 / nu_m2);
+    const double g1 = normalizer.first + inverse_product;
+    const double g1_nu = normalizer.second - inverse_product * (1.0 / nu_m1 + 1.0 / nu_m2);
     const double a_nu = a * g1;
     const double a_lam = a_core;
     const double a_nunu = a * (g1 * g1 + g1_nu);
@@ -136,7 +135,7 @@ static inline int skewt_precompute_full(double nu, double lam, skewt_cache_t *ca
 
     cache->a = a;
     cache->b = b;
-    cache->base_cnst = log(b) + lgamma_c - 0.5 * log(nu_m2 * M_PI);
+    cache->base_cnst = log(b) + normalizer.value;
     cache->a_nu = a_nu;
     cache->a_lam = a_lam;
     cache->a_nunu = a_nunu;
@@ -146,9 +145,9 @@ static inline int skewt_precompute_full(double nu, double lam, skewt_cache_t *ca
     cache->b_nunu = b_nunu;
     cache->b_nulam = b_nulam;
     cache->b_lamlam = b_lamlam;
-    cache->base_nu = b_nu * inv_b + c_nu - 0.5 / nu_m2;
+    cache->base_nu = b_nu * inv_b + normalizer.first;
     cache->base_lam = b_lam * inv_b;
-    cache->base_nunu = b_nunu * inv_b - b_nu * b_nu * inv_b2 + c_nunu + 0.5 / (nu_m2 * nu_m2);
+    cache->base_nunu = b_nunu * inv_b - b_nu * b_nu * inv_b2 + normalizer.second;
     cache->base_nulam = b_nulam * inv_b - b_nu * b_lam * inv_b2;
     cache->base_lamlam = b_lamlam * inv_b - b_lam * b_lam * inv_b2;
     return 1;
@@ -225,33 +224,28 @@ static inline int skewt_obs_derivs(
 
     const double R_e = 2.0 * v * v_e;
     const double R_h = 2.0 * v * v_h;
-    const double R_nu = 1.0 + 2.0 * v * v_nu;
     const double R_lam = 2.0 * v * v_lam;
     const double R_ee = 2.0 * (v_e * v_e + v * v_ee);
     const double R_eh = 2.0 * (v_e * v_h + v * v_eh);
     const double R_hh = 2.0 * (v_h * v_h + v * v_hh);
-    const double R_e_nu = 2.0 * (v_e * v_nu + v * v_e_nu);
     const double R_e_lam = 2.0 * (v_e * v_lam + v * v_e_lam);
-    const double R_h_nu = 2.0 * (v_h * v_nu + v * v_h_nu);
     const double R_h_lam = 2.0 * (v_h * v_lam + v * v_h_lam);
-    const double R_nu_nu = 2.0 * (v_nu * v_nu + v * v_nu_nu);
-    const double R_nu_lam = 2.0 * (v_nu * v_lam + v * v_nu_lam);
     const double R_lam_lam = 2.0 * (v_lam * v_lam + v * v_lam_lam);
 
-    out->value = 0.5 * log(h) + q * (log(R) - log(nu_m2));
+    out->value = 0.5 * log(h) + q * vlk_student_log_tail(v*v, nu_m2, R, log(nu_m2));
     out->ell_e = q * R_e * inv_R;
     out->ell_h = 0.5 * inv_h + q * R_h * inv_R;
-    out->ell_nu = 0.5 * (log(R) - log(nu_m2)) + q * (R_nu * inv_R - 1.0 / nu_m2);
+    out->ell_nu = vlk_skewt_tail_shape_first(nu, v, v_nu);
     out->ell_lam = q * R_lam * inv_R;
     out->ell_ee = q * (R_ee * inv_R - R_e * R_e * inv_R2);
     out->ell_eh = q * (R_eh * inv_R - R_e * R_h * inv_R2);
     out->ell_hh = -0.5 * inv_h2 + q * (R_hh * inv_R - R_h * R_h * inv_R2);
-    out->ell_e_nu = 0.5 * R_e * inv_R + q * (R_e_nu * inv_R - R_e * R_nu * inv_R2);
+    out->ell_e_nu = vlk_skewt_tail_shape_cross(nu, v, v_nu, v_e, v_e_nu);
     out->ell_e_lam = q * (R_e_lam * inv_R - R_e * R_lam * inv_R2);
-    out->ell_h_nu = 0.5 * R_h * inv_R + q * (R_h_nu * inv_R - R_h * R_nu * inv_R2);
+    out->ell_h_nu = vlk_skewt_tail_shape_cross(nu, v, v_nu, v_h, v_h_nu);
     out->ell_h_lam = q * (R_h_lam * inv_R - R_h * R_lam * inv_R2);
-    out->ell_nu_nu = (R_nu * inv_R - 1.0 / nu_m2) + q * (R_nu_nu * inv_R - R_nu * R_nu * inv_R2 + 1.0 / (nu_m2 * nu_m2));
-    out->ell_nu_lam = 0.5 * R_lam * inv_R + q * (R_nu_lam * inv_R - R_nu * R_lam * inv_R2);
+    out->ell_nu_nu = vlk_skewt_tail_shape_second(nu, v, v_nu, v_nu_nu);
+    out->ell_nu_lam = vlk_skewt_tail_shape_cross(nu, v, v_nu, v_lam, v_nu_lam);
     out->ell_lam_lam = q * (R_lam_lam * inv_R - R_lam * R_lam * inv_R2);
     return 1;
 }
@@ -417,7 +411,7 @@ double arma_gjr_garch_nll_pq_normal(
             const double e_lag = resid[t - 1 - i];
             const double e2_lag = e_lag * e_lag;
             const double ind = (e_lag < 0.0) ? 1.0 : 0.0;
-            h_t += alpha[i] * e2_lag + gamma[i] * ind * e2_lag;
+            h_t += (alpha[i] + gamma[i] * ind) * e2_lag;
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
@@ -528,7 +522,7 @@ double arma_gjr_garch_nll_grad_pq_normal(
             const double e_lag = resid[t - 1 - i];
             const double e2_lag = e_lag * e_lag;
             const double ind = (e_lag < 0.0) ? 1.0 : 0.0;
-            h_t += alpha[i] * e2_lag + gamma[i] * ind * e2_lag;
+            h_t += (alpha[i] + gamma[i] * ind) * e2_lag;
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
@@ -696,7 +690,7 @@ void arma_gjr_garch_hess_pq_normal(
             const double e_lag = resid[t - 1 - i];
             const double e2_lag = e_lag * e_lag;
             const double ind = (e_lag < 0.0) ? 1.0 : 0.0;
-            h_t += alpha[i] * e2_lag + gamma[i] * ind * e2_lag;
+            h_t += (alpha[i] + gamma[i] * ind) * e2_lag;
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
@@ -852,7 +846,7 @@ double arma_gjr_garch_nll_pq_studentt(
         sigma2[i] = h0[i];
     }
 
-    const double cnst = lgamma_approx(0.5 * (nu + 1.0)) - lgamma_approx(0.5 * nu) - 0.5 * log((nu - 2.0) * M_PI);
+    const double cnst = vlk_student_normalization(nu, 1, 0, 0).value;
     double sum_nll = 0.0;
     for (size_t t = max_lag; t < n; ++t) {
         double mu_t = c;
@@ -865,7 +859,7 @@ double arma_gjr_garch_nll_pq_studentt(
             const double e_lag = resid[t - 1 - i];
             const double e2_lag = e_lag * e_lag;
             const double ind = (e_lag < 0.0) ? 1.0 : 0.0;
-            h_t += alpha[i] * e2_lag + gamma[i] * ind * e2_lag;
+            h_t += (alpha[i] + gamma[i] * ind) * e2_lag;
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
@@ -941,9 +935,8 @@ double arma_gjr_garch_nll_grad_pq_studentt(
     }
 
     const double inv_nu_m2 = 1.0 / (nu - 2.0);
-    const double psi_half_nu_plus_1 = digamma_approx(0.5 * (nu + 1.0));
-    const double psi_half_nu = digamma_approx(0.5 * nu);
-    const double cnst = lgamma_approx(0.5 * (nu + 1.0)) - lgamma_approx(0.5 * nu) - 0.5 * log((nu - 2.0) * M_PI);
+    const double student_normalizer_first = vlk_student_normalization(nu, 0, 1, 0).first;
+    const double cnst = vlk_student_normalization(nu, 1, 0, 0).value;
     double sum_nll = 0.0;
 
     for (size_t t = max_lag; t < n; ++t) {
@@ -974,7 +967,7 @@ double arma_gjr_garch_nll_grad_pq_studentt(
             const double e_lag = resid[t - 1 - i];
             const double e2_lag = e_lag * e_lag;
             const double ind = (e_lag < 0.0) ? 1.0 : 0.0;
-            h_t += alpha[i] * e2_lag + gamma[i] * ind * e2_lag;
+            h_t += (alpha[i] + gamma[i] * ind) * e2_lag;
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
@@ -1010,10 +1003,8 @@ double arma_gjr_garch_nll_grad_pq_studentt(
         const double one_plus = 1.0 + e2 * inv_nu_m2 / h_t;
         const double ell_e = (nu + 1.0) * e_t / B;
         const double ell_h = 0.5 / h_t - 0.5 * (nu + 1.0) * e2 / (h_t * B);
-        const double grad_nu = -0.5 * psi_half_nu_plus_1 + 0.5 * psi_half_nu
-                             + 0.5 * inv_nu_m2
-                             + 0.5 * log(one_plus)
-                             - 0.5 * (nu + 1.0) * e2 * inv_nu_m2 / B;
+        const double grad_nu = -student_normalizer_first
+            + vlk_student_tail_shape_first(nu, e2 / h_t);
 
         for (size_t k = 0; k < K_base; ++k) grad[k] += ell_e * de_curr[k] + ell_h * dh_curr[k];
         grad[nu_idx] += grad_nu;
@@ -1109,8 +1100,7 @@ void arma_gjr_garch_hess_pq_studentt(
     const double inv_nu_m2 = 1.0 / (nu - 2.0);
     const double inv_nu_m2_2 = inv_nu_m2 * inv_nu_m2;
     const double inv_nu_m2_3 = inv_nu_m2_2 * inv_nu_m2;
-    const double trigamma_half_nu_plus_1 = trigamma_approx(0.5 * (nu + 1.0));
-    const double trigamma_half_nu = trigamma_approx(0.5 * nu);
+    const double student_normalizer_second = vlk_student_normalization(nu, 0, 0, 1).second;
 
     for (size_t t = max_lag; t < n; ++t) {
         double mu_t = c;
@@ -1156,7 +1146,7 @@ void arma_gjr_garch_hess_pq_studentt(
             const double e_lag = resid[t - 1 - i];
             const double e2_lag = e_lag * e_lag;
             const double ind = (e_lag < 0.0) ? 1.0 : 0.0;
-            h_t += alpha[i] * e2_lag + gamma[i] * ind * e2_lag;
+            h_t += (alpha[i] + gamma[i] * ind) * e2_lag;
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
@@ -1238,15 +1228,10 @@ void arma_gjr_garch_hess_pq_studentt(
         const double ell_hh = -0.5 * inv_h2
                             + density_q * tmp * inv_nu_m2 * inv_h2 / one_plus
                             - 0.5 * density_q * tmp * tmp * inv_nu_m2_2 * inv_h2 / one_plus2;
-        const double ell_enu = e_t * inv_B - density_q * e_t * h_t * inv_B2;
-        const double ell_hnu = -0.5 * e2 * inv_h2 / one_plus
-                              * (inv_nu_m2 - density_q * inv_nu_m2_2 / one_plus);
-        const double ell_nunu =
-            -0.25 * trigamma_half_nu_plus_1
-            + 0.25 * trigamma_half_nu
-            - 0.5 * inv_nu_m2_2
-            - e2 * inv_nu_m2_2 * inv_h / one_plus
-            + 0.5 * density_q * e2 * inv_nu_m2_3 * inv_h * (1.0 + one_plus) / one_plus2;
+        const double ell_enu = 2.0 * e_t * inv_h * vlk_student_tail_squared_shape(nu, e2 * inv_h);
+        const double ell_hnu = -e2 * inv_h2 * vlk_student_tail_squared_shape(nu, e2 * inv_h);
+        const double ell_nunu = -student_normalizer_second
+            + vlk_student_tail_shape_second(nu, e2 * inv_h);
 
         for (size_t i = 0; i < K_base; ++i) {
             for (size_t j = 0; j < K_base; ++j) {
@@ -1343,7 +1328,7 @@ double arma_gjr_garch_nll_pq_ged(
             const double e_lag = resid[t - 1 - i];
             const double e2_lag = e_lag * e_lag;
             const double ind = (e_lag < 0.0) ? 1.0 : 0.0;
-            h_t += alpha[i] * e2_lag + gamma[i] * ind * e2_lag;
+            h_t += (alpha[i] + gamma[i] * ind) * e2_lag;
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
@@ -1453,7 +1438,7 @@ double arma_gjr_garch_nll_grad_pq_ged(
             const double e_lag = resid[t - 1 - i];
             const double e2_lag = e_lag * e_lag;
             const double ind = (e_lag < 0.0) ? 1.0 : 0.0;
-            h_t += alpha[i] * e2_lag + gamma[i] * ind * e2_lag;
+            h_t += (alpha[i] + gamma[i] * ind) * e2_lag;
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
@@ -1625,7 +1610,7 @@ void arma_gjr_garch_hess_pq_ged(
             const double e_lag = resid[t - 1 - i];
             const double e2_lag = e_lag * e_lag;
             const double ind = (e_lag < 0.0) ? 1.0 : 0.0;
-            h_t += alpha[i] * e2_lag + gamma[i] * ind * e2_lag;
+            h_t += (alpha[i] + gamma[i] * ind) * e2_lag;
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
@@ -1783,8 +1768,7 @@ double arma_gjr_garch_nll_pq_skewt(
 
     double a, b;
     skewt_precompute(nu, lam, &a, &b);
-    const double lgamma_c = lgamma_approx(0.5 * (nu + 1.0)) - lgamma_approx(0.5 * nu);
-    const double base_cnst = log(b) + lgamma_c - 0.5 * log((nu - 2.0) * M_PI);
+    const double base_cnst = log(b) + vlk_student_normalization(nu, 1, 0, 0).value;
     double sum_nll = 0.0;
 
     for (size_t t = max_lag; t < n; ++t) {
@@ -1798,7 +1782,7 @@ double arma_gjr_garch_nll_pq_skewt(
             const double e_lag = resid[t - 1 - i];
             const double e2_lag = e_lag * e_lag;
             const double ind = (e_lag < 0.0) ? 1.0 : 0.0;
-            h_t += alpha[i] * e2_lag + gamma[i] * ind * e2_lag;
+            h_t += (alpha[i] + gamma[i] * ind) * e2_lag;
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
@@ -1915,7 +1899,7 @@ double arma_gjr_garch_nll_grad_pq_skewt(
             const double e_lag = resid[t - 1 - i];
             const double e2_lag = e_lag * e_lag;
             const double ind = (e_lag < 0.0) ? 1.0 : 0.0;
-            h_t += alpha[i] * e2_lag + gamma[i] * ind * e2_lag;
+            h_t += (alpha[i] + gamma[i] * ind) * e2_lag;
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;
@@ -2097,7 +2081,7 @@ void arma_gjr_garch_hess_pq_skewt(
             const double e_lag = resid[t - 1 - i];
             const double e2_lag = e_lag * e_lag;
             const double ind = (e_lag < 0.0) ? 1.0 : 0.0;
-            h_t += alpha[i] * e2_lag + gamma[i] * ind * e2_lag;
+            h_t += (alpha[i] + gamma[i] * ind) * e2_lag;
         }
         for (size_t j = 0; j < Q_garch; ++j) h_t += beta[j] * sigma2[t - 1 - j];
         sigma2[t] = h_t;

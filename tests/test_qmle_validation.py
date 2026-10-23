@@ -22,6 +22,22 @@ from scivol import (
 from scivol import _core
 
 
+@pytest.mark.parametrize("orders", [(1, 1, 1, 1), (3, 1, 2, 1)])
+def test_joint_covariance_uses_the_scored_sample_size(orders):
+    from scivol._qmle import _compute_arma_garch_robust_se
+
+    p, q, P, Q = orders
+    data = np.random.default_rng(825).normal(size=160)
+    result = (ARMA(p, q) + GARCH(P, Q)).fit(data, method="qmle", solver="slsqp")
+    opg, hessian = _compute_arma_garch_robust_se(result.params, data, p, q, P, Q,
+                                               np.mean(data*data))
+    n_eff = len(data) - max(p, q, P, Q, 1)
+    additive_inverse = np.linalg.inv(n_eff*hessian)
+    expected_robust = additive_inverse @ (n_eff*opg) @ additive_inverse
+    np.testing.assert_allclose(result.cov_matrix, additive_inverse, rtol=3e-10, atol=2e-12)
+    np.testing.assert_allclose(result.cov_robust, expected_robust, rtol=3e-10, atol=2e-12)
+
+
 @pytest.mark.parametrize("direct", (False, True))
 @pytest.mark.parametrize("density", (Normal, StudentT, SkewT))
 @pytest.mark.parametrize(

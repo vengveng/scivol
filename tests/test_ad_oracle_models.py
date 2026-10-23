@@ -62,6 +62,116 @@ if importlib.util.find_spec("jax") is None:
     pytest.skip("jax is required for AD-oracle model checks", allow_module_level=True)
 
 
+@pytest.mark.parametrize("residual", [0.0, 0.7])
+def test_vg_oracle_resolves_high_skew_curvature(residual):
+    mp = pytest.importorskip("mpmath")
+    from scivol._devtools.ad_oracle import _jax_modules, _jax_vg_logpdf
+
+    jax, jnp, jsp = _jax_modules()
+    point = np.array([residual, 1.3, 0.95, 20.0])
+
+    def objective(theta, count=256):
+        e, variance, rho, shape = theta
+        return .5*jnp.log(variance) - _jax_vg_logpdf(
+            jnp, jsp, jnp.array([e/jnp.sqrt(variance)]), rho, shape, count
+        )[0]
+
+    def reference(e, variance, rho, shape):
+        theta = mp.sqrt(2)*rho/mp.sqrt(1-rho*rho)
+        scale = mp.sqrt(shape*(1+theta*theta))
+        argument_scale = mp.sqrt(2+theta*theta)
+        y = scale*e/mp.sqrt(variance)+shape*theta
+        order = shape-mp.mpf('.5')
+        logpdf = (mp.log(2*scale)-mp.log(2*mp.pi)/2-mp.loggamma(shape)
+                  +theta*y+order*mp.log(abs(y)/argument_scale)
+                  +mp.log(mp.besselk(order, argument_scale*abs(y))))
+        return mp.log(variance)/2-logpdf
+
+    with mp.workdps(70):
+        exact_point = tuple(mp.mpf(float(value)) for value in point)
+        expected_value = float(reference(*exact_point))
+        expected_gradient = np.array([
+            float(mp.diff(reference, exact_point, [int(k == i) for k in range(4)]))
+            for i in range(4)
+        ])
+        expected_hessian = np.array([
+            [float(mp.diff(reference, exact_point,
+                           [int(k == i)+int(k == j) for k in range(4)]))
+             for j in range(4)] for i in range(4)
+        ])
+
+    for count in (256, 512):
+        value, gradient = jax.jit(jax.value_and_grad(lambda x: objective(x, count)))(point)
+        hessian = jax.jit(jax.hessian(lambda x: objective(x, count)))(point)
+        np.testing.assert_allclose(value, expected_value, rtol=0, atol=1e-9)
+        np.testing.assert_allclose(gradient, expected_gradient, rtol=2e-7, atol=3e-8)
+        np.testing.assert_allclose(hessian, expected_hessian, rtol=2e-7, atol=3e-8)
+
+
+@pytest.mark.parametrize(
+    "coordinate",
+    [-700.0, -50.0, -36.0, -1.0, 0.0, 1.0, 35.63818828100899, 36.0, 50.0, 700.0],
+)
+@pytest.mark.parametrize("bounds", [(0.1, 25.0), (-60.0, 60.0)])
+def test_native_bounded_logistic_oracle_preserves_tail_derivatives(
+    coordinate: float, bounds: tuple[float, float]
+) -> None:
+    mp = pytest.importorskip("mpmath")
+    from scivol._devtools.ad_oracle import _jax_modules, _native_bounded_logistic
+
+    jax, jnp, _ = _jax_modules()
+    function = lambda z: _native_bounded_logistic(jax, z, *bounds)
+    point = jnp.asarray(coordinate)
+    actual = np.array(
+        [function(point), jax.grad(function)(point), jax.grad(jax.grad(function))(point)]
+    )
+    with mp.workdps(80):
+        lower, upper = map(mp.mpf, bounds)
+        width, z = upper - lower, mp.mpf(coordinate)
+        tail = mp.exp(-abs(z))
+        value = upper - width*tail/(1+tail) if z >= 0 else lower + width*tail/(1+tail)
+        slope = width * tail / (1 + tail)**2
+        curvature = -mp.sign(z) * width * tail * (1 - tail) / (1 + tail)**3
+        expected = np.array(list(map(float, (value, slope, curvature))))
+    np.testing.assert_allclose(actual[:1], expected[:1], rtol=3e-15, atol=3e-15)
+    np.testing.assert_allclose(actual[1:], expected[1:], rtol=3e-14, atol=0.0)
+
+
+@pytest.mark.parametrize("mean_width", [0, 1, 4, 7])
+@pytest.mark.parametrize("p", [0, 2])
+def test_egarch_chart_oracle_preserves_linear_mean_cross_curvature(mean_width, p):
+    from scivol._devtools.ad_oracle import native_egarch_coordinate_chain_rule_value_grad_hess
+
+    size = mean_width + 2 + 2 * p
+    coordinates = np.linspace(-0.3, 0.7, size)
+    theta = coordinates.copy()
+    theta[-1] = np.tanh(coordinates[-1])
+    gradient = np.linspace(0.2, 1.3, size)
+    hessian = np.eye(size) + np.outer(gradient, gradient)
+    actual = native_egarch_coordinate_chain_rule_value_grad_hess(
+        coordinates, theta, 2.0, gradient, hessian, p, 1, "normal",
+        linear_mean_parameters=mean_width,
+    )
+    jacobian = np.ones(size)
+    jacobian[-1] = 1 - theta[-1] ** 2
+    expected_hessian = hessian * jacobian[:, None] * jacobian
+    expected_hessian[-1, -1] -= 2 * theta[-1] * jacobian[-1] * gradient[-1]
+    np.testing.assert_allclose(actual[0], 2.0, rtol=0, atol=1e-14)
+    np.testing.assert_allclose(actual[1], gradient * jacobian, rtol=2e-14, atol=1e-14)
+    np.testing.assert_allclose(actual[2], expected_hessian, rtol=2e-14, atol=1e-14)
+
+
+@pytest.mark.parametrize("mean_width", [-1, 0.5])
+def test_egarch_chart_oracle_rejects_invalid_mean_width(mean_width):
+    from scivol._devtools.ad_oracle import native_egarch_coordinate_chain_rule_value_grad_hess
+
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        native_egarch_coordinate_chain_rule_value_grad_hess(
+            np.zeros(2), np.zeros(2), 0.0, np.zeros(2), np.eye(2), 0, 1, "normal",
+            linear_mean_parameters=mean_width,
+        )
+
+
 def _as_cptr(arr: np.ndarray) -> int:
     return np.ascontiguousarray(arr, dtype=np.float64).ctypes.data
 

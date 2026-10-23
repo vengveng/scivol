@@ -29,6 +29,13 @@ scivol's portable linear algebra and caller-owned workspaces.
   line-search limit is unchanged; a rejection at that limit returns
   `VLK_SLSQP_INVALID_OBJECTIVE`. This is an evaluation failure, not
   convergence. The runtime driver restores the last accepted point.
+- The per-solve `minimum_invalid_step` option contracts invalid trials by 0.1
+  instead of interpolating against the rejection merit. Both native drivers
+  default to interpolation. The EGARCH controller uses the smaller contraction
+  only when continuing an uncertified retained estimate. Valid-trial acceptance,
+  rejection limits and termination rules are unchanged; invalid values still
+  cannot authorize acceptance or convergence. Fixed/runtime regressions check
+  the actual contraction, finite/NaN/Inf rejection and bounded failure.
 - Valid trial values retain the upstream merit and termination rules. Solver
   termination remains distinct from scivol's external stationarity assessment.
 - Optional constraint-curvature reset: `sqp_curvature_reset.h` keeps scalar,
@@ -41,3 +48,12 @@ scivol's portable linear algebra and caller-owned workspaces.
   Invalid objective or constraint requests break the failure sequence and cannot
   supply reset evidence. No likelihood, constraint, acceptance or termination
   formula changes. `kraft::Result` reports the policy's reset count separately.
+- Pure-box subproblems with an exactly diagonal positive finite LDL metric use
+  the separable solution `clip(-gradient / diagonal, lower, upper)`. This avoids
+  cancellation in LDP's dual-to-primal recovery, which can otherwise corrupt
+  even identity-metric steps or report false success without an objective trial.
+  Dense factors, explicit constraints and augmented problems retain LSQ/LSEI.
+  NaN bounds remain unbounded and bound multipliers remain unavailable. Invalid
+  data or an unrepresentable unbounded minimizer returns numerical failure;
+  quotient overflow capped by a finite bound remains valid. No statistical
+  domain, line-search or convergence tolerance changes.

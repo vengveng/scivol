@@ -71,10 +71,9 @@ inline bool reflection_block(
     if (jacobian) {
         for (std::size_t row = 0; row < block.order; ++row) {
             for (std::size_t col = 0; col < block.order; ++col) {
-                const double reflection = theta[block.start + col];
                 jacobian[(block.start + row)*width + block.start + col] =
                     sign*local_jacobian[row*block.order + col]
-                    * (1.0-reflection*reflection);
+                    * ad::coordinate_tanh_first(z[block.start + col]);
             }
         }
     }
@@ -131,7 +130,7 @@ bool map_forward(const Layout& plan, Autoregression ar, const double* z,
     if (jacobian) {
         jacobian[scale*n+scale] =
             generated::softplus_first_from_positive(theta[scale]);
-        Shape::fill_jacobian(theta+plan.width, jacobian, n, plan.width);
+        Shape::fill_jacobian(z+plan.width, jacobian, n, plan.width);
     }
     return true;
 }
@@ -178,7 +177,7 @@ bool map_pullback(
     const std::size_t scale = plan.width-1;
     hz[scale*n+scale] += g[scale]
         * generated::softplus_second_from_positive(theta[scale]);
-    Shape::add_curvature(theta+plan.width, g+plan.width, hz, n, plan.width);
+    Shape::add_curvature(z+plan.width, g+plan.width, hz, n, plan.width);
     return true;
 }
 

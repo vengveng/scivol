@@ -105,7 +105,7 @@ template<class Constraints> struct RestrictedConstraints {
                   double* jacobian) const noexcept {
         if (inner.dimension()!=map.full || count()!=map.rows || !map.expand(x)
             || !runtime_kraft_detail::evaluate_constraints(inner,request,
-                map.expanded,values,map.jacobian)) return false;
+                map.expanded,values,map.jacobian,{map.indices,map.free})) return false;
         if (request!=kraft::ConstraintRequest::value)
             for (std::size_t j=0;j<map.free;++j)
                 for (std::size_t i=0;i<map.rows;++i)

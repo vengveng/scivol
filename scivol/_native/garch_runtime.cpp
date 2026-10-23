@@ -121,7 +121,8 @@ struct Layout {
         if (!sizer.add<double>(layout.parameters))
             return 0u;
         if ((theta_request & VLK_JET_G) != 0u
-            && !sizer.add<double>(layout.parameters)) {
+            && (!sizer.add<double>(layout.parameters)
+                || !sizer.add<double>(layout.variance_parameters - 1u))) {
             return 0u;
         }
         if (layout.leverage && (request & VLK_JET_G) != 0u
@@ -323,9 +324,11 @@ template<class Density, bool Leverage,
         for (std::size_t lag = 0; lag < layout.p; ++lag) {
             if (!startup || time > lag) {
                 const std::size_t source = time - 1u - lag;
-                const double coefficient = theta[layout.alpha_start + lag]
-                    + (Leverage && sample.residuals[source] < 0.0
-                        ? theta[layout.gamma_start + lag] : 0.0);
+                const double coefficient = Leverage
+                    ? generated::garch_equation::gjr_shock_coefficient(
+                        theta[layout.alpha_start + lag], theta[layout.gamma_start + lag],
+                        sample.residuals[source])
+                    : theta[layout.alpha_start + lag];
                 generated::garch_equation::add_variance_term(
                     variance, coefficient,
                     scratch.residual_ring[source % layout.p]);
@@ -476,12 +479,21 @@ template<class Density, bool Leverage>
 
 template<class ShapeTransform>
 void pack_coordinates(
-    const Layout& layout, const double* z, double* theta) noexcept
+    const Layout& layout, const double* z, double* theta,
+    generated::SimplexTailPoint* simplex = nullptr, double* shifted_weights = nullptr) noexcept
 {
     theta[0] = std::numeric_limits<double>::min() + generated::softplus(z[0]);
     const std::size_t coefficients = layout.p + layout.q;
     const double persistence_limit =
         domain::stationary_persistence_limit(coefficients);
+    if (simplex != nullptr) {
+        *simplex = generated::SimplexTailPoint(coefficients,
+            [&](std::size_t index) { return z[1u + index]; }, shifted_weights);
+        for (std::size_t index = 0; index < coefficients; ++index)
+            theta[1u + index] = simplex->contribution(index, persistence_limit);
+        ShapeTransform::pack(z + layout.variance_parameters, theta + layout.variance_parameters);
+        return;
+    }
     double maximum = 0.0;
     for (std::size_t index = 0; index < coefficients; ++index)
         maximum = std::max(maximum, z[1u + index]);
@@ -499,22 +511,23 @@ void pack_coordinates(
 
 template<class ShapeTransform>
 void fill_transform_jacobian(
-    const Layout& layout, const double* theta, double* jacobian) noexcept
+    const Layout& layout, const double* coordinates, const double* theta, double* jacobian,
+    const generated::SimplexTailPoint& simplex) noexcept
 {
     const std::size_t K = layout.parameters;
     const std::size_t coefficients = layout.p + layout.q;
-    const double limit = domain::stationary_persistence_limit(coefficients);
     std::fill_n(jacobian, K * K, 0.0);
     jacobian[0] = generated::softplus_first_from_positive(
         theta[0] - std::numeric_limits<double>::min());
-    for (std::size_t row = 0; row < coefficients; ++row) {
-        for (std::size_t column = 0; column < coefficients; ++column) {
-            jacobian[(1u + row) * K + 1u + column] = theta[1u + row]
-                * ((row == column ? 1.0 : 0.0) - theta[1u + column] / limit);
+    for (std::size_t column = 0; column < coefficients; ++column) {
+        const double weight = simplex.weight(column);
+        for (std::size_t row = 0; row < coefficients; ++row) {
+            jacobian[(1u + row) * K + 1u + column] =
+                simplex.first(row, column, theta[1u + row], weight);
         }
     }
     ShapeTransform::fill_jacobian(
-        theta + layout.variance_parameters,
+        coordinates + layout.variance_parameters,
         jacobian,
         K,
         layout.variance_parameters);
@@ -523,27 +536,24 @@ void fill_transform_jacobian(
 template<class ShapeTransform>
 void pullback_gradient(
     const Layout& layout,
-    const double* theta,
+    const double* coordinates, const double* theta,
     const double* theta_gradient,
-    double* gradient) noexcept
+    double* gradient, const generated::SimplexTailPoint& simplex) noexcept
 {
     const std::size_t coefficients = layout.p + layout.q;
-    const double limit = 1.0
-        - 8.0 * static_cast<double>(coefficients + 1u)
-            * std::numeric_limits<double>::epsilon();
     gradient[0] = generated::softplus_first_from_positive(
         theta[0] - std::numeric_limits<double>::min()) * theta_gradient[0];
     for (std::size_t column = 0; column < coefficients; ++column) {
         double value = 0.0;
+        const double weight = simplex.weight(column);
         for (std::size_t row = 0; row < coefficients; ++row) {
-            value += theta_gradient[1u + row] * theta[1u + row]
-                * ((row == column ? 1.0 : 0.0)
-                    - theta[1u + column] / limit);
+            value += theta_gradient[1u + row]
+                * simplex.first(row, column, theta[1u + row], weight);
         }
         gradient[1u + column] = value;
     }
     ShapeTransform::transform_gradient(
-        theta + layout.variance_parameters,
+        coordinates + layout.variance_parameters,
         theta_gradient + layout.variance_parameters,
         gradient + layout.variance_parameters);
 }
@@ -551,19 +561,16 @@ void pullback_gradient(
 template<class ShapeTransform>
 void pullback_hessian(
     const Layout& layout,
-    const double* theta,
+    const double* coordinates, const double* theta,
     const double* theta_gradient,
     const double* theta_hessian,
     double* jacobian,
     double* intermediate,
-    double* hessian) noexcept
+    double* hessian, const generated::SimplexTailPoint& simplex) noexcept
 {
     const std::size_t K = layout.parameters;
     const std::size_t coefficients = layout.p + layout.q;
-    const double limit = 1.0
-        - 8.0 * static_cast<double>(coefficients + 1u)
-            * std::numeric_limits<double>::epsilon();
-    fill_transform_jacobian<ShapeTransform>(layout, theta, jacobian);
+    fill_transform_jacobian<ShapeTransform>(layout, coordinates, theta, jacobian, simplex);
     for (std::size_t row = 0; row < K; ++row) {
         for (std::size_t column = 0; column < K; ++column) {
             double value = 0.0;
@@ -587,24 +594,20 @@ void pullback_hessian(
     hessian[0] += theta_gradient[0]
         * generated::softplus_second_from_positive(
             theta[0] - std::numeric_limits<double>::min());
-    for (std::size_t output = 0; output < coefficients; ++output) {
-        const double output_value = theta[1u + output];
-        for (std::size_t row = 0; row < coefficients; ++row) {
-            const double row_value = theta[1u + row] / limit;
-            for (std::size_t column = 0; column < coefficients; ++column) {
-                const double column_value = theta[1u + column] / limit;
-                const double second = output_value * (
-                    ((output == column ? 1.0 : 0.0) - column_value)
-                        * ((output == row ? 1.0 : 0.0) - row_value)
-                    - row_value
-                        * ((row == column ? 1.0 : 0.0) - column_value));
+    for (std::size_t row = 0; row < coefficients; ++row) {
+        const double row_value = simplex.weight(row);
+        for (std::size_t column = 0; column < coefficients; ++column) {
+            const double column_value = simplex.weight(column);
+            for (std::size_t output = 0; output < coefficients; ++output) {
+                const double second = simplex.second(output, row, column,
+                    theta[1u + output], row_value, column_value);
                 hessian[(1u + row) * K + 1u + column] +=
                     theta_gradient[1u + output] * second;
             }
         }
     }
     ShapeTransform::add_curvature(
-        theta + layout.variance_parameters,
+        coordinates + layout.variance_parameters,
         theta_gradient + layout.variance_parameters,
         hessian,
         K,
@@ -637,7 +640,8 @@ void pullback_hessian(
 
 template<class Density, class ShapeTransform>
 [[nodiscard]] bool pack_gjr_coordinates(
-    const Layout& layout, const double* z, double* theta) noexcept
+    const Layout& layout, const double* z, double* theta,
+    generated::SimplexTailPoint* simplex = nullptr, double* shifted_weights = nullptr) noexcept
 {
     ShapeTransform::pack(
         z + layout.variance_parameters,
@@ -650,22 +654,23 @@ template<class Density, class ShapeTransform>
         + generated::softplus(z[0]);
     const std::size_t count = 2u * layout.p + layout.q;
     const double limit = gjr_persistence_limit(layout);
-    double maximum = 0.0;
-    for (std::size_t index = 0; index < count; ++index) {
-        maximum = std::max(
-            maximum, z[gjr_contribution_coordinate(layout, index)]);
-    }
-    double denominator = std::exp(-maximum);
-    for (std::size_t index = 0; index < count; ++index) {
-        const std::size_t coordinate =
-            gjr_contribution_coordinate(layout, index);
-        theta[coordinate] = std::exp(z[coordinate] - maximum);
-        denominator += theta[coordinate];
-    }
-    for (std::size_t index = 0; index < count; ++index) {
-        const std::size_t coordinate =
-            gjr_contribution_coordinate(layout, index);
-        theta[coordinate] *= limit / denominator;
+    if (simplex != nullptr) {
+        *simplex = generated::SimplexTailPoint(count,
+            [&](std::size_t index) { return z[gjr_contribution_coordinate(layout, index)]; }, shifted_weights);
+        for (std::size_t index = 0; index < count; ++index)
+            theta[gjr_contribution_coordinate(layout, index)] = simplex->contribution(index, limit);
+    } else {
+        double maximum = 0.0;
+        for (std::size_t index = 0; index < count; ++index)
+            maximum = std::max(maximum, z[gjr_contribution_coordinate(layout, index)]);
+        double denominator = std::exp(-maximum);
+        for (std::size_t index = 0; index < count; ++index) {
+            const std::size_t coordinate = gjr_contribution_coordinate(layout, index);
+            theta[coordinate] = std::exp(z[coordinate] - maximum);
+            denominator += theta[coordinate];
+        }
+        for (std::size_t index = 0; index < count; ++index)
+            theta[gjr_contribution_coordinate(layout, index)] *= limit / denominator;
     }
     for (std::size_t lag = 0; lag < layout.p; ++lag) {
         const double positive = theta[layout.alpha_start + lag];
@@ -735,11 +740,12 @@ template<class Density, class ShapeTransform>
     const Layout& layout,
     const double* source,
     double* destination,
-    bool forward) noexcept
+    bool forward, generated::SimplexTailPoint* simplex = nullptr,
+    double* shifted_weights = nullptr) noexcept
 {
     return forward
         ? pack_gjr_coordinates<Density, ShapeTransform>(
-              layout, source, destination)
+              layout, source, destination, simplex, shifted_weights)
         : unpack_gjr_coordinates<Density, ShapeTransform>(
               layout, source, destination);
 }
@@ -749,12 +755,13 @@ template<class Density, class ShapeTransform>
     std::uint32_t density,
     const double* source,
     double* destination,
-    bool forward) noexcept
+    bool forward, generated::SimplexTailPoint* simplex = nullptr,
+    double* shifted_weights = nullptr) noexcept
 {
 #define VLK_MAP_GJR(DENSITY_POLICY, SHAPE_TRANSFORM) \
     return map_gjr_coordinates< \
         generated::DENSITY_POLICY, generated::SHAPE_TRANSFORM>( \
-        layout, source, destination, forward)
+        layout, source, destination, forward, simplex, shifted_weights)
     switch (density) {
     case VLK_GARCH_NORMAL:
         VLK_MAP_GJR(NormalDensity, NoShapeTransform);
@@ -832,17 +839,23 @@ template<int Order>
 
 template<class Density, class ShapeTransform>
 [[nodiscard]] bool fill_gjr_transform_jacobian(
-    const Layout& layout, const double* theta, double* jacobian) noexcept
+    const Layout& layout, const double* coordinates, const double* theta, double* jacobian,
+    const generated::SimplexTailPoint* prepared = nullptr) noexcept
 {
     const std::size_t K = layout.parameters;
     const std::size_t D = layout.shape;
     const std::size_t count = 2u * layout.p + layout.q;
     const double limit = gjr_persistence_limit(layout);
-    std::fill_n(jacobian, K * K, 0.0);
+    if (prepared != nullptr && prepared->shifted_weights == jacobian + 1u) {
+        std::fill_n(jacobian + K, (K - 1u) * K, 0.0);
+        std::fill_n(jacobian + 1u + count, K - 1u - count, 0.0);
+    } else {
+        std::fill_n(jacobian, K * K, 0.0);
+    }
     jacobian[0] = generated::softplus_first_from_positive(
         theta[0] - std::numeric_limits<double>::min());
     ShapeTransform::fill_jacobian(
-        theta + layout.variance_parameters,
+        coordinates + layout.variance_parameters,
         jacobian, K, layout.variance_parameters);
     const auto moment = generated::negative_second_moment<1, Density>(
         theta + layout.variance_parameters);
@@ -855,27 +868,26 @@ template<class Density, class ShapeTransform>
             * jacobian[(layout.variance_parameters + shape) * K
                        + layout.variance_parameters + shape];
     }
+    generated::SimplexTailPoint local;
+    if (prepared == nullptr) {
+        // The omega row is zero outside its diagonal and is restored below.
+        local = generated::SimplexTailPoint(count,
+            [&](std::size_t index) {
+                return coordinates[gjr_contribution_coordinate(layout, index)];
+            }, jacobian + 1u);
+        prepared = &local;
+    }
+    const auto& simplex = *prepared;
     const auto contribution = [&](std::size_t index) {
-        if (index < layout.p) {
-            return (1.0 - moment.value)
-                * theta[layout.alpha_start + index];
-        }
-        if (index < 2u * layout.p) {
-            const std::size_t lag = index - layout.p;
-            return moment.value * (
-                theta[layout.alpha_start + lag]
-                + theta[layout.gamma_start + lag]);
-        }
-        return theta[layout.beta_start + index - 2u * layout.p];
+        return simplex.contribution(index, limit);
     };
     for (std::size_t output = 0; output < count; ++output) {
         const double output_value = contribution(output);
         for (std::size_t input = 0; input < count; ++input) {
-            const double derivative = output_value * (
-                (output == input ? 1.0 : 0.0)
-                - contribution(input) / limit);
             const std::size_t column =
                 gjr_contribution_coordinate(layout, input);
+            const double derivative = simplex.first(output, input, output_value,
+                simplex.weight(input));
             if (output < layout.p) {
                 jacobian[(layout.alpha_start + output) * K + column] =
                     derivative / (1.0 - moment.value);
@@ -906,19 +918,20 @@ template<class Density, class ShapeTransform>
                 negative_derivative - alpha_derivative;
         }
     }
+    std::fill_n(jacobian + 1u, count, 0.0);
     return finite_values(jacobian, K * K);
 }
 
 template<class Density, class ShapeTransform>
 [[nodiscard]] bool pullback_gjr_gradient(
     const Layout& layout,
-    const double* theta,
+    const double* coordinates, const double* theta,
     const double* theta_gradient,
     double* jacobian,
-    double* gradient) noexcept
+    double* gradient, const generated::SimplexTailPoint& simplex) noexcept
 {
     if (!fill_gjr_transform_jacobian<Density, ShapeTransform>(
-            layout, theta, jacobian)) {
+            layout, coordinates, theta, jacobian, &simplex)) {
         return false;
     }
     for (std::size_t column = 0; column < layout.parameters; ++column) {
@@ -934,11 +947,11 @@ template<class Density, class ShapeTransform>
 template<class Density, class ShapeTransform>
 [[nodiscard]] bool add_gjr_coordinate_curvature(
     const Layout& layout,
-    const double* theta,
+    const double* coordinates, const double* theta,
     const double* theta_gradient,
     const double* jacobian,
     double* moment_hessian,
-    double* hessian) noexcept
+    double* hessian, const generated::SimplexTailPoint* prepared = nullptr) noexcept
 {
     const std::size_t K = layout.parameters;
     const std::size_t D = layout.shape;
@@ -948,7 +961,7 @@ template<class Density, class ShapeTransform>
         * generated::softplus_second_from_positive(
             theta[0] - std::numeric_limits<double>::min());
     ShapeTransform::add_curvature(
-        theta + layout.variance_parameters,
+        coordinates + layout.variance_parameters,
         theta_gradient + layout.variance_parameters,
         hessian, K, layout.variance_parameters);
 
@@ -977,21 +990,21 @@ template<class Density, class ShapeTransform>
         }
     }
     ShapeTransform::add_curvature(
-        theta + layout.variance_parameters, moment.gradient.data(),
+        coordinates + layout.variance_parameters, moment.gradient.data(),
         moment_hessian, K, layout.variance_parameters);
 
+    generated::SimplexTailPoint local;
+    if (prepared == nullptr) {
+        // Only the density-shape block of this scratch matrix is consumed.
+        local = generated::SimplexTailPoint(count,
+            [&](std::size_t index) {
+                return coordinates[gjr_contribution_coordinate(layout, index)];
+            }, moment_hessian + 1u);
+        prepared = &local;
+    }
+    const auto& simplex = *prepared;
     const auto contribution = [&](std::size_t index) {
-        if (index < layout.p) {
-            return (1.0 - moment.value)
-                * theta[layout.alpha_start + index];
-        }
-        if (index < 2u * layout.p) {
-            const std::size_t lag = index - layout.p;
-            return moment.value * (
-                theta[layout.alpha_start + lag]
-                + theta[layout.gamma_start + lag]);
-        }
-        return theta[layout.beta_start + index - 2u * layout.p];
+        return simplex.contribution(index, limit);
     };
     const auto contracted_weight = [&](std::size_t index) {
         if (index < layout.p) {
@@ -1028,14 +1041,8 @@ template<class Density, class ShapeTransform>
                 gjr_contribution_coordinate(layout, right);
             double value = 0.0;
             for (std::size_t output = 0; output < count; ++output) {
-                const double second = contribution(output) * (
-                    ((output == right ? 1.0 : 0.0)
-                     - contribution(right) / limit)
-                        * ((output == left ? 1.0 : 0.0)
-                           - contribution(left) / limit)
-                    - contribution(left) / limit
-                        * ((left == right ? 1.0 : 0.0)
-                           - contribution(right) / limit));
+                const double second = simplex.second(output, left, right,
+                    contribution(output), simplex.weight(left), simplex.weight(right));
                 value += contracted_weight(output) * second;
             }
             hessian[left_coordinate * K + right_coordinate] += value;
@@ -1043,9 +1050,8 @@ template<class Density, class ShapeTransform>
         for (std::size_t shape = 0; shape < D; ++shape) {
             double cross = 0.0;
             for (std::size_t output = 0; output < count; ++output) {
-                const double derivative = contribution(output) * (
-                    (output == left ? 1.0 : 0.0)
-                    - contribution(left) / limit);
+                const double derivative = simplex.first(output, left, contribution(output),
+                    simplex.weight(left));
                 double weight_derivative = 0.0;
                 if (output < layout.p) {
                     weight_derivative = (
@@ -1081,16 +1087,16 @@ template<class Density, class ShapeTransform>
 template<class Density, class ShapeTransform>
 [[nodiscard]] bool pullback_gjr_hessian(
     const Layout& layout,
-    const double* theta,
+    const double* coordinates, const double* theta,
     const double* theta_gradient,
     const double* theta_hessian,
     double* jacobian,
     double* intermediate,
-    double* hessian) noexcept
+    double* hessian, const generated::SimplexTailPoint& simplex) noexcept
 {
     const std::size_t K = layout.parameters;
     if (!fill_gjr_transform_jacobian<Density, ShapeTransform>(
-            layout, theta, jacobian)) {
+            layout, coordinates, theta, jacobian, &simplex)) {
         return false;
     }
     for (std::size_t row = 0; row < K; ++row) {
@@ -1114,7 +1120,7 @@ template<class Density, class ShapeTransform>
         }
     }
     return add_gjr_coordinate_curvature<Density, ShapeTransform>(
-        layout, theta, theta_gradient, jacobian, intermediate, hessian);
+        layout, coordinates, theta, theta_gradient, jacobian, intermediate, hessian, &simplex);
 }
 
 template<class Density, class ShapeTransform, bool Leverage>
@@ -1139,25 +1145,20 @@ template<class Density, class ShapeTransform, bool Leverage>
     double* theta_hessian = nullptr;
     double* jacobian = nullptr;
     double* intermediate = nullptr;
+    double* shifted_weights = nullptr;
+    generated::SimplexTailPoint simplex;
     std::uint32_t theta_request = request;
     if (transformed) {
         mapped_theta = arena.take<double>(layout.parameters);
         if (mapped_theta == nullptr)
             return false;
-        if constexpr (Leverage) {
-            if (!pack_gjr_coordinates<Density, ShapeTransform>(
-                    layout, parameters, mapped_theta)) {
-                return false;
-            }
-        } else {
-            pack_coordinates<ShapeTransform>(layout, parameters, mapped_theta);
-        }
         theta = mapped_theta;
         if ((request & VLK_JET_H) != 0u)
             theta_request |= VLK_JET_G;
         if ((theta_request & VLK_JET_G) != 0u) {
             theta_gradient = arena.take<double>(layout.parameters);
-            if (theta_gradient == nullptr)
+            shifted_weights = arena.take<double>(layout.variance_parameters - 1u);
+            if (theta_gradient == nullptr || shifted_weights == nullptr)
                 return false;
         }
         if constexpr (Leverage) {
@@ -1172,6 +1173,15 @@ template<class Density, class ShapeTransform, bool Leverage>
                 if (jacobian == nullptr)
                     return false;
             }
+        }
+        auto* prepared = shifted_weights != nullptr ? &simplex : nullptr;
+        if constexpr (Leverage) {
+            if (!pack_gjr_coordinates<Density, ShapeTransform>(
+                    layout, parameters, mapped_theta, prepared, shifted_weights))
+                return false;
+        } else {
+            pack_coordinates<ShapeTransform>(
+                layout, parameters, mapped_theta, prepared, shifted_weights);
         }
         if ((theta_request & VLK_JET_H) != 0u) {
             std::size_t square = 0u;
@@ -1198,25 +1208,25 @@ template<class Density, class ShapeTransform, bool Leverage>
     if ((request & VLK_JET_G) != 0u) {
         if constexpr (Leverage) {
             if (!pullback_gjr_gradient<Density, ShapeTransform>(
-                    layout, theta, theta_gradient, jacobian, gradient)) {
+                    layout, parameters, theta, theta_gradient, jacobian, gradient, simplex)) {
                 return false;
             }
         } else {
             pullback_gradient<ShapeTransform>(
-                layout, theta, theta_gradient, gradient);
+                layout, parameters, theta, theta_gradient, gradient, simplex);
         }
     }
     if ((request & VLK_JET_H) != 0u) {
         if constexpr (Leverage) {
             if (!pullback_gjr_hessian<Density, ShapeTransform>(
-                    layout, theta, theta_gradient, theta_hessian,
-                    jacobian, intermediate, hessian)) {
+                    layout, parameters, theta, theta_gradient, theta_hessian,
+                    jacobian, intermediate, hessian, simplex)) {
                 return false;
             }
         } else {
             pullback_hessian<ShapeTransform>(
-                layout, theta, theta_gradient, theta_hessian,
-                jacobian, intermediate, hessian);
+                layout, parameters, theta, theta_gradient, theta_hessian,
+                jacobian, intermediate, hessian, simplex);
         }
     }
     return true;
@@ -1346,14 +1356,22 @@ bool gjr_coordinate_forward(
     const double* coordinates,
     bool need_jacobian,
     double* parameters,
-    double* jacobian) noexcept
+    double* jacobian, generated::SimplexTailPoint* simplex,
+    double* shifted_weights) noexcept
 {
     const auto layout = make_layout(p, q, density, true);
     if (!layout.valid || coordinates == nullptr || parameters == nullptr
         || (need_jacobian && jacobian == nullptr)
-        || !valid_coordinates(layout, coordinates)
-        || !dispatch_gjr_map(
-            layout, density, coordinates, parameters, true)) {
+        || !valid_coordinates(layout, coordinates)) {
+        return false;
+    }
+    generated::SimplexTailPoint local;
+    if (need_jacobian && simplex == nullptr) {
+        simplex = &local;
+        shifted_weights = jacobian + 1u;
+    }
+    if (!dispatch_gjr_map(
+            layout, density, coordinates, parameters, true, simplex, shifted_weights)) {
         return false;
     }
     if (!need_jacobian)
@@ -1362,7 +1380,7 @@ bool gjr_coordinate_forward(
     case CODE: \
         return fill_gjr_transform_jacobian< \
             generated::DENSITY, generated::TRANSFORM>( \
-                layout, parameters, jacobian)
+                layout, coordinates, parameters, jacobian, simplex)
     switch (density) {
         VLK_GJR_JACOBIAN(VLK_GARCH_NORMAL, NormalDensity, NoShapeTransform);
         VLK_GJR_JACOBIAN(
@@ -1403,11 +1421,12 @@ bool add_gjr_coordinate_curvature(
     std::size_t p,
     std::size_t q,
     std::uint32_t density,
+    const double* coordinates,
     const double* parameters,
     const double* theta_gradient,
     const double* jacobian,
     double* moment_hessian,
-    double* coordinate_hessian) noexcept
+    double* coordinate_hessian, const generated::SimplexTailPoint* simplex) noexcept
 {
     const auto layout = make_layout(p, q, density, true);
     if (!layout.valid || parameters == nullptr || theta_gradient == nullptr
@@ -1419,8 +1438,8 @@ bool add_gjr_coordinate_curvature(
     case CODE: \
         return add_gjr_coordinate_curvature< \
             generated::DENSITY, generated::TRANSFORM>( \
-                layout, parameters, theta_gradient, jacobian, \
-                moment_hessian, coordinate_hessian)
+                layout, coordinates, parameters, theta_gradient, jacobian, \
+                moment_hessian, coordinate_hessian, simplex)
     switch (density) {
         VLK_GJR_CURVATURE(VLK_GARCH_NORMAL, NormalDensity, NoShapeTransform);
         VLK_GJR_CURVATURE(

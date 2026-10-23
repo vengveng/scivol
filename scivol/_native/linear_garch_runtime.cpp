@@ -278,7 +278,7 @@ bool solve_joint(const runtime::ArmaGarchLayout& layout,unsigned density,
     mean::PolynomialConstraintPlan polynomial,const double* lower,const double* upper,const double* scales,
     void* memory,std::size_t bytes,double* theta,double* gradient,
     std::int64_t* stats,double* value,double accuracy,std::int64_t iterations,bool speculate,
-    std::int64_t* requests,bool curvature_reset,std::int64_t* reset_count)
+    std::int64_t* requests,bool curvature_reset,std::int64_t* reset_count,bool minimum_invalid_step)
 {
     const auto k=layout.parameter_count+Density::shape_parameters;
     const auto mean_rows=2*polynomial.domain.order;
@@ -306,7 +306,9 @@ bool solve_joint(const runtime::ArmaGarchLayout& layout,unsigned density,
     const auto result=runtime::minimize_runtime_kraft(
         runtime::DiagonalObjective{objective,scales,scaled_point},
         runtime::DiagonalConstraints{restrictions,scales,scaled_point},z,
-        {lower,upper},{accuracy,iterations,curvature_reset},state);
+        {lower,upper},{accuracy,iterations,curvature_reset,
+            minimum_invalid_step?kraft::InvalidTrialPolicy::minimum_step
+                                :kraft::InvalidTrialPolicy::interpolate},state);
     if (reset_count) *reset_count=result.constraint_curvature_resets;
     for (std::size_t j=0;j<k;++j) z[j]*=scales[j];
     stats[0]=result.mode;stats[1]=result.iterations;
@@ -337,11 +339,11 @@ bool solve_density(const runtime::ArmaGarchLayout& layout,unsigned density,
     mean::PolynomialConstraintPlan polynomial,const double* lower,const double* upper,const double* scales,
     void* memory,std::size_t bytes,double* theta,double* gradient,
     std::int64_t* stats,double* value,double accuracy,std::int64_t iterations,bool speculate,
-    std::int64_t* requests,bool curvature_reset,std::int64_t* reset_count)
+    std::int64_t* requests,bool curvature_reset,std::int64_t* reset_count,bool minimum_invalid_step)
 {
     using namespace generated;
     switch(density) {
-#define D(C,T) case C:return solve_joint<T,Leverage,Fixed,Transformed>(layout,density,z,y,x,n,h0,polynomial,lower,upper,scales,memory,bytes,theta,gradient,stats,value,accuracy,iterations,speculate,requests,curvature_reset,reset_count)
+#define D(C,T) case C:return solve_joint<T,Leverage,Fixed,Transformed>(layout,density,z,y,x,n,h0,polynomial,lower,upper,scales,memory,bytes,theta,gradient,stats,value,accuracy,iterations,speculate,requests,curvature_reset,reset_count,minimum_invalid_step)
         D(0,NormalDensity);D(1,StudentTDensity);D(2,SkewTDensity);D(3,GedDensity);
         D(4,GeneralizedHyperbolicDensity);D(5,NormalInverseGaussianDensity);
         D(6,HyperbolicDensity);D(7,VarianceGammaDensity);
@@ -355,7 +357,7 @@ bool jm_solve(double* z,const double* y,const double* x,std::size_t n,
     double h0,std::size_t order,std::size_t ar_parameters,std::size_t offset,const double* basis,
     const double* lower,const double* upper,const double* scales,void* memory,std::size_t bytes,
     double* theta,double* gradient,std::int64_t* stats,double* value,double accuracy,std::int64_t iterations,bool speculate,
-    std::int64_t* requests,bool curvature_reset,std::int64_t* reset_count)
+    std::int64_t* requests,bool curvature_reset,std::int64_t* reset_count,bool minimum_invalid_step)
 {
     const auto layout=linear_layout(columns,p,q,leverage);
     const auto required=jm_solve_bytes(columns,p,q,leverage,density,order,ar_parameters,basis,transformed);
@@ -369,7 +371,7 @@ bool jm_solve(double* z,const double* y,const double* x,std::size_t n,
     for (std::size_t i=0;i<features;++i) if (!std::isfinite(x[i])) return false;
     const mean::PolynomialConstraintPlan polynomial {{order,ar_parameters,basis},offset};
     const bool use_fixed=fixed;
-#define CALL(L,F) (transformed?solve_density<L,F,true>(layout,density,z,y,x,n,h0,polynomial,lower,upper,scales,memory,bytes,theta,gradient,stats,value,accuracy,iterations,speculate,requests,curvature_reset,reset_count):solve_density<L,F,false>(layout,density,z,y,x,n,h0,polynomial,lower,upper,scales,memory,bytes,theta,gradient,stats,value,accuracy,iterations,speculate,requests,curvature_reset,reset_count))
+#define CALL(L,F) (transformed?solve_density<L,F,true>(layout,density,z,y,x,n,h0,polynomial,lower,upper,scales,memory,bytes,theta,gradient,stats,value,accuracy,iterations,speculate,requests,curvature_reset,reset_count,minimum_invalid_step):solve_density<L,F,false>(layout,density,z,y,x,n,h0,polynomial,lower,upper,scales,memory,bytes,theta,gradient,stats,value,accuracy,iterations,speculate,requests,curvature_reset,reset_count,minimum_invalid_step))
     return leverage?(use_fixed?CALL(true,true):CALL(true,false)):
                     (use_fixed?CALL(false,true):CALL(false,false));
 #undef CALL
@@ -451,7 +453,7 @@ bool garch_fit(const Plan& p,const Solve& s)
     return jm_solve(s.point,s.y,s.x,p.n,p.columns,p.p,p.q,p.family==1,p.density,p.fixed,
         s.transformed,s.h0,s.mean.order,s.mean.width,s.mean.offset,s.mean.basis,
         s.lower,s.upper,s.scales,s.workspace,s.bytes,s.theta,s.gradient,s.stats,s.value,
-        s.accuracy,s.iterations,s.speculate,s.requests,s.curvature_reset,s.reset_count);
+        s.accuracy,s.iterations,s.speculate,s.requests,s.curvature_reset,s.reset_count,s.minimum_invalid_step);
 }
 bool garch_constraints(const Plan& p,const Domain& d,const double* theta,double* values,
                        double* jacobian,void* work,std::size_t bytes)

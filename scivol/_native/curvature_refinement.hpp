@@ -2,6 +2,7 @@
 #ifndef SCIVOL_NATIVE_CURVATURE_REFINEMENT_HPP
 #define SCIVOL_NATIVE_CURVATURE_REFINEMENT_HPP
 
+#include "native_request_accounting.hpp"
 #include "runtime_kraft_slsqp.hpp"
 
 #include <algorithm>
@@ -19,6 +20,15 @@ struct Result {
     std::size_t gradient_evaluations = 0u;
     bool improved = false;
     bool converged = false;
+    bool derivatives_current = false;
+};
+
+// A useful continuation seed need not be the lowest-value point found.
+struct ContinuationPoint {
+    double* coordinates;
+    double* gradient;
+    double value = std::numeric_limits<double>::infinity();
+    double kkt_residual = std::numeric_limits<double>::infinity();
 };
 
 [[nodiscard]] inline double maximum_absolute(
@@ -132,43 +142,78 @@ template<class Objective>
     double* hessian,
     double* factor,
     double* direction,
-    double* trial) noexcept
+    double* trial,
+    ContinuationPoint* continuation = nullptr) noexcept
 {
+    request_accounting::PhaseScope accounting_phase(request_accounting::Phase::refinement);
     Result result;
     const std::size_t dimension = objective.dimension();
     const double tolerance = std::max(
         std::sqrt(accuracy),
         std::sqrt(std::numeric_limits<double>::epsilon()));
-    double accepted_value = std::numeric_limits<double>::infinity();
-    double accepted_kkt = std::numeric_limits<double>::infinity();
+    double best_value = std::numeric_limits<double>::infinity();
+    double best_kkt = std::numeric_limits<double>::infinity();
+    bool best_gradient_current = false;
+    const double unavailable = std::numeric_limits<double>::quiet_NaN();
+    const auto retain_value = [&](const double* point, double value) noexcept {
+        if (!std::isfinite(value))
+            return false;
+        for (std::size_t index = 0u; index < dimension; ++index) {
+            if (!std::isfinite(point[index])
+                || (!std::isnan(bounds.lower[index])
+                    && point[index] < bounds.lower[index])
+                || (!std::isnan(bounds.upper[index])
+                    && point[index] > bounds.upper[index])) {
+                return false;
+            }
+        }
+        if (value < best_value) {
+            best_value = value;
+            best_kkt = std::numeric_limits<double>::infinity();
+            best_gradient_current = false;
+            std::copy_n(point, dimension, accepted_coordinates);
+            std::fill_n(accepted_gradient, dimension, unavailable);
+        }
+        return true;
+    };
 
     for (std::size_t iteration = 0u; iteration <= maximum_steps; ++iteration) {
         double value = 0.0;
+        ++result.function_evaluations;
+        ++result.gradient_evaluations;
         if (!objective.evaluate_curvature(
                 coordinates, &value, gradient, hessian)) {
             break;
         }
-        ++result.function_evaluations;
-        ++result.gradient_evaluations;
-        const double kkt = maximum_absolute(gradient, dimension);
-        if (!std::isfinite(value) || !std::isfinite(kkt))
+        if (!retain_value(coordinates, value))
             break;
-
-        const double objective_roundoff =
-            128.0 * std::numeric_limits<double>::epsilon()
-            * std::max(1.0, std::abs(value));
-        if (!std::isfinite(accepted_value)
-            || (value <= accepted_value + objective_roundoff
-                && kkt < accepted_kkt)) {
-            accepted_value = value;
-            accepted_kkt = kkt;
+        bool gradient_valid = true;
+        for (std::size_t index = 0u; index < dimension; ++index)
+            gradient_valid = gradient_valid && std::isfinite(gradient[index]);
+        if (!gradient_valid)
+            break;
+        const double kkt = maximum_absolute(gradient, dimension);
+        if (continuation != nullptr) {
+            const double roundoff = 128.0 * std::numeric_limits<double>::epsilon()
+                * std::max(1.0, std::abs(value));
+            if (!std::isfinite(continuation->value)
+                || (value <= continuation->value + roundoff
+                    && kkt < continuation->kkt_residual)) {
+                continuation->value = value;
+                continuation->kkt_residual = kkt;
+                std::copy_n(coordinates, dimension, continuation->coordinates);
+                std::copy_n(gradient, dimension, continuation->gradient);
+            }
+        }
+        if (std::equal(coordinates, coordinates + dimension, accepted_coordinates)
+            || (value == best_value && kkt < best_kkt)) {
+            best_kkt = kkt;
+            best_gradient_current = true;
             std::copy_n(coordinates, dimension, accepted_coordinates);
             std::copy_n(gradient, dimension, accepted_gradient);
         }
-        if (kkt <= tolerance) {
-            result.converged = true;
+        if (kkt <= tolerance)
             break;
-        }
         if (iteration == maximum_steps)
             break;
 
@@ -194,14 +239,13 @@ template<class Objective>
             for (std::size_t index = 0; index < dimension; ++index)
                 direction[index] = -gradient[index];
         }
-        double descent = directional_derivative(
+        const double descent = directional_derivative(
             gradient, direction, dimension);
         if (!std::isfinite(descent) || descent >= 0.0) {
             for (std::size_t index = 0; index < dimension; ++index)
                 direction[index] = -gradient[index];
         }
         limit_step(direction, dimension);
-        descent = directional_derivative(gradient, direction, dimension);
 
         bool step_accepted = false;
         double step = 1.0;
@@ -210,20 +254,29 @@ template<class Objective>
                 trial[index] = coordinates[index] + step * direction[index];
             runtime::runtime_kraft_detail::clip_to_bounds(
                 trial, dimension, bounds);
+            if (std::equal(trial, trial + dimension, coordinates))
+                break;
+            double actual_descent = 0.0;
+            for (std::size_t index = 0; index < dimension; ++index)
+                actual_descent += gradient[index]
+                    * (trial[index] - coordinates[index]);
             double trial_value = 0.0;
-            if (objective.evaluate(
-                    kraft::ObjectiveRequest::value,
-                    trial, &trial_value, gradient, false)) {
+            if (actual_descent < 0.0) {
                 ++result.function_evaluations;
-                const double roundoff =
-                    128.0 * std::numeric_limits<double>::epsilon()
-                    * std::max(1.0, std::abs(value));
-                if (std::isfinite(trial_value)
-                    && trial_value <= value + roundoff
-                    && trial_value <= value + 1e-4 * step * descent + roundoff) {
-                    std::copy_n(trial, dimension, coordinates);
-                    step_accepted = true;
-                    break;
+                if (objective.evaluate(
+                    kraft::ObjectiveRequest::value,
+                    trial, &trial_value, gradient, false)
+                    && retain_value(trial, trial_value)) {
+                    // Best-value retention does not change the continuation point.
+                    const double roundoff =
+                        128.0 * std::numeric_limits<double>::epsilon()
+                        * std::max(1.0, std::abs(value));
+                    if (trial_value <= value + roundoff
+                        && trial_value <= value + 1e-4 * actual_descent + roundoff) {
+                        std::copy_n(trial, dimension, coordinates);
+                        step_accepted = true;
+                        break;
+                    }
                 }
             }
             step *= 0.5;
@@ -233,13 +286,28 @@ template<class Objective>
         ++result.steps;
     }
 
-    result.value = accepted_value;
-    result.kkt_residual = accepted_kkt;
-    result.improved = std::isfinite(accepted_value);
+    result.value = best_value;
+    result.improved = std::isfinite(best_value);
     if (result.improved) {
         std::copy_n(accepted_coordinates, dimension, coordinates);
+        if (!best_gradient_current) {
+            double ignored_value = best_value;
+            ++result.gradient_evaluations;
+            best_gradient_current = runtime::runtime_kraft_detail::evaluate_objective(
+                objective, kraft::ObjectiveRequest::gradient, coordinates,
+                &ignored_value, accepted_gradient, false);
+            if (best_gradient_current)
+                best_kkt = maximum_absolute(accepted_gradient, dimension);
+            else
+                std::fill_n(accepted_gradient, dimension, unavailable);
+        }
         std::copy_n(accepted_gradient, dimension, gradient);
+    } else {
+        std::fill_n(gradient, dimension, unavailable);
     }
+    result.derivatives_current = best_gradient_current;
+    result.kkt_residual = best_kkt;
+    result.converged = best_gradient_current && best_kkt <= tolerance;
     return result;
 }
 
@@ -260,6 +328,7 @@ template<class Objective, class Projection>
     double* solve_gradient,
     double* constraint_direction) noexcept
 {
+    request_accounting::PhaseScope accounting_phase(request_accounting::Phase::refinement);
     Result result;
     const std::size_t dimension = objective.dimension();
     const double tolerance = std::max(

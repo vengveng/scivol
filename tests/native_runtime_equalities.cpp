@@ -96,6 +96,8 @@ struct RejectedTrial {
     int failure;
     bool recover, speculate, gradient_only;
     mutable std::size_t values=0,gradients=0;
+    mutable std::size_t rejected_values=0;
+    mutable double first_rejected[2]{};
     std::size_t dimension() const noexcept { return 1; }
     bool speculate_trial_gradient(std::int64_t) const noexcept { return speculate; }
     bool evaluate(kraft::ObjectiveRequest request, const double* x, double* f,
@@ -108,6 +110,8 @@ struct RejectedTrial {
         if (wants_value) *f = 0.5 * curvature * (x[0] - 1) * (x[0] - 1);
         if (wants_gradient) g[0] = curvature * (x[0] - 1);
         if (outside && (gradient_only ? wants_gradient : wants_value)) {
+            if (wants_value && rejected_values++ < 2)
+                first_rejected[rejected_values-1] = x[0];
             if (failure == 0) return false;
             if (gradient_only) g[0] = failure == 1 ? NAN : INFINITY;
             else *f = failure == 1 ? NAN : INFINITY;
@@ -317,6 +321,8 @@ void verify_rejected_trials() {
     runtime::RuntimeKraftWorkspace workspace;
     assert(runtime::bind_runtime_kraft_workspace(1, 0, memory.data(), bytes, workspace));
     double lower = NAN, upper = NAN;
+    for (const auto policy : {kraft::InvalidTrialPolicy::interpolate,
+                              kraft::InvalidTrialPolicy::minimum_step})
     for (const bool reset : {false, true})
     for (const double accuracy : {1e-8, 1e-12})
     for (const int failure : {0, 1, 2}) {
@@ -328,7 +334,7 @@ void verify_rejected_trials() {
                     double x = recover ? 2 : 0;
                     const auto result = runtime::minimize_runtime_kraft(objective,
                         Restrictions{1, 0, 0}, &x, {&lower, &upper},
-                        kraft::Options{accuracy, 100, reset}, workspace);
+                        kraft::Options{accuracy, 100, reset, policy}, workspace);
                     assert(result.function_evaluations==objective.values);
                     assert(result.gradient_evaluations==objective.gradients);
                     assert(result.constraint_curvature_resets == 0);
@@ -360,7 +366,7 @@ void verify_rejected_trials() {
             const auto result = kraft::minimize(
                 FixedRejectedTrial{{failure, recover, false, false}},
                 kraft::NoConstraints<1>{}, &x, bounds,
-                kraft::Options{accuracy, 100, reset}, fixed_workspace);
+                kraft::Options{accuracy, 100, reset, policy}, fixed_workspace);
             assert(result.constraint_curvature_resets == 0);
             assert(result.mode == (recover ? 0 : VLK_SLSQP_INVALID_OBJECTIVE));
             if (recover) assert(std::abs(x - 1) < 1e-10);
@@ -375,6 +381,37 @@ void verify_rejected_trials() {
         CancelAfterTrial{});
     assert(cancelled.mode == kraft::cancelled_mode);
     assert(std::isnan(cancelled.value));
+}
+
+void verify_invalid_step_policy() {
+    const auto bytes = runtime::runtime_kraft_workspace_bytes(1, 0);
+    std::vector<std::byte> memory(bytes);
+    runtime::RuntimeKraftWorkspace workspace;
+    assert(runtime::bind_runtime_kraft_workspace(1, 0, memory.data(), bytes, workspace));
+    for (const auto policy : {kraft::InvalidTrialPolicy::interpolate,
+                              kraft::InvalidTrialPolicy::minimum_step}) {
+        const auto options = kraft::Options{1e-12, 100, false, policy};
+        const RejectedTrial objective{0, true, false, false};
+        double x = 2, lower = NAN, upper = NAN;
+        const auto result = runtime::minimize_runtime_kraft(objective,
+            Restrictions{1, 0, 0}, &x, {&lower, &upper}, options, workspace);
+        assert(result.mode == 0 && objective.rejected_values >= 2);
+        const double ratio = (objective.first_rejected[1]-2)/(objective.first_rejected[0]-2);
+        if (policy == kraft::InvalidTrialPolicy::minimum_step)
+            assert(std::abs(ratio-0.1) < 1e-14);
+        else
+            assert(ratio > 0.1 && ratio <= 0.5);
+        const FixedRejectedTrial fixed{{0, true, false, false}};
+        kraft::Workspace<1, 0, 0> fixed_workspace;
+        kraft::Bounds<1> bounds;
+        double fixed_x = 2;
+        const auto fixed_result = kraft::minimize(fixed, kraft::NoConstraints<1>{},
+            &fixed_x, bounds, options, fixed_workspace);
+        assert(fixed_result.mode == 0 && fixed_x == x);
+        assert(fixed.inner.rejected_values == objective.rejected_values);
+        for (int j = 0; j < 2; ++j)
+            assert(fixed.inner.first_rejected[j] == objective.first_rejected[j]);
+    }
 }
 
 void verify_curvature_prediction() {
@@ -587,7 +624,56 @@ void verify_augmented_workspace() {
     assert(memory.front()==919 && memory.back()==919);
 }
 
+struct SelectiveConstraint {
+    std::size_t dimension() const noexcept {return 3;}
+    std::size_t count() const noexcept {return 1;}
+    bool evaluate(kraft::ConstraintRequest r,const double* x,double* c,double* j,
+                  runtime::ConstraintColumns columns={}) const noexcept {
+        if (r!=kraft::ConstraintRequest::jacobian) *c=x[0]+2*x[2];
+        if (r!=kraft::ConstraintRequest::value) {
+            j[0]=1.; j[1]=NAN; j[2]=2.;
+            if (columns.contains(1)) return false;
+        }
+        return true;
+    }
+};
+
+void verify_composed_constraint_columns() {
+    double x[]{1.,2.,3.},scales[]{2.,3.,4.},scaled[3];
+    const double normal[]{1.,2.,3.};
+    const runtime::AffineEquality affine{normal,3,0.};
+    const SelectiveConstraint raw;
+    const runtime::AffineEqualityPrefix prefixed{raw,affine};
+    const runtime::DiagonalConstraints diagonal{prefixed,scales,scaled};
+    const std::size_t selected[]{0,2};
+    double lower[]{NAN,NAN,NAN},upper[]{NAN,NAN,NAN};
+    const auto bytes=runtime::CoordinateRestriction::bytes(3,2);
+    std::vector<std::byte> scratch(bytes);
+    runtime::CoordinateRestriction map;
+    assert(map.bind(3,2,2,selected,x,{lower,upper},scratch.data(),bytes));
+    const runtime::RestrictedConstraints restricted{diagonal,map};
+    double c[]{91.,92.},j[]{93.,94.,95.,96.};
+    assert(restricted.evaluate(kraft::ConstraintRequest::jacobian,map.point,c,j));
+    assert(c[0]==91. && c[1]==92.);
+    assert(j[0]==2. && j[1]==2. && j[2]==12. && j[3]==8.);
+    assert(restricted.evaluate(kraft::ConstraintRequest::value,map.point,c,j));
+    assert(c[0]==50. && c[1]==26.);
+    assert(j[0]==2. && j[1]==2. && j[2]==12. && j[3]==8.);
+    assert(restricted.evaluate(kraft::ConstraintRequest::value_jacobian,map.point,c,j));
+    double full[6];
+    assert(!runtime::runtime_kraft_detail::evaluate_constraints(
+        diagonal,kraft::ConstraintRequest::jacobian,x,c,full));
+}
+
 int main() {
+    for (double scale : {1e-200,1.,1e200}) {
+        kraft::Workspace<2,2,2> workspace;
+        workspace.jacobian={scale,0.,0.,scale};
+        assert(kraft::detail::equality_jacobian_has_full_row_rank(workspace));
+        workspace.jacobian={scale,scale,0.,0.};
+        assert(!kraft::detail::equality_jacobian_has_full_row_rank(workspace));
+    }
+    verify_composed_constraint_columns();
     verify_augmented_workspace();
     std::vector<double> wide_target(64);
     for (std::size_t i=0;i<wide_target.size();++i) wide_target[i]=(i+1)/64.0;
@@ -599,6 +685,7 @@ int main() {
     verify_success_does_not_discard_a_better_trial();
     verify_checkpoint_constraint_evidence();
     verify_rejected_trials();
+    verify_invalid_step_policy();
     verify(Restrictions{2,1,1},{0.5,0.5});
     verify(Restrictions{2,2,1},{0.8,0.2});
     verify(Restrictions{3,3,3,true},{1.0,2.0,3.0});
@@ -653,6 +740,30 @@ int main() {
     const double zero[]{0.0,0.0},nonfinite[]{1.0,INFINITY};
     assert((!runtime::AffineEquality{zero,2,0}.valid(2)));
     assert((!runtime::AffineEquality{nonfinite,2,0}.valid(2)));
+    // Several affine rows: minimum-norm solution of [1 1 0; 0 1 1] x = [1; 2].
+    const double faces[]{1.0,1.0,0.0,0.0,1.0,1.0},face_targets[]{1.0,2.0};
+    const runtime::AffineEquality two_faces{faces,3,0.0,2,face_targets};
+    assert(two_faces.valid(4) && two_faces.count()==2);
+    const Restrictions four{4,0,0};
+    verify(runtime::AffineEqualityPrefix{four,two_faces},{0.0,1.0,1.0,0.0});
+    const Restrictions three_nonnegative{3,1,0};
+    const runtime::AffineEqualityPrefix faces_first{three_nonnegative,two_faces};
+    assert(faces_first.count()==3 && faces_first.equalities()==2);
+    double y[]{0.1,0.2,0.3},face_values[3],face_jacobian[9],only_values[3]{},only_jacobian[9]{};
+    assert(faces_first.evaluate(kraft::ConstraintRequest::value_jacobian,y,face_values,face_jacobian));
+    assert(faces_first.evaluate(kraft::ConstraintRequest::value,y,only_values,nullptr));
+    assert(faces_first.evaluate(kraft::ConstraintRequest::jacobian,y,nullptr,only_jacobian));
+    assert(std::abs(face_values[0]-(0.3-1.0))<1e-15 && std::abs(face_values[1]-(0.5-2.0))<1e-15);
+    for (unsigned i=0;i<3;++i) assert(only_values[i]==face_values[i]);
+    for (unsigned i=0;i<9;++i) assert(only_jacobian[i]==face_jacobian[i]);
+    // Column-major: the two equality rows precede the inner inequality in every column.
+    for (unsigned j=0;j<3;++j) {
+        assert(face_jacobian[3*j]==faces[j] && face_jacobian[3*j+1]==faces[3+j]);
+    }
+    assert((!runtime::AffineEquality{faces,3,0.0,2,nullptr}.valid(4)));
+    assert((!runtime::AffineEquality{faces,3,0.0,4,face_targets}.valid(4)));
+    const double second_zero[]{1.0,1.0,0.0,0.0,0.0,0.0};
+    assert((!runtime::AffineEquality{second_zero,3,0.0,2,face_targets}.valid(4)));
     assert(runtime::runtime_kraft_workspace_bytes(2,1,2)==0);
     assert(runtime::runtime_kraft_workspace_bytes(2,3,3)==0);
     const auto old_bytes=runtime::runtime_kraft_workspace_bytes(8,1);

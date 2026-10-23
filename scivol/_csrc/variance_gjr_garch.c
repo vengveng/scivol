@@ -27,7 +27,7 @@ void gjr_garch_variance_11(const double* __restrict parameters,
         const double e2_prev = e_prev * e_prev;
         const double ind     = (e_prev < 0.0) ? 1.0 : 0.0;
 
-        sigma2[i] = omega + alpha * e2_prev + gamma * ind * e2_prev + beta * sigma2[i - 1];
+        sigma2[i] = omega + (alpha + gamma * ind) * e2_prev + beta * sigma2[i - 1];
 
         if (sigma2[i] < H_FLOOR || !isfinite(sigma2[i]))
             sigma2[i] = H_FLOOR;
@@ -60,7 +60,7 @@ void gjr_garch_variance_pq(const double* __restrict parameters,
                 const double e_lag  = residuals[i - 1 - j];
                 const double e2_lag = e_lag * e_lag;
                 const double ind    = (e_lag < 0.0) ? 1.0 : 0.0;
-                s += alpha[j] * e2_lag + gam[j] * ind * e2_lag;
+                s += (alpha[j] + gam[j] * ind) * e2_lag;
             }
         }
         for (size_t k = 0; k < q; ++k) {
@@ -79,7 +79,7 @@ void gjr_garch_variance_pq(const double* __restrict parameters,
             const double e_lag  = residuals[i - 1 - j];
             const double e2_lag = e_lag * e_lag;
             const double ind    = (e_lag < 0.0) ? 1.0 : 0.0;
-            s += alpha[j] * e2_lag + gam[j] * ind * e2_lag;
+            s += (alpha[j] + gam[j] * ind) * e2_lag;
         }
         for (size_t k = 0; k < q; ++k)
             s += beta[k] * sigma2[i - 1 - k];

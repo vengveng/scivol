@@ -3,14 +3,22 @@
 #include <Python.h>
 
 #include "aparch_runtime.hpp"
+#include "aparch_multi_phase_api.hpp"
+#include "aparch_preparation.hpp"
 #include "arma_egarch_runtime.hpp"
 #include "arma_garch_runtime.hpp"
 #include "arma_garch_runtime_reformulation.hpp"
 #include "curvature_refinement.hpp"
+#include "optimizer_controller.hpp"
+#include "exact_request_reuse.hpp"
+#include "native_request_accounting.hpp"
+#include "bounded_direction.hpp"
 #include "egarch_runtime.hpp"
+#include "egarch_moment_policy.hpp"
 #include "garch_runtime.hpp"
 #include "garch_solver_constraints.hpp"
 #include "garch_transform_policy.hpp"
+#include "mean_precision.hpp"
 #include "runtime_kraft_slsqp.hpp"
 
 #include <algorithm>
@@ -18,6 +26,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+
+namespace scivol::linear_joint {
+PyObject* accounting_prevalidated(PyObject*, PyObject*);
+PyObject* accounting_fit(PyObject*, PyObject*);
+PyObject* accounting_refine(PyObject*, PyObject*);
+}
 
 namespace {
 
@@ -1799,6 +1813,24 @@ struct AparchObjective {
     void* workspace;
     std::size_t workspace_bytes;
     double scale;
+    const vlk::experiment::mean_screen::ObservationSummary* sample = nullptr;
+    vlk::experiment::request_reuse::Bank* reuse = nullptr;
+    // Caller-owned across copies; only optimizer callbacks record execution.
+    std::uint32_t* execution = nullptr;
+
+    AparchObjective scaled(double factor) const noexcept
+    {
+        auto result=*this;
+        result.scale*=factor;
+        return result;
+    }
+
+    AparchObjective with_request_reuse(vlk::experiment::request_reuse::Bank* bank) const noexcept
+    {
+        auto result=*this;
+        result.reuse=bank;
+        return result;
+    }
 
     [[nodiscard]] std::size_t dimension() const noexcept
     {
@@ -1820,22 +1852,37 @@ struct AparchObjective {
         double* gradient,
         double* hessian,
         std::uint32_t* valid,
-        bool transformed) const noexcept
+        bool transformed,
+        bool record_execution = false) const noexcept
     {
+        vlk::experiment::request_accounting::LogicalRequest accounting(request, transformed);
+        if (reuse && reuse->get(point, request, transformed ? 1u : 0u,
+                {value, gradient, hessian})) {
+            *valid = request;
+            accounting.hit();
+            return accounting.finish(VLK_JET_OK, *valid);
+        }
+        std::int32_t status;
         if constexpr (Joint) {
-            return vlk_arma_aparch_jet_evaluate_prevalidated(
+            status = runtime::aparch::evaluate_joint_prevalidated(
                 point, parameter_count, observations, observation_count,
                 initial_variance, p_ar, q_ma, p, q, density,
                 transformed ? 1u : 0u, request,
                 workspace, workspace_bytes,
-                value, gradient, hessian, valid);
+                value, gradient, hessian, valid, sample,
+                record_execution ? execution : nullptr);
+        } else {
+            status = runtime::aparch::evaluate_standalone_prevalidated(
+                point, parameter_count, observations, observation_count,
+                initial_variance, p, q, density,
+                transformed ? 1u : 0u, request,
+                workspace, workspace_bytes,
+                value, gradient, hessian, valid,
+                record_execution ? execution : nullptr);
         }
-        return vlk_aparch_jet_evaluate_prevalidated(
-            point, parameter_count, observations, observation_count,
-            initial_variance, p, q, density,
-            transformed ? 1u : 0u, request,
-            workspace, workspace_bytes,
-            value, gradient, hessian, valid);
+        if (reuse) reuse->put(point, request, transformed ? 1u : 0u,
+            {value, gradient, hessian}, status, *valid);
+        return accounting.finish(status, *valid);
     }
 
     [[nodiscard]] bool evaluate(
@@ -1851,7 +1898,7 @@ struct AparchObjective {
             coordinates, requested,
             request == kraft::ObjectiveRequest::gradient ? nullptr : value,
             request == kraft::ObjectiveRequest::value ? nullptr : gradient,
-            nullptr, &valid, true);
+            nullptr, &valid, true, true);
         if (status != VLK_JET_OK || valid != requested)
             return false;
         if (request != kraft::ObjectiveRequest::gradient)
@@ -1873,7 +1920,7 @@ struct AparchObjective {
             VLK_JET_F | VLK_JET_G | VLK_JET_H;
         std::uint32_t valid = 0u;
         const std::int32_t status = call_jet(
-            coordinates, request, value, gradient, hessian, &valid, true);
+            coordinates, request, value, gradient, hessian, &valid, true, true);
         if (status != VLK_JET_OK || valid != request)
             return false;
         *value *= scale;
@@ -1970,336 +2017,8 @@ struct AparchObjective {
     }
 };
 
-struct NoConstraints {
-    std::size_t dimension_value;
-
-    [[nodiscard]] std::size_t dimension() const noexcept
-    {
-        return dimension_value;
-    }
-
-    [[nodiscard]] constexpr std::size_t count() const noexcept
-    {
-        return 0u;
-    }
-
-    [[nodiscard]] bool evaluate(
-        kraft::ConstraintRequest,
-        const double*,
-        double*,
-        double*) const noexcept
-    {
-        return true;
-    }
-};
-
 using GjrThetaConstraints = runtime::GarchThetaConstraints;
-
-template<class Objective>
-kraft::Result minimize_objective(
-    const Objective& objective,
-    double* coordinates,
-    const double* lower,
-    const double* upper,
-    double accuracy,
-    std::int64_t maximum_iterations,
-    void* workspace,
-    std::size_t workspace_bytes,
-    double& kkt_residual,
-    std::size_t& refinement_restarts,
-    std::size_t& curvature_steps,
-    std::size_t& scientific_projection_steps) noexcept
-{
-    kraft::Result result;
-    const std::size_t solver_bytes =
-        runtime::runtime_kraft_workspace_bytes(objective.dimension(), 0u);
-    const std::size_t aligned_solver_bytes =
-        (solver_bytes + alignof(double) - 1u) & ~(alignof(double) - 1u);
-    const std::size_t dimension = objective.dimension();
-    std::size_t square = 0u;
-    std::size_t scratch_count = 0u;
-    std::size_t vectors = 0u;
-    if (solver_bytes == 0u || aligned_solver_bytes < solver_bytes
-        || !runtime::checked_product(dimension, dimension, square)
-        || !runtime::checked_product(square, 2u, scratch_count)
-        || !runtime::checked_product(dimension, 6u, vectors)
-        || !runtime::checked_sum(scratch_count, vectors, scratch_count)
-        || scratch_count
-            > (std::numeric_limits<std::size_t>::max() - aligned_solver_bytes)
-                / sizeof(double)
-        || workspace_bytes < aligned_solver_bytes
-            + scratch_count * sizeof(double)) {
-        result.mode = -1001;
-        return result;
-    }
-    auto* workspace_bytes_pointer = static_cast<std::byte*>(workspace);
-    runtime::WorkspaceArena scratch_arena(
-        workspace_bytes_pointer + aligned_solver_bytes,
-        workspace_bytes - aligned_solver_bytes);
-    double* accepted_coordinates = scratch_arena.take<double>(dimension);
-    double* hessian = scratch_arena.take<double>(square);
-    double* factor = scratch_arena.take<double>(square);
-    double* direction = scratch_arena.take<double>(dimension);
-    double* trial = scratch_arena.take<double>(dimension);
-    double* theta = scratch_arena.take<double>(dimension);
-    double* theta_gradient = scratch_arena.take<double>(dimension);
-    double* pre_polish_coordinates = scratch_arena.take<double>(dimension);
-    if (accepted_coordinates == nullptr || hessian == nullptr
-        || factor == nullptr || direction == nullptr || trial == nullptr
-        || theta == nullptr || theta_gradient == nullptr
-        || pre_polish_coordinates == nullptr) {
-        result.mode = -1001;
-        return result;
-    }
-    runtime::RuntimeKraftWorkspace bound;
-    if (!runtime::bind_runtime_kraft_workspace(
-            objective.dimension(), 0u, workspace, solver_bytes, bound)) {
-        result.mode = -1001;
-        return result;
-    }
-    const runtime::RuntimeBounds bounds {lower, upper};
-    std::size_t initial_curvature_function_evaluations = 0u;
-    std::size_t initial_curvature_gradient_evaluations = 0u;
-    std::size_t initial_curvature_step_count = 0u;
-    if constexpr (requires { Objective::initial_curvature_steps; }) {
-        const double initial_curvature_accuracy = std::max(
-            64.0 * std::numeric_limits<double>::epsilon(),
-            std::min(accuracy, accuracy * 1e-4));
-        const curvature::Result initialized = curvature::refine(
-            objective, coordinates, bounds, initial_curvature_accuracy,
-            Objective::initial_curvature_steps,
-            bound.gradient, accepted_coordinates, bound.accepted_gradient,
-            hessian, factor, direction, trial);
-        initial_curvature_function_evaluations =
-            initialized.function_evaluations;
-        initial_curvature_gradient_evaluations =
-            initialized.gradient_evaluations;
-        initial_curvature_step_count = initialized.steps;
-    }
-    const double requested_accuracy = std::max(
-        64.0 * std::numeric_limits<double>::epsilon(), accuracy * 0.01);
-    const kraft::Options requested_options {
-        requested_accuracy, maximum_iterations};
-    result = runtime::minimize_runtime_kraft(
-        objective, NoConstraints {objective.dimension()}, coordinates,
-        bounds, requested_options, bound);
-    result.function_evaluations += initial_curvature_function_evaluations;
-    result.gradient_evaluations += initial_curvature_gradient_evaluations;
-
-    const auto current_kkt = [&]() noexcept {
-        if (!result.derivatives_current)
-            return std::numeric_limits<double>::infinity();
-        double residual = 0.0;
-        for (std::size_t index = 0; index < objective.dimension(); ++index)
-            residual = std::max(residual, std::abs(bound.gradient[index]));
-        return residual;
-    };
-    const double scientific_tolerance = std::max(
-        std::sqrt(accuracy),
-        std::sqrt(std::numeric_limits<double>::epsilon()));
-    const auto current_scientific_kkt = [&]() noexcept {
-        return objective.scientific_kkt(
-            coordinates, theta, theta_gradient, scientific_tolerance);
-    };
-    const auto credible = [&](const kraft::Result& solver, double residual) noexcept {
-        const double tolerance = std::max(
-            std::sqrt(accuracy),
-            std::sqrt(std::numeric_limits<double>::epsilon()));
-        return solver.mode == 0 && solver.derivatives_current
-            && std::isfinite(solver.value) && std::isfinite(residual)
-            && solver.maximum_violation <= tolerance && residual <= tolerance;
-    };
-    const auto accumulate_work = [](kraft::Result& destination,
-                                    const kraft::Result& source) noexcept {
-        destination.iterations += source.iterations;
-        destination.function_evaluations += source.function_evaluations;
-        destination.gradient_evaluations += source.gradient_evaluations;
-        destination.constraint_evaluations += source.constraint_evaluations;
-        destination.jacobian_evaluations += source.jacobian_evaluations;
-    };
-
-    kkt_residual = current_kkt();
-    double scientific_kkt_residual = current_scientific_kkt();
-    bool boundary_reached = objective.boundary_reached(
-        coordinates, theta, scientific_tolerance);
-    refinement_restarts = 0u;
-    curvature_steps = initial_curvature_step_count;
-    const double curvature_accuracy = std::max(
-        64.0 * std::numeric_limits<double>::epsilon(),
-        std::min(accuracy, accuracy * 1e-4));
-    const double curvature_tolerance = std::max(
-        std::sqrt(curvature_accuracy),
-        std::sqrt(std::numeric_limits<double>::epsilon()));
-    const auto polish_with_curvature = [&](std::size_t maximum_steps) noexcept {
-        if (boundary_reached
-            || result.iterations >= static_cast<std::size_t>(maximum_iterations)
-            || (credible(result, scientific_kkt_residual)
-                && kkt_residual <= curvature_tolerance)) {
-            return;
-        }
-        std::copy_n(coordinates, dimension, pre_polish_coordinates);
-        const double accepted_value = result.value;
-        const double accepted_scientific_kkt = scientific_kkt_residual;
-        const bool accepted_boundary = boundary_reached;
-        const std::size_t remaining_iterations =
-            static_cast<std::size_t>(maximum_iterations) - result.iterations;
-        const curvature::Result polished = curvature::refine(
-            objective, coordinates, bounds, curvature_accuracy,
-            std::min(maximum_steps, remaining_iterations),
-            bound.gradient, accepted_coordinates, bound.accepted_gradient,
-            hessian, factor, direction, trial);
-        result.function_evaluations += polished.function_evaluations;
-        result.gradient_evaluations += polished.gradient_evaluations;
-        curvature_steps += polished.steps;
-        const double polished_scientific_kkt = current_scientific_kkt();
-        const bool polished_boundary = objective.boundary_reached(
-            coordinates, theta, scientific_tolerance);
-        const double objective_roundoff =
-            128.0 * std::numeric_limits<double>::epsilon()
-            * std::max(1.0, std::abs(accepted_value));
-        if (polished.improved
-            && polished.value <= accepted_value + objective_roundoff
-            && polished_scientific_kkt < accepted_scientific_kkt) {
-            result.value = polished.value;
-            result.derivatives_current = true;
-            result.iterations += polished.steps;
-            kkt_residual = polished.kkt_residual;
-            scientific_kkt_residual = polished_scientific_kkt;
-            boundary_reached = polished_boundary;
-            if (polished.converged)
-                result.mode = 0;
-            return;
-        }
-        std::copy_n(pre_polish_coordinates, dimension, coordinates);
-        result.derivatives_current = objective.evaluate(
-            kraft::ObjectiveRequest::gradient,
-            coordinates, nullptr, bound.gradient, false);
-        kkt_residual = current_kkt();
-        scientific_kkt_residual = current_scientific_kkt();
-        boundary_reached = accepted_boundary;
-    };
-
-    polish_with_curvature(4u);
-    while (refinement_restarts < 2u
-           && result.iterations < static_cast<std::size_t>(maximum_iterations)
-           && !boundary_reached
-           && !credible(result, scientific_kkt_residual)) {
-        std::copy_n(
-            coordinates, objective.dimension(), accepted_coordinates);
-        const kraft::Result accepted_result = result;
-        const double accepted_kkt = kkt_residual;
-        const double accepted_scientific_kkt = scientific_kkt_residual;
-        const bool accepted_boundary = boundary_reached;
-        std::copy_n(coordinates, dimension, pre_polish_coordinates);
-        const double refinement_accuracy = refinement_restarts == 0u
-            ? accuracy * 0.01
-            : accuracy * accuracy;
-        const kraft::Options refinement_options {
-            std::max(
-                64.0 * std::numeric_limits<double>::epsilon(),
-                std::min(accuracy, refinement_accuracy)),
-            maximum_iterations
-                - static_cast<std::int64_t>(result.iterations)};
-        kraft::Result candidate = runtime::minimize_runtime_kraft(
-            objective, NoConstraints {objective.dimension()}, coordinates,
-            bounds, refinement_options, bound);
-        result = candidate;
-        const double candidate_kkt = current_kkt();
-        const double candidate_scientific_kkt = current_scientific_kkt();
-        const bool candidate_boundary = objective.boundary_reached(
-            coordinates, theta, scientific_tolerance);
-        ++refinement_restarts;
-
-        const double objective_roundoff =
-            64.0 * std::numeric_limits<double>::epsilon()
-            * std::max(1.0, std::abs(accepted_result.value));
-        const bool candidate_valid = candidate.mode == 0
-            && candidate.derivatives_current && std::isfinite(candidate.value)
-            && std::isfinite(candidate_kkt)
-            && std::isfinite(candidate_scientific_kkt)
-            && candidate.value <= accepted_result.value + objective_roundoff;
-        const bool accepted_credible = credible(
-            accepted_result, accepted_scientific_kkt);
-        const bool candidate_credible = credible(
-            candidate, candidate_scientific_kkt);
-        const bool improved = candidate_valid
-            && (candidate_credible != accepted_credible
-                    ? candidate_credible
-                    : candidate_scientific_kkt < accepted_scientific_kkt);
-        if (improved) {
-            accumulate_work(candidate, accepted_result);
-            result = candidate;
-            kkt_residual = candidate_kkt;
-            scientific_kkt_residual = candidate_scientific_kkt;
-            boundary_reached = candidate_boundary;
-            continue;
-        }
-
-        std::copy_n(
-            accepted_coordinates, objective.dimension(), coordinates);
-        result = accepted_result;
-        accumulate_work(result, candidate);
-        kkt_residual = accepted_kkt;
-        scientific_kkt_residual = accepted_scientific_kkt;
-        boundary_reached = accepted_boundary;
-        continue;
-    }
-
-    polish_with_curvature(16u);
-    scientific_projection_steps = 0u;
-    if constexpr (requires {
-        objective.scientific_projected_step(
-            theta, theta_gradient, direction, trial);
-    }) {
-        while (scientific_projection_steps < 16u
-               && result.iterations
-                    < static_cast<std::size_t>(maximum_iterations)
-               && !credible(result, scientific_kkt_residual)) {
-            current_scientific_kkt();
-            if (!objective.scientific_projected_step(
-                    theta, theta_gradient, direction, trial)) {
-                break;
-            }
-            double candidate_value = std::numeric_limits<double>::infinity();
-            const bool evaluated = objective.evaluate(
-                kraft::ObjectiveRequest::value_gradient,
-                trial, &candidate_value, bound.accepted_gradient, false);
-            ++scientific_projection_steps;
-            ++result.iterations;
-            ++result.function_evaluations;
-            ++result.gradient_evaluations;
-            if (!evaluated || !std::isfinite(candidate_value))
-                break;
-            const double candidate_scientific_kkt = objective.scientific_kkt(
-                trial, theta, theta_gradient, scientific_tolerance);
-            double candidate_kkt = 0.0;
-            for (std::size_t index = 0; index < dimension; ++index) {
-                candidate_kkt = std::max(
-                    candidate_kkt, std::abs(bound.accepted_gradient[index]));
-            }
-            const double objective_roundoff =
-                128.0 * std::numeric_limits<double>::epsilon()
-                * std::max(1.0, std::abs(result.value));
-            if (!std::isfinite(candidate_scientific_kkt)
-                || candidate_value > result.value + objective_roundoff
-                || candidate_scientific_kkt >= scientific_kkt_residual) {
-                break;
-            }
-            std::copy_n(trial, dimension, coordinates);
-            std::copy_n(
-                bound.accepted_gradient, dimension, bound.gradient);
-            result.value = candidate_value;
-            result.derivatives_current = true;
-            kkt_residual = candidate_kkt;
-            scientific_kkt_residual = candidate_scientific_kkt;
-            boundary_reached = objective.boundary_reached(
-                coordinates, theta, scientific_tolerance);
-            if (credible(result, scientific_kkt_residual))
-                result.mode = 0;
-        }
-    }
-    return result;
-}
+using vlk::experiment::controller::minimize_objective;
 
 curvature::Result refine_garch_theta_projected(
     const GarchObjective& objective,
@@ -2405,10 +2124,11 @@ PyObject* build_fit_result(
     double kkt_residual,
     std::size_t refinement_restarts,
     std::size_t curvature_steps,
-    std::size_t scientific_projection_steps)
+    std::size_t scientific_projection_steps,
+    const std::uint32_t* execution = nullptr)
 {
     return Py_BuildValue(
-        "(LdddLKKKKK)",
+        execution ? "(LdddLKKKKKI)" : "(LdddLKKKKK)",
         static_cast<long long>(result.mode),
         result.value,
         result.maximum_violation,
@@ -2418,7 +2138,8 @@ PyObject* build_fit_result(
         static_cast<unsigned long long>(result.gradient_evaluations),
         static_cast<unsigned long long>(refinement_restarts),
         static_cast<unsigned long long>(curvature_steps),
-        static_cast<unsigned long long>(scientific_projection_steps));
+        static_cast<unsigned long long>(scientific_projection_steps),
+        static_cast<unsigned int>(execution ? *execution : 0u));
 }
 
 PyObject* py_optimizer_workspace_bytes(
@@ -2438,25 +2159,8 @@ PyObject* py_optimizer_workspace_bytes(
         : 0u;
     if (PyErr_Occurred())
         return nullptr;
-    const std::size_t solver_bytes =
-        runtime::runtime_kraft_workspace_bytes(dimension, constraints);
-    const std::size_t aligned_solver_bytes =
-        (solver_bytes + alignof(double) - 1u) & ~(alignof(double) - 1u);
-    std::size_t square = 0u;
-    std::size_t scratch_count = 0u;
-    std::size_t vectors = 0u;
-    if (solver_bytes == 0u || aligned_solver_bytes < solver_bytes
-        || !runtime::checked_product(dimension, dimension, square)
-        || !runtime::checked_product(square, 2u, scratch_count)
-        || !runtime::checked_product(dimension, 6u, vectors)
-        || !runtime::checked_sum(scratch_count, vectors, scratch_count)
-        || scratch_count
-            > (std::numeric_limits<std::size_t>::max() - aligned_solver_bytes)
-                / sizeof(double)) {
-        return PyLong_FromSize_t(0u);
-    }
     return PyLong_FromSize_t(
-        aligned_solver_bytes + scratch_count * sizeof(double));
+        vlk::experiment::controller::workspace_bytes(dimension, constraints));
 }
 
 PyObject* py_garch_workspace_bytes(
@@ -3658,6 +3362,7 @@ PyObject* py_fit_aparch(
     const std::int64_t maximum_iterations = PyLong_AsLongLong(args[14]);
     if (PyErr_Occurred())
         return nullptr;
+    vlk::experiment::request_accounting::prepare(vlk::experiment::request_accounting::Preparation::sample, 0u);
     if (!vlk_aparch_sample_data_valid(
             residuals, observations, initial_variance, p, q, density)) {
         PyErr_SetString(
@@ -3668,11 +3373,12 @@ PyObject* py_fit_aparch(
     }
     const std::size_t parameter_count = vlk_aparch_parameter_count(
         p, q, density);
+    std::uint32_t execution = 0u;
     const AparchObjective<false> objective {
         residuals, observations, initial_variance,
         0u, 0u, p, q, density, parameter_count,
         jet_workspace, jet_workspace_bytes,
-        1.0 / static_cast<double>(observations)};
+        1.0 / static_cast<double>(observations), nullptr, nullptr, &execution};
     double kkt_residual = std::numeric_limits<double>::infinity();
     std::size_t refinement_restarts = 0u;
     std::size_t curvature_steps = 0u;
@@ -3686,14 +3392,15 @@ PyObject* py_fit_aparch(
     Py_END_ALLOW_THREADS
     return build_fit_result(
         result, kkt_residual, refinement_restarts, curvature_steps,
-        scientific_projection_steps);
+        scientific_projection_steps, &execution);
 }
 
-PyObject* py_fit_arma_aparch(
-    PyObject*, PyObject* const* args, Py_ssize_t nargs)
+PyObject* fit_arma_aparch_impl(
+    PyObject* const* args, Py_ssize_t nargs, bool with_reuse)
 {
-    if (nargs != 17) {
-        BAD_ARITY("_fit_arma_aparch", 17, nargs);
+    const int expected = with_reuse ? 20 : 17;
+    if (nargs != expected) {
+        BAD_ARITY(with_reuse ? "_fit_arma_aparch_reuse" : "_fit_arma_aparch", expected, nargs);
         return nullptr;
     }
     double* coordinates = pointer_from<double*>(args[0]);
@@ -3716,9 +3423,11 @@ PyObject* py_fit_arma_aparch(
     const std::int64_t maximum_iterations = PyLong_AsLongLong(args[16]);
     if (PyErr_Occurred())
         return nullptr;
-    if (!vlk_arma_aparch_sample_data_valid(
-            observations, observation_count, initial_variance,
-            p_ar, q_ma, p, q, density)) {
+    vlk::experiment::request_accounting::prepare(vlk::experiment::request_accounting::Preparation::sample, 0u);
+    const auto sample = vlk::experiment::mean_screen::ObservationSummary::prepare(
+        observations, observation_count);
+    if (!runtime::aparch::valid_joint_sample(
+            sample, initial_variance, p_ar, q_ma, p, q, density)) {
         PyErr_SetString(
             PyExc_ValueError,
             "Native ARMA-APARCH fit received invalid observations, orders, "
@@ -3729,11 +3438,45 @@ PyObject* py_fit_arma_aparch(
         p_ar, q_ma, p, q, density);
     const std::size_t effective = observation_count - std::max({
         p_ar, q_ma, p, q});
+    vlk::experiment::request_reuse::Bank cache;
+    bool cache_enabled = false;
+    if (with_reuse) {
+        void* cache_memory = pointer_from<void*>(args[17]);
+        const std::size_t cache_bytes = PyLong_AsSize_t(args[18]);
+        const std::size_t buckets = PyLong_AsSize_t(args[19]);
+        if (PyErr_Occurred()) return nullptr;
+        if (buckets) {
+            namespace ranges = vlk::experiment::bounded_direction;
+            ranges::Range cache_range;
+            std::size_t parameter_bytes = 0, observation_bytes = 0;
+            bool disjoint = runtime::checked_product(parameter_count, sizeof(double), parameter_bytes)
+                && runtime::checked_product(observation_count, sizeof(double), observation_bytes)
+                && ranges::memory_range(cache_memory, cache_bytes, cache_range);
+            const void* pointers[] = {coordinates, observations, lower, upper,
+                optimizer_workspace, jet_workspace};
+            const std::size_t sizes[] = {parameter_bytes, observation_bytes, parameter_bytes,
+                parameter_bytes, optimizer_workspace_bytes, jet_workspace_bytes};
+            for (std::size_t i = 0; i < 6u && disjoint; ++i) {
+                ranges::Range other;
+                disjoint = ranges::memory_range(pointers[i], sizes[i], other)
+                    && !ranges::intersects(cache_range, other);
+            }
+            if (!disjoint || !cache.bind(parameter_count, buckets, cache_memory, cache_bytes)) {
+                PyErr_SetString(PyExc_ValueError, "Native request reuse requires a disjoint, aligned, sufficiently sized workspace.");
+                return nullptr;
+            }
+            cache_enabled = true;
+        } else if (cache_memory != nullptr || cache_bytes != 0u) {
+            PyErr_SetString(PyExc_ValueError, "Disabled request reuse requires a null workspace and zero bytes.");
+            return nullptr;
+        }
+    }
+    std::uint32_t execution = 0u;
     const AparchObjective<true> objective {
         observations, observation_count, initial_variance,
         p_ar, q_ma, p, q, density, parameter_count,
         jet_workspace, jet_workspace_bytes,
-        1.0 / static_cast<double>(effective)};
+        1.0 / static_cast<double>(effective), &sample, cache_enabled ? &cache : nullptr, &execution};
     double kkt_residual = std::numeric_limits<double>::infinity();
     std::size_t refinement_restarts = 0u;
     std::size_t curvature_steps = 0u;
@@ -3745,9 +3488,277 @@ PyObject* py_fit_arma_aparch(
         optimizer_workspace, optimizer_workspace_bytes, kkt_residual,
         refinement_restarts, curvature_steps, scientific_projection_steps);
     Py_END_ALLOW_THREADS
-    return build_fit_result(
+    PyObject* fit = build_fit_result(
         result, kkt_residual, refinement_restarts, curvature_steps,
-        scientific_projection_steps);
+        scientific_projection_steps, &execution);
+    if (!fit || !with_reuse) return fit;
+    return Py_BuildValue("(NKK)", fit,
+        static_cast<unsigned long long>(cache.queries()),
+        static_cast<unsigned long long>(cache.hits()));
+}
+
+PyObject* py_fit_arma_aparch(PyObject*, PyObject* const* args, Py_ssize_t nargs)
+{ return fit_arma_aparch_impl(args, nargs, false); }
+
+PyObject* py_fit_arma_aparch_reuse(PyObject*, PyObject* const* args, Py_ssize_t nargs)
+{ return fit_arma_aparch_impl(args, nargs, true); }
+
+PyObject* py_request_reuse_workspace_bytes(PyObject*, PyObject* const* args, Py_ssize_t nargs)
+{
+    if (nargs != 2) { BAD_ARITY("_request_reuse_workspace_bytes", 2, nargs); return nullptr; }
+    const auto width = PyLong_AsSize_t(args[0]), buckets = PyLong_AsSize_t(args[1]);
+    if (PyErr_Occurred()) return nullptr;
+    return PyLong_FromSize_t(vlk::experiment::request_reuse::Bank::bytes(width, buckets));
+}
+
+// A tenth item opts into an explicit strategy and a (legacy report, diagnostics) result.
+bool parse_aparch_preparation_request(PyObject* object,
+    runtime::aparch::preparation::Request& request)
+{
+    if (!PyTuple_Check(object) || (PyTuple_GET_SIZE(object)!=9 && PyTuple_GET_SIZE(object)!=10)) {
+        PyErr_SetString(PyExc_TypeError, "APARCH preparation request must be a 9- or 10-item tuple");
+        return false;
+    }
+    request={};
+    request.ar=PyLong_AsSize_t(PyTuple_GET_ITEM(object,0));
+    request.ma=PyLong_AsSize_t(PyTuple_GET_ITEM(object,1));
+    request.p=PyLong_AsSize_t(PyTuple_GET_ITEM(object,2));
+    request.q=PyLong_AsSize_t(PyTuple_GET_ITEM(object,3));
+    request.density=PyLong_AsSize_t(PyTuple_GET_ITEM(object,4));
+    const int force=PyObject_IsTrue(PyTuple_GET_ITEM(object,5));
+    request.force_runtime_map=force==1;
+    request.power=PyFloat_AsDouble(PyTuple_GET_ITEM(object,6));
+    request.accuracy=PyFloat_AsDouble(PyTuple_GET_ITEM(object,7));
+    request.iterations=PyLong_AsLongLong(PyTuple_GET_ITEM(object,8));
+    if (PyTuple_GET_SIZE(object)==10) {
+        const auto strategy=PyLong_AsSize_t(PyTuple_GET_ITEM(object,9));
+        if (PyErr_Occurred()) return false;
+        if (strategy>1 || (strategy==1 && (request.density==1 || request.density==2))) {
+            PyErr_SetString(PyExc_ValueError,
+                "APARCH strategy 1 requires an independent power coordinate; Student/Skew require strategy 0 physical equality");
+            return false;
+        }
+        request.strategy=static_cast<runtime::aparch::preparation::Strategy>(strategy);
+    }
+    return !PyErr_Occurred();
+}
+
+PyObject* py_arma_aparch_preparation_workspace_bytes(
+    PyObject*,PyObject* const* args,Py_ssize_t nargs)
+{
+    if (nargs!=1) {BAD_ARITY("_arma_aparch_preparation_workspace_bytes",1,nargs);return nullptr;}
+    runtime::aparch::preparation::Request request;
+    if (!parse_aparch_preparation_request(args[0],request)) return nullptr;
+    return PyLong_FromSize_t(runtime::aparch::preparation::workspace_bytes(&request));
+}
+
+PyObject* py_arma_aparch_prepare(PyObject*,PyObject* const* args,Py_ssize_t nargs)
+{
+    if (nargs!=16) {BAD_ARITY("_arma_aparch_prepare",16,nargs);return nullptr;}
+    runtime::aparch::preparation::Request request;
+    if (!parse_aparch_preparation_request(args[0],request)) return nullptr;
+    const auto* incoming=pointer_from<const double*>(args[1]);
+    request.width=PyLong_AsSize_t(args[2]);
+    const auto* observations=pointer_from<const double*>(args[3]);
+    request.count=PyLong_AsSize_t(args[4]);
+    request.initial_variance=PyFloat_AsDouble(args[5]);
+    const auto* lower=pointer_from<const double*>(args[6]);
+    const auto* upper=pointer_from<const double*>(args[7]);
+    auto* workspace=pointer_from<void*>(args[8]);
+    const auto bytes=PyLong_AsSize_t(args[9]);
+    auto* jet=pointer_from<void*>(args[10]);
+    const auto jet_bytes=PyLong_AsSize_t(args[11]);
+    auto* continuation=pointer_from<double*>(args[12]);
+    const auto continuation_count=PyLong_AsSize_t(args[13]);
+    auto* best=pointer_from<double*>(args[14]);
+    const auto best_count=PyLong_AsSize_t(args[15]);
+    if (PyErr_Occurred()) return nullptr;
+    auto sample=vlk::experiment::mean_screen::ObservationSummary::prepare(nullptr,0);
+    const AparchObjective<true> objective{observations,request.count,request.initial_variance,
+        request.ar,request.ma,request.p,request.q,static_cast<std::uint32_t>(request.density),
+        request.width,jet,jet_bytes,1.0,&sample};
+    runtime::aparch::preparation::Result result;
+    int status;
+    Py_BEGIN_ALLOW_THREADS
+    status=runtime::aparch::preparation::run_checked(&request,objective,[&] {
+        vlk::experiment::request_accounting::prepare(vlk::experiment::request_accounting::Preparation::sample,0u);
+        sample=vlk::experiment::mean_screen::ObservationSummary::prepare(observations,request.count);
+        return runtime::aparch::valid_joint_sample(sample,request.initial_variance,
+            request.ar,request.ma,request.p,request.q,static_cast<std::uint32_t>(request.density));
+    },incoming,observations,lower,upper,workspace,bytes,jet,jet_bytes,[&] {
+        return vlk_arma_aparch_jet_workspace_bytes(request.ar,request.ma,
+            request.p,request.q,static_cast<std::uint32_t>(request.density),1u,
+            request.strategy==runtime::aparch::preparation::Strategy::box_full_controller_reuse ? 7u : 3u);
+    },continuation,continuation_count,best,best_count,&result);
+    if (status==0 || status==-2)
+        result.objective_dispatch=vlk_arma_aparch_dispatch_kind(request.ar,request.ma,
+            request.p,request.q,static_cast<std::uint32_t>(request.density),1u);
+    Py_END_ALLOW_THREADS
+    PyObject* report=Py_BuildValue("(idddLLKKKKKKLKKK)",status,result.continuation_value,result.best_value,
+        result.equality_error,static_cast<long long>(result.mode),static_cast<long long>(result.iterations),
+        static_cast<unsigned long long>(result.values),static_cast<unsigned long long>(result.gradients),
+        static_cast<unsigned long long>(result.hessians),static_cast<unsigned long long>(result.constraints),
+        static_cast<unsigned long long>(result.jacobians),static_cast<unsigned long long>(result.map_dispatch),
+        static_cast<long long>(result.objective_dispatch),
+        static_cast<unsigned long long>(result.independent_power),static_cast<unsigned long long>(result.eligible),
+        static_cast<unsigned long long>(result.retained_feasible_trial));
+    if (!report || PyTuple_GET_SIZE(args[0])==9) return report;
+    PyObject* solver=build_fit_result(result.solver,result.unrestricted_coordinate_kkt,
+        result.refinement_restarts,result.curvature_steps,result.scientific_projection_steps);
+    if (!solver) {Py_DECREF(report);return nullptr;}
+    PyObject* diagnostics=Py_BuildValue("{s:K,s:O,s:N,s:K,s:K,s:K,s:K,s:K,s:K,s:K,s:O}",
+        "strategy",static_cast<unsigned long long>(request.strategy),
+        "held_power_certified",Py_False,
+        "solver_diagnostics_unrestricted",solver,
+        "reuse_queries",static_cast<unsigned long long>(result.reuse_queries),
+        "reuse_hits",static_cast<unsigned long long>(result.reuse_hits),
+        "constraint_evaluations",static_cast<unsigned long long>(result.solver.constraint_evaluations),
+        "jacobian_evaluations",static_cast<unsigned long long>(result.solver.jacobian_evaluations),
+        "constraint_curvature_resets",static_cast<unsigned long long>(result.solver.constraint_curvature_resets),
+        "checkpoint_restarts",static_cast<unsigned long long>(result.solver.checkpoint_restarts),
+        "stop_reason",static_cast<unsigned long long>(result.solver.stop_reason),
+        "derivatives_current",result.solver.derivatives_current ? Py_True : Py_False);
+    if (!diagnostics) {Py_DECREF(report);return nullptr;}
+    return Py_BuildValue("(NN)",report,diagnostics);
+}
+
+PyObject* py_arma_aparch_multi_phase_workspace_bytes(
+    PyObject*, PyObject* const* args, Py_ssize_t nargs)
+{
+    if (nargs != 7 && nargs != 8) {
+        PyErr_SetString(PyExc_TypeError,"APARCH multi-phase workspace query takes 7 or 8 arguments");
+        return nullptr;
+    }
+    const auto density = PyLong_AsUnsignedLong(args[4]);
+    if (PyErr_Occurred()) return nullptr;
+    if (density > 7) { PyErr_SetString(PyExc_ValueError,"Invalid APARCH density code"); return nullptr; }
+    runtime::aparch::multi_phase::Specification spec{
+        PyLong_AsSize_t(args[0]),PyLong_AsSize_t(args[1]),PyLong_AsSize_t(args[2]),PyLong_AsSize_t(args[3]),
+        PyLong_AsSize_t(args[5]),static_cast<std::uint32_t>(density),false};
+    const int force_runtime = PyObject_IsTrue(args[6]);
+    const auto strategy = nargs == 8 ? PyLong_AsUnsignedLong(args[7]) : 0ul;
+    if (PyErr_Occurred()) return nullptr;
+    if (strategy > 1) { PyErr_SetString(PyExc_ValueError,"Invalid APARCH multi-phase strategy"); return nullptr; }
+    spec.force_runtime = force_runtime == 1;
+    return PyLong_FromSize_t(vlk_arma_aparch_multi_phase_strategy_workspace_bytes(
+        &spec,static_cast<std::uint32_t>(strategy)));
+}
+
+PyObject* py_arma_aparch_multi_phase_run(
+    PyObject*, PyObject* const* args, Py_ssize_t nargs)
+{
+    if (nargs != 27 && nargs != 28) {
+        PyErr_SetString(PyExc_TypeError,"APARCH multi-phase run takes 27 or 28 arguments");
+        return nullptr;
+    }
+    const auto* initial = pointer_from<const double*>(args[0]);
+    const auto width = PyLong_AsSize_t(args[1]);
+    const auto* data = pointer_from<const double*>(args[2]);
+    const auto n = PyLong_AsSize_t(args[3]);
+    const double h0 = PyFloat_AsDouble(args[4]);
+    const auto density = PyLong_AsUnsignedLong(args[9]);
+    if (PyErr_Occurred()) return nullptr;
+    if (density > 7) { PyErr_SetString(PyExc_ValueError,"Invalid APARCH density code"); return nullptr; }
+    runtime::aparch::multi_phase::Specification spec{
+        PyLong_AsSize_t(args[5]),PyLong_AsSize_t(args[6]),PyLong_AsSize_t(args[7]),PyLong_AsSize_t(args[8]),
+        PyLong_AsSize_t(args[10]),static_cast<std::uint32_t>(density),false};
+    const auto steps = PyLong_AsSize_t(args[11]);
+    auto* workspace = pointer_from<void*>(args[12]);
+    const auto bytes = PyLong_AsSize_t(args[13]);
+    auto* anchors = pointer_from<std::size_t*>(args[14]);
+    const auto anchor_count = PyLong_AsSize_t(args[15]);
+    auto* columns = pointer_from<std::size_t*>(args[16]);
+    const auto column_count = PyLong_AsSize_t(args[17]);
+    auto* continuation = pointer_from<double*>(args[18]);
+    const auto continuation_count = PyLong_AsSize_t(args[19]);
+    auto* best = pointer_from<double*>(args[20]);
+    const auto best_count = PyLong_AsSize_t(args[21]);
+    auto* summary = pointer_from<double*>(args[22]);
+    const auto summary_capacity = PyLong_AsSize_t(args[23]);
+    auto* trace = pointer_from<double*>(args[24]);
+    const auto trace_count = PyLong_AsSize_t(args[25]);
+    const int force_runtime = PyObject_IsTrue(args[26]);
+    const auto strategy = nargs == 28 ? PyLong_AsUnsignedLong(args[27]) : 0ul;
+    if (PyErr_Occurred()) return nullptr;
+    if (strategy > 1) { PyErr_SetString(PyExc_ValueError,"Invalid APARCH multi-phase strategy"); return nullptr; }
+    spec.force_runtime = force_runtime == 1;
+    int status;
+    Py_BEGIN_ALLOW_THREADS
+    status = vlk_arma_aparch_multi_phase_strategy_run(&spec,initial,width,data,n,h0,steps,workspace,bytes,
+        anchors,anchor_count,columns,column_count,continuation,continuation_count,best,best_count,
+        summary,summary_capacity,trace,trace_count,static_cast<std::uint32_t>(strategy));
+    Py_END_ALLOW_THREADS
+    return PyLong_FromLong(status);
+}
+
+PyObject* py_arma_aparch_mean_refinement_workspace_bytes(
+    PyObject*, PyObject* const* args, Py_ssize_t nargs)
+{
+    if (nargs != 6 && nargs != 7) {
+        PyErr_Format(PyExc_TypeError,
+            "_arma_aparch_mean_refinement_workspace_bytes() takes 6 or 7 "
+            "positional arguments but %zd were given", nargs);
+        return nullptr;
+    }
+    const auto p_ar = PyLong_AsSize_t(args[0]);
+    const auto q_ma = PyLong_AsSize_t(args[1]);
+    const auto p = PyLong_AsSize_t(args[2]);
+    const auto q = PyLong_AsSize_t(args[3]);
+    const auto density = static_cast<std::uint32_t>(PyLong_AsUnsignedLong(args[4]));
+    const bool force_runtime = PyObject_IsTrue(args[5]) == 1;
+    const bool joint = nargs == 7 && PyObject_IsTrue(args[6]) == 1;
+    if (PyErr_Occurred()) return nullptr;
+    return PyLong_FromSize_t(runtime::aparch::mean_refinement::workspace_bytes(
+        p_ar, q_ma, p, q, density, force_runtime, joint));
+}
+
+PyObject* py_arma_aparch_mean_refine(
+    PyObject*, PyObject* const* args, Py_ssize_t nargs)
+{
+    if (nargs < 19 || nargs > 21) {
+        PyErr_Format(PyExc_TypeError,
+            "_arma_aparch_mean_refine() takes 19, 20 or 21 positional "
+            "arguments but %zd were given", nargs);
+        return nullptr;
+    }
+    const auto* parameters = pointer_from<const double*>(args[0]);
+    const auto k = PyLong_AsSize_t(args[1]);
+    const auto* observations = pointer_from<const double*>(args[2]);
+    const auto n = PyLong_AsSize_t(args[3]);
+    const double h0 = PyFloat_AsDouble(args[4]);
+    const auto p_ar = PyLong_AsSize_t(args[5]);
+    const auto q_ma = PyLong_AsSize_t(args[6]);
+    const auto p = PyLong_AsSize_t(args[7]);
+    const auto q = PyLong_AsSize_t(args[8]);
+    const auto density = static_cast<std::uint32_t>(PyLong_AsUnsignedLong(args[9]));
+    const auto maximum_steps = PyLong_AsSize_t(args[10]);
+    const auto radius = PyLong_AsSize_t(args[11]);
+    auto* workspace = pointer_from<void*>(args[12]);
+    const auto bytes = PyLong_AsSize_t(args[13]);
+    auto* continuation = pointer_from<double*>(args[14]);
+    const auto continuation_count = PyLong_AsSize_t(args[15]);
+    auto* best = pointer_from<double*>(args[16]);
+    const auto best_count = PyLong_AsSize_t(args[17]);
+    const bool force_runtime = PyObject_IsTrue(args[18]) == 1;
+    const bool joint = nargs >= 20 && PyObject_IsTrue(args[19]) == 1;
+    const double maximum_step = nargs == 21 ? PyFloat_AsDouble(args[20]) : 1e-3;
+    if (PyErr_Occurred()) return nullptr;
+    runtime::aparch::mean_refinement::Result result;
+    Py_BEGIN_ALLOW_THREADS
+    runtime::aparch::mean_refinement::refine_checked(parameters, k, observations, n, h0,
+        p_ar, q_ma, p, q, density, maximum_steps, radius, workspace, bytes,
+        continuation, continuation_count, best, best_count, force_runtime,
+        joint, maximum_step, &result);
+    Py_END_ALLOW_THREADS
+    return Py_BuildValue("(iddKKKKKKK)", static_cast<int>(result.stop),
+        result.value, result.continuation_value,
+        static_cast<unsigned long long>(result.iterations),
+        static_cast<unsigned long long>(result.accepted),
+        static_cast<unsigned long long>(result.values),
+        static_cast<unsigned long long>(result.curvatures),
+        static_cast<unsigned long long>(result.lattice),
+        static_cast<unsigned long long>(result.proposals),
+        static_cast<unsigned long long>(result.rejected));
 }
 
 PyObject* py_aparch_workspace_bytes(
@@ -4017,6 +4028,30 @@ PyObject* py_aparch_asymmetric_power_moment(
         shape, density, gamma, delta, request, value, gradient, hessian));
 }
 
+PyObject* py_aparch_persistence(
+    PyObject*, PyObject* const* args, Py_ssize_t nargs)
+{
+    if (nargs != 4) {
+        BAD_ARITY("_aparch_persistence", 4, nargs);
+        return nullptr;
+    }
+    const double* parameters=pointer_from<const double*>(args[0]);
+    const std::size_t p=PyLong_AsSize_t(args[1]), q=PyLong_AsSize_t(args[2]);
+    const auto density=PyLong_AsUnsignedLong(args[3]);
+    if (PyErr_Occurred()) return nullptr;
+    if (density>VLK_GARCH_VARIANCE_GAMMA) {
+        PyErr_SetString(PyExc_ValueError,"APARCH density must be an integer from 0 to 7.");
+        return nullptr;
+    }
+    double value,slack;
+    const auto status=vlk_aparch_persistence(parameters,p,q,density,&value,&slack);
+    if (status != VLK_JET_OK) {
+        PyErr_Format(PyExc_RuntimeError,"APARCH persistence rejected the supplied point with status=%d.",status);
+        return nullptr;
+    }
+    return Py_BuildValue("(dd)",value,slack);
+}
+
 PyObject* py_aparch_filter_workspace_bytes(
     PyObject*, PyObject* const* args, Py_ssize_t nargs)
 {
@@ -4197,7 +4232,133 @@ PyObject* py_arma_aparch_jet(
     return Py_BuildValue("(iI)", status, valid);
 }
 
+PyObject* py_request_accounting_call(PyObject*, PyObject* const* args, Py_ssize_t nargs)
+{
+    namespace accounting = vlk::experiment::request_accounting;
+    if (nargs != 3 || !PyTuple_Check(args[1])) {
+        PyErr_SetString(PyExc_TypeError, "_request_accounting_call requires selector, argument tuple, and phase.");
+        return nullptr;
+    }
+    if constexpr (!accounting::enabled) {
+        PyErr_SetString(PyExc_RuntimeError, "Native request accounting is disabled in this build.");
+        return nullptr;
+    }
+    const auto selector = PyLong_AsUnsignedLong(args[0]);
+    const auto phase = PyLong_AsUnsignedLong(args[2]);
+    if (PyErr_Occurred()) return nullptr;
+    using Entry = PyObject* (*)(PyObject*, PyObject* const*, Py_ssize_t);
+    const Entry entries[] = {py_fit_arma_aparch, py_fit_arma_aparch_reuse,
+        py_arma_aparch_jet, py_arma_aparch_filter_state, py_arma_aparch_mean_refine,
+        py_fit_aparch, py_aparch_jet, py_aparch_filter_state,
+        py_arma_aparch_prepare, py_arma_aparch_multi_phase_run};
+    // Append tuple-call entries without changing the ten FASTCALL selector IDs.
+    const PyCFunction linear_entries[] = {
+        scivol::linear_joint::accounting_prevalidated,
+        scivol::linear_joint::accounting_fit,
+        scivol::linear_joint::accounting_refine};
+    if (selector >= std::size(entries) + std::size(linear_entries)
+        || phase >= accounting::phases) {
+        PyErr_SetString(PyExc_ValueError, "Invalid native accounting selector or phase.");
+        return nullptr;
+    }
+    accounting::Counts counts{};
+    PyObject* result;
+    {
+        accounting::Binding binding(&counts);
+        accounting::PhaseScope scope(static_cast<accounting::Phase>(phase));
+        result = selector < std::size(entries)
+            ? entries[selector](nullptr, PySequence_Fast_ITEMS(args[1]), PyTuple_GET_SIZE(args[1]))
+            : linear_entries[selector - std::size(entries)](nullptr, args[1]);
+    }
+    if (!result) return nullptr;
+    PyObject* record = PyDict_New();
+    if (!record) { Py_DECREF(result); return nullptr; }
+    const auto insert = [&](const char* name, const std::uint64_t* data, std::size_t size) {
+        PyObject* values = PyTuple_New(static_cast<Py_ssize_t>(size));
+        if (!values) return false;
+        for (std::size_t i = 0; i < size; ++i) {
+            PyObject* value = PyLong_FromUnsignedLongLong(data[i]);
+            if (!value) { Py_DECREF(values); return false; }
+            PyTuple_SET_ITEM(values, static_cast<Py_ssize_t>(i), value);
+        }
+        const int status = PyDict_SetItemString(record, name, values);
+        Py_DECREF(values);
+        return status == 0;
+    };
+    // Serialize fields individually: no pointer arithmetic across nested arrays or struct members.
+    constexpr std::size_t rows = accounting::phases * 2u * 8u;
+    const char* names[] = {"requested", "cache_hits", "failures", "physical", "physical_failures", "theta_passes"};
+    const std::uint64_t accounting::Requests::* fields[] = {&accounting::Requests::requested,
+        &accounting::Requests::cache_hits, &accounting::Requests::failures, &accounting::Requests::physical,
+        &accounting::Requests::physical_failures, &accounting::Requests::theta_passes};
+    constexpr std::size_t preparation_rows = accounting::phases * accounting::preparations * 3u;
+    std::uint64_t buffer[rows > preparation_rows ? rows : preparation_rows]{};
+    bool valid = true;
+    for (std::size_t field = 0; field < std::size(fields) && valid; ++field) {
+        std::size_t index = 0;
+        for (const auto& phase_rows : counts.requests)
+            for (const auto& coordinate_rows : phase_rows)
+                for (const auto& row : coordinate_rows) buffer[index++] = row.*fields[field];
+        valid = insert(names[field], buffer, rows);
+    }
+    std::size_t index = 0;
+    for (const auto& phase_rows : counts.preparation)
+        for (const auto& kind : phase_rows)
+            for (auto value : kind) buffer[index++] = value;
+    valid = valid && insert("preparation", buffer, index)
+        && insert("phase_entries", counts.phase_entries, accounting::phases);
+    for (const auto& item : {std::pair{"solver_requests", &counts.solver_requests},
+                            std::pair{"solver_failures", &counts.solver_failures}}) {
+        index = 0;
+        for (const auto& phase_rows : *item.second)
+            for (auto value : phase_rows) buffer[index++] = value;
+        valid = valid && insert(item.first, buffer, index);
+    }
+    if (!valid) { Py_DECREF(result); Py_DECREF(record); return nullptr; }
+    return Py_BuildValue("(NN)", result, record);
+}
+
+PyObject* py_skewt_absolute_moment(PyObject*, PyObject* const* args, Py_ssize_t nargs)
+{
+    if (nargs != 2) { BAD_ARITY("_skewt_absolute_moment",2,nargs); return nullptr; }
+    const double shape[] = {PyFloat_AsDouble(args[0]),PyFloat_AsDouble(args[1])};
+    if (PyErr_Occurred()) return nullptr;
+    const auto result = vlk::experiment::generated::egarch_moment_detail::skew_t_finite<0>(shape);
+    if (!result.valid) {
+        PyErr_SetString(PyExc_ValueError,"Skew-t absolute moment is unavailable at the supplied shape.");
+        return nullptr;
+    }
+    return PyFloat_FromDouble(result.value);
+}
+
+PyObject* py_vg_logpdf(PyObject*, PyObject* const* args, Py_ssize_t nargs)
+{
+    if (nargs != 5) { BAD_ARITY("_vg_logpdf",5,nargs); return nullptr; }
+    const double* values = pointer_from<const double*>(args[0]);
+    double* output = pointer_from<double*>(args[1]);
+    const auto n = PyLong_AsSize_t(args[2]);
+    const double rho = PyFloat_AsDouble(args[3]), shape = PyFloat_AsDouble(args[4]);
+    if (PyErr_Occurred()) return nullptr;
+    vg_shape_value_cache_t cache;
+    gh_bessel_value_plan_t plan;
+    if (!vg_shape_value_cache_init(rho,shape,&cache)
+        || !gh_bessel_value_plan_init(shape-.5,&plan)) {
+        PyErr_SetString(PyExc_ValueError,"Variance-gamma density is unavailable at the supplied shape.");
+        return nullptr;
+    }
+    Py_BEGIN_ALLOW_THREADS
+    for (std::size_t index=0; index<n; ++index)
+        output[index] = std::isnan(values[index]) ? values[index]
+            : -vg_obs_nll_value_planned(values[index],1.0,&cache,&plan);
+    Py_END_ALLOW_THREADS
+    Py_RETURN_NONE;
+}
+
 PyMethodDef methods[] = {
+    {"_skewt_absolute_moment", (PyCFunction)py_skewt_absolute_moment,
+     METH_FASTCALL, "Return the canonical Skew-t absolute moment."},
+    {"_vg_logpdf", (PyCFunction)py_vg_logpdf,
+     METH_FASTCALL, "Evaluate variance-gamma log densities into caller-owned output."},
     {"_optimizer_workspace_bytes", (PyCFunction)py_optimizer_workspace_bytes,
      METH_FASTCALL, "Return native optimizer workspace bytes."},
     {"_garch_workspace_bytes", (PyCFunction)py_garch_workspace_bytes,
@@ -4208,6 +4369,17 @@ PyMethodDef methods[] = {
      METH_FASTCALL, "Return joint ARMA-GARCH jet workspace bytes."},
     {"_arma_egarch_workspace_bytes", (PyCFunction)py_arma_egarch_workspace_bytes,
      METH_FASTCALL, "Return joint ARMA-EGARCH jet workspace bytes."},
+    {"_arma_aparch_preparation_workspace_bytes", (PyCFunction)py_arma_aparch_preparation_workspace_bytes, METH_FASTCALL, nullptr},
+    {"_arma_aparch_prepare", (PyCFunction)py_arma_aparch_prepare, METH_FASTCALL, nullptr},
+    {"_arma_aparch_multi_phase_workspace_bytes", (PyCFunction)py_arma_aparch_multi_phase_workspace_bytes,
+     METH_FASTCALL, "Plan caller-owned selected multi-anchor phase scratch."},
+    {"_arma_aparch_multi_phase_run", (PyCFunction)py_arma_aparch_multi_phase_run,
+     METH_FASTCALL, "Run a checked selected phase without certifying the fit."},
+    {"_arma_aparch_mean_refinement_workspace_bytes",
+     (PyCFunction)py_arma_aparch_mean_refinement_workspace_bytes,
+     METH_FASTCALL, "Plan caller-owned anchored mean refinement scratch."},
+    {"_arma_aparch_mean_refine", (PyCFunction)py_arma_aparch_mean_refine,
+     METH_FASTCALL, "Run a conditional mean refinement, without certifying the joint fit."},
     {"_aparch_workspace_bytes", (PyCFunction)py_aparch_workspace_bytes,
      METH_FASTCALL, "Return APARCH jet workspace bytes."},
     {"_arma_aparch_workspace_bytes",
@@ -4291,6 +4463,8 @@ PyMethodDef methods[] = {
      METH_FASTCALL, "Map APARCH parameters between theta and native coordinates."},
     {"_map_arma_aparch", (PyCFunction)py_map_arma_aparch,
      METH_FASTCALL, "Map joint ARMA-APARCH parameters and coordinates."},
+    {"_aparch_persistence", (PyCFunction)py_aparch_persistence,
+     METH_FASTCALL, "Return density-adjusted APARCH persistence from its domain policy."},
     {"_aparch_asymmetric_power_moment",
      (PyCFunction)py_aparch_asymmetric_power_moment,
      METH_FASTCALL, "Evaluate the APARCH stationarity-moment jet."},
@@ -4320,6 +4494,12 @@ PyMethodDef methods[] = {
      METH_FASTCALL, "Fit APARCH in native transformed coordinates."},
     {"_fit_arma_aparch", (PyCFunction)py_fit_arma_aparch,
      METH_FASTCALL, "Fit joint ARMA-APARCH in native transformed coordinates."},
+    {"_request_accounting_call", (PyCFunction)py_request_accounting_call,
+     METH_FASTCALL, "Collect private native work counts around an unchanged existing call."},
+    {"_request_reuse_workspace_bytes", (PyCFunction)py_request_reuse_workspace_bytes,
+     METH_FASTCALL, "Size a caller-owned exact-request cache for qualification."},
+    {"_fit_arma_aparch_reuse", (PyCFunction)py_fit_arma_aparch_reuse,
+     METH_FASTCALL, "Qualify exact-request reuse without changing the fitting policy."},
     {nullptr, nullptr, 0, nullptr},
 };
 

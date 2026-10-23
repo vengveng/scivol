@@ -20,6 +20,7 @@ struct SLSQP_vars {
     double acc, alpha, f0, gs, h1, h2, h3, h4, t, t0, tol;
     int64_t exact, inconsistent, reset, iter, itermax, line, m, meq, mode, n;
     struct ScivolSqpCurvatureReset curvature_reset;
+    int64_t minimum_invalid_step;
 };
 
 void __slsqp_body(struct SLSQP_vars* S, double* funx, double* gradx, double* C, double* d, double* sol, double* mult, double* xl, double* xu, double* buffer, CBLAS_INT* indices, struct ScivolNnlsWorkspace nnls_workspace);

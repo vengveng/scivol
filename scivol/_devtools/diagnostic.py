@@ -18,6 +18,7 @@ Usage in development:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 from typing import Callable, Optional, List, Tuple, TYPE_CHECKING
 
 import numpy as np
@@ -25,6 +26,27 @@ from numpy.typing import NDArray
 
 if TYPE_CHECKING:
     from ..spec.composite import CompositeSpec
+
+
+def _garch_derivative_validation_layout(uid: str) -> Tuple[int, int, str, int]:
+    """Resolve only the model and parameter layouts these validators support."""
+    match = re.fullmatch(r"GARCH\((\d+),(\d+)\)\+(Normal|StudentT)", uid)
+    if match is None:
+        raise ValueError(
+            "Derivative validation supports only standalone GARCH(p,q)+Normal "
+            f"or GARCH(p,q)+StudentT, not {uid}"
+        )
+    p, q = int(match.group(1)), int(match.group(2))
+    density = match.group(3).lower()
+    n_params = 1 + p + q + int(density == "studentt")
+    return p, q, density, n_params
+
+
+def _check_derivative_parameter_buffer(
+    params: NDArray[np.float64], n_params: int, uid: str,
+) -> None:
+    if params.ndim != 1 or params.size != n_params or not np.all(np.isfinite(params)):
+        raise ValueError(f"Parameters must be a finite 1-D array of length {n_params} for {uid}")
 
 
 # =============================================================================
@@ -208,8 +230,10 @@ def validate_derivatives(
     data = np.ascontiguousarray(data, dtype=np.float64)
     n = len(data)
     
-    # Get routine for this model
+    # Match the complete model before selecting fixed-width C callbacks.
     uid = str(spec)  # CompositeSpec stores signature in _sig, accessed via __str__
+    p, q, density, k = _garch_derivative_validation_layout(uid)
+    is_normal = density == "normal"
     routine = get_routine(uid)
     
     # Get default parameters if not provided
@@ -218,7 +242,7 @@ def validate_derivatives(
     else:
         params = np.ascontiguousarray(params, dtype=np.float64)
     
-    k = len(params)
+    _check_derivative_parameter_buffer(params, k, uid)
     
     # Prepare data buffers
     resid2 = data ** 2
@@ -227,17 +251,6 @@ def validate_derivatives(
     
     def _as_cptr(arr: NDArray[np.float64]) -> int:
         return np.ascontiguousarray(arr, np.float64).ctypes.data
-    
-    # Determine which C functions to use based on UID
-    is_normal = "Normal" in uid
-    is_studentt = "StudentT" in uid
-    
-    # Parse p, q from UID
-    import re
-    match = re.search(r"GARCH\((\d+),(\d+)\)", uid)
-    if not match:
-        raise ValueError(f"Cannot parse GARCH order from UID: {uid}")
-    p, q = int(match.group(1)), int(match.group(2))
     
     # Select appropriate C functions
     if is_normal:
@@ -251,7 +264,7 @@ def validate_derivatives(
             c_grad = _core._garch_ll_grad_pq_normal
             c_hess = _core._garch_ll_hess_pq_normal
             extra_args = (p, q)
-    elif is_studentt:
+    else:
         if p == 1 and q == 1:
             c_obj = _core._garch_ll_11_studentt
             c_grad = _core._garch_ll_grad_11_studentt
@@ -262,8 +275,6 @@ def validate_derivatives(
             c_grad = _core._garch_ll_grad_pq_studentt
             c_hess = _core._garch_ll_hess_pq_studentt
             extra_args = (p, q)
-    else:
-        raise ValueError(f"Unsupported distribution in UID: {uid}")
     
     # Compute analytical gradient
     grad_analytical = np.empty(k, dtype=np.float64)
@@ -281,38 +292,36 @@ def validate_derivatives(
         resid2,
         p,
         q,
-        dist="normal" if is_normal else "studentt",
+        dist=density,
     )
-    
-    # Compute errors
-    grad_abs_diff = np.abs(grad_analytical - grad_numerical)
-    hess_abs_diff = np.abs(hess_analytical - hess_numerical)
-    
-    # Relative errors (percentage)
-    grad_denom = np.maximum(np.abs(grad_analytical), 1e-20)
-    hess_denom = np.maximum(np.abs(hess_analytical), 1e-20)
-    
-    grad_rel_diff = grad_abs_diff / grad_denom * 100
-    hess_rel_diff = hess_abs_diff / hess_denom * 100
-    
-    # Max errors
-    grad_max_abs = float(np.max(grad_abs_diff))
-    grad_max_rel = float(np.max(grad_rel_diff))
-    hess_max_abs = float(np.nanmax(hess_abs_diff))
-    hess_max_rel = float(np.nanmax(hess_rel_diff))
     
     grad_finite_mask = np.isfinite(grad_numerical) & np.isfinite(grad_analytical)
     hess_finite_mask = np.isfinite(hess_numerical) & np.isfinite(hess_analytical)
 
-    grad_passed = np.any(grad_finite_mask) and np.allclose(
-        grad_analytical[grad_finite_mask],
-        grad_numerical[grad_finite_mask],
+    # Missing derivative comparisons count as failures, not discarded entries.
+    with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
+        grad_abs_diff = np.where(grad_finite_mask, np.abs(grad_analytical - grad_numerical), np.inf)
+        hess_abs_diff = np.where(hess_finite_mask, np.abs(hess_analytical - hess_numerical), np.inf)
+        grad_denom = np.maximum(np.abs(grad_analytical), 1e-20)
+        hess_denom = np.maximum(np.abs(hess_analytical), 1e-20)
+        grad_rel_diff = np.where(grad_finite_mask, grad_abs_diff / grad_denom * 100, np.inf)
+        hess_rel_diff = np.where(hess_finite_mask, hess_abs_diff / hess_denom * 100, np.inf)
+    
+    # Max errors
+    grad_max_abs = float(np.max(grad_abs_diff))
+    grad_max_rel = float(np.max(grad_rel_diff))
+    hess_max_abs = float(np.max(hess_abs_diff))
+    hess_max_rel = float(np.max(hess_rel_diff))
+
+    grad_passed = np.all(grad_finite_mask) and np.allclose(
+        grad_analytical,
+        grad_numerical,
         rtol=rtol_grad,
         atol=0,
     )
-    hess_passed = np.any(hess_finite_mask) and np.allclose(
-        hess_analytical[hess_finite_mask],
-        hess_numerical[hess_finite_mask],
+    hess_passed = np.all(hess_finite_mask) and np.allclose(
+        hess_analytical,
+        hess_numerical,
         rtol=rtol_hess,
         atol=0,
     )
@@ -320,16 +329,18 @@ def validate_derivatives(
     overall_passed = grad_passed and hess_passed
     
     # Message
-    nan_warnings = []
-    if not np.all(grad_finite_mask):
-        nan_warnings.append("gradient has non-finite AD-oracle entries")
-    if not np.all(hess_finite_mask):
-        nan_warnings.append("Hessian has non-finite AD-oracle entries")
+    nonfinite_warnings = []
+    for name, analytical, reference in (
+        ("gradient", grad_analytical, grad_numerical),
+        ("Hessian", hess_analytical, hess_numerical),
+    ):
+        if not np.all(np.isfinite(analytical)):
+            nonfinite_warnings.append(f"{name} has non-finite analytical entries")
+        if not np.all(np.isfinite(reference)):
+            nonfinite_warnings.append(f"{name} has non-finite AD-oracle entries")
     
     if overall_passed:
         message = "All derivatives validated successfully"
-        if nan_warnings:
-            message += f" (note: {'; '.join(nan_warnings)})"
     else:
         issues = []
         if not grad_passed:
@@ -337,8 +348,8 @@ def validate_derivatives(
         if not hess_passed:
             issues.append(f"Hessian (max rel err: {hess_max_rel:.2e}%)")
         message = "Validation failed for: " + ", ".join(issues)
-        if nan_warnings:
-            message += f" (note: {'; '.join(nan_warnings)})"
+        if nonfinite_warnings:
+            message += f" (note: {'; '.join(nonfinite_warnings)})"
     
     return DerivativeValidationReport(
         uid=uid,

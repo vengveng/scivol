@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import ctypes
 from dataclasses import replace
+from functools import partial
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from scivol import APARCH, ARMA, StudentT
+from scivol import APARCH, ARMA, Normal, StudentT
 from scivol import _native_fit as native
 from scivol._mean_fit import StabilityBlock
 from scivol.result import FitMetadata
@@ -48,6 +49,7 @@ def policy(monkeypatch):
         hessian_unavailable=False,
         stop=0, phase_iterations=2, accepted=0, values=7, curvatures=2,
         workspace_size=256, workspace_calls=[], phase_calls=[], jet_calls=[],
+        joint=False,
     )
 
     # Keep domain and KKT assembly real; only the density-moment primitive is mocked.
@@ -56,15 +58,17 @@ def policy(monkeypatch):
 
     def workspace_bytes(*arguments):
         case.workspace_calls.append(arguments)
-        assert arguments == (
+        expected = (
             case.model.p_ar, case.model.q_ma, case.model.p_vol,
             case.model.q_vol, case.model.density_code, False,
         )
+        assert arguments == expected + ((True,) if case.joint else ())
         return case.workspace_size
 
     def run_phase(parameters, count, observations, n, h0, p_ar, q_ma, p, q,
                   density, maximum_steps, radius, workspace, workspace_size,
-                  continuation, continuation_count, best, best_count, runtime):
+                  continuation, continuation_count, best, best_count, runtime, *options):
+        assert options == ((True, 0.1) if case.joint else ())
         np.testing.assert_array_equal(_pointer_array(parameters, count), case.theta)
         np.testing.assert_array_equal(_pointer_array(observations, n), case.data)
         assert count == continuation_count == best_count == case.model.n_params
@@ -124,7 +128,60 @@ def _refine(case, *, maximum_iterations=20, requests=None):
     return native._refine_aparch_mean_if_needed(
         case.model, case.data, case.theta, case.solve, case.value, case.gradient,
         accuracy=ACCURACY, maximum_iterations=maximum_iterations, requests=requests,
+        joint=case.joint,
     )
+
+
+def _use_joint_normal(case):
+    case.joint = True
+    case.spec = ARMA(1, 1) + APARCH(1, 1) + Normal()
+    case.model = native._describe_model(case.spec)
+    for name in ("theta", "best", "continuation", "gradient", "candidate_gradient"):
+        setattr(case, name, getattr(case, name)[:-1].copy())
+    case.best[3] *= 0.9
+    case.best[-1] = 1.6
+    return case
+
+
+@pytest.fixture
+def joint_policy(policy):
+    return _use_joint_normal(policy)
+
+
+def test_joint_phase_can_improve_volatility_when_mean_gradient_is_zero(joint_policy):
+    case = joint_policy
+    case.gradient[:case.model.n_mean] = 0.0
+    outcome = _refine(case)
+    np.testing.assert_array_equal(outcome[0], case.best)
+    assert outcome[4]["retained"] and outcome[4]["trigger"] == "joint-kkt"
+    assert outcome[4]["mean_gradient_residual"] == 0.0
+    assert outcome[4]["maximum_step"] == 0.1
+    assert outcome[4]["certificate"] == "none" and outcome[1].mode == -105
+    _assert_accounting(case, outcome[1], outcome[4])
+
+
+@pytest.mark.parametrize("remaining", [1, 6, 12, 20])
+def test_joint_phase_respects_remaining_budget(joint_policy, remaining):
+    case = joint_policy
+    case.phase_iterations = 100
+    outcome = _refine(case, maximum_iterations=case.solve.iterations + remaining)
+    assert case.phase_calls == [(min(12, remaining), 1024)]
+    assert outcome[1].iterations <= case.solve.iterations + remaining
+
+
+@pytest.mark.parametrize("index,value", [(3, -0.1), (4, -0.1), (6, 1.1), (7, 0.0)])
+def test_joint_phase_rejects_infeasible_changed_volatility(joint_policy, index, value):
+    joint_policy.best[index] = value
+    outcome = _refine(joint_policy)
+    _assert_baseline(joint_policy, outcome)
+    assert outcome[4]["validation"] == "rejected"
+
+
+def test_joint_phase_does_not_enable_unqualified_densities(policy):
+    policy.joint = True
+    outcome = _refine(policy)
+    assert outcome[0] is policy.theta and outcome[4] is None
+    assert policy.workspace_calls == policy.phase_calls == policy.jet_calls == []
 
 
 def _assert_accounting(case, combined, diagnostics):
@@ -183,6 +240,31 @@ def test_phase_skips_inapplicable_or_already_stationary_points(policy, reason):
     assert value == case.value and diagnostics is None
     assert case.phase_calls == case.jet_calls == [] and requests == {}
     assert len(case.workspace_calls) == (reason == "no-workspace")
+
+
+def test_mean_phase_does_not_try_to_repair_frozen_block_stationarity(policy):
+    policy.gradient[:policy.model.n_mean] = 0.0
+    assessment = native._assess_theta_solution(
+        policy.model, policy.theta, policy.gradient, policy.data, ACCURACY,
+        boundary_reached=False,
+    )
+    assert assessment.kkt_residual > np.sqrt(ACCURACY)
+    outcome = _refine(policy)
+    assert outcome[0] is policy.theta and outcome[1] is policy.solve
+    assert outcome[4] is None
+    assert policy.workspace_calls == policy.phase_calls == policy.jet_calls == []
+
+
+@pytest.mark.parametrize("factor,attempted", [(0.5, False), (2.0, True)])
+def test_mean_trigger_uses_the_same_sample_and_data_units_as_final_kkt(policy, factor, attempted):
+    policy.gradient.fill(0.0)
+    data_scale = float(np.sqrt(np.mean(policy.data * policy.data)))
+    policy.gradient[0] = factor * np.sqrt(ACCURACY) * policy.model.scored_observations(policy.data.size) / data_scale
+    outcome = _refine(policy)
+    assert bool(policy.phase_calls) is attempted
+    if attempted:
+        assert outcome[4]["mean_gradient_residual"] == pytest.approx(factor * np.sqrt(ACCURACY))
+        assert outcome[4]["trigger_tolerance"] == np.sqrt(ACCURACY)
 
 
 @pytest.mark.parametrize("remaining", [1, 3, 6, 20])
@@ -540,3 +622,68 @@ def test_mean_feasibility_does_not_swallow_shared_owner_constructor_errors(monke
     monkeypatch.setattr("scivol._mean_fit.StabilityBlock", invalid_constructor)
     with pytest.raises(ValueError, match="programming error"):
         native._mean_parameters_are_feasible(model, np.zeros(model.n_params))
+
+
+def test_real_automatic_handoff_retains_joint_likelihood_without_a_false_certificate(monkeypatch):
+    from benchmark_native_aparch import _simulate_aparch
+
+    spec = ARMA(1, 1) + APARCH(1, 1) + Normal()
+    data = _simulate_aparch(joint=True)
+    initial = np.array([0.07530199519364092, 0.0, 0.0, 0.05020594691464097,
+                        0.08, 0.0, 0.85, 2.0])
+    monkeypatch.setattr(native, "_APARCH_MEAN_REFINEMENT_ENABLED", False)
+    baseline = native.fit_native_spec(spec, data, initial_params=initial, maxiter=500)
+    monkeypatch.setattr(native, "_APARCH_MEAN_REFINEMENT_ENABLED", True)
+    candidate = native.fit_native_spec(spec, data, initial_params=initial, maxiter=500)
+
+    phase, = candidate.fit_info.phase_diagnostics
+    assert phase["retained"] and phase["certificate"] == "none"
+    assert phase["mean_gradient_residual"] > phase["trigger_tolerance"]
+    assert candidate.log_likelihood > baseline.log_likelihood + 0.01
+    np.testing.assert_array_equal(candidate.params[3:], baseline.params[3:])
+    assert candidate.n_iter == baseline.n_iter + phase["iterations"] <= 500
+    assert candidate.fit_info.function_evaluations == (
+        baseline.fit_info.function_evaluations + phase["requests"]["F"] + phase["requests"]["F|G|H"]
+    )
+    assert candidate.fit_info.gradient_evaluations == (
+        baseline.fit_info.gradient_evaluations + phase["requests"]["F|G|H"]
+    )
+    assert candidate.fit_info.postfit_jet_requests == {"F|G": 2, "H": 1}
+    assert candidate.fit_info.maximum_constraint_violation == 0.0
+    assert candidate.fit_info.optimizer_mode == -105 and not candidate.converged
+    assert candidate.fit_info.inference_status == "unavailable"
+    assert candidate.cov_matrix is None and candidate.std_errors is None
+    assert INFERENCE_WARNING in candidate.warnings
+    model = native._describe_model(spec)
+    value, _, _ = native._evaluate_theta_request(model, data, candidate.params, request=1)
+    assert abs(value + candidate.log_likelihood) <= 2e-11
+    assert native._mean_parameters_are_feasible(model, candidate.params)
+
+
+@pytest.mark.parametrize("improves", [False, True])
+def test_joint_fit_handoff_preserves_status_counts_and_actual_theta(
+    fitting_policy, monkeypatch, improves
+):
+    case = _use_joint_normal(fitting_policy)
+    if not improves:
+        case.best_value = case.value
+    monkeypatch.setattr(native, "_refine_aparch_mean_if_needed",
+                        partial(native._refine_aparch_mean_if_needed, joint=True))
+    result = native.fit_native_spec(case.spec, case.data, maxiter=20)
+    selected = case.best if improves else case.theta
+    np.testing.assert_array_equal(result.params, selected)
+    np.testing.assert_array_equal(case.filter_calls[0][0], selected)
+    assert result.log_likelihood == -(case.best_value if improves else case.value)
+    assert result.fit_info.optimizer_phases == ("native-z-slsqp", "native-theta-anchored-joint")
+    assert result.fit_info.optimizer_mode == (-105 if improves else case.solve.mode)
+    phase, = result.fit_info.phase_diagnostics
+    assert phase["retained"] is improves and phase["certificate"] == "none"
+    assert phase["scope"] == "joint" and phase["maximum_steps"] == 12
+    assert "joint phase requests" in result.fit_info.request_count_scope
+    assert result.fit_info.function_evaluations == case.solve.function_evaluations + case.values + case.curvatures
+    assert result.fit_info.gradient_evaluations == case.solve.gradient_evaluations + case.curvatures
+    assert result.fit_info.postfit_jet_requests == {"F|G": 2 if improves else 1, "H": 1}
+    assert not result.converged and not result.fit_info.optimizer_terminated
+    assert result.fit_info.inference_status == "unavailable"
+    assert result.cov_matrix is None and result.std_errors is None
+    assert INFERENCE_WARNING in result.warnings

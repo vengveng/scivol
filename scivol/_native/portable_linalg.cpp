@@ -56,6 +56,28 @@ double stable_norm(CBLAS_INT size, const double* values, CBLAS_INT increment)
     return scale == 0.0 ? 0.0 : scale * std::sqrt(sum_squares);
 }
 
+void range_householder(CBLAS_INT size, double* alpha, double* tail,
+                       CBLAS_INT increment, double* tau, bool positive)
+{
+    const double magnitude = std::max(std::abs(*alpha), stable_norm(size-1,tail,increment));
+    int exponent;
+    std::frexp(magnitude, &exponent);
+    const double leading = std::scalbn(*alpha, -exponent);
+    std::ptrdiff_t index = vector_start(size-1,increment);
+    for (CBLAS_INT item=0; item<size-1; ++item,index+=increment)
+        tail[index] = std::scalbn(tail[index],-exponent);
+    const double norm = stable_norm(size-1,tail,increment);
+    const double beta = positive ? std::hypot(leading,norm)
+                                : -std::copysign(std::hypot(leading,norm),leading);
+    const double ratio = leading/beta;
+    *tau = positive && leading>=0.0
+        ? (norm/beta)*((norm/beta)/(1.0+ratio)) : 1.0-ratio;
+    index = vector_start(size-1,increment);
+    for (CBLAS_INT item=0; item<size-1; ++item,index+=increment)
+        tail[index] = -(tail[index]/beta)/(*tau);
+    *alpha = std::scalbn(beta,exponent);
+}
+
 void standard_householder(
     CBLAS_INT size,
     double* alpha,
@@ -70,6 +92,11 @@ void standard_householder(
     const double tail_norm = stable_norm(size - 1, tail, increment);
     if (tail_norm == 0.0) {
         *tau = 0.0;
+        return;
+    }
+    const double magnitude = std::max(std::abs(*alpha),tail_norm);
+    if (magnitude>0x1p500 || magnitude<0x1p-500) {
+        range_householder(size,alpha,tail,increment,tau,false);
         return;
     }
     const double beta = -std::copysign(std::hypot(*alpha, tail_norm), *alpha);
@@ -93,6 +120,8 @@ void BLAS_FUNC(daxpy)(
     double* y,
     CBLAS_INT* incy)
 {
+    if (*n <= 0 || *alpha == 0.0)
+        return;
     std::ptrdiff_t x_index = vector_start(*n, *incx);
     std::ptrdiff_t y_index = vector_start(*n, *incy);
     for (CBLAS_INT item = 0; item < *n; ++item) {
@@ -161,11 +190,21 @@ void BLAS_FUNC(dgemv)(
     double* y,
     CBLAS_INT* incy)
 {
-    const bool transpose = option(trans, 'T');
+    if (*m == 0 || *n == 0 || (*alpha == 0.0 && *beta == 1.0))
+        return;
+    const bool transpose = option(trans, 'T') || option(trans, 'C');
     const CBLAS_INT output_size = transpose ? *n : *m;
     std::ptrdiff_t y_index = vector_start(output_size, *incy);
-    for (CBLAS_INT item = 0; item < output_size; ++item, y_index += *incy)
-        y[y_index] *= *beta;
+    // BLAS permits an unset output when beta is zero.
+    if (*beta == 0.0) {
+        for (CBLAS_INT item = 0; item < output_size; ++item, y_index += *incy)
+            y[y_index] = 0.0;
+    } else if (*beta != 1.0) {
+        for (CBLAS_INT item = 0; item < output_size; ++item, y_index += *incy)
+            y[y_index] *= *beta;
+    }
+    if (*alpha == 0.0)
+        return;
 
     if (!transpose) {
         std::ptrdiff_t x_index = vector_start(*n, *incx);
@@ -332,6 +371,11 @@ void BLAS_FUNC(dlarfgp)(
         return;
     }
 
+    const double magnitude = std::max(std::abs(*alpha),x_norm);
+    if (magnitude>0x1p500 || magnitude<0x1p-500) {
+        range_householder(*n,alpha,x,*incx,tau,true);
+        return;
+    }
     double beta = std::copysign(std::hypot(*alpha, x_norm), *alpha);
     const double saved_alpha = *alpha;
     double scale;
@@ -666,9 +710,8 @@ void BLAS_FUNC(dgelsy)(
         const double diagonal = stable_norm(*m, &a[pivot * *lda], 1);
         if (pivot == 0)
             first_diagonal = diagonal;
-        const double tolerance = (*rcond >= 0.0 ? *rcond : 0.0)
-            * std::max(first_diagonal, 1.0);
-        if (!(diagonal > tolerance))
+        const double tolerance = *rcond >= 0.0 ? *rcond : 0.0;
+        if (!(first_diagonal > 0.0) || !(diagonal/first_diagonal > tolerance))
             break;
         triangular[pivot + pivot * *n] = diagonal;
         for (CBLAS_INT row = 0; row < *m; ++row)

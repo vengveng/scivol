@@ -69,13 +69,16 @@ A surface is a mean model × volatility model × distribution combination.
 | `ARX` | `GARCH` | linked joint | `F` | `F` | `F` | `F` | `F` | `F` | `F` | `F` |
 | `ARX` | `GJR-GARCH` | linked joint | `F` | `F` | `F` | `F` | `F` | `F` | `F` | `F` |
 | `ARX` | `EGARCH` | linked joint | `F` | `F` | `F` | `F` | `F` | `F` | `F` | `F` |
+| `ARX` | `APARCH` | linked joint | `F` | `F` | `F` | `F` | `F` | `F` | `F` | `F` |
 | `HARX` | `—` | standalone mean | `F` | `F` | `F` | `F` | `F` | `F` | `F` | `F` |
 | `HARX` | `GARCH` | linked joint | `F` | `F` | `F` | `F` | `F` | `F` | `F` | `F` |
 | `HARX` | `GJR-GARCH` | linked joint | `F` | `F` | `F` | `F` | `F` | `F` | `F` | `F` |
 | `HARX` | `EGARCH` | linked joint | `F` | `F` | `F` | `F` | `F` | `F` | `F` | `F` |
+| `HARX` | `APARCH` | linked joint | `F` | `F` | `F` | `F` | `F` | `F` | `F` | `F` |
 <!-- surface-manifest:tensor:end -->
 
-All 136 declared univariate fitted surfaces are available.
+The tensor includes explicit-native prototypes as well as promoted defaults.
+Completion and default-routing status are recorded in the native-jet table below.
 
 `GeneralizedHyperbolic` estimates invariant shape parameters `rho`, `zeta`, and
 `lambda`. `NormalInverseGaussian` and `Hyperbolic` estimate `rho` and `zeta`
@@ -100,7 +103,10 @@ This status is generated from the manifest and tracks validation debt, not
 missing implementations.
 
 <!-- surface-manifest:verification-exceptions:start -->
-No known verification exceptions.
+| Surface group | Missing evidence | Current protection | Closure target |
+|---|---|---|---|
+| Joint EGARCH, fixed-layout code generation | Binary qualification of remaining fixed-order request and fallback paths | Shared fixed layouts reach helpers, filters, precision and joint EGARCH recursion; selected installed AD/parity and assembly checks pass | Inspect remaining dispatched F/G/H paths and preserve matched-start quality/performance |
+| VarianceGamma, except APARCH and joint ARX/HARX-EGARCH | Post-fix replacement-quality revalidation | Uniform Bessel-product F/G/H passes independent density and derivative regressions; old xfails removed | Renew matched-start solution-quality evidence for the remaining families |
 <!-- surface-manifest:verification-exceptions:end -->
 
 ---
@@ -133,8 +139,9 @@ These eight families support arbitrary declared orders, complete additive
 solver on the same canonical jet for EGARCH and APARCH; other historical
 families retain their established adapters.
 QMLE retains the established engine. Auto-selection uses each fixed candidate's
-canonical default engine, so promoted GARCH, GJR-GARCH, EGARCH, APARCH, and
-their ARMA forms use the native path.
+existing default engine, including the native route for zero-mean and ARMA
+APARCH. Joint ARX/HARX-APARCH also uses the qualified native jet by default.
+Completion and routing are recorded per surface in the manifest.
 
 Standalone ARMA, ARX and HARX use the native constant-variance jet across all
 eight densities. All mean, innovation-variance and density parameters are
@@ -163,24 +170,28 @@ scaling without altering their optimization objectives.
 <!-- surface-manifest:native-jets:start -->
 | Jet family | Densities | Status | General order | Generated fixed path | Evidence | Default |
 |---|---|---|---|---|---|---|
-| GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_vol,q_vol)` runtime | template-generated; precompiled 11, 12, 21, 22 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
-| GJR-GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_vol,q_vol)` runtime | template-generated; precompiled 11, 12, 21, 22 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
-| EGARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_vol,q_vol)` runtime | template-generated; precompiled 11, 12, 21, 22 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | incomplete: VarianceGamma; others complete | `(p_vol,q_vol)` runtime | template-generated; precompiled 11, 12, 21, 22 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| GJR-GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | incomplete: VarianceGamma; others complete | `(p_vol,q_vol)` runtime | template-generated; precompiled 11, 12, 21, 22 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| EGARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | incomplete: VarianceGamma; others complete | `(p_vol,q_vol)` runtime | template-generated; precompiled 11, 12, 21, 22 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
 | APARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_vol,q_vol)` runtime | template-generated; precompiled 11, 12, 21, 22 | AD full; dispatch and `benchmark_native_aparch.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
-| ARMA + GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_ar,q_ma,p_vol,q_vol)` runtime | template-generated; precompiled 1111 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
-| ARMA + GJR-GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_ar,q_ma,p_vol,q_vol)` runtime | template-generated; precompiled 1111 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
-| ARMA + EGARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_ar,q_ma,p_vol,q_vol)` runtime | template-generated; precompiled 1111 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| ARMA + GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | incomplete: VarianceGamma; others complete | `(p_ar,q_ma,p_vol,q_vol)` runtime | template-generated; precompiled 1111 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| ARMA + GJR-GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | incomplete: VarianceGamma; others complete | `(p_ar,q_ma,p_vol,q_vol)` runtime | template-generated; precompiled 1111 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| ARMA + EGARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | incomplete | `(p_ar,q_ma,p_vol,q_vol)` runtime | template-generated; precompiled 1111 | AD full; dispatch and `benchmark_native_tensor.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
 | ARMA + APARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_ar,q_ma,p_vol,q_vol)` runtime | template-generated; precompiled 1111 | AD full; dispatch and `benchmark_native_aparch.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
-| ARMA | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(p_ar,q_ma)` runtime | template-generated; precompiled 11 | AD full; dispatch and `benchmark_native_mean.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
-| ARX | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(lags,n_exog)` runtime | template-generated; precompiled 4 design columns | AD full; dispatch and `benchmark_native_mean.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
-| HARX | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(horizons,n_exog)` runtime | template-generated; precompiled 4 design columns | AD full; dispatch and `benchmark_native_mean.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
-| ARX + GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(lags,n_exog,p_vol,q_vol)` runtime | template-generated; precompiled 4/7 design columns, 11 | AD full; dispatch and `benchmark_native_joint.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
-| ARX + GJR-GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(lags,n_exog,p_vol,q_vol)` runtime | template-generated; precompiled 4/7 design columns, 11 | AD full; dispatch and `benchmark_native_joint.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
-| HARX + GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(horizons,n_exog,p_vol,q_vol)` runtime | template-generated; precompiled 4/7 design columns, 11 | AD full; dispatch and `benchmark_native_joint.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
-| HARX + GJR-GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(horizons,n_exog,p_vol,q_vol)` runtime | template-generated; precompiled 4/7 design columns, 11 | AD full; dispatch and `benchmark_native_joint.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| ARMA | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | incomplete: VarianceGamma; others complete | `(p_ar,q_ma)` runtime | template-generated; precompiled 11 | AD full; dispatch and `benchmark_native_mean.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| ARX | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | incomplete: VarianceGamma; others complete | `(lags,n_exog)` runtime | template-generated; precompiled 4 design columns | AD full; dispatch and `benchmark_native_mean.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| HARX | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | incomplete: VarianceGamma; others complete | `(horizons,n_exog)` runtime | template-generated; precompiled 4 design columns | AD full; dispatch and `benchmark_native_mean.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| ARX + GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | incomplete: VarianceGamma; others complete | `(lags,n_exog,p_vol,q_vol)` runtime | template-generated; precompiled 4/7 design columns, 11 | AD full; dispatch and `benchmark_native_joint.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| ARX + GJR-GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | incomplete: VarianceGamma; others complete | `(lags,n_exog,p_vol,q_vol)` runtime | template-generated; precompiled 4/7 design columns, 11 | AD full; dispatch and `benchmark_native_joint.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| ARX + EGARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | incomplete | `(lags,n_exog,p_vol,q_vol)` runtime | template-generated; precompiled 4 columns/11, 7 columns/32 | AD full; dispatch and `benchmark_native_joint.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| ARX + APARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(lags,n_exog,p_vol,q_vol)` runtime | template-generated; precompiled 4 columns/11, 7 columns/32 | AD full; dispatch and `benchmark_native_joint.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| HARX + GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | incomplete: VarianceGamma; others complete | `(horizons,n_exog,p_vol,q_vol)` runtime | template-generated; precompiled 4/7 design columns, 11 | AD full; dispatch and `benchmark_native_joint.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| HARX + GJR-GARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | incomplete: VarianceGamma; others complete | `(horizons,n_exog,p_vol,q_vol)` runtime | template-generated; precompiled 4/7 design columns, 11 | AD full; dispatch and `benchmark_native_joint.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| HARX + EGARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | incomplete | `(horizons,n_exog,p_vol,q_vol)` runtime | template-generated; precompiled 4 columns/11, 7 columns/32 | AD full; dispatch and `benchmark_native_joint.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
+| HARX + APARCH | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma | complete | `(horizons,n_exog,p_vol,q_vol)` runtime | template-generated; precompiled 4 columns/11, 7 columns/32 | AD full; dispatch and `benchmark_native_joint.py` | Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, VarianceGamma |
 <!-- surface-manifest:native-jets:end -->
 
-Joint ARX/HARX with GARCH or GJR-GARCH uses the native jet by default across
+Joint ARX/HARX with GARCH, GJR-GARCH, EGARCH or APARCH uses the native jet by default across
 all eight densities, including exogenous regressors and explicit theta/z paths.
 The automatic policy starts in theta space and records any subsequent coordinate
 refinement in `fit_info`. Explicit `solver="legacy"` and `solver="slsqp"` remain
@@ -189,12 +200,54 @@ Small-gradient termination also checks for predicted improvement along weak
 curvature directions. This can trigger refinement of the same estimate within
 the shared budget; it is neither multistart nor a global-optimality certificate.
 
-Joint ARX/HARX with EGARCH or APARCH remains an explicit native prototype.
-EGARCH's saved precision regressions pass; replacement-quality and platform gates
-remain open. APARCH has an unresolved optimizer-performance gate. These are not
-completed native replacements. Joint EGARCH/VG uses double-double primal recursion
-and binary64 derivatives, reported in `fit_info.scalar_precision`; other joint
-densities retain binary64 arithmetic. The model and parameter domain are unchanged.
+Joint ARX/HARX-EGARCH uses a default total budget of 1800 iterations, matching
+the validated continuation policy. GARCH/GJR retain 1000. Explicit `maxiter`
+remains a hard total cap across phases; `fit_info.maxiter` records the cap.
+Both explicit theta and transformed paths remain available. The default may
+refine in either coordinate system and reports every phase. It is not multistart.
+Non-Normal EGARCH linear-mean fits use double-double primal recursion and
+binary64 derivatives, reported in `fit_info.scalar_precision`.
+GH moment preparation uses the validated Normal-GIG integral. Hyperbolic uses
+an exact integration-by-parts reduction to a finite integral. GH, Hyperbolic and
+VG share the scalar-moment cache. Student-t, Skew-t and GED also cache accurate
+scalar moments; Skew-t uses exact first-moment antiderivatives and a finite CDF
+integral. Normal retains binary64 arithmetic.
+The model and parameter domain are unchanged.
+The frozen 64-case joint EGARCH panel has no likelihood loss above the absolute
+1e-9 tolerance against canonically rescored historical estimates or independent
+SciPy on the same accurate jet. Feasibility and all 30 certifications are
+preserved. The retained difficult VG regression also passes at its explicit
+1000-iteration cap. Uncertified finite feasible estimates retain their parameters,
+persistent warnings and unavailable inference; nearby-kink evidence is not called
+a smooth certificate.
+Native is faster in 28 of 34 equivalent-likelihood fits. Six timing exceptions
+retain their measured refinement and credibility costs. Another 30 cases improve
+likelihood beyond the comparison tolerance; some take longer. Full endpoints and
+verified common-quality checkpoint upper bounds are reported separately. This
+is a quality-aware promotion, not a claim that every native fit is faster or
+globally optimal. `benchmark_native_joint.py` owns the bounded promotion panel.
+Joint ARX/HARX-APARCH with automatic coordinates uses the same-start metric
+portfolio and a default total cap of 3200. Explicit theta/z choices retain their
+independent retry paths and default cap of 1000. Explicit caller caps are respected;
+the best finite feasible point, certification, warnings and inference status
+remain independent of route termination.
+The optional private joint ARMA-APARCH point controller remains experimental
+and opt-in; this public jet promotion does not qualify it.
+Linux/Windows execution is outside this local qualification; no cross-platform
+numerical parity is claimed.
+
+The shared VarianceGamma near-center likelihood now evaluates the uniform
+`x^nu K_nu(x)` product. Multiprecision and independent Normal-Gamma mixture AD
+checks cover values, gradients and Hessians, including moving-center cross terms.
+The exact center retains its analytical curvature, without smoothing. Completion
+remains reopened pending post-fix solution-quality revalidation for the other
+model families; their existing default routes are unchanged. Joint ARX/HARX-EGARCH
+and APARCH have completed their applicable solution-quality revalidation.
+
+APARCH fixed layouts are qualified through recursions, helpers, filters and
+precision paths. Joint EGARCH shares fixed layouts but retains its remaining
+dispatched request and fallback binary qualification. Its routing and completed
+solution-quality comparison are unchanged.
 
 ---
 

@@ -188,18 +188,15 @@ VLK_INLINE int lm_studentt_obs_derivs(double e, double h, double nu,
     out->value = 0.5 * log(h) + 0.5 * q * log_tail - normalization->value;
     out->ell_e = q * e * inv_B;
     out->ell_h = 0.5 * inv_h - 0.5 * q * e2 * inv_a * inv_h2 / one_plus;
-    out->ell_nu = -normalization->first + 0.5 * log_tail
-                - 0.5 * q * e2 * inv_a2 * inv_h / one_plus;
+    out->ell_nu = -normalization->first + vlk_student_tail_shape_first(nu, e2 * inv_h);
     out->ell_ee = q * (B - 2.0 * e2) * inv_B2;
     out->ell_eh = -q * e * nu_m2 * inv_B2;
     out->ell_hh = -0.5 * inv_h2
                 + q * tmp * inv_a * inv_h2 / one_plus
                 - 0.5 * q * tmp * tmp * inv_a2 * inv_h2 / one_plus2;
-    out->ell_e_nu = e * inv_B - q * e * h * inv_B2;
-    out->ell_h_nu = -0.5 * e2 * inv_h2 / one_plus * (inv_a - q * inv_a2 / one_plus);
-    out->ell_nu_nu = -normalization->second
-                   - e2 * inv_a2 * inv_h / one_plus
-                   + 0.5 * q * e2 * inv_a3 * inv_h * (1.0 + one_plus) / one_plus2;
+    out->ell_e_nu = 2.0 * e * inv_h * vlk_student_tail_squared_shape(nu, e2 * inv_h);
+    out->ell_h_nu = -e2 * inv_h2 * vlk_student_tail_squared_shape(nu, e2 * inv_h);
+    out->ell_nu_nu = -normalization->second + vlk_student_tail_shape_second(nu, e2 * inv_h);
     return 1;
 }
 
@@ -383,37 +380,29 @@ VLK_INLINE int lm_skewt_obs_derivs(double e, double h, double nu, double lam, co
     const double v_lam_lam = u_lam_lam * inv_s - 2.0 * u_lam * s_lam * inv_s2 + 2.0 * u * s_lam * s_lam * inv_s3;
     const double R_e = 2.0 * v * v_e;
     const double R_h = 2.0 * v * v_h;
-    const double R_nu = 1.0 + 2.0 * v * v_nu;
     const double R_lam = 2.0 * v * v_lam;
     const double R_ee = 2.0 * (v_e * v_e + v * v_ee);
     const double R_eh = 2.0 * (v_e * v_h + v * v_eh);
-    const double R_e_nu = 2.0 * (v_e * v_nu + v * v_e_nu);
     const double R_e_lam = 2.0 * (v_e * v_lam + v * v_e_lam);
     const double R_hh = 2.0 * (v_h * v_h + v * v_hh);
-    const double R_h_nu = 2.0 * (v_h * v_nu + v * v_h_nu);
     const double R_h_lam = 2.0 * (v_h * v_lam + v * v_h_lam);
-    const double R_nu_nu = 2.0 * (v_nu * v_nu + v * v_nu_nu);
-    const double R_nu_lam = 2.0 * (v_nu * v_lam + v * v_nu_lam);
     const double R_lam_lam = 2.0 * (v_lam * v_lam + v * v_lam_lam);
 
     const double log_tail = vlk_student_log_tail(v*v, nu_m2, R, log(nu_m2));
     out->value = 0.5 * log(h) - cache->c_log - log(cache->b) + q * log_tail;
     out->ell_e = q * R_e * inv_R;
     out->ell_h = 0.5 * inv_h + q * R_h * inv_R;
-    out->ell_nu = -cache->dc_log_dnu - cache->b_nu * inv_b + 0.5 * log_tail + q * (R_nu * inv_R - 1.0 / nu_m2);
+    out->ell_nu = -cache->dc_log_dnu - cache->b_nu * inv_b + vlk_skewt_tail_shape_first(nu, v, v_nu);
     out->ell_lam = -cache->b_lam * inv_b + q * R_lam * inv_R;
     out->ell_ee = q * (R_ee * inv_R - R_e * R_e * inv_R2);
     out->ell_eh = q * (R_eh * inv_R - R_e * R_h * inv_R2);
-    out->ell_e_nu = 0.5 * R_e * inv_R + q * (R_e_nu * inv_R - R_e * R_nu * inv_R2);
+    out->ell_e_nu = vlk_skewt_tail_shape_cross(nu, v, v_nu, v_e, v_e_nu);
     out->ell_e_lam = q * (R_e_lam * inv_R - R_e * R_lam * inv_R2);
     out->ell_hh = -0.5 * inv_h2 + q * (R_hh * inv_R - R_h * R_h * inv_R2);
-    out->ell_h_nu = 0.5 * R_h * inv_R + q * (R_h_nu * inv_R - R_h * R_nu * inv_R2);
+    out->ell_h_nu = vlk_skewt_tail_shape_cross(nu, v, v_nu, v_h, v_h_nu);
     out->ell_h_lam = q * (R_h_lam * inv_R - R_h * R_lam * inv_R2);
-    out->ell_nu_nu = -cache->d2c_log_dnu2 - cache->b_nunu * inv_b + cache->b_nu * cache->b_nu * inv_b2
-                   + (R_nu * inv_R - 1.0 / nu_m2)
-                   + q * (R_nu_nu * inv_R - R_nu * R_nu * inv_R2 + 1.0 / (nu_m2 * nu_m2));
-    out->ell_nu_lam = -cache->b_nulam * inv_b + cache->b_nu * cache->b_lam * inv_b2 + 0.5 * R_lam * inv_R
-                    + q * (R_nu_lam * inv_R - R_nu * R_lam * inv_R2);
+    out->ell_nu_nu = -cache->d2c_log_dnu2 - cache->b_nunu * inv_b + cache->b_nu * cache->b_nu * inv_b2 + vlk_skewt_tail_shape_second(nu, v, v_nu, v_nu_nu);
+    out->ell_nu_lam = -cache->b_nulam * inv_b + cache->b_nu * cache->b_lam * inv_b2 + vlk_skewt_tail_shape_cross(nu, v, v_nu, v_lam, v_nu_lam);
     out->ell_lam_lam = -cache->b_lamlam * inv_b + cache->b_lam * cache->b_lam * inv_b2 + q * (R_lam_lam * inv_R - R_lam * R_lam * inv_R2);
     (void)lam;
     return 1;
@@ -421,24 +410,8 @@ VLK_INLINE int lm_skewt_obs_derivs(double e, double h, double nu, double lam, co
 
 VLK_INLINE int egarch_studentt_abs_moment(double nu, double *m, double *m_nu, double *m_nunu)
 {
-    const double nu_m1 = nu - 1.0;
-    const double nu_m2 = nu - 2.0;
-    if (nu <= NU_MIN || nu_m1 <= 0.0 || nu_m2 <= 0.0) {
-        return 0;
-    }
-
-    const vlk_student_normalization_t normalization = vlk_student_normalization(nu, 1, 1, 1);
-    const double dc_log_dnu = normalization.first;
-    const double d2c_log_dnu2 = normalization.second;
-    const double c_log = normalization.value;
-    const double m_local = 2.0 * exp(c_log) * nu_m2 / nu_m1;
-    const double g = dc_log_dnu + 1.0 / nu_m2 - 1.0 / nu_m1;
-    const double g_nu = d2c_log_dnu2 - 1.0 / (nu_m2 * nu_m2) + 1.0 / (nu_m1 * nu_m1);
-
-    *m = m_local;
-    *m_nu = m_local * g;
-    *m_nunu = m_local * (g * g + g_nu);
-    return 1;
+    if (nu <= NU_MIN) return 0;
+    return vlk_student_abs_moment(nu, m, m_nu, m_nunu);
 }
 
 VLK_INLINE int egarch_ged_precompute_full(double nu, egarch_ged_cache_t *cache)

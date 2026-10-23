@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cmath>
+#include <type_traits>
 
 namespace vlk::experiment::generated {
 
@@ -26,7 +28,11 @@ template<class Scalar, class Lagged>
 VLK_ARMA_RECURSION_INLINE void subtract_product(
     Scalar& state, double coefficient, Lagged lagged_state)
 {
-    state -= Scalar(coefficient) * Scalar(lagged_state);
+    // Keep the primal update's rounding identical across F/G/H request plans.
+    if constexpr (std::is_floating_point_v<Scalar>)
+        state = std::fma(-Scalar(coefficient), Scalar(lagged_state), state);
+    else
+        state -= Scalar(coefficient) * Scalar(lagged_state);
 }
 
 VLK_ARMA_RECURSION_INLINE void add_product(
@@ -41,26 +47,29 @@ VLK_ARMA_RECURSION_INLINE void add_squared_product(
     state += coefficient * lagged_residual * lagged_residual;
 }
 
+template<class Scalar>
 VLK_ARMA_RECURSION_INLINE void initialize_residual_first(
-    double* current, std::size_t width, std::size_t constant_index)
+    Scalar* current, std::size_t width, std::size_t constant_index)
 {
     std::fill_n(current, width, 0.0);
     current[constant_index] = -1.0;
 }
 
+template<class Scalar>
 VLK_ARMA_RECURSION_INLINE void add_ar_first(
-    double* current, std::size_t ar_index, double lagged_observation)
+    Scalar* current, std::size_t ar_index, double lagged_observation)
 {
     current[ar_index] = -lagged_observation;
 }
 
+template<class Scalar>
 VLK_ARMA_RECURSION_INLINE void add_ma_first(
-    double* current,
+    Scalar* current,
     std::size_t width,
     std::size_t ma_index,
     double ma,
-    double lagged_residual,
-    const double* previous_first)
+    Scalar lagged_residual,
+    const Scalar* previous_first)
 {
     for (std::size_t parameter = 0; parameter < width; ++parameter)
         current[parameter] -= ma * previous_first[parameter];
@@ -133,13 +142,14 @@ VLK_ARMA_RECURSION_INLINE constexpr std::size_t packed_index(
     return row * width - row * (row + 1u) / 2u + column;
 }
 
+template<class Scalar>
 VLK_ARMA_RECURSION_INLINE void add_ma_second(
-    double* current,
+    Scalar* current,
     std::size_t width,
     std::size_t ma_index,
     double ma,
-    const double* previous_first,
-    const double* previous_second)
+    const Scalar* previous_first,
+    const Scalar* previous_second)
 {
     for (std::size_t row = 0; row < width; ++row) {
         for (std::size_t column = row; column < width; ++column) {

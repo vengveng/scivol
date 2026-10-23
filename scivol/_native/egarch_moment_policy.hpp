@@ -35,17 +35,11 @@ template<int Order, std::size_t ShapeParameters>
 template<int Order>
 [[nodiscard]] AbsoluteMoment<1u> student_t(const double* shape) noexcept
 {
-    using Number = ad::Differential<Order, 1u>;
-    const Number nu = Number::variable(shape[0], 0u);
-    const Number half = Number::constant(0.5);
-    const Number c_log = ad::lgamma(half * (nu + Number::constant(1.0)))
-        - ad::lgamma(half * nu)
-        - half * ad::log(
-            Number::constant(M_PI) * (nu - Number::constant(2.0)));
-    return from_differential(
-        Number::constant(2.0) * ad::exp(c_log)
-        * (nu - Number::constant(2.0))
-        / (nu - Number::constant(1.0)));
+    AbsoluteMoment<1u> result;
+    result.valid = vlk_student_abs_moment(shape[0], &result.value,
+        Order >= 1 ? result.gradient.data() : nullptr,
+        Order >= 2 ? result.hessian.data() : nullptr);
+    return result;
 }
 
 template<int Order>
@@ -62,13 +56,64 @@ template<int Order>
         - ad::lgamma(inverse)));
 }
 
-template<int Order, class Density>
+template<class Number>
+struct SkewTAbsoluteMoment {
+    static Number constant(double value) {return density_moment::moment_constant<Number>(value);}
+    Number nu,normalizer,half_moment,a,b,left,right,threshold,partial;
+
+    SkewTAbsoluteMoment(Number degrees,Number skew,Number log_constant):
+        nu(degrees),normalizer(log_constant) {
+        using std::exp; using std::log1p; using std::sqrt;
+        half_moment=student_first_half_moment(nu,normalizer);
+        const SkewTStandardization standardization(skew,half_moment);
+        a=standardization.a;
+        b=standardization.b;
+        left=constant(1)-skew; right=constant(1)+skew;
+        threshold=a/right;
+        partial=-half_moment*exp(-student_log_power<1>(nu,threshold*threshold));
+    }
+    Number operator()(Number unit) const {
+        using std::exp; using std::log1p;
+        const auto z=threshold*unit;
+        return threshold*exp(normalizer-student_log_power(nu,z*z));
+    }
+    Number finish(Number integral) const {
+        // First-moment antiderivatives leave only the finite CDF integral.
+        return (a*left/constant(2)+left*left*half_moment
+            +a*right*(constant(2)*integral-constant(.5))
+            +right*right*(-half_moment-constant(2)*partial))/b;
+    }
+};
+
+template<int Order>
+[[nodiscard]] AbsoluteMoment<2> skew_t_finite(const double* shape) noexcept {
+    if (!SkewTDensity::valid_shape(shape)) return {};
+    using Number=ad::Differential<Order,2>;
+    const auto nu=Number::variable(shape[0],0);
+    auto skew=Number::variable(shape[1],1);
+    if (shape[1]<0) skew=-skew;
+    const SkewTAbsoluteMoment<Number> factor(nu,skew,student_normalization(nu));
+    const auto integrand=[&](double unit) {
+        const auto value=factor(Number::constant(unit));
+        auto jet=from_differential(value);
+        // Zero skew has a zero-width CDF interval but nonzero shape derivatives.
+        jet.valid=ad::finite(value);
+        return jet;
+    };
+    const double boundaries[]={0,1};
+    const auto integrated=density_moment::integrate<Order,2>(integrand,boundaries,2);
+    if (!integrated.valid) return {};
+    auto integral=Number::constant(integrated.value);
+    if constexpr (Order>=1) integral.gradient=integrated.gradient;
+    if constexpr (Order>=2) integral.hessian=integrated.hessian;
+    return from_differential(factor.finish(integral));
+}
+
+template<int Order, class Density, class Prepared>
 [[nodiscard]] AbsoluteMoment<Density::shape_parameters>
-integrate(const double* shape) noexcept
+integrate_prepared(const double* shape, const Prepared& prepared) noexcept
 {
     constexpr std::size_t D = Density::shape_parameters;
-    const auto prepared = Density::template prepare<
-        true, Order >= 1, Order >= 2>(shape, 1u);
     if (!prepared.valid)
         return {};
 
@@ -105,6 +150,22 @@ integrate(const double* shape) noexcept
     if (!(result.valid && result.value > 0.0 && result.value <= 1.0))
         return {};
     return result;
+}
+
+template<int Order, class Density>
+[[nodiscard]]
+#if defined(_MSC_VER)
+__declspec(noinline)
+#else
+__attribute__((noinline))
+#endif
+AbsoluteMoment<Density::shape_parameters>
+integrate(const double* shape) noexcept
+{
+    // The moment's prepared cache is temporary and must not share the recursion frame.
+    const auto prepared = Density::template prepare<
+        true, Order >= 1, Order >= 2>(shape, 1u);
+    return integrate_prepared<Order,Density>(shape,prepared);
 }
 
 }  // namespace egarch_moment_detail

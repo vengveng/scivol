@@ -18,6 +18,7 @@ extern "C" {
 #  undef VLK_RUNTIME_RESTORE_RESTRICT
 #endif
 
+#include "native_request_accounting.hpp"
 #include "kraft_slsqp_driver.hpp"
 #include "runtime_workspace.hpp"
 
@@ -28,6 +29,16 @@ extern "C" {
 #include <limits>
 
 namespace vlk::experiment::runtime {
+
+// Null selects all columns. Restricted indices are sorted and checked at bind.
+// Only selected columns are defined/validated; value requests still cover all rows.
+struct ConstraintColumns {
+    const std::size_t* indices=nullptr;
+    std::size_t size=0;
+    bool contains(std::size_t column) const noexcept {
+        return !indices || std::binary_search(indices,indices+size,column);
+    }
+};
 
 struct RuntimeKraftWorkspace {
     double* buffer = nullptr;
@@ -265,23 +276,25 @@ template<class Objective>
     double* gradient,
     bool same_point) noexcept
 {
+    request_accounting::SolverRequest accounting(request == kraft::ObjectiveRequest::value ? 1u
+        : request == kraft::ObjectiveRequest::gradient ? 2u : 3u);
     for (std::size_t index = 0; index < objective.dimension(); ++index) {
         if (!std::isfinite(parameters[index]))
-            return false;
+            return accounting.finish(false);
     }
     if (!objective.evaluate(request, parameters, value, gradient, same_point))
-        return false;
+        return accounting.finish(false);
     if (request != kraft::ObjectiveRequest::gradient
         && !std::isfinite(*value)) {
-        return false;
+        return accounting.finish(false);
     }
     if (request != kraft::ObjectiveRequest::value) {
         for (std::size_t index = 0; index < objective.dimension(); ++index) {
             if (!std::isfinite(gradient[index]))
-                return false;
+                return accounting.finish(false);
         }
     }
-    return true;
+    return accounting.finish(true);
 }
 
 struct TrialEvaluation {
@@ -329,14 +342,33 @@ template<class Objective>
 }
 
 template<class Constraints>
+[[nodiscard]] bool invoke_constraints(
+    const Constraints& constraints, kraft::ConstraintRequest request,
+    const double* parameters, double* values, double* jacobian,
+    ConstraintColumns columns={}) noexcept
+{
+    if constexpr (requires {constraints.evaluate(request,parameters,values,jacobian,columns);})
+        return constraints.evaluate(request,parameters,values,jacobian,columns);
+    else {
+        if (!constraints.evaluate(request,parameters,values,jacobian)) return false;
+        // A provider without column intentions still promises its entire Jacobian.
+        if (columns.indices && request!=kraft::ConstraintRequest::value)
+            for (std::size_t i=0;i<constraints.count()*constraints.dimension();++i)
+                if (!std::isfinite(jacobian[i])) return false;
+        return true;
+    }
+}
+
+template<class Constraints>
 [[nodiscard]] bool evaluate_constraints(
     const Constraints& constraints,
     kraft::ConstraintRequest request,
     const double* parameters,
     double* values,
-    double* jacobian) noexcept
+    double* jacobian,
+    ConstraintColumns columns={}) noexcept
 {
-    if (!constraints.evaluate(request, parameters, values, jacobian))
+    if (!invoke_constraints(constraints,request,parameters,values,jacobian,columns))
         return false;
     if (request != kraft::ConstraintRequest::jacobian) {
         for (std::size_t row = 0; row < constraints.count(); ++row) {
@@ -345,11 +377,10 @@ template<class Constraints>
         }
     }
     if (request != kraft::ConstraintRequest::value) {
-        for (std::size_t index = 0;
-             index < constraints.count() * constraints.dimension(); ++index) {
-            if (!std::isfinite(jacobian[index]))
-                return false;
-        }
+        for (std::size_t column=0;column<constraints.dimension();++column)
+            if (columns.contains(column))
+                for (std::size_t row=0;row<constraints.count();++row)
+                    if (!std::isfinite(jacobian[row+column*constraints.count()])) return false;
     }
     return true;
 }
@@ -365,6 +396,7 @@ template<class Objective, class Constraints>
     const kraft::Options& options,
     RuntimeKraftWorkspace& workspace) noexcept
 {
+    request_accounting::PhaseScope accounting_phase(request_accounting::Phase::optimization);
     const std::size_t dimension = objective.dimension();
     const std::size_t constraint_count = constraints.count();
     const std::size_t equality_count = runtime_kraft_detail::equality_count(constraints);
@@ -443,6 +475,7 @@ template<class Objective, class Constraints>
     state.mode = 0;
     state.n = static_cast<std::int64_t>(dimension);
     state.curvature_reset.enabled = options.constraint_curvature_reset;
+    state.minimum_invalid_step = options.invalid_trial_policy == kraft::InvalidTrialPolicy::minimum_step;
 
     bool derivatives_current = true;
     bool last_value_point_current = false;
@@ -640,7 +673,8 @@ template<class Objective, class Constraints>
         auto current = minimize_runtime_kraft_phase(objective, constraints,
             parameters, bounds,
             kraft::Options{options.accuracy, previous.checkpoint_restarts ? 1 : remaining,
-                options.constraint_curvature_reset && previous.constraint_curvature_resets == 0},
+                options.constraint_curvature_reset && previous.constraint_curvature_resets == 0,
+                options.invalid_trial_policy},
             workspace);
         if (previous.checkpoint_restarts && current.mode == 9)
             current.mode = kraft::retained_point_mode;

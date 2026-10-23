@@ -6,7 +6,6 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.integrate import quad
 from scipy.optimize import brentq
-from scipy.special import gammaln, kve
 
 from . import _core
 
@@ -25,35 +24,14 @@ def standardized_vg_parameters(rho: float, shape_lambda: float) -> tuple[float, 
 def standardized_vg_logpdf(
     values: NDArray[np.float64], rho: float, shape_lambda: float
 ) -> NDArray[np.float64]:
-    values = np.asarray(values, dtype=np.float64)
-    theta, scale = standardized_vg_parameters(rho, shape_lambda)
-    y = scale * values + theta * shape_lambda
-    order = shape_lambda - 0.5
-    argument_scale = np.sqrt(theta * theta + 2.0)
-    abs_y = np.abs(y)
-    argument = argument_scale * abs_y
+    from . import _native_core
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        bessel_product = (
-            order * (np.log(abs_y) - np.log(argument_scale))
-            + np.log(kve(order, argument))
-            - argument
-        )
-    center = (
-        (order - 1.0) * np.log(2.0)
-        + gammaln(order)
-        - 2.0 * order * np.log(argument_scale)
-    )
-    bessel_product = np.where(abs_y == 0.0, center, bessel_product)
-    return np.asarray(
-        np.log(scale)
-        + np.log(2.0)
-        - 0.5 * np.log(2.0 * np.pi)
-        - gammaln(shape_lambda)
-        + theta * y
-        + bessel_product,
-        dtype=np.float64,
-    )
+    values = np.asarray(values, dtype=np.float64)
+    contiguous = np.ascontiguousarray(values)
+    result = np.empty(contiguous.size, dtype=np.float64)
+    _native_core._vg_logpdf(contiguous.ctypes.data, result.ctypes.data,
+                           contiguous.size, rho, shape_lambda)
+    return result.reshape(values.shape)
 
 
 @lru_cache(maxsize=1024)

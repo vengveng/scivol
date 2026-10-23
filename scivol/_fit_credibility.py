@@ -13,9 +13,15 @@ def jet_agreement(
 
     Agreement is necessary evidence, not a numerical accuracy certificate. The
     errors use the same per-observation objective and parameter units as the
-    stationarity check; no additional jet evaluation is performed here.
+    stationarity check. A componentwise eight-epsilon allowance covers last-bit
+    differences between request plans, without letting a large derivative hide
+    disagreement in another component. Both stationarity checks remain separate;
+    this allowance is not an accuracy bound for either gradient.
     """
     gradient_error = None
+    gradient_excess = None
+    gradient_roundoff = None
+    roundoff_rtol = 8 * np.finfo(float).eps
     gradient_tolerance = max(np.sqrt(accuracy), np.sqrt(np.finfo(float).eps))
     try:
         with np.errstate(over="raise", invalid="raise", divide="raise"):
@@ -29,12 +35,24 @@ def jet_agreement(
             with np.errstate(over="raise", invalid="raise", divide="raise"):
                 difference = (gradient - previous_gradient) * units / n_eff
                 gradient_error = float(np.hypot.reduce(difference, initial=0.0))
-                if not np.isfinite(gradient_error):
-                    gradient_error = np.inf
+                allowance = (
+                    roundoff_rtol
+                    * np.maximum(np.abs(gradient), np.abs(previous_gradient))
+                    * np.abs(units)
+                    / n_eff
+                )
+                gradient_roundoff = float(np.hypot.reduce(allowance, initial=0.0))
+                gradient_excess = float(np.hypot.reduce(
+                    np.maximum(np.abs(difference) - allowance, 0.0), initial=0.0
+                ))
+                if not np.isfinite([gradient_error, gradient_roundoff, gradient_excess]).all():
+                    gradient_excess = np.inf
         except FloatingPointError:
+            gradient_excess = np.inf
+        if gradient_error is None or not np.isfinite(gradient_error):
             gradient_error = np.inf
     inconsistent = value_error > accuracy or (
-        gradient_error is not None and gradient_error > gradient_tolerance
+        gradient_excess is not None and gradient_excess > gradient_tolerance
     )
     return {
         "status": (
@@ -45,6 +63,9 @@ def jet_agreement(
         "value_error": float(value_error),
         "value_tolerance": float(accuracy),
         "gradient_error": gradient_error,
+        "gradient_error_above_roundoff": gradient_excess,
+        "gradient_roundoff_allowance": gradient_roundoff,
+        "gradient_roundoff_rtol": float(roundoff_rtol),
         "gradient_tolerance": float(gradient_tolerance),
         "scope": "same-point request agreement in optimizer units, not an accuracy certificate",
     }
@@ -73,11 +94,16 @@ def diagonal_descent_prediction(
     ):
         return None
     curvature = np.abs(diagonal)
-    if np.any(curvature == 0):
+    flat = curvature == 0
+    if np.any(flat & (gradient != 0)):
         return None
     try:
         with np.errstate(over="raise", invalid="raise", divide="raise"):
-            step = np.clip(-gradient / curvature, lower_step, upper_step)
+            # A zero slope/curvature contributes no coordinate-model decrease;
+            # it must not suppress the predictions for other coordinates.
+            step = np.zeros_like(gradient, dtype=float)
+            np.divide(-gradient, curvature, out=step, where=~flat)
+            step = np.clip(step, lower_step, upper_step)
             change = jacobian * step
             fractions = np.ones_like(change)
             np.divide(slack[:, None], -change, out=fractions, where=change < 0)
@@ -143,7 +169,12 @@ def _projection_multipliers(gradient, normals, gaps):
 
 
 def projected_stationarity_bound(gradient, lower_step, upper_step, jacobian, slack):
-    """Return an uncertified bound when certificate arithmetic is unrepresentable."""
+    """Use a box-only dual certificate if the constraint Jacobian is unavailable.
+
+    This is an upper bound for the full problem, not the norm of its box-only
+    projection. All constraint values must still establish a feasible origin.
+    Unrepresentable certificate arithmetic returns an uncertified bound.
+    """
     try:
         with np.errstate(over="raise", invalid="raise", divide="raise"):
             bound = _compute_projected_stationarity_bound(
@@ -167,7 +198,7 @@ def _compute_projected_stationarity_bound(
     gradient = np.asarray(gradient, dtype=np.float64)
     if (
         not np.isfinite(gradient).all()
-        or not np.isfinite(jacobian).all()
+        or (jacobian is not None and not np.isfinite(jacobian).all())
         or not np.isfinite(slack).all()
         or np.any(slack < 0)
         or np.any(lower_step > 0)
@@ -176,19 +207,9 @@ def _compute_projected_stationarity_bound(
         or np.isnan(upper_step).any()
     ):
         return np.inf
-    # At the origin, outward forces on exactly active box faces have exact
-    # nonnegative multipliers and zero complementarity. Their residual is zero
-    # without subtracting large numbers; all other gradient components remain.
-    supported = ((lower_step == 0) & (gradient > 0)) | (
-        (upper_step == 0) & (gradient < 0)
-    )
-    residual = np.where(supported, 0.0, gradient)
-    box_bound = float(np.hypot.reduce(residual, initial=0.0))
-    if box_bound == 0:
-        return 0.0
-    box_bound = np.nextafter(
-        box_bound * (1 + 8 * gradient.size * np.finfo(float).eps), np.inf
-    )
+    box_bound = _box_projection_bound(gradient, lower_step, upper_step)
+    if box_bound == 0 or jacobian is None:
+        return box_bound
     try:
         constrained = _linearized_projection_bound(
             gradient, lower_step, upper_step, jacobian, slack
@@ -196,6 +217,26 @@ def _compute_projected_stationarity_bound(
     except (FloatingPointError, np.linalg.LinAlgError, RuntimeError, ValueError):
         return box_bound
     return min(box_bound, constrained) if np.isfinite(constrained) else box_bound
+
+
+def _box_projection_bound(gradient, lower_step, upper_step):
+    """Bound the projection by a zero-step dual certificate without cancellation.
+
+    An opposing box force lambda=abs(g_i) cancels g_i exactly and contributes
+    2*lambda*slack to the squared bound. A zero force contributes g_i**2 instead.
+    Keep the cheaper certificate term; no nearly active slack is discarded.
+    """
+    magnitude = np.abs(gradient)
+    distance = np.where(gradient > 0, -lower_step, upper_step)
+    supported = np.isfinite(distance) & ((distance == 0) | (distance < magnitude / 2))
+    terms = magnitude.copy()
+    terms[supported] = (
+        np.sqrt(magnitude[supported]) * np.sqrt(distance[supported]) * np.sqrt(2.0)
+    )
+    bound = float(np.hypot.reduce(terms, initial=0.0))
+    return np.nextafter(
+        bound * (1 + 8 * gradient.size * np.finfo(float).eps), np.inf
+    ) if bound else 0.0
 
 
 def _linearized_projection_bound(gradient, lower_step, upper_step, jacobian, slack):
@@ -207,51 +248,113 @@ def _linearized_projection_bound(gradient, lower_step, upper_step, jacobian, sla
     gaps = np.concatenate((slack, -lower_step[low], upper_step[high]))
     scales = np.max(np.abs(normals), axis=1, initial=0)
     nonzero = scales > 0
-    normals = normals[nonzero] / scales[nonzero, None]
-    gaps = gaps[nonzero] / scales[nonzero]
+    normals, gaps, scales = normals[nonzero], gaps[nonzero], scales[nonzero]
     if not len(gaps):
-        return float(np.linalg.norm(gradient))
+        return np.inf
     # Inactive constraints may improve the multiplier fit but their full slack
     # still enters the independent certificate below.
     try:
-        point, dual = _projection_multipliers(gradient, normals, gaps)
-    except (RuntimeError, ValueError):
-        return float(np.linalg.norm(gradient))
-    extended = np.longdouble
-    a, g, weights = (
-        normals.astype(extended),
-        gradient.astype(extended),
-        dual.astype(extended),
-    )
-    point = point.astype(extended)
-    gaps = gaps.astype(extended)
-    movement = a @ point
-    violating = movement + gaps < 0
+        point, dual = _projection_multipliers(
+            gradient, normals / scales[:, None], gaps / scales
+        )
+        # Certify the original rows, not their rounded solver normalization.
+        weights = np.asarray(dual, dtype=np.longdouble) / scales
+        return _projection_certificate_bound(gradient, normals, gaps, point, weights)
+    except (RuntimeError, TypeError, ValueError, OverflowError):
+        return np.inf
+
+
+def _projection_certificate_bound(
+    gradient, normals, gaps, point, dual, *, accumulator=np.longdouble
+):
+    """Bound the infinity norm of P(-g) on the supplied domain A*x+b >= 0.
+
+    For a feasible p and lambda >= 0, strong convexity gives
+    ||p-P(-g)||_2**2 <= ||p+g-A.T*lambda||_2**2 + 2*lambda.T*(A*p+b).
+    The origin-feasible domain also gives ||P(-g)||_2 <= ||g||_2. Neither
+    certificate requires an optimal proposal. Retraction and outward error
+    accounting follow _native/active_face_refinement.hpp::primal_dual_bound.
+    The accumulator option permits binary64 regression coverage on wider hosts.
+    Invalid proposals or unrepresentable arithmetic return an uncertified bound.
+    """
+    try:
+        with np.errstate(over="raise", invalid="raise", divide="raise", under="ignore"):
+            g, a, b, p, weights = (
+                np.asarray(values, dtype=accumulator)
+                for values in (gradient, normals, gaps, point, dual)
+            )
+            if (
+                g.ndim != 1 or not g.size or p.shape != g.shape
+                or b.ndim != 1 or weights.shape != b.shape
+                or a.shape != (b.size, g.size)
+                or not all(np.isfinite(values).all() for values in (g, a, b, p, weights))
+                or np.any(b < 0) or np.any(weights < 0)
+            ):
+                return np.inf
+            primal, upper_slack = _retract_projection_proposal(a, b, p)
+            precision = np.finfo(g.dtype)
+            eps, tiny = precision.eps, precision.smallest_subnormal
+            rows, width = a.shape
+            complementarity = np.sum(weights * upper_slack)
+            complementarity = (
+                complementarity * (1 + 8 * rows * eps) + 8 * rows * tiny
+            )
+            if not np.isfinite(complementarity) or complementarity < 0:
+                return np.inf
+            force_terms = a * weights[:, None]
+            force = np.sum(force_terms, axis=0)
+            residual_norm = np.hypot.reduce(primal + g - force, initial=0)
+            force_scale = np.hypot.reduce(
+                np.abs(primal) + np.abs(g) + np.sum(np.abs(force_terms), axis=0),
+                initial=0,
+            )
+            slack_error = np.sqrt(complementarity) * np.sqrt(g.dtype.type(2))
+            roundoff = 8 * (1 + rows + width) * (
+                eps * (force_scale + slack_error) + tiny
+            )
+            bound = (
+                np.max(np.abs(primal)) + np.hypot(residual_norm, slack_error) + roundoff
+            )
+            gradient_norm = np.hypot.reduce(g, initial=0)
+            gradient_cap = gradient_norm * (1 + 8 * width * eps) + 8 * width * tiny
+            if not np.isfinite([bound, gradient_cap]).all():
+                return np.inf
+            upper = np.nextafter(float(min(bound, gradient_cap)), np.inf)
+            return upper if np.isfinite(upper) else np.inf
+    except (FloatingPointError, TypeError, ValueError, OverflowError):
+        return np.inf
+
+
+def _retract_projection_proposal(normals, gaps, point):
+    """Retract toward the feasible origin and return nonnegative upper slacks."""
+    precision = np.finfo(point.dtype)
+    eps, tiny = precision.eps, precision.smallest_subnormal
+
+    def movement(fraction):
+        primal = point * fraction
+        terms = normals * primal
+        change = np.sum(terms, axis=1)
+        error = 8 * (1 + point.size) * (
+            eps * (np.sum(np.abs(terms), axis=1) + gaps) + tiny
+        )
+        return primal, change, error
+
+    _, change, error = movement(1)
+    # Reserve a second dot-error allowance for the subsequent feasibility check.
+    conservative_change = change - 2 * error
+    violating = conservative_change + gaps < 0
+    fraction = 1.0
     if np.any(violating):
-        fraction = max(
-            0.0, min(1.0, float(np.min(gaps[violating] / -movement[violating])))
-        )
-        point *= np.nextafter(fraction, 0.0)
-    primal_slack = a @ point + gaps
-    if np.any(primal_slack < 0):
-        point.fill(0.0)
-        primal_slack = gaps
-    force = a.T @ weights
-    residual = point + g - force
-    complementarity = weights @ primal_slack
-    bound = np.max(np.abs(point)) + np.sqrt(residual @ residual + 2 * complementarity)
-    # Account for the summation error even where active forces nearly cancel.
-    roundoff = (
-        8
-        * np.finfo(extended).eps
-        * (1 + len(gaps))
-        * (
-            np.linalg.norm(np.abs(g) + np.abs(a).T @ weights)
-            + np.sqrt(2 * abs(complementarity))
-        )
-    )
-    certified_bound = float(bound + roundoff)
-    return min(float(np.linalg.norm(gradient)), np.nextafter(certified_bound, np.inf))
+        fraction = max(0.0, min(1.0, float(np.min(
+            gaps[violating] / -conservative_change[violating]
+        ))))
+        fraction = np.nextafter(fraction, 0.0)
+    primal, change, error = movement(fraction)
+    if np.any(change - error + gaps < 0):
+        primal, change, error = movement(0)
+    # Slack error belongs inside the gap before sqrt, not in an O(eps) tail.
+    upper_slack = np.nextafter(np.maximum(change + gaps + error, 0), np.inf)
+    return primal, upper_slack
 
 
 def observed_covariance(hessian, *, stationary):

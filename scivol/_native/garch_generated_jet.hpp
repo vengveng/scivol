@@ -607,7 +607,11 @@ struct TransformedGarchJet {
         std::array<double, K> theta {};
         std::array<double, K> theta_gradient {};
         std::array<double, K * K> theta_hessian {};
-        Transform::pack(z, theta.data());
+        std::array<double, Transform::simplex_parameters> shifted_weights;
+        SimplexTailPoint simplex;
+        const bool derivatives = (request & (VLK_JET_G | VLK_JET_H)) != 0u;
+        Transform::pack(z, theta.data(), derivatives ? &simplex : nullptr,
+            derivatives ? shifted_weights.data() : nullptr);
 
         const std::uint32_t theta_request = (request & VLK_JET_H) != 0u
             ? request | VLK_JET_G
@@ -624,14 +628,14 @@ struct TransformedGarchJet {
 
         if ((request & VLK_JET_G) != 0u) {
             Transform::transform_gradient(
-                theta.data(), theta_gradient.data(), gradient);
+                theta.data(), z, theta_gradient.data(), gradient, &simplex);
         }
         if ((request & VLK_JET_H) != 0u) {
             Transform::transform_hessian(
-                theta.data(),
+                theta.data(), z,
                 theta_gradient.data(),
                 theta_hessian.data(),
-                hessian);
+                hessian, &simplex);
         }
     }
 

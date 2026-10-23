@@ -16,6 +16,7 @@
 namespace vlk::experiment::runtime::egarch_transform {
 
 struct Scratch {
+    const double* coordinates = nullptr;
     double* theta = nullptr;
     double* theta_gradient = nullptr;
     double* theta_hessian = nullptr;
@@ -124,6 +125,7 @@ template<class ShapeTransform, class Layout>
     bool derivatives,
     Scratch& scratch) noexcept
 {
+    scratch.coordinates = coordinates;
     std::copy_n(coordinates, layout.parameters, scratch.theta);
     for (std::size_t lag = 0; lag < layout.q; ++lag) {
         scratch.reflection[lag] =
@@ -145,8 +147,7 @@ template<class ShapeTransform, class Layout>
         return false;
     if (derivatives) {
         for (std::size_t column = 0; column < layout.q; ++column) {
-            const double first = 1.0
-                - scratch.reflection[column] * scratch.reflection[column];
+            const double first = ad::coordinate_tanh_first(coordinates[layout.beta_start + column]);
             for (std::size_t row = 0; row < layout.q; ++row) {
                 scratch.reflection_jacobian[row * layout.q + column] *= first;
             }
@@ -178,7 +179,7 @@ void pullback_gradient(
         gradient[layout.beta_start + column] = entry;
     }
     ShapeTransform::transform_gradient(
-        scratch.theta + layout.model_parameters,
+        scratch.coordinates + layout.model_parameters,
         theta_gradient + layout.model_parameters,
         gradient + layout.model_parameters);
 }
@@ -207,7 +208,7 @@ void fill_jacobian_column(
     if constexpr (shape_parameters > 0u) {
         std::array<double, shape_parameters * shape_parameters> jacobian {};
         ShapeTransform::fill_jacobian(
-            scratch.theta + layout.model_parameters,
+            scratch.coordinates + layout.model_parameters,
             jacobian.data(), shape_parameters, 0u);
         const std::size_t shape_column = column - layout.model_parameters;
         for (std::size_t row = 0; row < shape_parameters; ++row) {
@@ -255,7 +256,7 @@ template<class ShapeTransform, class Layout>
         return false;
     }
     ShapeTransform::add_curvature(
-        scratch.theta + layout.model_parameters,
+        scratch.coordinates + layout.model_parameters,
         scratch.theta_gradient + layout.model_parameters,
         hessian,
         layout.parameters,

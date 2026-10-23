@@ -49,6 +49,7 @@ typedef struct {
     gh_jet_t log_kernel_scale; /* log(alpha) for GH; log(argument_scale) for VG */
     gh_jet_t vg_center;
     gh_jet_t vg_curvature;
+    gh_bessel_product_plan_t vg_product;
     int family_kind;
     int estimate_lambda;
 } gh_shape_cache_t;
@@ -75,6 +76,7 @@ typedef struct {
     double log_argument_scale;
     double center;
     double curvature;
+    gh_bessel_product_plan_t product;
 } vg_shape_value_cache_t;
 
 typedef struct {
@@ -158,6 +160,10 @@ int gh_log_bessel_k_first(double order, double argument,
 
 int gh_bessel_value_plan_init(double order,
                               gh_bessel_value_plan_t *plan);
+
+int gh_log_bessel_product(const gh_bessel_product_plan_t *plan,
+                          double argument, unsigned derivative_order,
+                          double *partials);
 
 int gh_log_bessel_k_value_planned(const gh_bessel_value_plan_t *plan,
                                   double argument, double *value);

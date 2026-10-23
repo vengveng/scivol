@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:scivol:contracts:source-provenance:2.0.0",
+  "title": "Shared file provenance, separate from mathematical qualification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ledger", "schema_version", "inventory_id", "producer", "owners", "uses", "unassigned_origins", "context_refs", "debt"],
+  "properties": {
+    "ledger": {"const": "source_provenance"},
+    "schema_version": {"const": "2.0.0"},
+    "inventory_id": {"$ref": "#/$defs/text"},
+    "producer": {"$ref": "#/$defs/text"},
+    "owners": {"type": "array", "items": {"$ref": "#/$defs/owner"}},
+    "uses": {"type": "array", "items": {"$ref": "#/$defs/use"}},
+    "unassigned_origins": {
+      "type": "array", "items": {
+        "type": "object", "additionalProperties": false, "required": ["origin", "reason"],
+        "properties": {"origin": {"$ref": "#/$defs/origin"}, "reason": {"$ref": "#/$defs/text"}}
+      }
+    },
+    "context_refs": {"type": "array", "items": {"$ref": "#/$defs/context"}},
+    "debt": {"$ref": "#/$defs/debt"}
+  },
+  "$defs": {
+    "text": {"type": "string", "pattern": "\\S"},
+    "path": {"type": "string", "minLength": 1},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "debt": {"type": "array", "items": {"$ref": "#/$defs/text"}, "uniqueItems": true},
+    "paths": {"type": "array", "items": {"$ref": "#/$defs/path"}, "uniqueItems": true},
+    "snapshot": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "sha256", "retained_path", "reason"],
+      "properties": {
+        "state": {"enum": ["known", "not_recorded", "not_applicable"]},
+        "sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "retained_path": {"oneOf": [{"$ref": "#/$defs/path"}, {"type": "null"}]},
+        "reason": {"oneOf": [{"$ref": "#/$defs/text"}, {"type": "null"}]}
+      },
+      "allOf": [{
+        "if": {"properties": {"state": {"const": "known"}}},
+        "then": {"properties": {"sha256": {"$ref": "#/$defs/sha256"}, "reason": {"type": "null"}}},
+        "else": {"properties": {"sha256": {"type": "null"}, "retained_path": {"type": "null"}, "reason": {"$ref": "#/$defs/text"}}}
+      }]
+    },
+    "selection": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "whole_file"}}},
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "ranges"],
+          "properties": {
+            "kind": {"const": "byte_ranges"},
+            "ranges": {"type": "array", "minItems": 1, "items": {
+              "type": "object", "additionalProperties": false, "required": ["start", "end", "sha256"],
+              "properties": {"start": {"type": "integer", "minimum": 0}, "end": {"type": "integer", "minimum": 1}, "sha256": {"$ref": "#/$defs/sha256"}}
+            }}
+          }
+        },
+        {"type": "object", "additionalProperties": false, "required": ["kind", "reason"], "properties": {"kind": {"const": "unresolved"}, "reason": {"$ref": "#/$defs/text"}}}
+      ]
+    },
+    "origin": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "path", "snapshot", "selection"],
+      "properties": {
+        "kind": {"enum": ["source", "owner"]}, "path": {"$ref": "#/$defs/path"},
+        "snapshot": {"$ref": "#/$defs/snapshot"}, "selection": {"$ref": "#/$defs/selection"}
+      }
+    },
+    "change": {
+      "type": "object", "additionalProperties": false, "required": ["from_sha256", "to_sha256", "description"],
+      "properties": {
+        "from_sha256": {"$ref": "#/$defs/sha256"}, "to_sha256": {"$ref": "#/$defs/sha256"}, "description": {"$ref": "#/$defs/text"}
+      }
+    },
+    "owner": {
+      "type": "object", "additionalProperties": false,
+      "required": ["destination", "kind", "origins", "materialization", "snapshots", "changes", "context_refs", "review_ref", "status", "debt"],
+      "properties": {
+        "destination": {"$ref": "#/$defs/path"},
+        "kind": {"enum": ["copied", "partitioned", "composed", "authored", "derived", "vendor"]},
+        "origins": {"type": "array", "items": {"$ref": "#/$defs/origin"}},
+        "materialization": {"enum": ["verbatim", "selected_bytes", "reviewed_adaptation", "authored", "not_recorded"]},
+        "snapshots": {
+          "type": "object", "additionalProperties": false, "required": ["relocated", "current", "history"],
+          "properties": {"relocated": {"$ref": "#/$defs/snapshot"}, "current": {"$ref": "#/$defs/snapshot"}, "history": {"type": "array", "items": {"$ref": "#/$defs/snapshot"}}}
+        },
+        "changes": {"type": "array", "items": {"$ref": "#/$defs/change"}},
+        "context_refs": {"$ref": "#/$defs/paths"},
+        "review_ref": {"oneOf": [{"$ref": "#/$defs/path"}, {"type": "null"}]},
+        "status": {"enum": ["incomplete", "provenance_reviewed"]},
+        "debt": {"$ref": "#/$defs/debt"},
+        "vendor_ref": {"$ref": "#/$defs/path"}
+      },
+      "allOf": [{"if": {"properties": {"kind": {"const": "vendor"}}}, "then": {"required": ["vendor_ref"]}, "else": {"not": {"required": ["vendor_ref"]}}}]
+    },
+    "target": {
+      "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["kind", "path"], "properties": {"kind": {"const": "owner"}, "path": {"$ref": "#/$defs/path"}}},
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "name", "version", "reason"],
+          "properties": {"kind": {"const": "external"}, "name": {"$ref": "#/$defs/text"}, "version": {"$ref": "#/$defs/text"}, "reason": {"$ref": "#/$defs/text"}}
+        }
+      ]
+    },
+    "use": {
+      "type": "object", "additionalProperties": false, "required": ["consumer", "target", "role", "debt"],
+      "properties": {
+        "consumer": {"$ref": "#/$defs/path"}, "target": {"$ref": "#/$defs/target"},
+        "role": {"enum": ["include", "composition", "link_input", "derivation_basis", "regression_input", "oracle_precedent"]},
+        "observation": {"$ref": "#/$defs/snapshot"}, "include_spelling": {"$ref": "#/$defs/text"}, "debt": {"$ref": "#/$defs/debt"}
+      }
+    },
+    "context": {
+      "type": "object", "additionalProperties": false, "required": ["path", "role", "snapshot"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"}, "role": {"enum": ["license", "vendor", "provenance_review", "discovery", "toolchain", "handoff"]}, "snapshot": {"$ref": "#/$defs/snapshot"}
+      }
+    },
+    "vendor_manifest": {
+      "type": "object", "additionalProperties": false, "required": ["package", "version", "license_refs"],
+      "properties": {"package": {"$ref": "#/$defs/text"}, "version": {"$ref": "#/$defs/text"}, "license_refs": {"$ref": "#/$defs/paths", "minItems": 1}}
+    },
+    "provenance_review": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "destination", "record_sha256", "context_sha256", "outcome", "reviewer", "independent", "rationale"],
+      "properties": {
+        "kind": {"const": "provenance_review"}, "destination": {"$ref": "#/$defs/path"}, "record_sha256": {"$ref": "#/$defs/sha256"}, "context_sha256": {"$ref": "#/$defs/sha256"},
+        "outcome": {"const": "passed"}, "reviewer": {"$ref": "#/$defs/text"}, "independent": {"type": "boolean", "const": true}, "rationale": {"$ref": "#/$defs/text"}
+      }
+    }
+  }
+}

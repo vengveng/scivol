@@ -2,6 +2,8 @@
 #include "aparch_runtime.hpp"
 
 #include "aparch_runtime_jet.hpp"
+#include "aparch_mean_refinement.hpp"
+#include "arma_residual_precision.hpp"
 #include "garch_extended_density_policy.hpp"
 #include "garch_transform_policy.hpp"
 
@@ -15,6 +17,8 @@ namespace generated = vlk::experiment::generated;
 namespace runtime = vlk::experiment::runtime;
 namespace aparch = vlk::experiment::runtime::aparch;
 namespace transform = vlk::experiment::runtime::aparch_transform;
+namespace mean = vlk::experiment::mean;
+namespace mean_screen = vlk::experiment::mean_screen;
 
 namespace {
 
@@ -104,6 +108,38 @@ template<bool Joint>
 #undef VLK_APARCH_COUNT
 }
 
+// Qualify each density before changing its public request and filter route.
+template<class Density, bool Joint>
+inline constexpr bool adaptive_mean = Joint
+    && (std::is_same_v<Density, generated::NormalDensity>
+        || std::is_same_v<Density, generated::StudentTDensity>);
+
+template<class Density, class Orders>
+struct MeanRequestWorkspace {
+    static constexpr const aparch::Layout* fixed = Orders::fixed
+        ? &aparch::fixed_layout<Orders, Density, true> : nullptr;
+    using Context = mean::ArmaResidualPrecisionContext<aparch::Layout, fixed>;
+    std::size_t core, primal, bytes;
+
+    MeanRequestWorkspace(const aparch::Layout& layout, std::size_t core_bytes) noexcept
+        : core(core_bytes), primal(Context::Plan::workspace_bytes(layout)), bytes(0u) {
+        runtime::WorkspaceSizer size;
+        if (core && core % sizeof(double) == 0u && primal % sizeof(double) == 0u
+            && size.add<double>(core / sizeof(double))
+            && size.add<double>(primal / sizeof(double))) bytes = size.size();
+    }
+
+    bool bind(void* workspace, std::size_t size, Context& context) const noexcept {
+        if (!bytes || !workspace || size < bytes
+            || reinterpret_cast<std::uintptr_t>(workspace) % alignof(double)) return false;
+        runtime::WorkspaceArena arena(workspace, size);
+        if (!arena.take<double>(core / sizeof(double))) return false;
+        context.workspace = arena.take<double>(primal / sizeof(double));
+        context.workspace_size = primal;
+        return primal == 0u || context.workspace != nullptr;
+    }
+};
+
 template<class Density, class ShapeTransform, class Orders, bool Joint>
 [[nodiscard]] std::size_t workspace_density(
     std::size_t p_ar,
@@ -114,11 +150,13 @@ template<class Density, class ShapeTransform, class Orders, bool Joint>
     std::uint32_t request) noexcept
 {
     aparch::Layout layout;
-    return layout_for<Density, Joint>(p_ar, q_ma, p, q, layout)
-        ? aparch::workspace_bytes<
-            Density, ShapeTransform, Orders, Joint>(
-                layout, transformed, request)
-        : 0u;
+    if (!layout_for<Density, Joint>(p_ar, q_ma, p, q, layout)) return 0u;
+    const auto core = aparch::workspace_bytes<
+        Density, ShapeTransform, Orders, Joint, !adaptive_mean<Density, Joint>>(
+            layout, transformed, request);
+    if constexpr (adaptive_mean<Density, Joint>)
+        return MeanRequestWorkspace<Density, Orders>(layout, core).bytes;
+    return core;
 }
 
 template<class Orders, bool Joint>
@@ -177,16 +215,41 @@ template<class Density, class ShapeTransform,
     double* value,
     double* gradient,
     double* hessian,
-    std::uint32_t* valid_mask) noexcept
+    std::uint32_t* valid_mask,
+    const mean_screen::ObservationSummary* sample = nullptr,
+    std::uint32_t* execution = nullptr) noexcept
 {
     aparch::Layout layout;
     if (!layout_for<Density, Joint>(p_ar, q_ma, p, q, layout))
         return VLK_JET_INVALID_ARGUMENT;
-    return aparch::evaluate<
-        Joint, Density, ShapeTransform, Orders, ValidateData>(
-            layout, parameters, parameter_count, observations,
-            observation_count, initial_variance, transformed, request,
-            workspace, workspace_bytes, value, gradient, hessian, valid_mask);
+    if constexpr (adaptive_mean<Density, Joint>) {
+        if (valid_mask) *valid_mask = 0u;
+        if (!aparch::valid_evaluation_arguments<Orders>(
+                layout, parameters, parameter_count, request, value, gradient, hessian))
+            return VLK_JET_INVALID_ARGUMENT;
+        const MeanRequestWorkspace<Density, Orders> plan(layout,
+            aparch::workspace_bytes<Density, ShapeTransform, Orders, Joint, false>(
+                layout, transformed, request));
+        typename MeanRequestWorkspace<Density, Orders>::Context context{
+            sample ? *sample : mean_screen::ObservationSummary::prepare(nullptr, 0u)};
+        if (!plan.bind(workspace, workspace_bytes, context)) return VLK_JET_INSUFFICIENT_WORKSPACE;
+        if (!sample) context.sample = mean_screen::ObservationSummary::prepare(observations, observation_count);
+        if (!context.matches_sample(observations, observation_count)
+            || !context.sample.data() || !std::isfinite(context.sample.maximum())
+            || observation_count <= layout.maximum_lag || !std::isfinite(initial_variance)
+            || !(initial_variance > 0.0)) return VLK_JET_INVALID_ARGUMENT;
+        return aparch::evaluate<Joint, Density, ShapeTransform, Orders, false>(
+            layout, parameters, parameter_count, observations, observation_count,
+            initial_variance, transformed, request, workspace, plan.core,
+            value, gradient, hessian, valid_mask, nullptr, nullptr, nullptr, nullptr, &context, execution);
+    } else {
+        return aparch::evaluate<
+            Joint, Density, ShapeTransform, Orders, ValidateData>(
+                layout, parameters, parameter_count, observations,
+                observation_count, initial_variance, transformed, request,
+                workspace, workspace_bytes, value, gradient, hessian, valid_mask,
+                nullptr, nullptr, nullptr, nullptr, static_cast<void*>(nullptr), execution);
+    }
 }
 
 template<class Orders, bool Joint, bool ValidateData>
@@ -208,14 +271,17 @@ template<class Orders, bool Joint, bool ValidateData>
     double* value,
     double* gradient,
     double* hessian,
-    std::uint32_t* valid_mask) noexcept
+    std::uint32_t* valid_mask,
+    const mean_screen::ObservationSummary* sample = nullptr,
+    std::uint32_t* execution = nullptr) noexcept
 {
+    vlk::experiment::request_accounting::PhysicalRequest accounting(request, transformed);
 #define VLK_APARCH_EVALUATE(CODE, DENSITY, SHAPE) \
-    case CODE: return evaluate_density<generated::DENSITY, \
+    case CODE: return accounting.finish(evaluate_density<generated::DENSITY, \
         generated::SHAPE, Orders, Joint, ValidateData>( \
             parameters, parameter_count, observations, observation_count, \
             initial_variance, p_ar, q_ma, p, q, transformed, request, \
-            workspace, workspace_bytes, value, gradient, hessian, valid_mask)
+            workspace, workspace_bytes, value, gradient, hessian, valid_mask, sample, execution), valid_mask)
     switch (density) {
     VLK_APARCH_EVALUATE(VLK_GARCH_NORMAL, NormalDensity, NoShapeTransform);
     VLK_APARCH_EVALUATE(
@@ -237,7 +303,7 @@ template<class Orders, bool Joint, bool ValidateData>
     default:
         if (valid_mask != nullptr)
             *valid_mask = 0u;
-        return VLK_JET_INVALID_ARGUMENT;
+        return accounting.finish(VLK_JET_INVALID_ARGUMENT, valid_mask);
     }
 #undef VLK_APARCH_EVALUATE
 }
@@ -325,9 +391,22 @@ template<class Density, class Orders, bool Joint>
     aparch::Layout layout;
     if (!layout_for<Density, Joint>(p_ar, q_ma, p, q, layout))
         return VLK_JET_INVALID_ARGUMENT;
-    return aparch::filter_state<Joint, Density, Orders>(
-        layout, parameters, observations, observation_count,
-        initial_variance, workspace, workspace_bytes, residuals, variance);
+    if constexpr (adaptive_mean<Density, Joint>) {
+        using Workspace = MeanRequestWorkspace<Density, Orders>;
+        const Workspace plan(layout,
+            aparch::core_workspace_bytes<0, Joint, Workspace::fixed, false, false>(layout));
+        typename Workspace::Context context{mean_screen::ObservationSummary::prepare(nullptr, 0u)};
+        if (!plan.bind(workspace, workspace_bytes, context)) return VLK_JET_INVALID_ARGUMENT;
+        context.sample = mean_screen::ObservationSummary::prepare(observations, observation_count);
+        auto primal = context.prepare(layout, parameters);
+        return aparch::filter_state<Joint, Density, Orders, false, typename Workspace::Context::Plan>(
+            layout, parameters, observations, observation_count, initial_variance,
+            workspace, plan.core, residuals, variance, &primal);
+    } else {
+        return aparch::filter_state<Joint, Density, Orders>(
+            layout, parameters, observations, observation_count,
+            initial_variance, workspace, workspace_bytes, residuals, variance);
+    }
 }
 
 template<class Orders, bool Joint>
@@ -486,9 +565,112 @@ template<bool Joint>
 #undef VLK_APARCH_MAP_SIZE
 }
 
+template<class Orders, class Action>
+auto dispatch_mean_refinement(std::uint32_t density, bool joint, Action action) noexcept
+    -> decltype(action.template operator()<generated::NormalDensity, Orders,
+        aparch::mean_refinement::ActiveSet::mean>())
+{
+#define VLK_APARCH_MEAN_PHASE(CODE, DENSITY) \
+    case CODE: return joint \
+        ? action.template operator()<generated::DENSITY, Orders, aparch::mean_refinement::ActiveSet::joint>() \
+        : action.template operator()<generated::DENSITY, Orders, aparch::mean_refinement::ActiveSet::mean>()
+    switch (density) {
+    VLK_APARCH_MEAN_PHASE(VLK_GARCH_NORMAL, NormalDensity);
+    VLK_APARCH_MEAN_PHASE(VLK_GARCH_STUDENTT, StudentTDensity);
+    VLK_APARCH_MEAN_PHASE(VLK_GARCH_SKEWT, SkewTDensity);
+    VLK_APARCH_MEAN_PHASE(VLK_GARCH_GED, GedDensity);
+    VLK_APARCH_MEAN_PHASE(VLK_GARCH_GH, GeneralizedHyperbolicDensity);
+    VLK_APARCH_MEAN_PHASE(VLK_GARCH_NIG, NormalInverseGaussianDensity);
+    VLK_APARCH_MEAN_PHASE(VLK_GARCH_HYPERBOLIC, HyperbolicDensity);
+    VLK_APARCH_MEAN_PHASE(VLK_GARCH_VARIANCE_GAMMA, VarianceGammaDensity);
+    default: return {};
+    }
+#undef VLK_APARCH_MEAN_PHASE
+}
+
 }  // namespace
 
+std::size_t aparch::mean_refinement::workspace_bytes(
+    std::size_t p_ar, std::size_t q_ma, std::size_t p, std::size_t q,
+    std::uint32_t density, bool force_runtime, bool joint) noexcept
+{
+    const auto plan = [&]<class Density, class Orders, ActiveSet Active>() noexcept -> std::size_t {
+        aparch::Layout layout;
+        return layout_for<Density, true>(p_ar, q_ma, p, q, layout)
+            ? aparch::mean_refinement::workspace<Density, Orders, Active>(layout).bytes : 0u;
+    };
+    return !force_runtime && fixed_joint_order(p_ar, q_ma, p, q)
+        ? dispatch_mean_refinement<Joint1111>(density, joint, plan)
+        : dispatch_mean_refinement<aparch::RuntimeOrders>(density, joint, plan);
+}
+
+std::int32_t aparch::mean_refinement::refine_checked(
+    const double* parameters, std::size_t parameter_count,
+    const double* observations, std::size_t observation_count,
+    double initial_variance, std::size_t p_ar, std::size_t q_ma,
+    std::size_t p, std::size_t q, std::uint32_t density,
+    std::size_t maximum_steps, std::size_t radius,
+    void* workspace, std::size_t workspace_bytes,
+    double* continuation, std::size_t continuation_count,
+    double* best, std::size_t best_count, bool force_runtime,
+    bool joint, double maximum_step, Result* result) noexcept
+{
+    // The evidence record is caller-owned too; it must not alias any buffer.
+    if (!result || !parameters || !observations || !continuation || !best)
+        return VLK_JET_INVALID_ARGUMENT;
+    std::size_t parameter_bytes, observation_bytes, continuation_bytes, best_bytes;
+    if (!runtime::checked_product(parameter_count, sizeof(double), parameter_bytes)
+        || !runtime::checked_product(observation_count, sizeof(double), observation_bytes)
+        || !runtime::checked_product(continuation_count, sizeof(double), continuation_bytes)
+        || !runtime::checked_product(best_count, sizeof(double), best_bytes))
+        return VLK_JET_INVALID_ARGUMENT;
+    const void* pointers[] = {parameters, observations, workspace, continuation, best, result};
+    const std::size_t sizes[] = {parameter_bytes, observation_bytes, workspace_bytes,
+        continuation_bytes, best_bytes, sizeof(*result)};
+    if (!aparch::mean_refinement::detail::disjoint_buffers(pointers, sizes))
+        return VLK_JET_INVALID_ARGUMENT;
+    const auto run = [&]<class Density, class Orders, ActiveSet Active>() noexcept
+        -> aparch::mean_refinement::Result {
+        aparch::Layout layout;
+        if (!layout_for<Density, true>(p_ar, q_ma, p, q, layout)) return {};
+        return aparch::mean_refinement::refine<Density, Orders, NoObserver, Active>(layout,
+            {parameters, parameter_count}, {observations, observation_count},
+            initial_variance, maximum_steps, radius, workspace, workspace_bytes,
+            {continuation, continuation_count}, {best, best_count}, {}, maximum_step);
+    };
+    *result = !force_runtime && fixed_joint_order(p_ar, q_ma, p, q)
+        ? dispatch_mean_refinement<Joint1111>(density, joint, run)
+        : dispatch_mean_refinement<aparch::RuntimeOrders>(density, joint, run);
+    return VLK_JET_OK;
+}
+
 extern "C" {
+
+std::size_t vlk_arma_aparch_mean_refinement_workspace_bytes(
+    std::size_t p_ar, std::size_t q_ma, std::size_t p, std::size_t q,
+    std::uint32_t density, bool force_runtime)
+{
+    return aparch::mean_refinement::workspace_bytes(
+        p_ar, q_ma, p, q, density, force_runtime, false);
+}
+
+std::int32_t vlk_arma_aparch_mean_refine(
+    const double* parameters, std::size_t parameter_count,
+    const double* observations, std::size_t observation_count,
+    double initial_variance, std::size_t p_ar, std::size_t q_ma,
+    std::size_t p, std::size_t q, std::uint32_t density,
+    std::size_t maximum_steps, std::size_t radius,
+    void* workspace, std::size_t workspace_bytes,
+    double* continuation, std::size_t continuation_count,
+    double* best, std::size_t best_count, bool force_runtime,
+    aparch::mean_refinement::Result* result)
+{
+    return aparch::mean_refinement::refine_checked(
+        parameters, parameter_count, observations, observation_count,
+        initial_variance, p_ar, q_ma, p, q, density, maximum_steps, radius,
+        workspace, workspace_bytes, continuation, continuation_count,
+        best, best_count, force_runtime, false, 1e-3, result);
+}
 
 std::size_t vlk_aparch_parameter_count(
     std::size_t p,
@@ -537,15 +719,28 @@ std::int32_t vlk_arma_aparch_sample_data_valid(
     std::size_t q,
     std::uint32_t density)
 {
+    return aparch::valid_joint_sample(mean_screen::ObservationSummary::prepare(observations, observation_count),
+        initial_variance, p_ar, q_ma, p, q, density);
+}
+
+}  // extern "C"
+
+bool aparch::valid_joint_sample(
+    const mean_screen::ObservationSummary& sample, double initial_variance,
+    std::size_t p_ar, std::size_t q_ma, std::size_t p, std::size_t q,
+    std::uint32_t density) noexcept
+{
     aparch::Layout layout;
     return shape_parameters(density)
                 != std::numeric_limits<std::size_t>::max()
             && aparch::make_layout<generated::NormalDensity>(
                 p_ar, q_ma, p, q, true, layout)
-            && aparch::valid_data<true>(
-                layout, observations, observation_count, initial_variance)
-        ? 1 : 0;
+            && sample.data() && std::isfinite(sample.maximum())
+            && sample.size() > layout.maximum_lag
+            && std::isfinite(initial_variance) && initial_variance > 0.0;
 }
+
+extern "C" {
 
 std::int32_t vlk_aparch_dispatch_kind(
     std::size_t p,
@@ -641,6 +836,39 @@ std::int32_t vlk_aparch_asymmetric_power_moment(
 {
     return moment_dispatched(
         shape, density, gamma, delta, request, value, gradient, hessian);
+}
+
+std::int32_t vlk_aparch_persistence(const double* parameters,
+    std::size_t p, std::size_t q, std::uint32_t density, double* value, double* slack)
+{
+    if (!parameters || !value || !slack) return VLK_JET_INVALID_ARGUMENT;
+    const auto evaluate = [&]<class Density>() -> std::int32_t {
+        aparch::Layout layout;
+        if (!layout_for<Density, false>(0u, 0u, p, q, layout))
+            return VLK_JET_INVALID_ARGUMENT;
+        if (!Density::valid_shape(parameters+layout.model_parameters)
+            || !std::isfinite(parameters[layout.delta_index])
+            || !(parameters[layout.delta_index]>0.)) return VLK_JET_DOMAIN_ERROR;
+        const auto result=generated::power_persistence<Density>(layout,parameters);
+        if (!result.valid || !std::isfinite(result.value)) return VLK_JET_DOMAIN_ERROR;
+        *value=result.value;
+        *slack=result.slack;
+        return VLK_JET_OK;
+    };
+#define VLK_APARCH_PERSISTENCE(CODE, DENSITY) \
+    case CODE: return evaluate.template operator()<generated::DENSITY>()
+    switch (density) {
+    VLK_APARCH_PERSISTENCE(VLK_GARCH_NORMAL, NormalDensity);
+    VLK_APARCH_PERSISTENCE(VLK_GARCH_STUDENTT, StudentTDensity);
+    VLK_APARCH_PERSISTENCE(VLK_GARCH_SKEWT, SkewTDensity);
+    VLK_APARCH_PERSISTENCE(VLK_GARCH_GED, GedDensity);
+    VLK_APARCH_PERSISTENCE(VLK_GARCH_GH, GeneralizedHyperbolicDensity);
+    VLK_APARCH_PERSISTENCE(VLK_GARCH_NIG, NormalInverseGaussianDensity);
+    VLK_APARCH_PERSISTENCE(VLK_GARCH_HYPERBOLIC, HyperbolicDensity);
+    VLK_APARCH_PERSISTENCE(VLK_GARCH_VARIANCE_GAMMA, VarianceGammaDensity);
+    default: return VLK_JET_INVALID_ARGUMENT;
+    }
+#undef VLK_APARCH_PERSISTENCE
 }
 
 #define VLK_APARCH_VOL_ORDER(OPERATION, P, Q, ...) \
@@ -747,24 +975,10 @@ std::int32_t vlk_aparch_jet_evaluate(VLK_APARCH_EVALUATION_PARAMETERS)
 std::int32_t vlk_aparch_jet_evaluate_prevalidated(
     VLK_APARCH_EVALUATION_PARAMETERS)
 {
-    if (transformed > 1u)
-        return VLK_JET_INVALID_ARGUMENT;
-#define VLK_APARCH_EVALUATE_VOL(P, Q) \
-    if (p == P##u && q == Q##u) \
-        return evaluate_dispatched<Vol##P##Q, false, false>( \
-            parameters, parameter_count, observations, observation_count, \
-            initial_variance, 0u, 0u, p, q, density, transformed != 0u, \
-            request, workspace, workspace_bytes, value, gradient, hessian, \
-            valid_mask)
-    VLK_APARCH_EVALUATE_VOL(1, 1);
-    VLK_APARCH_EVALUATE_VOL(1, 2);
-    VLK_APARCH_EVALUATE_VOL(2, 1);
-    VLK_APARCH_EVALUATE_VOL(2, 2);
-#undef VLK_APARCH_EVALUATE_VOL
-    return evaluate_dispatched<aparch::RuntimeOrders, false, false>(
+    return aparch::evaluate_standalone_prevalidated(
         parameters, parameter_count, observations, observation_count,
-        initial_variance, 0u, 0u, p, q, density, transformed != 0u,
-        request, workspace, workspace_bytes, value, gradient, hessian,
+        initial_variance, p, q, density, transformed, request,
+        workspace, workspace_bytes, value, gradient, hessian,
         valid_mask);
 }
 
@@ -812,6 +1026,48 @@ std::int32_t vlk_arma_aparch_jet_evaluate(
 std::int32_t vlk_arma_aparch_jet_evaluate_prevalidated(
     VLK_ARMA_APARCH_EVALUATION_PARAMETERS)
 {
+    return aparch::evaluate_joint_prevalidated(parameters, parameter_count, observations, observation_count,
+        initial_variance, p_ar, q_ma, p, q, density, transformed, request,
+        workspace, workspace_bytes, value, gradient, hessian, valid_mask, nullptr);
+}
+
+}  // extern "C"
+
+std::int32_t aparch::evaluate_standalone_prevalidated(
+    const double* parameters, std::size_t parameter_count,
+    const double* observations, std::size_t observation_count,
+    double initial_variance, std::size_t p, std::size_t q,
+    std::uint32_t density, std::uint32_t transformed, std::uint32_t request,
+    void* workspace, std::size_t workspace_bytes,
+    double* value, double* gradient, double* hessian,
+    std::uint32_t* valid_mask, std::uint32_t* execution) noexcept
+{
+    if (transformed > 1u)
+        return VLK_JET_INVALID_ARGUMENT;
+#define VLK_APARCH_EVALUATE_VOL(P, Q) \
+    if (p == P##u && q == Q##u) \
+        return evaluate_dispatched<Vol##P##Q, false, false>( \
+            parameters, parameter_count, observations, observation_count, \
+            initial_variance, 0u, 0u, p, q, density, transformed != 0u, \
+            request, workspace, workspace_bytes, value, gradient, hessian, \
+            valid_mask, nullptr, execution)
+    VLK_APARCH_EVALUATE_VOL(1, 1);
+    VLK_APARCH_EVALUATE_VOL(1, 2);
+    VLK_APARCH_EVALUATE_VOL(2, 1);
+    VLK_APARCH_EVALUATE_VOL(2, 2);
+#undef VLK_APARCH_EVALUATE_VOL
+    return evaluate_dispatched<aparch::RuntimeOrders, false, false>(
+        parameters, parameter_count, observations, observation_count,
+        initial_variance, 0u, 0u, p, q, density, transformed != 0u,
+        request, workspace, workspace_bytes, value, gradient, hessian,
+        valid_mask, nullptr, execution);
+}
+
+std::int32_t aparch::evaluate_joint_prevalidated(
+    VLK_ARMA_APARCH_EVALUATION_PARAMETERS,
+    const mean_screen::ObservationSummary* sample,
+    std::uint32_t* execution) noexcept
+{
     if (transformed > 1u)
         return VLK_JET_INVALID_ARGUMENT;
     return fixed_joint_order(p_ar, q_ma, p, q)
@@ -819,13 +1075,15 @@ std::int32_t vlk_arma_aparch_jet_evaluate_prevalidated(
             parameters, parameter_count, observations, observation_count,
             initial_variance, p_ar, q_ma, p, q, density,
             transformed != 0u, request, workspace, workspace_bytes,
-            value, gradient, hessian, valid_mask)
+            value, gradient, hessian, valid_mask, sample, execution)
         : evaluate_dispatched<aparch::RuntimeOrders, true, false>(
             parameters, parameter_count, observations, observation_count,
             initial_variance, p_ar, q_ma, p, q, density,
             transformed != 0u, request, workspace, workspace_bytes,
-            value, gradient, hessian, valid_mask);
+            value, gradient, hessian, valid_mask, sample, execution);
 }
+
+extern "C" {
 
 std::int32_t vlk_runtime_arma_aparch_jet_evaluate(
     VLK_ARMA_APARCH_EVALUATION_PARAMETERS)

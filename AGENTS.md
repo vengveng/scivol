@@ -1,6 +1,6 @@
 # scivol Library Guide for AI Agents
 
-**Last Updated:** 2026-08-29
+**Last Updated:** 2026-10-04
 **Purpose:** Essential architectural rules, patterns, and constraints for developing the scivol time series volatility modeling library.
 
 **Reference implementations:** `localdev/arma_garch_estimator.py` contains Python+Numba implementations with analytical gradients/Hessians for ARMA-GARCH models (Normal, Student-t, Skew-t). `localdev/gjr_garch_estimator.py` contains the GJR-GARCH reference implementation. Use these as independent comparison implementations, not unquestionable ground truth. Resolve disagreements against the declared model equations, normalization, conditioning, scored sample and parameter domain. AD verifies derivatives of the supplied objective; it does not prove that objective implements the intended model. Correct confirmed reference bugs with independent regression evidence rather than reproducing them in new kernels.
@@ -271,6 +271,12 @@ order axis of the model, such as `(p, q)` for GARCH and
    - Fixed/runtime parity is evidence, not permission to duplicate equations.
      Their recursion and observation assembly must have one shared policy owner;
      traversal and storage adapters may differ around that owner.
+   - In a fixed specialization, every declared order axis is a compile-time
+     constant, including mean orders or design width. Derive its loop bounds,
+     lag-ring extents, parameter-block offsets, derivative widths and packed
+     indexing from the same compile-time layout. Reuse the general layout builder
+     through constexpr evaluation where possible. A fixed template name wrapped
+     around runtime order-derived metadata does not satisfy this requirement.
    - Precompile only measured common orders. Dispatch once at the outer ABI to a
      fixed specialization when available and otherwise use the runtime jet.
    - A runtime-only prototype is also incomplete until the same policy composition
@@ -349,6 +355,10 @@ order axis of the model, such as `(p, q)` for GARCH and
    - Every shipped transformed path differentiates the complete function
      `L(theta(z))`. Its Hessian includes transform curvature, not only
      `J' H_theta J`.
+   - Retain the original coordinate point for map derivatives. Reconstructing it
+     from rounded theta can change tail slopes and curvature. Validate complete
+     consumers at endpoint rounding plateaus, with the scalar theta anchored to
+     the actual mapped point and derivatives taken at the original z.
    - Non-differentiable points have explicit request-specific validity semantics.
      Never return a convenient derivative for a nearby smoothed, clipped, or floored
      model.
@@ -390,12 +400,25 @@ order axis of the model, such as `(p, q)` for GARCH and
      specialization assembly to verify that runtime order checks and ring indexing
      disappear where expected. Audit binary text size and stack frames as well as
      timing.
+   - Carry compile-time order information through helper and policy boundaries,
+     including filter materialization and numerical-range fallback paths.
+     Check every shipped request plan, not only F. Runtime loading of fitted
+     parameters and genuine data/domain branches remain necessary; reloading
+     fixed order-derived offsets or testing them per observation does not.
+     Arbitrary orders still use the runtime general-order path. This rule does
+     not require precompiling every order or unrolling observation-count loops.
 
 8. **Completion evidence**
    - Validate local density derivatives, recursive state derivatives, the complete
      theta jet, and every shipped transformed jet against independent AD oracles.
    - Verify that every sparse request equals the corresponding projection of a full
      `F|G|H` request, and that runtime and fixed paths agree at shared points.
+   - Compare every fixed layout field with the general builder in compiled tests,
+     including non-default order tuples. Binary evidence must also show that the
+     dispatched F/G/H specializations consume constant order-derived metadata;
+     a constexpr declaration, symbol name or successful instantiation alone is
+     insufficient. Record any unverified family as qualification debt rather than
+     claiming library-wide compliance from one kernel.
    - Encode exact distribution reductions as direct cross-density invariants. For
      example, Hansen Skew-t at zero skew must equal the variance-standardized
      Student-t value and all derivatives with respect to common parameters.
@@ -412,7 +435,8 @@ order axis of the model, such as `(p, q)` for GARCH and
      rounding even when the surrounding kernel permits FMA contraction.
    - Match the established production likelihood at identical points and benchmark
      objective requests separately from complete solves. Python-boundary savings do
-     not excuse a slower objective kernel.
+     not excuse avoidable objective-kernel overhead. Compare numerical accuracy as
+     well as requested outputs; unequal-accuracy costs follow the attribution rule below.
    - Until all clauses pass, label the surface **prototype/incomplete** with its
      blocking clauses. Do not mark it complete in `MODELS.md`, a manifest, a README,
      or a promotion ledger.
@@ -422,7 +446,13 @@ order axis of the model, such as `(p, q)` for GARCH and
      claims. Exact derivatives do not prove that a solver reaches an equally good
      estimate. Promotion requires preserved or improved solution quality, the
      performance gate below, and honest failure reporting, not universal convergence.
-   - On deterministic representative samples, fit the established and replacement
+   - Establish reference correctness before using it as a promotion target.
+     A demonstrably incorrect likelihood or derivative implementation cannot set
+     accuracy, convergence or speed requirements. Record the failing evidence and
+     use a corrected reference or an independent optimizer on the validated jet.
+     Keep incorrect-engine measurements as labeled diagnostics, not acceptance
+     benchmarks. An uncertified fit alone does not establish incorrect mathematics.
+   - On deterministic representative samples, fit the validated established and replacement
      paths from matched starts and evaluate both estimates with both evaluators.
      Record all four values. Differences in additive constants or scaling may be
      normalized explicitly; an unexplained ranking reversal or material loss blocks
@@ -469,17 +499,51 @@ order axis of the model, such as `(p, q)` for GARCH and
      materially prepares, solves, or refines the returned point.
 
 10. **Native performance attribution gate**
-   - A slower native result is an incomplete investigation, not an acceptable
-     implementation outcome. Keep the entry `prototype/incomplete` until the
-     regression is explained and removed; do not present an alternate native mode
-     as completed migration.
+   - Investigate every slower native result. Objective-kernel regressions and
+     avoidable systematic overhead must be removed before promotion. Judge speed
+     at comparable verified solution quality. An isolated comparable-quality
+     timing loss may be accepted when the representative panel establishes broad
+     speed superiority at that quality, every outlier is explained, and all
+     mathematical and solution-quality gates pass. Keep every case in the panel;
+     report comparable-quality and improved-quality results separately.
+   - A fit may take longer to obtain a genuinely better likelihood or stronger
+     applicable credibility. This is not an automatic performance failure, and
+     that fit need not finish sooner than a reference returning a worse estimate.
+     Attribute the extra work and judge its cost against the measured incremental
+     benefit. Improvements within the declared numerical agreement tolerance do
+     not by themselves justify extra work. Remove demonstrated duplication and
+     fruitless refinement; do not require proof that no faster algorithm exists.
+     Preserve the best finite feasible estimate and all accuracy requirements.
+     Do not discard an improvement solely to win a timing comparison, or present
+     an alternate native mode as completed migration while these gates remain open.
    - Reconcile complete-fit time from measured request counts and identical-point
      `F`, `G`, and `H` costs, plus preparation, validation, refinement, filtering,
      and inference. Faster components producing a slower fit prove that the timing
      account is incomplete.
+   - Separate avoidable overhead, demonstrated accuracy costs, and invalid
+     comparisons. Check additive values with the declared absolute likelihood
+     tolerance, separately from derivative tolerances; non-finite outputs never
+     establish agreement. Same-point agreement alone does not prove either
+     evaluator correct. A speed-only exception requires an explicit decision and
+     a controlled measurement of the accuracy cost, not an assumption that higher
+     precision explains the whole slowdown.
+   - When fits reach different solution quality, report time to a common verified
+     target alongside total fit time. Define the likelihood, feasibility and
+     applicable credibility requirements before timing. Retain misses and raw
+     runtimes. Distinguish measured first attainment from checkpoint upper bounds;
+     do not infer either from iteration counts or retuned stopping budgets. This
+     comparison does not replace the endpoint solution-quality gate.
    - Prove dispatch identity for every claimed fixed specialization. Compilation
      is not evidence that the optimizer reaches it. CI must fail when a common
      order expected to be fixed resolves to the runtime path.
+   - Verify numerical and solver symbol ownership in dynamically linked comparison
+     bridges. Top-level binary hashes and matching source do not prove that a
+     prototype calls the intended backend; mixed legacy/native bindings must be
+     labeled and cannot establish integration parity.
+     Reproduce the configured production compiler and linker drivers, not only
+     their apparent flags. Matching object files do not imply matching linked
+     code. Distinguish global name lookup from actual imported or internal calls
+     when checking backend ownership.
    - Classify expensive work by lifetime: once per solve, parameter point,
      observation, or parameter pair. Test or instrument work whose accidental
      promotion to a more frequent lifetime would materially affect performance.
@@ -529,11 +593,22 @@ Additional optimizer-interface rules:
   convergence, or a curvature update. A finite penalty is not a valid likelihood.
   Test rejection through both derivative-request and final-success transitions,
   including small steps and exhausted line-search budgets.
+- Keep best-estimate retention distinct from algorithmic continuation. A finite
+  feasible trial may improve likelihood without satisfying a phase's acceptance
+  condition. Preserve it for final selection without silently replacing the
+  accepted continuation point or solver state. An intentional restart from a
+  retained trial is a separate, measured optimizer policy. Test both point roles,
+  accumulated work, and final best-point retention across phase handoffs.
 - Constraint requests must preserve unrequested output buffers: Jacobian-only
   evaluation may not overwrite cached constraint values, and value-only evaluation
   may not overwrite the Jacobian. Constraint adapters must preserve this contract
   and the ordering of equality rows before inequality rows. Test composed adapters,
   including coordinate scaling, rather than only each adapter in isolation.
+- Coordinate-restricted phases may request only the needed Jacobian columns through
+  an explicit provider contract. Propagate that intention through scaling and row
+  adapters instead of forming unavailable derivatives and discarding them. Omitted
+  derivatives are not zeros; full requests retain their validity requirements.
+  Final feasibility and stationarity still concern the complete original domain.
 - Exact constrained Newton or trust-region refinement uses Lagrangian curvature:
   for inequalities `c(theta) >= 0`, `H_L = H_f - sum(lambda_i * H_c_i)`.
   Keep multiplier, coordinate and objective/constraint scaling conventions aligned.
@@ -616,6 +691,54 @@ its typed scaling adapter applies `1 / n_eff`; the mathematical jet does not.
 ---
 
 ## 3. Development Standards
+
+### Eliminate Work Before Accelerating It
+
+For new expensive numerical components, or when profiling identifies a dominant
+cost, review the mathematical representation before substantial low-level tuning,
+additional caching, or specialization. Investigate applicable identities, changes
+of variables, exchanged integration or differentiation order, analytical
+marginalization, factorization, and reusable sufficient quantities. Consult
+established results rather than assuming the existing formula is computationally
+necessary.
+
+Record the alternatives considered and their disposition briefly in the existing
+development report. Justify each transformation's mathematical validity. A
+successful reformulation must preserve the declared model, normalization, domain,
+and requested derivatives, with independent numerical validation and measured
+performance. Finding a simplification is not mandatory; conducting the review is.
+The review must be bounded and must not delay necessary correctness fixes.
+
+### Diagnose Before Expanding Experiments
+
+Use this sequence when a migration stalls or work moves to another model family.
+Keep the evidence in the existing `localdev/` report; the completion contract
+remains the acceptance gate.
+
+1. Refresh the smallest representative baseline after shared machinery changes.
+   Reproduce the current failure before treating an old report as an open blocker.
+   Identify improvements the next model already inherits.
+2. Isolate evaluation error from solver behavior before changing both. Compare
+   optimizers on the same validated jet, then compare evaluators at matched points.
+   Use independent value/AD evidence to resolve mathematical disagreements. Name
+   the failing component and what the next experiment will distinguish.
+3. Check phase scheduling and budget exhaustion before rejecting an algorithm.
+   A short capped run does not establish its attainable solution quality. Use a
+   few difficult cases to measure whether uninterrupted or additional work helps,
+   including restart costs and reserved refinement work. Honor explicit caller
+   caps; diagnostic overrides must be recorded. Longer solve budgets do not waive
+   the routine benchmark wall-time limit or justify a larger default automatically.
+4. Change one mechanism at a time against a retained baseline. Pointwise accuracy
+   and faster requests do not guarantee better complete fits; even equivalent
+   arithmetic can alter a sensitive trajectory. Measure accepted changes together
+   before claiming a combined gain. Preserve known better feasible endpoints as
+   comparison evidence, not hidden starts or outcome-dependent dispatch rules.
+5. Consult prior experiment dispositions before repeating them. Record the scope,
+   evidence and rejection reason; revisit when a relevant premise changes. An
+   endpoint loss can reject a solver policy without disproving its mathematical
+   identity. Transfer policies only after checking the next model's domain,
+   differentiability and measured costs. Precision choices, residual-face logic,
+   speculative gradients and phase schedules are not universal defaults.
 
 ### Initialization Conventions (ARMA-GARCH)
 
@@ -1221,7 +1344,7 @@ from scivol.result import EstimationResult
 ### Native Engine Promotion Status
 
 The native C++ function-jet engine is the default MLE path for fixed standalone
-GARCH, GJR-GARCH, and EGARCH and for their genuine joint ARMA forms across all
+GARCH, GJR-GARCH, EGARCH, and APARCH and for their genuine joint ARMA forms across all
 eight densities. Each promoted family supports arbitrary declared orders;
 measured common orders dispatch to generated fixed specializations.
 `solver="slsqp"` and `solver="legacy"` retain independent SciPy comparison
@@ -1231,9 +1354,14 @@ The native path stays quiet during fitting. It records historical Kraft mode,
 strict KKT residual and tolerance, maximum violation, refinement restarts,
 curvature and scientific-coordinate projection steps, request plan, and matched
 production-objective error in `result.fit_info`. A failed strict check returns a
-normal result with a persistent warning. Joint ARX/HARX with GARCH or GJR-GARCH
-also uses the native default. Joint ARX/HARX with EGARCH or APARCH remains an
-explicit prototype pending its precision, solution-quality and speed gates.
+normal result with a persistent warning. Joint ARX/HARX with GARCH, GJR-GARCH,
+EGARCH or APARCH also uses the native default. Joint EGARCH defaults to a total cap of
+1800 iterations, with explicit budgets preserved and reported. Its promotion
+accepts documented timing costs for proportionately better estimates and bounded
+credibility checks; no likelihood or derivative tolerance is relaxed.
+Joint ARX/HARX-APARCH automatic coordinates use the same-start metric portfolio
+with a default total cap of 3200; explicit theta/z retain independent paths and
+1000 by default. Caller caps and separate certification/warning status are preserved.
 QMLE promotion is separate. The surface manifest, not this summary, owns the
 per-entry completion and default-routing claims.
 

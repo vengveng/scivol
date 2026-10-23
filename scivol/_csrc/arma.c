@@ -16,10 +16,41 @@
 
 #include <math.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 #include "math_and_helpers.h"
 
 #define GED_ABS_EPS 1e-12
+
+static inline int arma_positive_finite(double value) {
+    uint64_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits > 0 && bits < UINT64_C(0x7ff0000000000000);
+}
+
+static double arma_concentrated_value(double rss, size_t count) {
+    if (!count || !arma_positive_finite(rss)) return INFINITY;
+    return 0.5 * (log(rss) - log((double)count) + 1.0);
+}
+
+static void arma_concentrated_hessian(
+    double rss, const double *sum_e_de, const double *sum_de_de,
+    const double *sum_e_d2, size_t width, double *hess
+) {
+    if (!arma_positive_finite(rss)) {
+        for (size_t i = 0; i < width * width; ++i) hess[i] = NAN;
+        return;
+    }
+    for (size_t i = 0; i < width; ++i) {
+        /* Preserve ratio-first rounding under the legacy fast-math flags. */
+        volatile double gi = sum_e_de[i] / rss;
+        for (size_t j = 0; j < width; ++j) {
+            volatile double gj = sum_e_de[j] / rss;
+            const size_t k = i * width + j;
+            hess[k] = (sum_de_de[k] + sum_e_d2[k]) / rss - 2.0 * gi * gj;
+        }
+    }
+}
 
 typedef struct {
     double nu;
@@ -144,15 +175,7 @@ double arma_nll_11_normal(
         sum_e2 += e_t * e_t;
     }
     
-    /* Concentrated variance */
-    double sigma2 = sum_e2 / (double)n_eff;
-    if (sigma2 < 1e-20) sigma2 = 1e-20;
-    
-    /* NLL = (n/2) * log(σ²) + (n/2) [since Σε²/σ² = n with σ² = Σε²/n] */
-    /* Per-observation: 0.5 * log(σ²) + 0.5 */
-    double nll = 0.5 * (log(sigma2) + 1.0);
-    
-    return nll;
+    return arma_concentrated_value(sum_e2, n_eff);
 }
 
 /* ========================================================================== */
@@ -233,21 +256,10 @@ double arma_nll_grad_11_normal(
         }
     }
     
-    /* Concentrated variance */
-    double sigma2 = sum_e2 / (double)n_eff;
-    if (sigma2 < 1e-20) sigma2 = 1e-20;
-    
-    /* Gradient: ∂NLL/∂θ_k = (1/σ̂²) * Σ ε_t * ∂ε_t/∂θ_k */
-    /* Scale to per-observation */
-    double inv_sigma2 = 1.0 / sigma2;
     for (size_t k = 0; k < K; k++) {
-        grad[k] = inv_sigma2 * sum_e_de[k] / (double)n_eff;
+        grad[k] = arma_positive_finite(sum_e2) ? sum_e_de[k] / sum_e2 : NAN;
     }
-    
-    /* Per-observation NLL */
-    double nll = 0.5 * (log(sigma2) + 1.0);
-    
-    return nll;
+    return arma_concentrated_value(sum_e2, n_eff);
 }
 
 /* ========================================================================== */
@@ -366,22 +378,7 @@ void arma_hess_11_normal(
         memcpy(d2_prev, d2_curr, sizeof(d2_prev));
     }
     
-    /* Concentrated variance */
-    double sigma2 = sum_e2 / (double)n_eff;
-    if (sigma2 < 1e-20) sigma2 = 1e-20;
-
-    {
-        const double Q = sigma2 * (double)n_eff;
-        const double inv_Q = 1.0 / Q;
-        const double inv_Q2 = inv_Q * inv_Q;
-        for (size_t i = 0; i < K; ++i) {
-            for (size_t j = 0; j < K; ++j) {
-                const size_t idx = i * K + j;
-                hess[idx] = (sum_de_de[idx] + sum_e_d2[idx]) * inv_Q
-                          - 2.0 * sum_e_de[i] * sum_e_de[j] * inv_Q2;
-            }
-        }
-    }
+    arma_concentrated_hessian(sum_e2, sum_e_de, sum_de_de, sum_e_d2, K, hess);
 }
 
 /* ========================================================================== */
@@ -438,14 +435,7 @@ double arma_nll_pq_normal(
         n_eff++;
     }
     
-    if (n_eff == 0) return 1e10;
-    
-    /* Concentrated variance */
-    double sigma2 = sum_e2 / (double)n_eff;
-    if (sigma2 < 1e-20) sigma2 = 1e-20;
-    
-    /* Per-observation NLL */
-    return 0.5 * (log(sigma2) + 1.0);
+    return arma_concentrated_value(sum_e2, n_eff);
 }
 
 /* ========================================================================== */
@@ -566,20 +556,10 @@ double arma_nll_grad_pq_normal(
         n_eff++;
     }
     
-    if (n_eff == 0) return 1e10;
-    
-    /* Concentrated variance */
-    double sigma2 = sum_e2 / (double)n_eff;
-    if (sigma2 < 1e-20) sigma2 = 1e-20;
-    
-    /* Gradient: ∂NLL/∂θ_k = (1/σ̂²) * Σ ε_t * ∂ε_t/∂θ_k */
-    double inv_sigma2 = 1.0 / sigma2;
     for (size_t k = 0; k < K; k++) {
-        grad[k] = inv_sigma2 * sum_e_de[k] / (double)n_eff;
+        grad[k] = arma_positive_finite(sum_e2) ? sum_e_de[k] / sum_e2 : NAN;
     }
-    
-    /* Per-observation NLL */
-    return 0.5 * (log(sigma2) + 1.0);
+    return arma_concentrated_value(sum_e2, n_eff);
 }
 
 /* ========================================================================== */
@@ -731,24 +711,7 @@ void arma_hess_pq_normal(
         n_eff++;
     }
     
-    if (n_eff == 0) return;
-    
-    /* Concentrated variance */
-    double sigma2 = sum_e2 / (double)n_eff;
-    if (sigma2 < 1e-20) sigma2 = 1e-20;
-    
-    {
-        const double Q = sigma2 * (double)n_eff;
-        const double inv_Q = 1.0 / Q;
-        const double inv_Q2 = inv_Q * inv_Q;
-        for (size_t i = 0; i < K; ++i) {
-            for (size_t j = 0; j < K; ++j) {
-                const size_t idx = i * K + j;
-                hess[idx] = (sum_de_de[idx] + sum_e_d2[idx]) * inv_Q
-                          - 2.0 * sum_e_de[i] * sum_e_de[j] * inv_Q2;
-            }
-        }
-    }
+    arma_concentrated_hessian(sum_e2, sum_e_de, sum_de_de, sum_e_d2, K, hess);
 }
 
 /* ========================================================================== */

@@ -62,6 +62,107 @@ _DENSITIES: tuple[tuple[str, DensityFactory], ...] = (
 )
 _REQUESTS = tuple(range(1, 8))
 _HALF_LOG_2PI = 0.9189385332046727
+_JOINT_GARCH_REQUEST_PLAN = (
+    "z-space SLSQP: initial F|G, separate F trials and G derivatives; "
+    "optional z-space F|G|H curvature refinement and SLSQP restarts; "
+    "theta-space G for KKT; theta-space F|G then H at the solution"
+)
+
+
+@pytest.mark.parametrize("family", ["garch", "gjr", "egarch", "arma_garch", "arma_gjr", "arma_egarch"])
+@pytest.mark.parametrize("coordinate", [-18., 18.])
+def test_shape_pullback_uses_original_coordinate_tail(family, coordinate):
+    mp = pytest.importorskip("mpmath")
+    density = StudentT if "gjr" in family else NormalInverseGaussian
+    if family == "egarch":
+        model, data, theta = _egarch_model_and_parameters(density, p=1, q=2)
+    elif family == "arma_egarch":
+        model, data, theta = _arma_egarch_model_and_parameters(density)
+    else:
+        spec = (GJRGARCH(1, 1) if "gjr" in family else GARCH(1, 1)) + density()
+        if family.startswith("arma"):
+            spec = ARMA(1, 1) + spec
+        model = _describe_model(spec)
+        data = np.random.default_rng(191).normal(size=48)
+        theta, _ = _initial_theta(spec, model, data, None)
+    z = _theta_to_coordinates(model, theta)
+    index = model.n_params-(1 if density is StudentT else 2)
+    z[index] = coordinate
+    mapped = _coordinates_to_theta(model, z)
+    f, g, h = _evaluate_mask(model, data, mapped, 7, transformed=False)
+    actual = _evaluate_mask(model, data, z, 7, transformed=True)
+    from scivol._devtools.ad_oracle import NATIVE_GH_RHO_LIMIT
+    with mp.workdps(80):
+        transform = (lambda x: 2+mp.log1p(mp.exp(x))) if density is StudentT else (
+            lambda x: mp.mpf(NATIVE_GH_RHO_LIMIT)*mp.tanh(x))
+        first = float(mp.diff(transform, mp.mpf(coordinate)))
+        second = float(mp.diff(transform, mp.mpf(coordinate), 2))
+    assert actual[0] == pytest.approx(f, abs=2e-11)
+    assert actual[1][index]/first == pytest.approx(g[index], rel=2e-11, abs=2e-10)
+    assert actual[2][index, index]/first == pytest.approx(
+        first*h[index, index]+second/first*g[index], rel=3e-10, abs=2e-9)
+
+
+@pytest.mark.parametrize("p,q", [(1,1),(3,2)])
+def test_gjr_negative_shock_cancels_coefficients_before_multiplication(p,q):
+    from scivol._devtools.ad_oracle import _jax_modules
+    jax,jnp,_ = _jax_modules()
+    data=np.array([-1e8,0.,1.])
+    model=_describe_model(GJRGARCH(p,q)+Normal())
+    theta=np.r_[.1,.7,np.zeros(p-1),np.nextafter(-.7,0.),np.zeros(p-1),np.zeros(q)]
+    h0=float(np.mean(data*data))
+    def objective(parameters):
+        variances=[jnp.asarray(h0)]
+        for time in range(1,len(data)):
+            h=parameters[0]
+            for lag in range(min(time,p)):
+                e=data[time-lag-1]
+                h=h+(parameters[1+lag]+parameters[1+p+lag]*(e<0))*e**2
+            for lag in range(min(time,q)):
+                h=h+parameters[1+2*p+lag]*variances[time-lag-1]
+            variances.append(h)
+        h=jnp.stack(variances)
+        return .5*jnp.sum(jnp.log(2*jnp.pi)+jnp.log(h)+jnp.asarray(data*data)/h)
+    expected=(float(objective(theta)),np.asarray(jax.grad(objective)(theta)),np.asarray(jax.hessian(objective)(theta)))
+    for request in _REQUESTS:
+        fixed=_evaluate_theta_request(model,data,theta,request=request)
+        runtime=_evaluate_forced_runtime(model,data,theta,request,transformed=False)
+        for bit,actual,other,reference in zip((1,2,4),fixed,runtime,expected):
+            if request & bit:
+                assert_allclose(actual,reference,rtol=4e-14,atol=1e-10)
+                assert_allclose(actual,other,rtol=4e-14,atol=1e-10)
+
+
+def test_gjr_finite_likelihood_does_not_overflow_cancelling_shocks():
+    mp=pytest.importorskip("mpmath")
+    model=_describe_model(GJRGARCH()+Normal())
+    data=np.array([-1e154,0.,0.]); theta=np.array([.1,1.9,-1.9,.02])
+    with mp.workdps(100):
+        h=mp.mpf(float(np.mean(data*data)))
+        expected=mp.log(2*mp.pi*h)/2+mp.mpf(float(data[0]))**2/(2*h)
+        for _ in range(2):
+            h=mp.mpf(float(theta[0]))+mp.mpf(float(theta[-1]))*h
+            expected+=mp.log(2*mp.pi*h)/2
+    assert _evaluate_theta_request(model,data,theta,request=1)[0]==pytest.approx(float(expected),abs=5e-12)
+
+
+@pytest.mark.parametrize("p,q", [(1,1),(3,2)])
+@pytest.mark.parametrize("overflow", [False,True])
+def test_legacy_gjr_filter_combines_shock_coefficients(p,q,overflow):
+    from scivol import _core
+    alpha=1.9 if overflow else .7
+    gamma=-alpha if overflow else np.nextafter(-alpha,0.)
+    theta=np.r_[.1,alpha,np.zeros(p-1),gamma,np.zeros(p-1),.02,np.zeros(q-1)]
+    data=np.array([-1e154 if overflow else -1e8,0.,1.])
+    h=np.array([1e308 if overflow else 1e16,0.,0.])
+    expected=h.copy()
+    for t in range(1,len(h)):
+        expected[t]=.1+(alpha+gamma*(data[t-1]<0))*(data[t-1]*data[t-1])+.02*expected[t-1]
+    if p==q==1:
+        _core._gjr_garch_variance_11(theta.ctypes.data,data.ctypes.data,h.ctypes.data,len(data))
+    else:
+        _core._gjr_garch_variance_pq(theta.ctypes.data,data.ctypes.data,h.ctypes.data,len(data),p,q)
+    np.testing.assert_allclose(h,expected,rtol=4e-15,atol=0)
 
 
 def _returns(seed: int = 20260827, n: int = 700) -> np.ndarray:
@@ -1071,6 +1172,30 @@ def test_egarch_fixed_zero_residual_has_exact_derivatives(
                 assert_allclose(actual[index], expected[index], rtol=2e-6, atol=2e-7)
 
 
+def test_joint_egarch_fused_residual_does_not_invent_a_zero_shock() -> None:
+    model, _, theta = _arma_egarch_model_and_parameters(
+        Normal, p_ar=1, q_ma=1, p_vol=1, q_vol=1,
+    )
+    delta = 2.0**-27
+    data = np.array([1.0-delta, 0.5, 0.3, -0.2, 0.1, -0.4])
+    theta[:model.n_mean] = [0.0, 0.5*(1.0+delta), 0.0]
+    residuals, variances = _materialize_native_arma_egarch_state(model, data, theta)
+    assert residuals[1] == 2.0**-55
+    assert np.all(residuals[model.maximum_lag:] != 0.0)
+    scored = slice(model.maximum_lag, None)
+    expected = 0.5*np.sum(np.log(2*np.pi)+np.log(variances[scored])
+                          +residuals[scored]**2/variances[scored])
+    for request in _REQUESTS:
+        fixed = _evaluate_mask(model, data, theta, request, transformed=False)
+        runtime = _evaluate_forced_runtime(model, data, theta, request, transformed=False)
+        for index, bit in enumerate((1, 2, 4)):
+            if request & bit:
+                assert np.all(np.isfinite(fixed[index]))
+                assert_allclose(fixed[index], runtime[index], rtol=2e-11, atol=2e-11)
+        if request & 1:
+            assert fixed[0] == pytest.approx(expected, rel=0, abs=2e-12)
+
+
 @pytest.mark.parametrize("alpha", [0.0, 0.08])
 def test_joint_egarch_active_zero_is_request_specific(alpha) -> None:
     model, data, theta = _arma_egarch_model_and_parameters(
@@ -1208,6 +1333,32 @@ def test_fixed_and_forced_runtime_jets_match_at_the_same_point(
             assert_allclose(runtime[1], fixed[1], rtol=2e-11, atol=2e-11)
         if request & 4:
             assert_allclose(runtime[2], fixed[2], rtol=2e-10, atol=2e-10)
+
+
+@pytest.mark.parametrize("observations", (2, 8, 9, 10, 16, 17, 18, 34))
+@pytest.mark.parametrize("leverage", (False, True), ids=("garch", "gjr"))
+@pytest.mark.parametrize("transformed", (False, True))
+def test_joint_normal_value_batches_preserve_sample_and_sparse_requests(
+    observations: int, leverage: bool, transformed: bool
+) -> None:
+    model, data, theta = _fixed_joint_model_and_parameters(Normal, leverage=leverage)
+    data = np.ascontiguousarray(data[:observations])
+    parameters = _theta_to_coordinates(model, theta) if transformed else theta
+    original_data, original_parameters = data.copy(), parameters.copy()
+    full = _evaluate_mask(model, data, parameters, 7, transformed=transformed)
+
+    for request in _REQUESTS:
+        fixed = _evaluate_mask(model, data, parameters, request, transformed=transformed)
+        runtime = _evaluate_forced_runtime(
+            model, data, parameters, request, transformed=transformed
+        )
+        for bit, observed, reference, complete in zip((1, 2, 4), fixed, runtime, full):
+            if request & bit:
+                relative = 0 if bit == 1 else 3e-10
+                assert_allclose(observed, reference, atol=2e-11, rtol=relative)
+                assert_allclose(observed, complete, atol=2e-11, rtol=relative)
+    np.testing.assert_array_equal(data, original_data)
+    np.testing.assert_array_equal(parameters, original_parameters)
 
 
 def test_native_fixed_dispatch_contract() -> None:
@@ -2157,7 +2308,7 @@ def test_native_fit_reports_conditional_theta_refinement() -> None:
     result = (GARCH(2, 1) + VarianceGamma()).fit(
         _gh_returns(seed=11, n=500),
         solver="native",
-        native_accuracy=1e-14,
+        native_accuracy=1e-8,
         maxiter=300,
     )
 
@@ -2174,7 +2325,21 @@ def test_native_fit_reports_conditional_theta_refinement() -> None:
     assert result.fit_info.kkt_residual is not None
     assert result.fit_info.kkt_tolerance is not None
     assert result.fit_info.kkt_residual <= result.fit_info.kkt_tolerance
+    assert result.fit_info.kkt_residual <= 1e-7
+    assert result.log_likelihood >= 1059.8144639417217 - 1e-7
     assert "projected Newton" in result.convergence_message
+
+
+def test_native_fit_skips_unnecessary_theta_refinement() -> None:
+    result = (GARCH(2, 1) + VarianceGamma()).fit(
+        _gh_returns(seed=11, n=500), solver="native",
+        native_accuracy=1e-14, maxiter=300,
+    )
+    assert result.converged
+    assert result.fit_info.optimizer_phases == ("native-z-slsqp",)
+    assert result.fit_info.theta_refinement_steps == 0
+    assert result.fit_info.kkt_residual <= result.fit_info.kkt_tolerance
+    assert result.log_likelihood >= 1059.8144639417217 - 1e-8
 
 
 def test_gjr_theta_refinement_matches_an_independent_coordinate_solve() -> None:
@@ -2467,6 +2632,26 @@ def test_gjr_density_matrix_defaults_to_native(
 
 
 @pytest.mark.parametrize(
+    "volatility_factory", (GARCH, GJRGARCH), ids=("garch", "gjr")
+)
+@pytest.mark.parametrize(
+    "density_name,density_factory",
+    _DENSITIES,
+    ids=(density_name for density_name, _ in _DENSITIES),
+)
+def test_joint_arma_garch_request_plan_reports_sparse_phases(
+    volatility_factory: Callable[..., object],
+    density_name: str,
+    density_factory: DensityFactory,
+) -> None:
+    model = _describe_model(
+        ARMA(1, 1) + volatility_factory(1, 1) + density_factory()
+    )
+
+    assert model.request_plan == _JOINT_GARCH_REQUEST_PLAN, density_name
+
+
+@pytest.mark.parametrize(
     "density_name,density_factory",
     _DENSITIES,
     ids=(f"garch-{density_name}" for density_name, _ in _DENSITIES),
@@ -2482,9 +2667,7 @@ def test_joint_arma_garch_density_matrix_defaults_to_native(
     assert result.converged, (density_name, result.convergence_message)
     assert result.fit_info.engine == "cpp-function-jet"
     assert result.fit_info.solver.startswith("native-slsqp")
-    assert result.fit_info.jet_request_plan == (
-        "fused F|G during optimization; theta-space F|G|H at the solution"
-    )
+    assert result.fit_info.jet_request_plan == _JOINT_GARCH_REQUEST_PLAN
     assert result.fit_info.requested_solver is None
     assert result.fit_info.used_default_solver
 
@@ -2501,9 +2684,7 @@ def test_joint_arma_gjr_density_matrix_defaults_to_native(
     assert result.converged, (density_name, result.convergence_message)
     assert result.fit_info.engine == "cpp-function-jet"
     assert result.fit_info.solver.startswith("native-slsqp")
-    assert result.fit_info.jet_request_plan == (
-        "fused F|G during optimization; theta-space F|G|H at the solution"
-    )
+    assert result.fit_info.jet_request_plan == _JOINT_GARCH_REQUEST_PLAN
     assert result.fit_info.requested_solver is None
     assert result.fit_info.used_default_solver
 

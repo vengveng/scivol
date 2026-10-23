@@ -86,23 +86,41 @@ struct ArmaGarchJet {
         if (!density.valid)
             return false;
         auto accumulated = Density::initial_value(density);
-        for (std::size_t time = maximum_lag; time < n; ++time) {
-            const double residual = Recursion::advance_residual(
-                theta, observations, time, residual_history);
-            const double variance = Recursion::advance_variance(
-                theta, time, residual_history, variance_history);
-            if (!valid_variance(variance))
-                return false;
-            const auto observation = Density::template observe<
-                true, false, false, false>(
-                    density, variance, residual, residual * residual);
-            if constexpr (Density::observation_can_fail) {
-                if (!observation.valid)
+        // Keep compensation out of the log-call loop without reordering the sum.
+        constexpr std::size_t batch = std::is_same_v<Density, NormalDensity> ? 8 : 1;
+        std::array<double, batch> values;
+        for (std::size_t begin = maximum_lag; begin < n;) {
+            const std::size_t length = std::min(batch, n - begin);
+            for (std::size_t offset = 0; offset < length; ++offset) {
+                const std::size_t time = begin + offset;
+                const double residual = Recursion::advance_residual(
+                    theta, observations, time, residual_history);
+                const double variance = Recursion::advance_variance(
+                    theta, time, residual_history, variance_history);
+                if (!valid_variance(variance))
                     return false;
+                const auto observation = observe_with_raw_residual<
+                    Density, true, false, false, false>(
+                        density, variance, residual);
+                if constexpr (Density::observation_can_fail) {
+                    if (!observation.valid)
+                        return false;
+                }
+                if constexpr (std::is_same_v<Density, NormalDensity>)
+                    values[offset] = observation.value;
+                else
+                    Density::accumulate_value(accumulated, observation);
+                residual_history[time % maximum_lag] = residual;
+                variance_history[time % maximum_lag] = variance;
             }
-            Density::accumulate_value(accumulated, observation);
-            residual_history[time % maximum_lag] = residual;
-            variance_history[time % maximum_lag] = variance;
+            if constexpr (std::is_same_v<Density, NormalDensity>) {
+                for (std::size_t offset = 0; offset < length; ++offset) {
+                    DensityObservation<0> observation;
+                    observation.value = values[offset];
+                    Density::accumulate_value(accumulated, observation);
+                }
+            }
+            begin += length;
         }
         *objective = Density::finalize_value(accumulated, density);
         return std::isfinite(*objective);
@@ -175,9 +193,9 @@ struct ArmaGarchJet {
                 return false;
             if constexpr (EmitValue
                           && std::is_same_v<Density, NormalDensity>) {
-                const auto value_observation = Density::template observe<
-                    true, false, false, false>(
-                        density, variance, residual, residual * residual);
+                const auto value_observation = observe_with_raw_residual<
+                    Density, true, false, false, false>(
+                        density, variance, residual);
                 Density::accumulate_value(
                     accumulated_value, value_observation);
             }
@@ -189,18 +207,18 @@ struct ArmaGarchJet {
                 residual_first, variance_first);
             if constexpr (EmitValue
                           && std::is_same_v<Density, NormalDensity>) {
-                const auto derivative_observation = Density::template observe<
-                    false, true, false, true>(
-                        density, variance, residual, residual * residual);
+                const auto derivative_observation = observe_with_raw_residual<
+                    Density, false, true, false, true>(
+                        density, variance, residual);
                 model::accumulate_location_scale_first<
                     false, model_parameters, Density>(
                         model_parameters, derivative_observation,
                         residual_first.data(), variance_first.data(),
                         accumulated_value, accumulated_gradient.data());
             } else {
-                const auto observation = Density::template observe<
-                    EmitValue, true, false, true>(
-                        density, variance, residual, residual * residual);
+                const auto observation = observe_with_raw_residual<
+                    Density, EmitValue, true, false, true>(
+                        density, variance, residual);
                 if constexpr (
                     model::location_scale_observation_can_fail<Density>) {
                     if (!observation.valid)
@@ -302,9 +320,9 @@ struct ArmaGarchJet {
                     theta, time, residual_history, residual_first_history)) {
                 return false;
             }
-            const auto observation = Density::template observe<
-                EmitValue, EmitGradient, true, true>(
-                    density, variance, residual, residual * residual);
+            const auto observation = observe_with_raw_residual<
+                Density, EmitValue, EmitGradient, true, true>(
+                    density, variance, residual);
             if constexpr (
                 model::location_scale_observation_can_fail<Density>) {
                 if (!observation.valid)

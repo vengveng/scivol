@@ -37,7 +37,7 @@ double skewt_ll(
 )
 {
     // Compute Hansen constants
-    const double c_log = lgamma(0.5 * (nu + 1)) - lgamma(0.5 * nu) - 0.5 * log(M_PI * (nu - 2));
+    const double c_log = vlk_student_normalization(nu, 1, 0, 0).value;
     const double c_exp = exp(c_log);
     const double a = 4.0 * lam * c_exp * (nu - 2.0) / (nu - 1.0);
     const double b = sqrt(1.0 + 3.0 * lam * lam - a * a);
@@ -88,7 +88,7 @@ double skewt_ll_z(
 )
 {
     // Compute Hansen constants
-    const double c_log = lgamma(0.5 * (nu + 1)) - lgamma(0.5 * nu) - 0.5 * log(M_PI * (nu - 2));
+    const double c_log = vlk_student_normalization(nu, 1, 0, 0).value;
     const double c_exp = exp(c_log);
     const double a = 4.0 * lam * c_exp * (nu - 2.0) / (nu - 1.0);
     const double b = sqrt(1.0 + 3.0 * lam * lam - a * a);
@@ -156,16 +156,14 @@ double garch_ll_grad_11_skewt(
     // Hansen constants
     const double nu_m1 = nu - 1.0;
     const double nu_m2 = nu - 2.0;
-    const double c_log = lgamma_approx(0.5 * (nu + 1)) - lgamma_approx(0.5 * nu) - 0.5 * log(M_PI * nu_m2);
+    const double c_log = vlk_student_normalization(nu, 1, 0, 0).value;
     const double c = exp(c_log);
     const double a = 4.0 * lam * c * nu_m2 / nu_m1;
     const double b_sq = 1.0 + 3.0 * lam * lam - a * a;
     const double b = sqrt(b_sq);
     
     // Derivatives of constants w.r.t. nu
-    const double psi_half = digamma_approx(0.5 * (nu + 1)) * 0.5;
-    const double psi_nu2 = digamma_approx(0.5 * nu) * 0.5;
-    const double dclog_dnu = psi_half - psi_nu2 - 0.5 / nu_m2;
+    const double dclog_dnu = vlk_student_normalization(nu, 0, 1, 0).first;
     const double dc_dnu = c * dclog_dnu;
     const double da_dnu = 4.0 * lam * (dc_dnu * nu_m2 / nu_m1 + c / (nu_m1 * nu_m1));
     const double db_dnu = -a * da_dnu / b;
@@ -210,13 +208,11 @@ double garch_ll_grad_11_skewt(
         const double z_adj = u / s;
         const double D = nu_m2 + z_adj * z_adj;
 
-        nll += 0.5 * log(h) + half_nup1 * log(D / nu_m2);
+        nll += 0.5 * log(h) + half_nup1 * log1p(z_adj * z_adj / nu_m2);
 
         const double du_dnu = db_dnu * z + da_dnu;
         const double dz_adj_dnu = du_dnu / s;
-        const double dD_dnu = 1.0 + 2.0 * z_adj * dz_adj_dnu;
-        grad_nu += 0.5 * log(D / nu_m2)
-                 + half_nup1 * (dD_dnu / D - 1.0 / nu_m2);
+        grad_nu += vlk_skewt_tail_shape_first(nu, z_adj, dz_adj_dnu);
 
         const double du_dlam = db_dlam * z + da_dlam;
         const double ds_dlam = sign_u;
@@ -252,7 +248,7 @@ double garch_ll_grad_11_skewt(
         const double D = nu_m2 + z_adj * z_adj;
         
         // NLL contribution
-        nll += 0.5 * log(h) + half_nup1 * log(D / nu_m2);
+        nll += 0.5 * log(h) + half_nup1 * log1p(z_adj * z_adj / nu_m2);
         
         // ==============================
         // Gradient w.r.t. h (for GARCH params)
@@ -274,10 +270,8 @@ double garch_ll_grad_11_skewt(
         // ==============================
         const double du_dnu = db_dnu * z + da_dnu;
         const double dz_adj_dnu = du_dnu / s;
-        const double dD_dnu = 1.0 + 2.0 * z_adj * dz_adj_dnu;
         
-        const double dnll_dnu = 0.5 * log(D / nu_m2)
-                              + half_nup1 * (dD_dnu / D - 1.0 / nu_m2);
+        const double dnll_dnu = vlk_skewt_tail_shape_first(nu, z_adj, dz_adj_dnu);
         grad_nu += dnll_dnu;
         
         // ==============================

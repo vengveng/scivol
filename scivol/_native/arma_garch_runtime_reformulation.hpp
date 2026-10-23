@@ -37,7 +37,9 @@ namespace vlk::experiment::runtime {
     const double* theta_gradient,
     void* workspace,
     std::size_t workspace_bytes,
-    double* coordinate_hessian) noexcept;
+    double* coordinate_hessian,
+    void* map_workspace = nullptr,
+    std::size_t map_workspace_bytes = 0u) noexcept;
 
 [[nodiscard]] std::size_t arma_gjr_garch_map_workspace_bytes(
     const ArmaGarchLayout& layout,
@@ -74,7 +76,9 @@ namespace vlk::experiment::runtime {
     const double* jacobian,
     void* workspace,
     std::size_t workspace_bytes,
-    double* coordinate_hessian) noexcept;
+    double* coordinate_hessian,
+    void* map_workspace = nullptr,
+    std::size_t map_workspace_bytes = 0u) noexcept;
 
 }  // namespace vlk::experiment::runtime
 

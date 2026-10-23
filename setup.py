@@ -119,7 +119,10 @@ ext_modules = [
             "scivol/_csrc/dcc_gaussian.c",
         ],
         include_dirs=["scivol/_csrc"],
-        depends=_included_files("scivol/_csrc", (".h",)),
+        depends=(
+            _included_files("scivol/_csrc", (".h",))
+            + ["scivol/_native/gh_equations.hpp", "scivol/_native/vg_equations.hpp"]
+        ),
         extra_compile_args=_compile_args(),
         libraries=_libraries(),
     ),
@@ -136,6 +139,8 @@ ext_modules = [
             "scivol/_native/egarch_runtime.cpp",
             "scivol/_native/arma_egarch_runtime.cpp",
             "scivol/_native/aparch_runtime.cpp",
+            "scivol/_native/aparch_multi_phase.cpp",
+            "scivol/_native/aparch_moment_precision.cpp",
             "scivol/_native/arma_garch_runtime.cpp",
             "scivol/_native/arma_garch_runtime_reformulation.cpp",
             "scivol/_native/portable_linalg.cpp",

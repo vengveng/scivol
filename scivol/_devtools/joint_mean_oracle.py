@@ -13,6 +13,10 @@ from .ad_oracle import (
     _jax_gh_logpdf,
     _jax_vg_logpdf,
     _jax_vg_abs_moment,
+    _jax_student_log_normalizer,
+    _jax_student_log_power,
+    _jax_hansen_skewt_abs_moment,
+    _egarch_skewt_quadrature_rule,
     _native_shape_coordinates,
     _native_reflection_coefficients,
     native_coordinate_chain_rule_value_grad_hess,
@@ -26,19 +30,15 @@ def _density_nll(jnp, jsp, z, shape, density, fixed_zero):
         return 0.5 * jnp.sum(jnp.log(2 * jnp.pi) + z * z)
     if density in (1, 2):
         nu = shape[0]
-        c = (
-            jsp.special.gammaln((nu + 1) / 2)
-            - jsp.special.gammaln(nu / 2)
-            - 0.5 * jnp.log(jnp.pi * (nu - 2))
-        )
+        c = _jax_student_log_normalizer(jnp, jsp, nu)
         if density == 2:
             lam = shape[1]
-            a = 4 * lam * jnp.exp(c) * (nu - 2) / (nu - 1)
+            a = 4 * lam * jnp.exp(c) / (1+1/(nu-2))
             b = jnp.sqrt(1 + 3 * lam * lam - a * a)
             u = b * z + a
             z = u / (1 + lam * jnp.where(u >= 0, 1.0, -1.0))
             c += jnp.log(b)
-        return -len(z) * c + (nu + 1) / 2 * jnp.sum(jnp.log1p(z * z / (nu - 2)))
+        return -len(z) * c + jnp.sum(_jax_student_log_power(jnp, nu, z*z))
     if density == 3:
         nu = shape[0]
         log_scale = 0.5 * (jsp.special.gammaln(1 / nu) - jsp.special.gammaln(3 / nu))
@@ -65,50 +65,92 @@ def joint_value_grad_hess(
     coordinates=None,
     request=7,
     kink_limit=None,
+    kink_pivot=0,
+    exact_mean_anchor=False,
 ):
     """Differentiate the objective or an explicitly requested limiting branch.
 
     A limiting branch is anchored at the exact affine residual-zero point,
     not the supplied doubles. Its backward error must be reported separately.
+    The selected mean coefficient absorbs the exact rational correction.
     Request 3 omits the Hessian for theta-space diagnostics.
+    An exact mean anchor instead preserves the supplied theta point. Rational
+    residuals are rounded once to binary64; AD still differentiates the full
+    affine mean, recursion and density. This option requires theta coordinates.
     """
     jax, jnp, jsp = _jax_modules()
     if request not in (3, 7) or (request == 3 and coordinates is not None):
         raise ValueError(
             "The oracle supports full jets or theta first-order diagnostics."
         )
+    if exact_mean_anchor and (coordinates is not None or kink_limit is not None):
+        raise ValueError("An exact mean anchor requires theta space without a kink limit.")
     m = x.shape[1]
     beta_start = m + 1 + (1 if family == 0 else 2) * p
     end = beta_start + q + int(family == 3)
     fixed_zero = (y == 0.0) & np.all(x == 0.0, axis=1)
     name = NAMES[density]
     anchor_residuals = None
-    if kink_limit is not None:
+    anchor_mean = None
+    limits = {}
+    if exact_mean_anchor or kink_limit is not None:
         from fractions import Fraction
 
-        row, side = kink_limit
+    if exact_mean_anchor:
+        anchor_mean = [Fraction(float(v)) for v in theta[:m]]
+    if kink_limit is not None:
+        # One (row, side) pair with an integer pivot, or equal-length lists of both.
+        several = isinstance(kink_limit, list)
+        pairs = list(kink_limit) if several else [kink_limit]
+        pivots = list(kink_pivot) if several and isinstance(kink_pivot, (list, tuple)) else [kink_pivot]
         if (
             family != 2
-            or density not in (0, 7)
+            or density not in (0, 1, 2, 4, 5, 6, 7)
             or coordinates is not None
-            or side not in (-1, 1)
+            or not pairs
+            or len(pivots) != len(pairs)
+            or any(len(pair) != 2 or pair[1] not in (-1, 1) for pair in pairs)
         ):
             raise ValueError(
-                "Limiting branches are validated for theta Normal/VG EGARCH."
+                "Limiting branches require theta Normal, Student-t, Skew-t or GH-family EGARCH."
             )
-        if not 0 <= row < len(y) or m == 0 or not np.all(x[:, 0] == 1):
+        rows = [pair[0] for pair in pairs]
+        if (
+            len(set(rows)) != len(rows) or len(set(map(str, pivots))) != len(pivots)
+            or any(not isinstance(row, (int, np.integer)) or not 0 <= row < len(y) for row in rows)
+            or any(not isinstance(pivot, (int, np.integer)) or not 0 <= pivot < m for pivot in pivots)
+            or (len(rows) == 1 and x[rows[0], pivots[0]] == 0)
+        ):
             raise ValueError(
-                "A limiting branch requires a sample row and an intercept."
+                "A limiting branch requires a sample row and a nonzero mean feature."
             )
+        limits = {int(row): side for row, side in pairs}
         mean = [Fraction(float(v)) for v in theta[:m]]
-        mean[0] = Fraction(float(y[row])) - sum(
-            Fraction(float(v)) * b for v, b in zip(x[row, 1:], mean[1:])
-        )
+        # Solve the active rows exactly for the pivot coefficients.
+        system = [
+            [Fraction(float(x[row, pivot])) for pivot in pivots]
+            + [Fraction(float(y[row])) - sum(
+                Fraction(float(x[row, j])) * mean[j] for j in range(m) if j not in pivots)]
+            for row in rows
+        ]
+        for column in range(len(rows)):
+            lead = next((i for i in range(column, len(rows)) if system[i][column] != 0), None)
+            if lead is None:
+                raise ValueError("Limiting branches require linearly independent faces.")
+            system[column], system[lead] = system[lead], system[column]
+            for i in range(len(rows)):
+                if i != column and system[i][column] != 0:
+                    ratio = system[i][column] / system[column][column]
+                    system[i] = [a - ratio * b for a, b in zip(system[i], system[column])]
+        for i, pivot in enumerate(pivots):
+            mean[pivot] = system[i][-1] / system[i][i]
+        anchor_mean = mean
+    if anchor_mean is not None:
         anchor_residuals = jnp.asarray(
             [
                 float(
                     Fraction(float(v))
-                    - sum(Fraction(float(a)) * b for a, b in zip(features, mean))
+                    - sum(Fraction(float(a)) * b for a, b in zip(features, anchor_mean))
                 )
                 for v, features in zip(y, x)
             ]
@@ -169,11 +211,15 @@ def joint_value_grad_hess(
             delta = parameters[end - 1]
             history = [initial ** (delta / 2)]
         elif family == 2:
-            moment = (
-                _jax_vg_abs_moment(jnp, jsp, *shape)
-                if density == 7
-                else _jax_aparch_power_moment(jnp, jsp, 0.0, 1.0, shape, name)
-            )
+            if density == 1:
+                moment = 2*jnp.exp(_jax_student_log_normalizer(jnp, jsp, shape[0]))/(1+1/(shape[0]-2))
+            elif density == 2:
+                nodes, weights = _egarch_skewt_quadrature_rule()
+                moment = _jax_hansen_skewt_abs_moment(jnp, jsp, *shape, jnp.asarray(nodes), jnp.asarray(weights))
+            elif density == 7:
+                moment = _jax_vg_abs_moment(jnp, jsp, *shape)
+            else:
+                moment = _jax_aparch_power_moment(jnp, jsp, 0.0, 1.0, shape, name)
             history = [jnp.log(initial)]
         else:
             history = [initial]
@@ -189,8 +235,8 @@ def joint_value_grad_hess(
                 elif family == 2:
                     z = e / jnp.sqrt(variance[t - 1 - lag])
                     absolute = (
-                        kink_limit[1] * z
-                        if kink_limit is not None and t - 1 - lag == kink_limit[0]
+                        limits[t - 1 - lag] * z
+                        if t - 1 - lag in limits
                         else jnp.abs(z)
                     )
                     state += alpha[lag] * (absolute - moment) + gamma[lag] * z

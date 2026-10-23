@@ -11,11 +11,6 @@
 #include "arma_garch_runtime_reformulation.hpp"
 #include "garch_transform_policy.hpp"
 #include <array>
-#if defined(__GNUC__) || defined(__clang__)
-#define VLK_JOINT_OBSERVATION_INLINE __attribute__((always_inline))
-#else
-#define VLK_JOINT_OBSERVATION_INLINE
-#endif
 namespace vlk::experiment::runtime::joint_garch {
 inline bool valid_request(std::uint32_t request) noexcept
 { return request && !(request & ~7u); }
@@ -229,7 +224,7 @@ template<class Density, bool Leverage,
     std::size_t value_cursor=start%ring;
     std::size_t derivative_cursor=start%derivative_ring;
     auto observation_at = [&]<bool Warmup>(std::size_t time)
-        VLK_JOINT_OBSERVATION_INLINE noexcept -> bool {
+        VLK_MEAN_LOOP_NOEXCEPT -> bool {
         const std::size_t active_p=Warmup?std::min(p,time):p;
         const std::size_t active_q=Warmup?std::min(q,time):q;
         const bool conditioned=Warmup && time==0;
@@ -358,9 +353,9 @@ template<class Density, bool Leverage,
             }
         }
 
-        const auto observation = Density::template observe<
-            EmitValue, EmitGradient, EmitHessian, true>(
-                density, variance, residual, residual * residual);
+        const auto observation = generated::observe_with_raw_residual<
+            Density, EmitValue, EmitGradient, EmitHessian, true>(
+                density, variance, residual);
         if constexpr (
             Density::observation_can_fail
             || ((EmitGradient || EmitHessian)
@@ -614,7 +609,7 @@ std::int32_t evaluate_transformed(
                     jacobian + row * total);
             }
             ShapeTransform::fill_jacobian(
-                theta + model, jacobian, total, model);
+                coordinates + model, jacobian, total, model);
         }
     }
 
@@ -644,7 +639,8 @@ std::int32_t evaluate_transformed(
             if (!add_arma_gjr_garch_coordinate_curvature(
                     layout, density_code, coordinates, theta, theta_gradient,
                     jacobian, curvature_workspace,
-                    curvature_doubles * sizeof(double), hessian)) {
+                    curvature_doubles * sizeof(double), hessian,
+                    map_workspace, map_doubles * sizeof(double))) {
                 return VLK_JET_DOMAIN_ERROR;
             }
         } else {
@@ -652,7 +648,8 @@ std::int32_t evaluate_transformed(
             if (!add_arma_garch_coordinate_curvature(
                     layout, coordinates, theta, theta_gradient,
                     curvature_workspace,
-                    curvature_doubles * sizeof(double), base_curvature)) {
+                    curvature_doubles * sizeof(double), base_curvature,
+                    map_workspace, map_doubles * sizeof(double))) {
                 return VLK_JET_DOMAIN_ERROR;
             }
             for (std::size_t row = 0; row < model; ++row) {
@@ -662,7 +659,7 @@ std::int32_t evaluate_transformed(
                 }
             }
             ShapeTransform::add_curvature(
-                theta + model, theta_gradient + model,
+                coordinates + model, theta_gradient + model,
                 hessian, total, model);
         }
     }
@@ -681,5 +678,4 @@ std::int32_t evaluate_transformed(
 }
 
 } // namespace vlk::experiment::runtime::joint_garch
-#undef VLK_JOINT_OBSERVATION_INLINE
 #endif

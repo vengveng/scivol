@@ -40,6 +40,25 @@ inline double softplus_second_from_positive(double value) noexcept
 
 namespace vlk::experiment::ad {
 
+inline double tanh_first(double coordinate) noexcept
+{
+    const double tail = std::exp(-2.0 * std::abs(coordinate));
+    return 4.0 * tail / ((1.0 + tail) * (1.0 + tail));
+}
+
+inline double logistic_first(double coordinate) noexcept
+{
+    const double tail = std::exp(-std::abs(coordinate));
+    return tail / ((1.0 + tail) * (1.0 + tail));
+}
+
+inline double coordinate_tanh_first(double coordinate) noexcept
+{
+    const double value=std::tanh(coordinate);
+    // Preserve well-conditioned map arithmetic; recover the cancelling tail.
+    return 1.0-std::abs(value)>=1e-4 ? 1.0-value*value : tanh_first(coordinate);
+}
+
 template<int Order, std::size_t Width>
 struct Differential;
 
@@ -231,6 +250,14 @@ inline Differential<Order, Width> log(
 }
 
 template<int Order, std::size_t Width>
+inline Differential<Order, Width> log1p(
+    const Differential<Order, Width>& operand) noexcept
+{
+    const double inverse = 1.0 / (1.0 + operand.value);
+    return unary(operand, std::log1p(operand.value), inverse, -inverse * inverse);
+}
+
+template<int Order, std::size_t Width>
 inline Differential<Order, Width> sqrt(
     const Differential<Order, Width>& operand) noexcept
 {
@@ -265,7 +292,7 @@ inline Differential<Order, Width> tanh(
     const Differential<Order, Width>& operand) noexcept
 {
     const double value = std::tanh(operand.value);
-    const double first = 1.0 - value * value;
+    const double first = tanh_first(operand.value);
     return unary(operand, value, first, -2.0 * value * first);
 }
 
@@ -273,11 +300,12 @@ template<int Order, std::size_t Width>
 inline Differential<Order, Width> logistic(
     const Differential<Order, Width>& operand) noexcept
 {
-    const double value = operand.value >= 0.0
-        ? 1.0 / (1.0 + std::exp(-operand.value))
-        : std::exp(operand.value) / (1.0 + std::exp(operand.value));
-    const double first = value * (1.0 - value);
-    return unary(operand, value, first, first * (1.0 - 2.0 * value));
+    const double tail = std::exp(-std::abs(operand.value));
+    const double denominator = 1.0 + tail;
+    const double value = operand.value >= 0.0 ? 1.0 / denominator : tail / denominator;
+    const double first = tail / (denominator * denominator);
+    const double sign = operand.value >= 0.0 ? -1.0 : 1.0;
+    return unary(operand, value, first, sign * first * ((1.0 - tail) / denominator));
 }
 
 template<int Order, std::size_t Width>

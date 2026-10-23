@@ -149,7 +149,8 @@ bool evaluate_prevalidated(
     if (!prepared.density.valid)
         return false;
     auto accumulated = Density::initial_value(prepared.density);
-    model::initialize_density_shape_derivatives<G, H, Mean, Density>(
+    // Residual dependency does not change the dense public Hessian layout.
+    model::initialize_density_shape_derivatives<G, H, true, Density>(
         prepared.density, k, gradient, hessian);
     if (residual_path)
         std::fill_n(residual_path, first_scored, 0.0);

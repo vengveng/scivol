@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import re
-
 import numpy as np
 from numpy.typing import NDArray
 
 import scivol._core as _c
 
 from .ad_oracle import garch_value_grad_hess
+from .diagnostic import (
+    _check_derivative_parameter_buffer,
+    _garch_derivative_validation_layout,
+)
 
 
 def _as_ptr(a: NDArray[np.float64]) -> int:
@@ -23,7 +25,7 @@ def check_routine(
     atol: float = 1e-10,
 ) -> None:
     """
-    AD-oracle validation for any compiled GARCH Routine.
+    AD-oracle validation for compiled standalone GARCH Normal/StudentT routines.
 
     Parameters
     ----------
@@ -34,12 +36,12 @@ def check_routine(
     rtol, atol : float
         Tolerances passed to ``np.allclose``.
     """
-    theta0 = routine.start(data).astype(np.float64, copy=True)
     uid = routine.uid
-    dist = "studentt" if "StudentT" in uid else "normal"
-    p, q = map(int, re.search(r"GARCH\((\d+),(\d+)\)", uid).groups())  # type: ignore[union-attr]
+    p, q, dist, n_params = _garch_derivative_validation_layout(uid)
+    theta0 = routine.start(data).astype(np.float64, copy=True)
+    _check_derivative_parameter_buffer(theta0, n_params, uid)
 
-    family = "_studentt" if dist == "studentt" else "_normal"
+    family = f"_{dist}"
     try:
         g_c = getattr(_c, f"_garch_ll_grad_{p}{q}{family}")
         h_c = getattr(_c, f"_garch_ll_hess_{p}{q}{family}")
@@ -61,6 +63,13 @@ def check_routine(
     h_c(_as_ptr(theta0), _as_ptr(resid2), _as_ptr(sigma), _as_ptr(hess_an), resid2.size, *extra)
 
     _, grad_ref, hess_ref = garch_value_grad_hess(theta0, resid2, p, q, dist=dist)
+
+    for label, derivative in (
+        ("analytical gradient", grad_an), ("AD-oracle gradient", grad_ref),
+        ("analytical hessian", hess_an), ("AD-oracle hessian", hess_ref),
+    ):
+        if not np.all(np.isfinite(derivative)):
+            raise AssertionError(f"Non-finite {label} entries")
 
     abs_grad_err = np.abs(grad_ref - grad_an)
     abs_hess_err = np.abs(hess_ref - hess_an)

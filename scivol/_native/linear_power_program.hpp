@@ -10,13 +10,20 @@ template<class Density,bool Aparch,
 struct LinearPowerProgram {
     static_assert(!Aparch || std::is_same_v<EgarchPointState,arma_egarch::Binary64PointState>);
     using density_type=Density;
+    using point_state_type=EgarchPointState;
     [[no_unique_address]] EgarchPointState egarch_point_state{};
     static constexpr bool aparch=Aparch;
-    static constexpr bool reuse_moments=Aparch && generated::quadrature_power_moment<Density>;
+    static constexpr bool reuse_moments=Aparch;
     using MomentValues=generated::PowerMomentValues<Density>;
     MomentValues* moment_values=nullptr;
     using Shape=generated::DensityShapeTransformT<Density>;
     using Layout=std::conditional_t<Aparch,runtime::aparch::Layout,runtime::arma_egarch::Layout>;
+    template<class Orders>
+    static constexpr const Layout* fixed_layout=[] {
+        if constexpr (!Orders::fixed) return static_cast<const Layout*>(nullptr);
+        else if constexpr (Aparch) return &runtime::aparch::fixed_layout<Orders,Density,true>;
+        else return &runtime::arma_egarch::fixed_layout<Orders,Density>;
+    }();
     Layout layout{};
     std::size_t q() const noexcept
     {
@@ -33,9 +40,14 @@ struct LinearPowerProgram {
         if constexpr (Aparch) return runtime::aparch::make_linear_layout<Density>(columns,p,q,layout);
         else return runtime::arma_egarch::make_linear_layout<Density>(columns,p,q,layout);
     }
+    template<auto StaticLayout=nullptr>
     bool parameter_units(const double* theta,const double* base,double h0,double* output) const noexcept
     {
         if (!theta || !base || !output || !std::isfinite(h0) || !(h0>0)) return false;
+        const auto& layout=[&]() -> const Layout& {
+            if constexpr (StaticLayout==nullptr) return this->layout;
+            else return *StaticLayout;
+        }();
         std::copy_n(base,layout.parameters,output);
         if constexpr (Aparch)
             output[layout.omega_index]=std::pow(h0,theta[layout.delta_index]/2);
@@ -69,16 +81,20 @@ struct LinearPowerProgram {
         else return runtime::arma_egarch::evaluate<Density,Shape,Orders,false>(
             layout,theta,layout.parameters,y,n,h0,transformed,mask,work,size,f,g,h,&valid,x,residuals,variances,egarch_point_state);
     }
+    template<class Orders=mean::LinearVolatilityOrders<>>
     bool map(const double* source,double* destination,bool forward,void* work,std::size_t size) const noexcept
     {
+        constexpr auto selected_layout=fixed_layout<Orders>;
         if constexpr (Aparch) {
             runtime::aparch_transform::MapScratch scratch;
-            return runtime::aparch_transform::bind_map_scratch(layout,work,size,scratch)
-                && runtime::aparch_transform::map_values<Density,Shape>(layout,source,forward,scratch,destination);
+            return runtime::aparch_transform::bind_map_scratch<selected_layout>(layout,work,size,scratch)
+                && runtime::aparch_transform::map_values<Density,Shape,selected_layout>(
+                    layout,source,forward,scratch,destination,moment_values);
         } else {
             runtime::arma_egarch_transform::MapScratch scratch;
-            return runtime::arma_egarch_transform::bind_map_scratch(layout,work,size,scratch)
-                && runtime::arma_egarch_transform::map_values<Shape>(layout,source,forward,scratch,destination);
+            return runtime::arma_egarch_transform::bind_map_scratch<selected_layout>(layout,work,size,scratch)
+                && runtime::arma_egarch_transform::map_values<Shape,selected_layout>(
+                    layout,source,forward,scratch,destination);
         }
     }
 };

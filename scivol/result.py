@@ -177,6 +177,7 @@ class APARCHParams:
     gamma: NDArray[np.float64]
     delta: float
     density_adjusted_persistence: Optional[float] = None
+    stationarity_slack: Optional[float] = None
 
     @property
     def persistence(self) -> float:
@@ -189,6 +190,8 @@ class APARCHParams:
 
     @property
     def is_stationary(self) -> bool:
+        if self.stationarity_slack is not None:
+            return self.stationarity_slack > 0.0
         return self.persistence < 1.0
 
     def to_array(self) -> NDArray[np.float64]:
@@ -310,10 +313,15 @@ class FitMetadata:
     scalar_precision: Optional[str] = None
     optimizer_mode: Optional[int] = None
     optimizer_status_kind: Optional[str] = None
+    optimizer_controller: Optional[str] = None
+    route_iteration_budgets: Optional[List[int]] = None
+    primary_route: Optional[Dict[str, Any]] = None
+    portfolio_agreement: Optional[Dict[str, Any]] = None
     optimizer_terminated: Optional[bool] = None
     stationarity_status: Optional[str] = None
     inference_status: Optional[str] = None
     jet_consistency: Optional[Dict[str, Any]] = None
+    nonsmooth_evidence: Optional[Dict[str, Any]] = None
     optimizer_phases: Optional[tuple[str, ...]] = None
     optimizer_phase_modes: Optional[tuple[int, ...]] = None
     kkt_residual: Optional[float] = None
@@ -379,10 +387,18 @@ class FitMetadata:
             "engine": self.engine,
             "optimizer_mode": self.optimizer_mode,
             "optimizer_status_kind": self.optimizer_status_kind,
+            "optimizer_controller": self.optimizer_controller,
+            "route_iteration_budgets": (
+                list(self.route_iteration_budgets)
+                if self.route_iteration_budgets is not None else None
+            ),
             "optimizer_terminated": self.optimizer_terminated,
+            "primary_route": deepcopy(self.primary_route),
+            "portfolio_agreement": deepcopy(self.portfolio_agreement),
             "stationarity_status": self.stationarity_status,
             "inference_status": self.inference_status,
             "jet_consistency": self.jet_consistency,
+            "nonsmooth_evidence": self.nonsmooth_evidence,
             "scalar_precision": self.scalar_precision,
             "optimizer_phases": (
                 list(self.optimizer_phases)
@@ -641,6 +657,10 @@ class EstimationResult:
                 density_adjusted_persistence=(
                     float(fp["persistence"])
                     if "persistence" in fp else None
+                ),
+                stationarity_slack=(
+                    float(fp["stationarity_slack"])
+                    if "stationarity_slack" in fp else None
                 ),
             )
 
@@ -1165,12 +1185,12 @@ class EstimationResult:
 
             if isinstance(gp, APARCHParams):
                 persistence = gp.persistence
-                print(f"{'Persistence proxy (alpha + beta):':<35} {persistence:.6f}")
+                print(f"{'Persistence (density-aware):':<35} {persistence:.6f}")
                 print(f"{'Power (delta):':<35} {gp.delta:.6f}")
-                print(f"{'Proxy stationary:':<35} {'Yes' if gp.is_stationary else 'No'}")
+                print(f"{'Power-state stationary:':<35} {'Yes' if gp.is_stationary else 'No'}")
                 if 0.0 < persistence < 1.0:
                     half_life = np.log(0.5) / np.log(persistence)
-                    print(f"{'Proxy half-life (periods):':<35} {half_life:.1f}")
+                    print(f"{'Half-life proxy (periods):':<35} {half_life:.1f}")
                 return
 
             persistence = gp.persistence
@@ -1219,7 +1239,7 @@ class EstimationResult:
                     add("Near-unit-root EGARCH persistence very close to 1")
             elif isinstance(gp, APARCHParams):
                 if gp.density_adjusted_persistence is not None:
-                    if gp.persistence >= 1.0:
+                    if not gp.is_stationary:
                         add("Non-stationary APARCH persistence detected")
                     elif gp.persistence > 0.99:
                         add("APARCH persistence is very close to 1")
@@ -1295,6 +1315,7 @@ class EstimationResult:
                 gp_dict[_r('gamma')] = gp.gamma.tolist()
             if isinstance(gp, APARCHParams):
                 gp_dict['delta'] = gp.delta
+                gp_dict['stationarity_slack'] = gp.stationarity_slack
             result_dict['garch_params'] = gp_dict
         
         # Add distribution parameters (keys use display names)

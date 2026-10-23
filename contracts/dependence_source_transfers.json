@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "status": "prototype/incomplete",
+  "as_of": "2026-10-14",
+  "license": "Repository MIT license for repository-derived mathematics and source.",
+  "authority": "Handoff provenance only. phase1_scope.json, math_owners.json and test_transfer.json remain the scope/owner/test authorities; this file does not qualify or register capabilities.",
+  "capability_ids": ["math:dcc+law:normal", "math:dcc+law:studentt"],
+  "objective_scope": "fixed_input_dependence_contribution; not full marginal-plus-correlation likelihood; not a fixed-uniform copula objective",
+  "parameter_order": ["a_1..a_p_corr", "b_1..b_q_corr", "nu for Student-t only"],
+  "coordinates": ["theta"],
+  "request_masks": [1, 2, 3, 4, 5, 6, 7],
+  "scaling": "Exact additive contribution; multiply all legacy averaged F/G/H by T for matching full-score comparisons.",
+  "model_document": "localdev/transition_phase1_20261014/dependence/README.md",
+  "comparators": [
+    {
+      "path": "scivol/_csrc/dcc_gaussian.c",
+      "source_sha256": "53e237b38daee9d517e020ac235a17af6754030e13c21703200f5f7d384f0271",
+      "reviewed_symbols": ["dcc_nll_11_gaussian", "dcc_nll_pq_gaussian", "dcc_normalise", "dcc_dR_from_dQ", "dcc_d2R_from_d2Q", "dcc_student_constant", "dcc_studentt_core"],
+      "transfer_mode": "Reviewed equations only; not a copied compilation unit or linked dependency.",
+      "preserved": ["Q equation", "unfloored R map", "fixed-eps Gaussian and Student joint/marginal density ratio", "gamma-recurrence normalizer", "legacy zero-shock/repeated-target conditioning when explicitly selected"],
+      "replaced": ["malloc/calloc/free with checked caller arena", "mandatory F/FG/FGH with all seven sparse masks", "T averaging with additive units", "handwritten 11 recursion with shared constexpr/runtime owner", "matrix inverse with differentiated Cholesky/forward solve", "overflowing log1p ratio with existing core overflow-safe Student log owner"]
+    },
+    {
+      "path": "scivol/_dcc_kernels.py",
+      "source_sha256": "d19d26453b538cd584261b5d2f8f7f34cafdd39720da980d28c75decb9b211b9",
+      "transfer_mode": "Parameter/input/scaling comparator only; no imports, wrapper transfers or Python ownership.",
+      "reviewed_symbols": ["dcc_nll", "dcc_nll_grad_hess", "dcc_studentt_nll", "dcc_studentt_nll_grad_hess", "compute_qbar"],
+      "excluded": ["Automatic target estimation", "Python memory ownership", "scores and fitting"]
+    }
+  ],
+  "reused_core_owners": [
+    {
+      "path": "core/src/math/runtime_workspace.hpp",
+      "source_sha256": "1ffb2ddb07e01d5286595545c05a85658557440877d10a29dc463ba509a1a66a",
+      "symbols": ["checked_sum", "checked_product", "WorkspaceArena"]
+    },
+    {
+      "path": "core/src/math/student_normalization.hpp",
+      "source_sha256": "733ff408f3e529e3446019adc31a088bef598ea42eb05076bdf36b244e0953e3",
+      "symbols": ["StudentNormalization"],
+      "note": "The standardized univariate constant is not substituted for the dimension-dependent ratio constant. Its shared underlying polynomial/gamma owners are reused."
+    },
+    {
+      "path": "core/src/math/math_and_helpers.h",
+      "source_sha256": "c07d00f260b16b29a755b766e2c9007d133dbf19c9cac5c626b67aeeb59dc569",
+      "symbols": ["digamma_approx", "trigamma_approx", "vlk_student_ratio_polynomial", "VLK_STUDENT_ASYMPTOTIC_NU", "vlk_student_log_tail", "vlk_student_tail_shape_first_shift", "vlk_student_tail_shape_second_shift", "vlk_student_tail_shape_first", "vlk_student_tail_shape_second"],
+      "note": "Existing core include only; no old include root and no new special-function approximation. std::lgamma supplies the value gamma owner below the shared asymptotic switch."
+    }
+  ],
+  "scope_snapshot": {
+    "path": "contracts/phase1_scope.json",
+    "source_sha256": "9f8bdc312a12a03362f27cecf9e657caadf54599b17d9fc17c44ebf6780e054d"
+  },
+  "reviewed_audit": {
+    "issues_path": "localdev/TRANSITION/audit/REVIEWED_ISSUES.json",
+    "issues_sha256": "f23e3a3f1bce657c87cce39ea3489bcb7f22f394f9ead8b5c78c9ed4c3ddd8a0",
+    "transfers_path": "localdev/TRANSITION/audit/MATH_TRANSFERS.json",
+    "transfers_sha256": "27587adea0552bb564f890c856d1a194c5c44126881e40b29294fb3af874d465",
+    "dispositions": [
+      {"id": "DCC-M01", "disposition": "Do not import Python returned-state floor; no production consumer edited."},
+      {"id": "DCC-M02", "disposition": "Preserve fixed-eps ratio scope; no candidate-nu quantile transform or full marginal claim."},
+      {"id": "DCC-M08/DCC-09", "disposition": "Use existing overflow-safe log owner; independently sourced scalar value regression; production legacy remains unchanged."}
+    ]
+  },
+  "new_owners": [
+    {"path": "core/src/models/dependence/layout.hpp", "current_sha256": "0441abdd64c3e097f97cfe58046a9a96820d061145ae8892419f07f06754a565", "owns": "One checked constexpr/runtime layout, all order axes, offsets, derivative widths and arena size."},
+    {"path": "core/src/models/dependence/parameter_domain.hpp", "current_sha256": "cb5d437d262da1f5c201a20749c429ac18adc2ffe17bef87746f86fdf3c45e67", "owns": "Finite nu>2 admission and typed binding of the shared exact simplex/slack result to DCC admission and its intercept."},
+    {"path": "core/src/models/dependence/jet_algebra.hpp", "current_sha256": "1e7603f6c5c0343a42abf84e5eadbdab346800c432692f108b8da332652adc02", "owns": "Private arena-backed elementary exact forward matrix sensitivities; no density approximation."},
+    {"path": "core/src/models/dependence/density_policy.hpp", "current_sha256": "cf2e58dc80c13fa7659c5c5eb9fc26ab34e4bc539598091c0fb4ec0f0628e1ac", "owns": "Dimension-dependent Student ratio assembly from shared numerical owners, shape partials and correlation/shape local cross."},
+    {"path": "core/src/models/dependence/program.hpp", "current_sha256": "f9ac395c8dc1ab4799d97b031b76fe74a25850b35cb4698f1603c4100e7a9e00", "owns": "Shared arbitrary-order Q/R recursion and all sparse theta observation assembly; compile-time and runtime adapters; intercept supplied by the same simplex owner as admission."},
+    {"path": "core/src/dependence_backend.hpp", "current_sha256": "bfd0aea4651b80d4bee15838867afca5bd0a897f0c9543acd4bd8fc8a9942a21", "owns": "Independent private contract sharing KernelRequirements/KernelBuffers and JetValidity."},
+    {"path": "core/src/dependence_backend.cpp", "current_sha256": "7932fa308dab9570d0700a6ea85db10ed57c9b6523b569d16cae2ab12dc42510", "owns": "Checked input/output/arena admission, immutable input validation and outer law/order/request dispatch."},
+    {"path": "tests/native/test_dependence_backend.cpp", "current_sha256": "f119e90a945aa9665ecfc1dbb6403521aaad83d04636ca84892b5d9eb7241562", "owns": "Tiny analytic identities, sparse projections, general/fixed parity, conditioning, buffer/range and exact strict-simplex regressions; not full AD qualification."},
+    {"path": "core/src/math/positive_simplex.hpp", "current_sha256": "496332a69b710577b3a76a155a98adb7e348029b178898a98a4220ddb955fd67", "owns": "New explicitly authorized single shared owner for exact unweighted nonnegative binary64 strict-simplex classification and nearest-even representable slack; integer lattice fast path plus bounded exact fallback."}
+  ],
+  "portable_simplex_followup": {
+    "interface": "vlk::experiment::positive_simplex::assess(std::span<const double>) noexcept -> Result{state,slack,used_exact_fallback}",
+    "states": ["inside", "nonstationary", "invalid_coefficients", "numerical_range"],
+    "slack_contract": "Available only for inside; nearest-even rounding of exact real 1-sum(binary64 coefficients), independent of FP rounding mode and long double.",
+    "scratch": "17 uint64_t words, 136 bytes bounded stack, independent of coefficient count; no heap.",
+    "precedent": {"title": "Neal 2015, Fast exact summation using small and large superaccumulators", "url": "https://arxiv.org/abs/1505.05571", "transfer": "Derived threshold-specific fixed-point algorithm; no external source code copied or linked."},
+    "proof": "localdev/transition_phase1_20261014/dependence/positive_simplex.md",
+    "oracle": {"path": "localdev/transition_phase1_20261014/dependence/1_check_positive_simplex.py", "sha256": "cedd610229d032434876bd2ac397cdf9dc74797d2d5d9d61337e5f090bd3e4bd", "cases": 274, "rounding_modes": 4, "reference": "Exact standard-library Fraction inputs and sum, independently rounded to binary64."},
+    "probe": {"path": "localdev/transition_phase1_20261014/dependence/positive_simplex_probe.cpp", "sha256": "14dd8300055aa3622a0c6037339c7c676714b2bb9a69f8df9eb09488af11caab", "tiny_flags": ["-O0", "-O3 -ffp-contract=fast"]},
+    "native_assertions_after_followup": 2558,
+    "exact_counterexample": {"coefficients": ["0.5", "0x1.fffffffffffffp-2", "0x1.fffffffffffffp-55"], "sum": "1-2^-107", "state": "inside", "slack": "0x1p-107"},
+    "scope": "DCC admission and intercept only. Existing compiled shared owners, GARCH/GJR, weighted moments and build005 integration are unchanged. No DCC qualification claim."
+  },
+  "independent_checks": {
+    "test": "tests/native/test_dependence_backend.cpp",
+    "evidence": "localdev/transition_phase1_20261014/dependence/checks.md",
+    "analytical_identities": ["Two-series affine-rho value, gradient and Hessian at nu=4", "Student shape/correlation cross at fixed supplied residuals", "Gamma/digamma/trigamma closed forms at N=2 and N=3, nu=4", "Gaussian constant-correlation zero-residual objective at arbitrary orders", "Gaussian-limit zero-residual Student shape jet at nu=1e15"],
+    "audit_value_control": {"source": "DCC-09 independently computed 100-digit raw ratio control", "residual": [1e154, 0], "nu": "nextafter(2,+inf)", "R": "I", "additive_nll": 372.03179295009113},
+    "not_run": ["Legacy engine execution", "JAX/AD", "new-core oracle bridge", "production flags or binary/frame/ownership audit", "benchmarks", "solvers or fits", "CMake build"]
+  },
+  "required_integration": ["Standalone CMake source/test wiring by chief", "Catalogue prototype registration and scope/owner/test ledger binding", "Independent AD/MP bridge and complete assertion transfer", "Production arithmetic, executed fixed metadata, backend ownership, frames and allocation audit", "Paired accuracy-matched sparse request performance; retain broad-layout/range cases"],
+  "debt_ids": ["independent_ad_pending", "full_test_transfer_pending", "range_stress_and_recovery_pending", "binary_and_frames_pending", "allocation_instrumentation_pending", "fixed_dispatch_measurement_pending", "sparse_request_performance_pending", "integration_pending"],
+  "qualification_policy": "All source hashes bind the reviewed working tree only. Source/hash or scalar-check success is not Phase 1 qualification. Retain every unresolved gate and revalidate affected consumers on owner drift."
+}

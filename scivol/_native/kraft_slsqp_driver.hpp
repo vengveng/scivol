@@ -45,10 +45,13 @@ enum class ConstraintRequest : std::uint8_t {
     value_jacobian,
 };
 
+enum class InvalidTrialPolicy : std::uint8_t { interpolate, minimum_step };
+
 struct Options {
     double accuracy = 1e-8;
     std::int64_t maximum_iterations = 100;
     bool constraint_curvature_reset = false;
+    InvalidTrialPolicy invalid_trial_policy = InvalidTrialPolicy::interpolate;
 };
 
 enum class StopReason : std::uint8_t {
@@ -339,13 +342,19 @@ template<std::size_t Dimension, std::size_t Constraints, std::size_t Equalities>
         return true;
     } else {
         std::array<double, Equalities * Dimension> rows {};
+        double scale = 0.0;
+        for (std::size_t row=0; row<Equalities; ++row)
+            for (std::size_t column=0; column<Dimension; ++column)
+                scale = std::max(scale,std::abs(workspace.jacobian[
+                    row+column*Workspace<Dimension,Constraints,Equalities>::leading_dimension]));
+        if (!(scale>0.0) || !std::isfinite(scale)) return false;
         double largest_row_norm = 0.0;
         for (std::size_t row = 0; row < Equalities; ++row) {
             double squared_norm = 0.0;
             for (std::size_t column = 0; column < Dimension; ++column) {
                 const double value = workspace.jacobian[
                     row + column * Workspace<
-                        Dimension, Constraints, Equalities>::leading_dimension];
+                        Dimension, Constraints, Equalities>::leading_dimension] / scale;
                 rows[row * Dimension + column] = value;
                 squared_norm += value * value;
             }
@@ -353,7 +362,7 @@ template<std::size_t Dimension, std::size_t Constraints, std::size_t Equalities>
         }
         const double tolerance = 64.0 * std::numeric_limits<double>::epsilon()
             * static_cast<double>(maximum(Dimension, Equalities))
-            * std::max(largest_row_norm, 1.0);
+            * largest_row_norm;
 
         for (std::size_t pivot = 0; pivot < Equalities; ++pivot) {
             std::size_t selected = pivot;
@@ -492,6 +501,7 @@ template<
     state.mode = 0;
     state.n = static_cast<std::int64_t>(dimension);
     state.curvature_reset.enabled = options.constraint_curvature_reset;
+    state.minimum_invalid_step = options.invalid_trial_policy == InvalidTrialPolicy::minimum_step;
 
     bool derivatives_are_current = true;
     bool value_is_current = true;

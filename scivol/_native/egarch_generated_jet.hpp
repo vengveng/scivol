@@ -357,16 +357,17 @@ private:
         std::array<double, EmitHessian ? CurvatureScratch : 0u>
             curvature_scratch {};
         runtime::egarch_transform::Scratch transform {
-            theta.data(),
-            NeedThetaGradient ? theta_gradient.data() : nullptr,
-            EmitHessian ? theta_hessian.data() : nullptr,
-            reflection.data(),
-            Order >= 1 ? reflection_jacobian.data() : nullptr,
-            reflection_scratch.data(),
-            EmitHessian ? jacobian_column.data() : nullptr,
-            EmitHessian ? hessian_product.data() : nullptr,
-            EmitHessian ? pulled_product.data() : nullptr,
-            EmitHessian ? curvature_scratch.data() : nullptr,
+            .coordinates = coordinates,
+            .theta = theta.data(),
+            .theta_gradient = NeedThetaGradient ? theta_gradient.data() : nullptr,
+            .theta_hessian = EmitHessian ? theta_hessian.data() : nullptr,
+            .reflection = reflection.data(),
+            .reflection_jacobian = Order >= 1 ? reflection_jacobian.data() : nullptr,
+            .reflection_scratch = reflection_scratch.data(),
+            .jacobian_column = EmitHessian ? jacobian_column.data() : nullptr,
+            .hessian_product = EmitHessian ? hessian_product.data() : nullptr,
+            .pulled_product = EmitHessian ? pulled_product.data() : nullptr,
+            .curvature_scratch = EmitHessian ? curvature_scratch.data() : nullptr,
         };
         constexpr TransformLayout transform_layout {};
         if (!runtime::egarch_transform::map_coordinates<ShapeTransform>(

@@ -260,7 +260,8 @@ MODE1:
             S->mode = VLK_SLSQP_INVALID_OBJECTIVE;
             return;
         }
-        S->alpha = fmin(0.5, fmax(S->h3/(2.0*(S->h3 - S->h1)), alfmin));
+        S->alpha = S->minimum_invalid_step ? alfmin
+            : fmin(0.5, fmax(S->h3/(2.0*(S->h3 - S->h1)), alfmin));
         goto LINE_SEARCH;
     }
 
@@ -374,6 +375,51 @@ MODEM1:
 }
 
 
+/* The packed LDL factor is diagonal only when every stored lower entry is zero.
+ * In that case the box QP separates, avoiding LDP's cancellation-prone recovery.
+ * Return zero only when the original general solver is still required. */
+static int
+diagonal_box_qp(CBLAS_INT n, const double* Lf, const double* gradx,
+    const double* xl, const double* xu, double* x, double* y, int64_t* mode)
+{
+    int64_t cursor = 0;
+    for (int64_t j = 0; j < n; ++j)
+    {
+        const double diagonal = Lf[cursor++];
+        if (!(diagonal > 0.0) || !isfinite(diagonal)) { return 0; }
+        for (int64_t i = j + 1; i < n; ++i)
+        {
+            if (Lf[cursor++] != 0.0) { return 0; }
+        }
+    }
+
+    cursor = 0;
+    for (int64_t i = 0; i < n; ++i)
+    {
+        if (!isfinite(gradx[i]) || (!isnan(xl[i]) && !isfinite(xl[i])) ||
+            (!isnan(xu[i]) && !isfinite(xu[i])))
+        {
+            *mode = 5;
+            return 1;
+        }
+        if (!isnan(xl[i]) && !isnan(xu[i]) && xl[i] > xu[i])
+        {
+            *mode = 4;
+            return 1;
+        }
+        double step = -gradx[i] / Lf[cursor];
+        cursor += n - i;
+        if (!isnan(xl[i]) && step < xl[i]) { step = xl[i]; }
+        if (!isnan(xu[i]) && step > xu[i]) { step = xu[i]; }
+        // Overflow of the unconstrained minimizer is harmless if a bound caps it.
+        if (!isfinite(step)) { *mode = 5; return 1; }
+        x[i] = step;
+    }
+    for (int64_t i = 0; i < 2*n; ++i) { y[i] = NAN; }
+    *mode = 1;
+    return 1;
+}
+
 /*
  *          min     |A*x - b|
  *        E*x = f
@@ -460,6 +506,9 @@ lsq(
     CBLAS_INT cursor = 0;
     CBLAS_INT ld = n;
     CBLAS_INT n_wG_rows = 0;
+
+    if (m == 0 && meq == 0 && !augment &&
+        diagonal_box_qp(n, Lf, gradx, xl, xu, x, y, mode)) { return; }
 
     if (augment) {
         ld = n + 1;

@@ -12,6 +12,19 @@
 #define GH_LOG_PI_OVER_2 0.45158270528945486473
 #define GH_HALF_PI 1.57079632679489661923
 
+/* Compile the numerical series once per request level, not once per model/order. */
+int gh_log_bessel_product(const gh_bessel_product_plan_t *plan,
+                          double argument, unsigned derivative_order,
+                          double *partials)
+{
+    switch (derivative_order) {
+        case 0: return gh_bessel_product_evaluate(1, plan, argument, partials);
+        case 1: return gh_bessel_product_evaluate(3, plan, argument, partials);
+        case 2: return gh_bessel_product_evaluate(7, plan, argument, partials);
+        default: return 0;
+    }
+}
+
 /* Gauss-Legendre roots and weights rounded once from 90-digit arithmetic. */
 static const double GH_NODES[GH_QUAD_HALF] = {
     1.222369896061576387e-02, 3.666379096873349092e-02, 6.108196960413957155e-02, 8.546364050451549232e-02,
@@ -312,10 +325,43 @@ static const double K1_LOG_COEFFICIENTS[K1_APPROX_INTERVALS][K1_APPROX_DEGREE + 
     {7.408859472518876735e-03, -5.068030026549820780e-03, 1.716592164714370039e-03, -3.800635184640114520e-04, 6.058109050241543210e-05, -7.050688766209480787e-06, 5.333096119545277487e-07, -4.600734563483697350e-09, -6.281389917565724931e-09, 1.186771759716875112e-09, -1.227217218248561531e-10, 2.979780515375761602e-12, 3.578216694109912610e-13, 4.549490733851806399e-13, 1.084199009602850240e-13},
 };
 
+static int log_bessel_k1_small(unsigned request, double x, double *value,
+                               double *first, double *second)
+{
+    /* DLMF 10.31.1: x*K1(x)=1+sum [1+2k(log(x/2)+gamma-H_k)] (x*x/4)^k/(k!)^2.
+       Eight terms suffice for x<0.1; the omitted value tail is below 3e-33.
+       Differentiate this same series, retaining the singular terms analytically. */
+    const double log_x = log(x);
+    const double logarithm = log_x - GH_LOG_2 + 0.57721566490153286061;
+    const double quarter_square = (0.25 * x) * x;
+    double term = 1.0, harmonic = 0.0, correction = 0.0;
+    double derivative = 0.0, curvature = 0.0;
+    for (unsigned k = 1; k <= 8; ++k) {
+        term *= quarter_square / (k * k);
+        harmonic += 1.0 / k;
+        const double coefficient = 1.0 + (2.0 * k) * (logarithm - harmonic);
+        correction += coefficient * term;
+        if (request & 6u) derivative += (2.0 * k) * (coefficient + 1.0) * term;
+        if (request & 4u)
+            curvature += (2.0 * k) * ((2.0 * k - 1.0) * (coefficient + 1.0) + 2.0 * k) * term;
+    }
+    if (request & 1u) *value = -log_x + log1p(correction);
+    if (request & 6u) {
+        const double ratio = derivative / (1.0 + correction);
+        if (request & 2u) *first = (ratio - 1.0) / x;
+        if (request & 4u)
+            *second = (1.0 + curvature / (1.0 + correction) - ratio * ratio) / x / x;
+    }
+    return (!(request & 1u) || isfinite(*value))
+        && (!(request & 2u) || isfinite(*first))
+        && (!(request & 4u) || isfinite(*second));
+}
+
 static int log_bessel_k1_fast(double x, double *value,
                               double *first, double *second)
 {
-    if (!(x >= 0.1) || !isfinite(x)) return 0;
+    if (!(x > 0.0) || !isfinite(x)) return 0;
+    if (x < 0.1) return log_bessel_k1_small(7, x, value, first, second);
     double correction;
     double correction_first;
     double correction_second;
@@ -355,10 +401,14 @@ static int log_bessel_k1_fast(double x, double *value,
 
 static double log_bessel_k_scalar(double order, double argument)
 {
-    if (fabs(fabs(order) - 0.5) < 1e-14) {
+    if (fabs(order) == 0.5) {
         return 0.5 * (GH_LOG_PI_OVER_2 - log(argument)) - argument;
     }
-    if (fabs(fabs(order) - 1.0) < 1e-14) {
+    if (fabs(order) == 1.0) {
+        if (argument < 0.1) {
+            double value;
+            return log_bessel_k1_small(1, argument, &value, NULL, NULL) ? value : NAN;
+        }
         double value, first, second;
         if (argument >= GH_BESSEL_FIXED_ONE_MIN_ARGUMENT) {
             if (gh_bessel_fixed_one_unplanned(1, argument, &value, NULL, NULL)) return value;
@@ -491,13 +541,17 @@ int gh_log_bessel_k_first(double order, double argument,
 {
     if (!value || !d_order || !d_argument || !isfinite(order)
         || !isfinite(argument) || !(argument > 0.0)) return 0;
-    if (!differentiate_order && fabs(fabs(order) - 0.5) < 1e-14) {
+    if (!differentiate_order && fabs(order) == 0.5) {
         *value = 0.5 * (GH_LOG_PI_OVER_2 - log(argument)) - argument;
         *d_order = 0.0;
         *d_argument = -0.5 / argument - 1.0;
         return isfinite(*value) && isfinite(*d_argument);
     }
-    if (!differentiate_order && fabs(fabs(order) - 1.0) < 1e-14) {
+    if (!differentiate_order && fabs(order) == 1.0) {
+        if (argument < 0.1) {
+            *d_order = 0.0;
+            return log_bessel_k1_small(3, argument, value, d_argument, NULL);
+        }
         if (argument >= GH_BESSEL_FIXED_ONE_MIN_ARGUMENT) {
             *d_order = 0.0;
             return gh_bessel_fixed_one_unplanned(3, argument, value, d_argument, NULL);
@@ -523,11 +577,11 @@ static int gh_bessel_value_plan_initialize(double order, int allow_fixed,
 {
     if (!plan || !isfinite(order)) return 0;
     memset(plan, 0, sizeof(*plan));
-    if (allow_fixed && fabs(fabs(order) - 0.5) < 1e-14) {
+    if (allow_fixed && fabs(order) == 0.5) {
         plan->fixed_kind = 1;
         return 1;
     }
-    if (allow_fixed && fabs(fabs(order) - 1.0) < 1e-14) {
+    if (allow_fixed && fabs(order) == 1.0) {
         plan->fixed_kind = 2;
         plan->expansion_ready = 1;
         gh_bessel_expansion_prepare_terms(GH_BESSEL_FIXED_ONE_TERMS,
@@ -576,6 +630,8 @@ int gh_log_bessel_k_value_planned(const gh_bessel_value_plan_t *plan,
         return isfinite(*value);
     }
     if (plan->fixed_kind == 2) {
+        if (argument < 0.1)
+            return log_bessel_k1_small(1, argument, value, NULL, NULL);
         if (argument >= GH_BESSEL_FIXED_ONE_MIN_ARGUMENT)
             return gh_bessel_fixed_one_evaluate(1, plan->expansion, argument, value, NULL, NULL);
         double first;
@@ -662,6 +718,10 @@ int gh_log_bessel_k_first_planned(const gh_bessel_first_plan_t *plan,
         return isfinite(*value) && isfinite(*d_argument);
     }
     if (value_plan->fixed_kind == 2) {
+        if (argument < 0.1) {
+            *d_order = 0.0;
+            return log_bessel_k1_small(3, argument, value, d_argument, NULL);
+        }
         if (argument >= GH_BESSEL_FIXED_ONE_MIN_ARGUMENT) {
             *d_order = 0.0;
             return gh_bessel_fixed_one_evaluate(3, value_plan->expansion,
@@ -879,7 +939,7 @@ static gh_jet_t jet_log_bessel_k(gh_jet_t order, gh_jet_t argument)
             break;
         }
     }
-    if (fixed_order && fabs(fabs(order.value) - 0.5) < 1e-14) {
+    if (fixed_order && fabs(order.value) == 0.5) {
         return jet_sub(
             jet_scale(
                 jet_sub(jet_constant(GH_LOG_PI_OVER_2), jet_log(argument)),
@@ -888,7 +948,7 @@ static gh_jet_t jet_log_bessel_k(gh_jet_t order, gh_jet_t argument)
             argument
         );
     }
-    if (fixed_order && fabs(fabs(order.value) - 1.0) < 1e-14) {
+    if (fixed_order && fabs(order.value) == 1.0) {
         double value, first, second = 0.0;
         if (argument.value >= GH_BESSEL_FIXED_ONE_MIN_ARGUMENT) {
             if (gh_bessel_fixed_one_unplanned(argument.second_order ? 7 : 3,
@@ -934,6 +994,9 @@ static gh_jet_t jet_log_bessel_k_planned(
         invalid.second_order = 1;
         return invalid;
     }
+    if (!plan->differentiate_order) {
+        return jet_unary(argument, value, d_argument, d_argument_argument);
+    }
     return jet_log_bessel_chain(
         order, argument, value, d_order, d_argument,
         d_order_order, d_order_argument, d_argument_argument);
@@ -951,24 +1014,31 @@ static int valid_shapes(double rho, double zeta, double lambda)
 
 static int scalar_standardized_parameters(double rho, double zeta, double lambda,
                                           double *alpha, double *beta,
-                                          double *delta, double *mu)
+                                          double *delta, double *mu,
+                                          double *prepared_log_k0)
 {
     if (!valid_shapes(rho, zeta, lambda)) return 0;
-    const double rho2 = 1.0 - rho * rho;
-    const double log_k0 = log_bessel_k_scalar(lambda, zeta);
-    const double kappa = exp(log_bessel_k_scalar(lambda + 1.0, zeta) - log_k0) / zeta;
-    const double kappa_next = exp(
-        log_bessel_k_scalar(lambda + 2.0, zeta)
-        - log_bessel_k_scalar(lambda + 1.0, zeta)
-    ) / zeta;
-    const double delta_kappa = kappa_next - kappa;
-    const double alpha_sq = zeta * zeta * kappa
-        * (1.0 + rho * rho * zeta * zeta * delta_kappa / rho2) / rho2;
-    if (!(alpha_sq > 0.0) || !isfinite(alpha_sq)) return 0;
-    *alpha = sqrt(alpha_sq);
-    *beta = *alpha * rho;
-    *delta = zeta / (*alpha * sqrt(rho2));
-    *mu = -(*beta) * (*delta) * (*delta) * kappa;
+    typedef double N;
+#define SCIVOL_GH_SCALAR_STANDARDIZE_EQUATIONS
+#define SCIVOL_GH_SCALAR_rho rho
+#define SCIVOL_GH_SCALAR_zeta zeta
+#define SCIVOL_GH_SCALAR_lambda lambda
+#define SCIVOL_GH_SCALAR_alpha (*alpha)
+#define SCIVOL_GH_SCALAR_beta (*beta)
+#define SCIVOL_GH_SCALAR_delta (*delta)
+#define SCIVOL_GH_SCALAR_mu (*mu)
+#define SCIVOL_GH_FIELD(name) SCIVOL_GH_SCALAR_##name
+#include "../_native/gh_equations.hpp"
+#undef SCIVOL_GH_FIELD
+#undef SCIVOL_GH_SCALAR_mu
+#undef SCIVOL_GH_SCALAR_delta
+#undef SCIVOL_GH_SCALAR_beta
+#undef SCIVOL_GH_SCALAR_alpha
+#undef SCIVOL_GH_SCALAR_lambda
+#undef SCIVOL_GH_SCALAR_zeta
+#undef SCIVOL_GH_SCALAR_rho
+#undef SCIVOL_GH_SCALAR_STANDARDIZE_EQUATIONS
+    *prepared_log_k0 = log_k0;
     return isfinite(*alpha) && isfinite(*beta) && isfinite(*delta) && isfinite(*mu);
 }
 
@@ -980,19 +1050,31 @@ int gh_shape_value_cache_init(double rho, double zeta, double lambda,
     cache->rho = rho;
     cache->zeta = zeta;
     cache->lambda = lambda;
+    double log_k0;
     if (!scalar_standardized_parameters(
             rho, zeta, lambda,
             &cache->alpha, &cache->beta,
-            &cache->delta, &cache->mu)) return 0;
-    const double gamma_sq = cache->alpha * cache->alpha
-                          - cache->beta * cache->beta;
-    if (!(gamma_sq > 0.0) || !isfinite(gamma_sq)) return 0;
-    const double gamma = sqrt(gamma_sq);
-    cache->log_alpha = log(cache->alpha);
-    cache->log_normalizer = lambda * (log(gamma) - log(cache->delta))
-                          - 0.5 * LOG_2PI
-                          - log_bessel_k_scalar(
-                              lambda, cache->delta * gamma);
+            &cache->delta, &cache->mu, &log_k0)) return 0;
+    typedef double N;
+#define SCIVOL_GH_SCALAR_NORMALIZER_EQUATIONS
+#define SCIVOL_GH_SCALAR_zeta zeta
+#define SCIVOL_GH_SCALAR_lambda lambda
+#define SCIVOL_GH_SCALAR_alpha cache->alpha
+#define SCIVOL_GH_SCALAR_beta cache->beta
+#define SCIVOL_GH_SCALAR_delta cache->delta
+#define SCIVOL_GH_SCALAR_log_alpha cache->log_alpha
+#define SCIVOL_GH_SCALAR_log_normalizer cache->log_normalizer
+#define SCIVOL_GH_FIELD(name) SCIVOL_GH_SCALAR_##name
+#include "../_native/gh_equations.hpp"
+#undef SCIVOL_GH_FIELD
+#undef SCIVOL_GH_SCALAR_log_normalizer
+#undef SCIVOL_GH_SCALAR_log_alpha
+#undef SCIVOL_GH_SCALAR_delta
+#undef SCIVOL_GH_SCALAR_beta
+#undef SCIVOL_GH_SCALAR_alpha
+#undef SCIVOL_GH_SCALAR_lambda
+#undef SCIVOL_GH_SCALAR_zeta
+#undef SCIVOL_GH_SCALAR_NORMALIZER_EQUATIONS
     return isfinite(cache->log_normalizer);
 }
 
@@ -1017,48 +1099,37 @@ static int gh_shape_cache_init_order(
         : jet_constant(lambda);
     cache->estimate_lambda = estimate_lambda;
 
-    const gh_jet_t one = jet_constant(1.0);
-    const gh_jet_t rho2 = jet_sub(one, jet_mul(cache->rho, cache->rho));
-    const gh_jet_t log_k0 = jet_log_bessel_k(cache->lambda, cache->zeta);
-    const gh_jet_t log_k1 = jet_log_bessel_k(
-        jet_add(cache->lambda, one), cache->zeta
-    );
-    const gh_jet_t log_k2 = jet_log_bessel_k(
-        jet_add(cache->lambda, jet_constant(2.0)), cache->zeta
-    );
-    const gh_jet_t kappa = jet_div(jet_exp(jet_sub(log_k1, log_k0)), cache->zeta);
-    const gh_jet_t kappa_next = jet_div(jet_exp(jet_sub(log_k2, log_k1)), cache->zeta);
-    const gh_jet_t delta_kappa = jet_sub(kappa_next, kappa);
-    const gh_jet_t zeta2 = jet_mul(cache->zeta, cache->zeta);
-    const gh_jet_t rho_sq = jet_mul(cache->rho, cache->rho);
-    const gh_jet_t skew_adjustment = jet_add(
-        one,
-        jet_div(jet_mul(jet_mul(rho_sq, zeta2), delta_kappa), rho2)
-    );
-    const gh_jet_t alpha_sq = jet_div(
-        jet_mul(jet_mul(zeta2, kappa), skew_adjustment), rho2
-    );
-    if (!(alpha_sq.value > 0.0) || !isfinite(alpha_sq.value)) return 0;
-    cache->alpha = jet_sqrt(alpha_sq);
-    cache->log_kernel_scale = jet_log(cache->alpha);
-    cache->beta = jet_mul(cache->alpha, cache->rho);
-    cache->delta = jet_div(cache->zeta, jet_mul(cache->alpha, jet_sqrt(rho2)));
-    cache->mu = jet_scale(
-        jet_mul(jet_mul(jet_mul(cache->beta, cache->delta), cache->delta), kappa),
-        -1.0
-    );
-
-    const gh_jet_t gamma = jet_sqrt(jet_sub(
-        jet_mul(cache->alpha, cache->alpha),
-        jet_mul(cache->beta, cache->beta)
-    ));
-    cache->log_normalizer = jet_sub(
-        jet_sub(
-            jet_mul(cache->lambda, jet_sub(jet_log(gamma), jet_log(cache->delta))),
-            jet_constant(0.5 * LOG_2PI)
-        ),
-        jet_log_bessel_k(cache->lambda, jet_mul(cache->delta, gamma))
-    );
+    typedef gh_jet_t N;
+    const N one = jet_constant(1.0);
+#define SCIVOL_GH_PREPARE_EQUATIONS
+#define SCIVOL_GH_CONSTANT(x) jet_constant(x)
+#define SCIVOL_GH_HALF_LOG_TWO_PI jet_constant(0.5 * LOG_2PI)
+#define SCIVOL_GH_INVALID_SQUARE(x) (!(x.value > 0.0) || !isfinite(x.value))
+#define SCIVOL_GH_FIELD(name) cache->name
+#define SCIVOL_GH_ADD(a,b) jet_add(a,b)
+#define SCIVOL_GH_SUB(a,b) jet_sub(a,b)
+#define SCIVOL_GH_MUL(a,b) jet_mul(a,b)
+#define SCIVOL_GH_DIV(a,b) jet_div(a,b)
+#define SCIVOL_GH_NEG(a) jet_scale(a,-1.0)
+#define SCIVOL_GH_EXP(a) jet_exp(a)
+#define SCIVOL_GH_LOG(a) jet_log(a)
+#define SCIVOL_GH_SQRT(a) jet_sqrt(a)
+#define SCIVOL_GH_LOG_BESSEL(a,b) jet_log_bessel_k(a,b)
+#include "../_native/gh_equations.hpp"
+#undef SCIVOL_GH_LOG_BESSEL
+#undef SCIVOL_GH_SQRT
+#undef SCIVOL_GH_LOG
+#undef SCIVOL_GH_EXP
+#undef SCIVOL_GH_NEG
+#undef SCIVOL_GH_DIV
+#undef SCIVOL_GH_MUL
+#undef SCIVOL_GH_SUB
+#undef SCIVOL_GH_ADD
+#undef SCIVOL_GH_FIELD
+#undef SCIVOL_GH_INVALID_SQUARE
+#undef SCIVOL_GH_HALF_LOG_TWO_PI
+#undef SCIVOL_GH_CONSTANT
+#undef SCIVOL_GH_PREPARE_EQUATIONS
     return isfinite(cache->log_normalizer.value);
 }
 
@@ -1093,31 +1164,44 @@ static int vg_shape_cache_init_order(
         ? jet_variable(lambda, GH_DERIV_ZETA)
         : jet_first_variable(lambda, GH_DERIV_ZETA);
 
-    const gh_jet_t one = jet_constant(1.0);
-    const gh_jet_t rho2 = jet_sub(one, jet_mul(cache->rho, cache->rho));
-    cache->vg_theta = jet_div(
-        jet_scale(cache->rho, sqrt(2.0)), jet_sqrt(rho2)
-    );
-    const gh_jet_t theta2 = jet_mul(cache->vg_theta, cache->vg_theta);
-    cache->vg_scale = jet_sqrt(
-        jet_mul(cache->zeta, jet_add(one, theta2))
-    );
-    cache->vg_argument_scale = jet_sqrt(
-        jet_add(theta2, jet_constant(2.0))
-    );
-    const gh_jet_t order = jet_sub(cache->zeta, jet_constant(0.5));
-    cache->log_kernel_scale = jet_log(cache->vg_argument_scale);
-    cache->log_normalizer = jet_sub(
-        jet_add(jet_log(cache->vg_scale), jet_constant(GH_LOG_2 - 0.5 * LOG_2PI)),
-        jet_lgamma(cache->zeta));
-    cache->vg_center = jet_add(
-        jet_add(jet_scale(jet_sub(order, jet_constant(1.0)), GH_LOG_2), jet_lgamma(order)),
-        jet_scale(jet_mul(order, cache->log_kernel_scale), -2.0));
-    cache->vg_curvature = jet_div(
-        jet_mul(cache->vg_argument_scale, cache->vg_argument_scale),
-        jet_scale(jet_sub(jet_constant(1.0), order), 2.0));
+    typedef gh_jet_t N;
+    const N one = jet_constant(1.0);
+#define SCIVOL_VG_PREPARE_EQUATIONS
+#define SCIVOL_VG_CONSTANT(x) jet_constant(x)
+#define SCIVOL_VG_NORMALIZER_CONSTANT jet_constant(GH_LOG_2 - 0.5 * LOG_2PI)
+#define SCIVOL_VG_FIELD(jet_name,scalar_name) cache->jet_name
+#define SCIVOL_VG_ADD(a,b) jet_add(a,b)
+#define SCIVOL_VG_SUB(a,b) jet_sub(a,b)
+#define SCIVOL_VG_MUL(a,b) jet_mul(a,b)
+#define SCIVOL_VG_DIV(a,b) jet_div(a,b)
+#define SCIVOL_VG_THETA_DIV(a,b) jet_div(a,b)
+#define SCIVOL_VG_SQRT(a) jet_sqrt(a)
+#define SCIVOL_VG_LOG(a) jet_log(a)
+#define SCIVOL_VG_LGAMMA(a) jet_lgamma(a)
+#define SCIVOL_VG_SQRT_TWO_MUL(a) jet_scale(a,sqrt(2.0))
+#define SCIVOL_VG_LOG_TWO_MUL(a) jet_scale(a,GH_LOG_2)
+#define SCIVOL_VG_TWICE(a) jet_scale(a,2.0)
+#define SCIVOL_VG_SUB_TWICE_PRODUCT(a,b,c) jet_add(a,jet_scale(jet_mul(b,c),-2.0))
+#include "../_native/vg_equations.hpp"
+#undef SCIVOL_VG_SUB_TWICE_PRODUCT
+#undef SCIVOL_VG_TWICE
+#undef SCIVOL_VG_LOG_TWO_MUL
+#undef SCIVOL_VG_SQRT_TWO_MUL
+#undef SCIVOL_VG_LGAMMA
+#undef SCIVOL_VG_LOG
+#undef SCIVOL_VG_SQRT
+#undef SCIVOL_VG_DIV
+#undef SCIVOL_VG_THETA_DIV
+#undef SCIVOL_VG_MUL
+#undef SCIVOL_VG_SUB
+#undef SCIVOL_VG_ADD
+#undef SCIVOL_VG_FIELD
+#undef SCIVOL_VG_NORMALIZER_CONSTANT
+#undef SCIVOL_VG_CONSTANT
+#undef SCIVOL_VG_PREPARE_EQUATIONS
     return isfinite(cache->vg_scale.value)
-        && isfinite(cache->vg_argument_scale.value);
+        && isfinite(cache->vg_argument_scale.value)
+        && gh_bessel_product_prepare(lambda - 0.5, second_order ? 2 : 1, &cache->vg_product);
 }
 
 int vg_shape_cache_init(double rho, double lambda, gh_shape_cache_t *cache)
@@ -1140,20 +1224,46 @@ int vg_shape_value_cache_init(double rho, double lambda,
     memset(cache, 0, sizeof(*cache));
     cache->rho = rho;
     cache->lambda = lambda;
-    const double rho2 = 1.0 - rho * rho;
-    if (!(rho2 > 0.0)) return 0;
-    /* Match the first/second-order preparation, including reciprocal rounding. */
-    cache->theta = (sqrt(2.0) * rho) * (1.0 / sqrt(rho2));
-    const double theta2 = cache->theta * cache->theta;
-    cache->scale = sqrt(lambda * (1.0 + theta2));
-    cache->argument_scale = sqrt(theta2 + 2.0);
-    const double order = lambda - 0.5;
-    cache->log_argument_scale = log(cache->argument_scale);
-    cache->log_normalizer = log(cache->scale) + (GH_LOG_2 - 0.5 * LOG_2PI) - lgamma(lambda);
-    cache->center = (order - 1.0) * GH_LOG_2 + lgamma(order)
-        - 2.0 * order * cache->log_argument_scale;
-    cache->curvature = cache->argument_scale * cache->argument_scale / (2.0 * (1.0 - order));
-    return isfinite(cache->scale) && isfinite(cache->argument_scale);
+    typedef double N;
+    const N one = 1.0;
+#define SCIVOL_VG_PREPARE_EQUATIONS
+#define SCIVOL_VG_CONSTANT(x) (x)
+#define SCIVOL_VG_NORMALIZER_CONSTANT (GH_LOG_2 - 0.5 * LOG_2PI)
+#define SCIVOL_VG_FIELD(jet_name,scalar_name) cache->scalar_name
+#define SCIVOL_VG_INVALID_RHO2(x) (!(x > 0.0))
+#define SCIVOL_VG_ADD(a,b) ((a) + (b))
+#define SCIVOL_VG_SUB(a,b) ((a) - (b))
+#define SCIVOL_VG_MUL(a,b) ((a) * (b))
+    /* Theta retains jet reciprocal rounding; curvature retains scalar division. */
+#define SCIVOL_VG_DIV(a,b) ((a) / (b))
+#define SCIVOL_VG_THETA_DIV(a,b) ((a) * (1.0 / (b)))
+#define SCIVOL_VG_SQRT(a) sqrt(a)
+#define SCIVOL_VG_LOG(a) log(a)
+#define SCIVOL_VG_LGAMMA(a) lgamma(a)
+#define SCIVOL_VG_SQRT_TWO_MUL(a) (sqrt(2.0) * (a))
+#define SCIVOL_VG_LOG_TWO_MUL(a) ((a) * GH_LOG_2)
+#define SCIVOL_VG_TWICE(a) (2.0 * (a))
+#define SCIVOL_VG_SUB_TWICE_PRODUCT(a,b,c) ((a) - 2.0 * (b) * (c))
+#include "../_native/vg_equations.hpp"
+#undef SCIVOL_VG_SUB_TWICE_PRODUCT
+#undef SCIVOL_VG_TWICE
+#undef SCIVOL_VG_LOG_TWO_MUL
+#undef SCIVOL_VG_SQRT_TWO_MUL
+#undef SCIVOL_VG_LGAMMA
+#undef SCIVOL_VG_LOG
+#undef SCIVOL_VG_SQRT
+#undef SCIVOL_VG_DIV
+#undef SCIVOL_VG_THETA_DIV
+#undef SCIVOL_VG_MUL
+#undef SCIVOL_VG_SUB
+#undef SCIVOL_VG_ADD
+#undef SCIVOL_VG_INVALID_RHO2
+#undef SCIVOL_VG_FIELD
+#undef SCIVOL_VG_NORMALIZER_CONSTANT
+#undef SCIVOL_VG_CONSTANT
+#undef SCIVOL_VG_PREPARE_EQUATIONS
+    return isfinite(cache->scale) && isfinite(cache->argument_scale)
+        && gh_bessel_product_prepare(order, 0, &cache->product);
 }
 
 int gh_family_cache_init(const double *params, size_t shape_start,
@@ -1177,33 +1287,11 @@ static gh_jet_t vg_logpdf_jet(
     gh_jet_t x, const gh_shape_cache_t *cache,
     const gh_bessel_second_plan_t *plan)
 {
-    const gh_jet_t half = jet_constant(0.5);
-    const gh_jet_t order = jet_sub(cache->zeta, half);
-    const gh_jet_t y = jet_add(
-        jet_mul(cache->vg_scale, x),
-        jet_mul(cache->vg_theta, cache->zeta)
-    );
-    gh_jet_t logpdf = jet_add(cache->log_normalizer, jet_mul(cache->vg_theta, y));
-
-    if (cache->vg_argument_scale.value * fabs(y.value) < 1e-4) {
-        return jet_add(
-            jet_add(logpdf, cache->vg_center),
-            jet_scale(jet_mul(cache->vg_curvature, jet_mul(y, y)), 0.5)
-        );
-    }
-
-    const gh_jet_t abs_y = jet_abs(y);
-    const gh_jet_t argument = jet_mul(cache->vg_argument_scale, abs_y);
-    const gh_jet_t bessel_product = jet_add(
-        jet_mul(
-            order,
-            jet_sub(jet_log(abs_y), cache->log_kernel_scale)
-        ),
-        plan
-            ? jet_log_bessel_k_planned(order, argument, plan)
-            : jet_log_bessel_k(order, argument)
-    );
-    return jet_add(logpdf, bessel_product);
+#define SCIVOL_VG_OBSERVATION_EQUATIONS
+#define SCIVOL_VG_C_JET_OBSERVATION
+#include "../_native/vg_equations.hpp"
+#undef SCIVOL_VG_C_JET_OBSERVATION
+#undef SCIVOL_VG_OBSERVATION_EQUATIONS
 }
 
 static void shape_cache_use_first_order(gh_shape_cache_t *cache)
@@ -1243,32 +1331,35 @@ static int gh_obs_jet_active(double residual, double variance,
         *out = nll;
         return 1;
     }
-    const gh_jet_t centered = jet_sub(z, cache->mu);
-    const gh_jet_t radius = jet_sqrt(jet_add(
-        jet_mul(cache->delta, cache->delta),
-        jet_mul(centered, centered)
-    ));
-    const gh_jet_t argument = jet_mul(cache->alpha, radius);
-    const gh_jet_t log_kernel = jet_sub(
-        jet_add(
-            jet_mul(cache->beta, centered),
-            plan
-                ? jet_log_bessel_k_planned(
-                    jet_sub(cache->lambda, jet_constant(0.5)),
-                    argument,
-                    plan)
-                : jet_log_bessel_k(
-                    jet_sub(cache->lambda, jet_constant(0.5)), argument)
-        ),
-        jet_mul(
-            jet_sub(jet_constant(0.5), cache->lambda),
-            jet_sub(jet_log(radius), cache->log_kernel_scale)
-        )
-    );
-    const gh_jet_t nll = jet_sub(
-        jet_scale(jet_log(h), 0.5),
-        jet_add(cache->log_normalizer, log_kernel)
-    );
+    typedef gh_jet_t N;
+#define SCIVOL_GH_OBSERVATION_EQUATIONS
+#define SCIVOL_GH_CONSTANT(x) jet_constant(x)
+#define SCIVOL_GH_FIELD(name) cache->name
+#define SCIVOL_GH_STANDARDIZED z
+#define SCIVOL_GH_ADD(a,b) jet_add(a,b)
+#define SCIVOL_GH_SUB(a,b) jet_sub(a,b)
+#define SCIVOL_GH_MUL(a,b) jet_mul(a,b)
+#define SCIVOL_GH_LOG(a) jet_log(a)
+#define SCIVOL_GH_SQRT(a) jet_sqrt(a)
+#define SCIVOL_GH_LOG_BESSEL(a,b) (plan \
+    ? jet_log_bessel_k_planned(a,b,plan) : jet_log_bessel_k(a,b))
+#define SCIVOL_GH_LOG_SCALE jet_scale(jet_log(h), 0.5)
+#define SCIVOL_GH_GROUPED_NLL
+#define SCIVOL_GH_OBSERVATION_RESULT(x) const N nll = (x)
+#include "../_native/gh_equations.hpp"
+#undef SCIVOL_GH_OBSERVATION_RESULT
+#undef SCIVOL_GH_GROUPED_NLL
+#undef SCIVOL_GH_LOG_SCALE
+#undef SCIVOL_GH_LOG_BESSEL
+#undef SCIVOL_GH_SQRT
+#undef SCIVOL_GH_LOG
+#undef SCIVOL_GH_MUL
+#undef SCIVOL_GH_SUB
+#undef SCIVOL_GH_ADD
+#undef SCIVOL_GH_STANDARDIZED
+#undef SCIVOL_GH_FIELD
+#undef SCIVOL_GH_CONSTANT
+#undef SCIVOL_GH_OBSERVATION_EQUATIONS
     if (!isfinite(nll.value)) return 0;
     *out = nll;
     return 1;
@@ -1353,18 +1444,19 @@ double gh_obs_nll_scalar(double residual, double variance,
             cache->rho.value, cache->zeta.value, cache->vg_theta.value,
             cache->vg_scale.value, cache->vg_argument_scale.value,
             cache->log_normalizer.value, cache->log_kernel_scale.value,
-            cache->vg_center.value, cache->vg_curvature.value};
+            cache->vg_center.value, cache->vg_curvature.value, cache->vg_product};
         return vg_obs_nll_value(residual, variance, &values);
     }
     const double z = residual / sqrt(h);
-    const double centered = z - cache->mu.value;
-    const double radius = hypot(cache->delta.value, centered);
-    const double argument = cache->alpha.value * radius;
-    const double log_kernel = cache->beta.value * centered
-        + log_bessel_k_scalar(cache->lambda.value - 0.5, argument)
-        - (0.5 - cache->lambda.value)
-          * (log(radius) - cache->log_kernel_scale.value);
-    return 0.5 * log(h) - cache->log_normalizer.value - log_kernel;
+#define SCIVOL_GH_SCALAR_OBSERVATION_EQUATIONS
+#define SCIVOL_GH_FIELD(name) cache->name.value
+#define SCIVOL_GH_STANDARDIZED z
+#define SCIVOL_GH_LOG_SCALE (0.5 * log(h))
+#include "../_native/gh_equations.hpp"
+#undef SCIVOL_GH_LOG_SCALE
+#undef SCIVOL_GH_STANDARDIZED
+#undef SCIVOL_GH_FIELD
+#undef SCIVOL_GH_SCALAR_OBSERVATION_EQUATIONS
 }
 
 double gh_obs_nll_value(double residual, double variance,
@@ -1373,14 +1465,17 @@ double gh_obs_nll_value(double residual, double variance,
     if (!cache || !isfinite(residual) || !isfinite(variance)
         || !(variance > 0.0)) return INFINITY;
     const double z = residual / sqrt(variance);
-    const double centered = z - cache->mu;
-    const double radius = hypot(cache->delta, centered);
-    const double argument = cache->alpha * radius;
-    const double log_kernel = cache->beta * centered
-        + log_bessel_k_scalar(cache->lambda - 0.5, argument)
-        - (0.5 - cache->lambda)
-          * (log(radius) - cache->log_alpha);
-    return 0.5 * log(variance) - cache->log_normalizer - log_kernel;
+#define SCIVOL_GH_SCALAR_OBSERVATION_EQUATIONS
+#define SCIVOL_GH_FIELD(name) cache->name
+#define SCIVOL_GH_STANDARDIZED z
+#define SCIVOL_GH_LOG_SCALE (0.5 * log(variance))
+#define SCIVOL_GH_LOG_KERNEL_SCALE cache->log_alpha
+#include "../_native/gh_equations.hpp"
+#undef SCIVOL_GH_LOG_KERNEL_SCALE
+#undef SCIVOL_GH_LOG_SCALE
+#undef SCIVOL_GH_STANDARDIZED
+#undef SCIVOL_GH_FIELD
+#undef SCIVOL_GH_SCALAR_OBSERVATION_EQUATIONS
 }
 
 double gh_obs_nll_value_planned(double residual, double variance,
@@ -1390,17 +1485,19 @@ double gh_obs_nll_value_planned(double residual, double variance,
     if (!cache || !plan || !isfinite(residual) || !isfinite(variance)
         || !(variance > 0.0)) return INFINITY;
     const double standardized = residual / sqrt(variance);
-    const double centered = standardized - cache->mu;
-    const double radius = hypot(cache->delta, centered);
-    const double argument = cache->alpha * radius;
-    double log_bessel;
-    if (!gh_log_bessel_k_value_planned(plan, argument, &log_bessel)) {
-        return INFINITY;
-    }
-    const double log_kernel = cache->beta * centered + log_bessel
-        - (0.5 - cache->lambda)
-          * (log(radius) - cache->log_alpha);
-    return 0.5 * log(variance) - cache->log_normalizer - log_kernel;
+#define SCIVOL_GH_SCALAR_OBSERVATION_EQUATIONS
+#define SCIVOL_GH_FIELD(name) cache->name
+#define SCIVOL_GH_STANDARDIZED standardized
+#define SCIVOL_GH_LOG_SCALE (0.5 * log(variance))
+#define SCIVOL_GH_LOG_KERNEL_SCALE cache->log_alpha
+#define SCIVOL_GH_VALUE_PLAN plan
+#include "../_native/gh_equations.hpp"
+#undef SCIVOL_GH_VALUE_PLAN
+#undef SCIVOL_GH_LOG_KERNEL_SCALE
+#undef SCIVOL_GH_LOG_SCALE
+#undef SCIVOL_GH_STANDARDIZED
+#undef SCIVOL_GH_FIELD
+#undef SCIVOL_GH_SCALAR_OBSERVATION_EQUATIONS
 }
 
 double vg_obs_nll_value(double residual, double variance,
@@ -1409,19 +1506,13 @@ double vg_obs_nll_value(double residual, double variance,
     if (!cache || !isfinite(residual) || !isfinite(variance)
         || !(variance > 0.0)) return INFINITY;
     const double standardized = residual / sqrt(variance);
-    const double order = cache->lambda - 0.5;
-    const double y = cache->scale * standardized
-        + cache->theta * cache->lambda;
-    double logpdf = cache->log_normalizer + cache->theta * y;
-    if (cache->argument_scale * fabs(y) < 1e-4) {
-        logpdf += cache->center + 0.5 * cache->curvature * y * y;
-    } else {
-        const double absolute_y = fabs(y);
-        const double argument = cache->argument_scale * absolute_y;
-        logpdf += order * (
-            log(absolute_y) - cache->log_argument_scale)
-            + log_bessel_k_scalar(order, argument);
-    }
+#define SCIVOL_VG_OBSERVATION_EQUATIONS
+#define SCIVOL_VG_SCALAR_OBSERVATION
+#define SCIVOL_VG_CONSTANT(x) (x)
+#include "../_native/vg_equations.hpp"
+#undef SCIVOL_VG_CONSTANT
+#undef SCIVOL_VG_SCALAR_OBSERVATION
+#undef SCIVOL_VG_OBSERVATION_EQUATIONS
     return 0.5 * log(variance) - logpdf;
 }
 
@@ -1432,22 +1523,15 @@ double vg_obs_nll_value_planned(double residual, double variance,
     if (!cache || !plan || !isfinite(residual) || !isfinite(variance)
         || !(variance > 0.0)) return INFINITY;
     const double standardized = residual / sqrt(variance);
-    const double order = cache->lambda - 0.5;
-    const double y = cache->scale * standardized
-        + cache->theta * cache->lambda;
-    double logpdf = cache->log_normalizer + cache->theta * y;
-    if (cache->argument_scale * fabs(y) < 1e-4) {
-        logpdf += cache->center + 0.5 * cache->curvature * y * y;
-    } else {
-        const double absolute_y = fabs(y);
-        const double argument = cache->argument_scale * absolute_y;
-        double log_bessel;
-        if (!gh_log_bessel_k_value_planned(plan, argument, &log_bessel)) {
-            return INFINITY;
-        }
-        logpdf += order * (
-            log(absolute_y) - cache->log_argument_scale) + log_bessel;
-    }
+#define SCIVOL_VG_OBSERVATION_EQUATIONS
+#define SCIVOL_VG_SCALAR_OBSERVATION
+#define SCIVOL_VG_PLANNED_OBSERVATION
+#define SCIVOL_VG_CONSTANT(x) (x)
+#include "../_native/vg_equations.hpp"
+#undef SCIVOL_VG_CONSTANT
+#undef SCIVOL_VG_PLANNED_OBSERVATION
+#undef SCIVOL_VG_SCALAR_OBSERVATION
+#undef SCIVOL_VG_OBSERVATION_EQUATIONS
     return 0.5 * log(variance) - logpdf;
 }
 
@@ -1519,32 +1603,37 @@ int gh_abs_moment_derivatives(const gh_shape_cache_t *cache,
     return isfinite(*moment);
 }
 
+static double standardized_logpdf_from_cache(double x,
+                                             const gh_shape_value_cache_t *cache)
+{
+#define SCIVOL_GH_STANDARDIZED_LOGPDF_EQUATIONS
+#define SCIVOL_GH_FIELD(name) cache->name
+#define SCIVOL_GH_STANDARDIZED x
+#define SCIVOL_GH_LOG_KERNEL_SCALE cache->log_alpha
+#include "../_native/gh_equations.hpp"
+#undef SCIVOL_GH_LOG_KERNEL_SCALE
+#undef SCIVOL_GH_STANDARDIZED
+#undef SCIVOL_GH_FIELD
+#undef SCIVOL_GH_STANDARDIZED_LOGPDF_EQUATIONS
+}
+
 double gh_standardized_logpdf_scalar(double x, double rho, double zeta,
                                      double lambda)
 {
-    double alpha, beta, delta, mu;
-    if (!scalar_standardized_parameters(
-            rho, zeta, lambda, &alpha, &beta, &delta, &mu)) {
-        return -INFINITY;
-    }
-    const double centered = x - mu;
-    const double radius = hypot(delta, centered);
-    const double gamma = sqrt(alpha * alpha - beta * beta);
-    const double argument = alpha * radius;
-    return lambda * (log(gamma) - log(delta))
-        - 0.5 * LOG_2PI
-        - log_bessel_k_scalar(lambda, delta * gamma)
-        + beta * centered
-        + log_bessel_k_scalar(lambda - 0.5, argument)
-        - (0.5 - lambda) * (log(radius) - log(alpha));
+    gh_shape_value_cache_t cache;
+    if (!gh_shape_value_cache_init(rho, zeta, lambda, &cache)) return -INFINITY;
+    return standardized_logpdf_from_cache(x, &cache);
 }
 
 double gh_standardized_nll(const double *x, size_t n, double rho,
                            double zeta, double lambda)
 {
+    if (n == 0) return 0.0;
+    gh_shape_value_cache_t cache;
+    if (!gh_shape_value_cache_init(rho, zeta, lambda, &cache)) return 1e10;
     double nll = 0.0;
     for (size_t i = 0; i < n; ++i) {
-        const double logpdf = gh_standardized_logpdf_scalar(x[i], rho, zeta, lambda);
+        const double logpdf = standardized_logpdf_from_cache(x[i], &cache);
         if (!isfinite(logpdf)) return 1e10;
         nll -= logpdf;
     }

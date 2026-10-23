@@ -26,6 +26,12 @@ constexpr std::size_t packed_index_runtime(
 
 namespace garch_equation {
 
+VLK_GENERATED_INLINE double gjr_shock_coefficient(
+    double alpha, double gamma, double residual)
+{
+    return residual < 0.0 ? alpha + gamma : alpha;
+}
+
 VLK_GENERATED_INLINE double add_variance_term(
     double& variance, double coefficient, double lagged_state)
 {
@@ -305,16 +311,18 @@ struct GjrRecursion {
                 const std::size_t source = time - 1u - lag;
                 const double residual = sample.residuals[source];
                 const double residual2 = residual * residual;
-                variance += theta[alpha_start + lag] * residual2
-                    + theta[gamma_start + lag]
-                        * (residual < 0.0 ? residual2 : 0.0);
+                garch_equation::add_variance_term(variance,
+                    garch_equation::gjr_shock_coefficient(
+                        theta[alpha_start + lag], theta[gamma_start + lag], residual),
+                    residual2);
             } else if (time > lag) {
                 const std::size_t source = time - 1u - lag;
                 const double residual = sample.residuals[source];
                 const double residual2 = residual * residual;
-                variance += theta[alpha_start + lag] * residual2
-                    + theta[gamma_start + lag]
-                        * (residual < 0.0 ? residual2 : 0.0);
+                garch_equation::add_variance_term(variance,
+                    garch_equation::gjr_shock_coefficient(
+                        theta[alpha_start + lag], theta[gamma_start + lag], residual),
+                    residual2);
             }
         }
         for (std::size_t lag = 0; lag < Q; ++lag) {

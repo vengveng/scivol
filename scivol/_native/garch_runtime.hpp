@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 
+namespace vlk::experiment::generated { struct SimplexTailPoint; }
+
 namespace vlk::experiment::runtime {
 
 [[nodiscard]] bool gjr_coordinate_forward(
@@ -16,7 +18,9 @@ namespace vlk::experiment::runtime {
     const double* coordinates,
     bool need_jacobian,
     double* parameters,
-    double* jacobian) noexcept;
+    double* jacobian,
+    generated::SimplexTailPoint* simplex = nullptr,
+    double* shifted_weights = nullptr) noexcept;
 
 [[nodiscard]] bool gjr_coordinate_inverse(
     std::size_t p,
@@ -29,11 +33,13 @@ namespace vlk::experiment::runtime {
     std::size_t p,
     std::size_t q,
     std::uint32_t density,
+    const double* coordinates,
     const double* parameters,
     const double* theta_gradient,
     const double* jacobian,
     double* moment_hessian,
-    double* coordinate_hessian) noexcept;
+    double* coordinate_hessian,
+    const generated::SimplexTailPoint* simplex = nullptr) noexcept;
 
 }  // namespace vlk::experiment::runtime
 

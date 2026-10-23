@@ -20,6 +20,63 @@ SHAPES = [
 
 
 @pytest.mark.parametrize("fixed", [False, True])
+def test_normal_finite_score_survives_inverse_variance_square_overflow(fixed):
+    variance, residual = 2.0**-540, 2.0**-269
+    model = MeanModel(ARX(0) + DENSITIES[0](), np.repeat(residual,2), None, fixed=fixed)
+    theta = np.array([0.,variance])
+    for request in (2,3):
+        _, gradient, _ = model.evaluate(theta,request)
+        np.testing.assert_allclose(gradient,[-2*residual/variance,-3./variance],rtol=3e-15,atol=0)
+
+
+@pytest.mark.parametrize("fixed", [False,True])
+@pytest.mark.parametrize("nu", [1.2,2.,3.])
+def test_ged_tiny_residual_preserves_its_finite_mean_curvature(fixed,nu):
+    mp=pytest.importorskip("mpmath")
+    residual=1e-200
+    model=MeanModel(ARX(0)+DENSITIES[3](),np.repeat(residual,2),None,fixed=fixed)
+    theta=np.array([0.,1.,nu])
+    with mp.workdps(90):
+        degrees=mp.mpf(nu); e=mp.mpf(residual)
+        scale=(mp.loggamma(1/degrees)-mp.loggamma(3/degrees))/2
+        kernel=mp.exp(degrees*(mp.log(e)-scale))
+        mean_gradient=float(-2*degrees*kernel/e)
+        mean_curvature=float(2*degrees*(degrees-1)*kernel/e**2)
+    full=model.evaluate(theta,7)
+    for request in range(1,8):
+        actual=model.evaluate(theta,request)
+        for bit,out,reference in zip((1,2,4),actual,full):
+            if request & bit:
+                np.testing.assert_allclose(out,reference,rtol=3e-12,atol=0)
+        if request & 2:
+            np.testing.assert_allclose(actual[1][0],mean_gradient,rtol=3e-12,atol=0)
+        if request & 4:
+            np.testing.assert_allclose(actual[2][0,0],mean_curvature,rtol=3e-12,atol=0)
+
+
+@pytest.mark.parametrize("builder", ["linear_mean_normal_common","linear_mean_garch_common","linear_mean_gjr_garch_common"])
+@pytest.mark.parametrize("data", [
+    [1e16]+[1.]*20,
+    [1e300,-1e300,1.,2.,3.]+[1.]*16,
+    [1e308]*21,
+    [np.nextafter(0.,1.)]*21,
+])
+def test_har_features_use_only_the_current_window(builder,data):
+    import importlib
+    from fractions import Fraction
+
+    y=np.array(data)
+    mean=HARX([1,3,7],constant=False)
+    actual=importlib.import_module("scivol._kernels."+builder).build_linear_mean_features(mean,y,None)
+    expected=np.zeros_like(actual)
+    for column,horizon in enumerate(mean.horizons):
+        for time in range(1,len(y)):
+            window=y[max(0,time-horizon):time]
+            expected[time,column]=float(sum(map(Fraction,window))/len(window))
+    np.testing.assert_allclose(actual,expected,rtol=3e-15,atol=0)
+
+
+@pytest.mark.parametrize("fixed", [False, True])
 def test_gaussian_value_retry_preserves_a_small_nonzero_residual(fixed):
     small = 2.0**-27
     data = np.ones(5)

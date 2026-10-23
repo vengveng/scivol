@@ -2,6 +2,8 @@
 #ifndef SCIVOL_EXPERIMENT_RUNTIME_REFLECTION_HPP
 #define SCIVOL_EXPERIMENT_RUNTIME_REFLECTION_HPP
 
+#include "fixed_differential.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -10,6 +12,20 @@
 namespace vlk::experiment::runtime {
 
 namespace reflection_detail {
+
+template<class Scalar>
+[[nodiscard]] inline Scalar inverse_schur_numerator(
+    Scalar direct, Scalar reflection, Scalar reverse) noexcept
+{
+    return direct+reflection*reverse;
+}
+
+template<class Scalar>
+[[nodiscard]] inline Scalar inverse_schur_center_value(
+    Scalar coefficient, Scalar reflection) noexcept
+{
+    return coefficient/(Scalar(1)-reflection);
+}
 
 // One inverse-Schur equation for value, Jacobian and constraint-curvature paths.
 struct InverseSchurStep {
@@ -58,14 +74,14 @@ struct InverseSchurStep {
 
     Row<> row(double direct,double reverse) const noexcept
     {
-        const double numerator=direct+reflection*reverse;
+        const double numerator=inverse_schur_numerator(direct,reflection,reverse);
         return {*this,reverse,numerator,numerator/denominator};
     }
 
     Row<true> center_row(double coefficient) const noexcept
     {
         // Structural identity cancels (1+k), including its removable pole at k=-1.
-        return {*this,coefficient,coefficient,coefficient/(1.0-reflection)};
+        return {*this,coefficient,coefficient,inverse_schur_center_value(coefficient,reflection)};
     }
 };
 
@@ -175,16 +191,21 @@ struct InverseSchurStep {
     return 2u * order + 2u * square + 2u * cube;
 }
 
+template<class CoordinateStart = std::size_t, class Order = std::size_t,
+         class Dimension = std::size_t>
 [[nodiscard]] inline bool reflection_add_contracted_curvature(
     const double* coordinates,
-    std::size_t coordinate_start,
-    std::size_t order,
+    CoordinateStart start_tag,
+    Order order_tag,
     double sign,
     const double* output_weights,
-    std::size_t dimension,
+    Dimension dimension_tag,
     double* coordinate_hessian,
     double* scratch) noexcept
 {
+    const std::size_t coordinate_start = start_tag;
+    const std::size_t order = order_tag;
+    const std::size_t dimension = dimension_tag;
     const std::size_t scratch_count =
         reflection_curvature_scratch_doubles(order);
     if (coordinates == nullptr || output_weights == nullptr
@@ -204,14 +225,14 @@ struct InverseSchurStep {
     std::fill_n(jacobian, square, 0.0);
     std::fill_n(hessian, order * packed, 0.0);
 
-    const auto packed_index = [order](std::size_t row, std::size_t column) {
+    const auto packed_index = [=](std::size_t row, std::size_t column) {
         if (column < row)
             std::swap(row, column);
         return row * order - row * (row + 1u) / 2u + column;
     };
     for (std::size_t stage = 0; stage < order; ++stage) {
         const double reflection = std::tanh(coordinates[coordinate_start + stage]);
-        const double first = 1.0 - reflection * reflection;
+        const double first = ad::coordinate_tanh_first(coordinates[coordinate_start + stage]);
         const double second = -2.0 * reflection * first;
         if (!std::isfinite(reflection))
             return false;
@@ -277,12 +298,14 @@ struct InverseSchurStep {
     return true;
 }
 
+template<class Order = std::size_t>
 [[nodiscard]] inline bool reflection_forward_values(
     const double* reflection,
-    std::size_t order,
+    Order order_tag,
     double* coefficients,
     double* scratch) noexcept
 {
+    const std::size_t order = order_tag;
     if (reflection == nullptr || order == 0u || coefficients == nullptr
         || scratch == nullptr) {
         return false;
@@ -305,13 +328,15 @@ struct InverseSchurStep {
     return true;
 }
 
+template<class Order = std::size_t>
 [[nodiscard]] inline bool reflection_forward(
     const double* reflection,
-    std::size_t order,
+    Order order_tag,
     double* coefficients,
     double* jacobian,
     double* scratch) noexcept
 {
+    const std::size_t order = order_tag;
     if (reflection == nullptr || order == 0u || coefficients == nullptr
         || jacobian == nullptr || scratch == nullptr) {
         return false;
@@ -356,9 +381,10 @@ struct InverseSchurStep {
 
 namespace reflection_detail {
 
+template<class Order = std::size_t>
 [[nodiscard]] inline bool reflection_inverse_impl(
     const double* coefficients,
-    std::size_t order,
+    Order order_tag,
     double* reflection,
     double* jacobian,
     double* scratch,
@@ -366,6 +392,7 @@ namespace reflection_detail {
     std::size_t independent_parameters = 0u,
     const double* input_jacobian = nullptr) noexcept
 {
+    const std::size_t order = order_tag;
     if (coefficients == nullptr || order == 0u || reflection == nullptr
         || jacobian == nullptr || scratch == nullptr) {
         return false;
@@ -447,15 +474,16 @@ namespace reflection_detail {
         require_stable, independent_parameters, coefficient_jacobian);
 }
 
+template<class Order = std::size_t>
 [[nodiscard]] inline bool reflection_inverse(
     const double* coefficients,
-    std::size_t order,
+    Order order_tag,
     double* reflection,
     double* jacobian,
     double* scratch) noexcept
 {
     return reflection_detail::reflection_inverse_impl(
-        coefficients, order, reflection, jacobian, scratch, true);
+        coefficients, order_tag, reflection, jacobian, scratch, true);
 }
 
 [[nodiscard]] inline bool reflection_inverse_unrestricted(

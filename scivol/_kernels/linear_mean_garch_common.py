@@ -6,6 +6,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from ..components.mean import ARX, HARX
+from .linear_mean_normal_common import build_linear_mean_features
 from .transforms import (
     jacobian_garch,
     jacobian_garch_ged,
@@ -25,53 +26,6 @@ from .transforms import (
 
 def _as_cptr(arr: NDArray[np.float64]) -> int:
     return np.ascontiguousarray(arr, dtype=np.float64).ctypes.data
-
-
-def build_linear_mean_features(
-    mean: ARX | HARX,
-    y: NDArray[np.float64],
-    x: NDArray[np.float64] | None,
-) -> NDArray[np.float64]:
-    y = np.ascontiguousarray(y, dtype=np.float64)
-    x_arr = None if x is None else np.ascontiguousarray(x, dtype=np.float64)
-    n = y.size
-
-    if isinstance(mean, ARX):
-        n_mean = mean.n_params
-        feats = np.zeros((n, n_mean), dtype=np.float64)
-        col = 0
-        if mean.constant:
-            feats[:, col] = 1.0
-            col += 1
-        for lag in range(1, mean.lags + 1):
-            feats[lag:, col] = y[:-lag]
-            col += 1
-        if x_arr is not None and mean.n_exog > 0:
-            feats[:, col:col + mean.n_exog] = x_arr
-        return np.ascontiguousarray(feats, dtype=np.float64)
-
-    if isinstance(mean, HARX):
-        n_mean = mean.n_params
-        feats = np.zeros((n, n_mean), dtype=np.float64)
-        col = 0
-        if mean.constant:
-            feats[:, col] = 1.0
-            col += 1
-        prefix = np.empty(n + 1, dtype=np.float64)
-        prefix[0] = 0.0
-        np.cumsum(y, out=prefix[1:])
-        for horizon in mean.horizons:
-            warmup_stop = min(horizon, n)
-            for t in range(1, warmup_stop):
-                feats[t, col] = prefix[t] / float(t)
-            for t in range(horizon, n):
-                feats[t, col] = (prefix[t] - prefix[t - horizon]) / float(horizon)
-            col += 1
-        if x_arr is not None and mean.n_exog > 0:
-            feats[:, col:col + mean.n_exog] = x_arr
-        return np.ascontiguousarray(feats, dtype=np.float64)
-
-    raise TypeError(f"Unsupported linear mean component: {type(mean)!r}")
 
 
 def _mean_bounds(mean: ARX | HARX) -> list[tuple[float, float]]:

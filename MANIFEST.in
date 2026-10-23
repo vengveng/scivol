@@ -11,4 +11,6 @@ exclude next_steps.md
 exclude prerelease.md
 prune localdev
 prune tests
+include tests/test_native_joint_mean.py
+include tests/egarch_precision_points.json
 prune scivol/_devtools

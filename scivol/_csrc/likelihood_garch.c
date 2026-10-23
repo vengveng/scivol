@@ -174,14 +174,11 @@ VLK_INLINE int garch_skewt_precompute_full(double nu, double lam, garch_skewt_ca
 {
     const double nu_m1 = nu - 1.0;
     const double nu_m2 = nu - 2.0;
-    const double c_log = lgamma_approx(0.5 * (nu + 1.0)) - lgamma_approx(0.5 * nu) - 0.5 * log(M_PI * nu_m2);
+    const vlk_student_normalization_t normalizer = vlk_student_normalization(nu, 1, 1, 1);
+    const double c_log = normalizer.value;
     const double c = exp(c_log);
-    const double dc_log_dnu = 0.5 * digamma_approx(0.5 * (nu + 1.0))
-                            - 0.5 * digamma_approx(0.5 * nu)
-                            - 0.5 / nu_m2;
-    const double d2c_log_dnu2 = 0.25 * trigamma_approx(0.5 * (nu + 1.0))
-                              - 0.25 * trigamma_approx(0.5 * nu)
-                              + 0.5 / (nu_m2 * nu_m2);
+    const double dc_log_dnu = normalizer.first;
+    const double d2c_log_dnu2 = normalizer.second;
     const double dc_dnu = c * dc_log_dnu;
     const double d2c_dnu2 = c * (dc_log_dnu * dc_log_dnu + d2c_log_dnu2);
 
@@ -284,24 +281,20 @@ VLK_INLINE int garch_skewt_obs_derivs(
     const double v_lam_lam = u_lam_lam * inv_s - 2.0 * u_lam * s_lam * inv_s2 + 2.0 * u * s_lam * s_lam * inv_s3;
 
     const double R_h = 2.0 * v * v_h;
-    const double R_nu = 1.0 + 2.0 * v * v_nu;
     const double R_lam = 2.0 * v * v_lam;
     const double R_hh = 2.0 * (v_h * v_h + v * v_hh);
-    const double R_h_nu = 2.0 * (v_h * v_nu + v * v_h_nu);
     const double R_h_lam = 2.0 * (v_h * v_lam + v * v_h_lam);
-    const double R_nu_nu = 2.0 * (v_nu * v_nu + v * v_nu_nu);
-    const double R_nu_lam = 2.0 * (v_nu * v_lam + v * v_nu_lam);
     const double R_lam_lam = 2.0 * (v_lam * v_lam + v * v_lam_lam);
 
-    out->value = 0.5 * log(h) + q * (log(R) - log(nu_m2));
+    out->value = 0.5 * log(h) + q * vlk_student_log_tail(v*v, nu_m2, R, log(nu_m2));
     out->ell_h = 0.5 * inv_h + q * R_h * inv_R;
-    out->ell_nu = 0.5 * (log(R) - log(nu_m2)) + q * (R_nu * inv_R - 1.0 / nu_m2);
+    out->ell_nu = vlk_skewt_tail_shape_first(nu, v, v_nu);
     out->ell_lam = q * R_lam * inv_R;
     out->ell_hh = -0.5 * inv_h2 + q * (R_hh * inv_R - R_h * R_h * inv_R2);
-    out->ell_h_nu = 0.5 * R_h * inv_R + q * (R_h_nu * inv_R - R_h * R_nu * inv_R2);
+    out->ell_h_nu = vlk_skewt_tail_shape_cross(nu, v, v_nu, v_h, v_h_nu);
     out->ell_h_lam = q * (R_h_lam * inv_R - R_h * R_lam * inv_R2);
-    out->ell_nu_nu = (R_nu * inv_R - 1.0 / nu_m2) + q * (R_nu_nu * inv_R - R_nu * R_nu * inv_R2 + 1.0 / (nu_m2 * nu_m2));
-    out->ell_nu_lam = 0.5 * R_lam * inv_R + q * (R_nu_lam * inv_R - R_nu * R_lam * inv_R2);
+    out->ell_nu_nu = vlk_skewt_tail_shape_second(nu, v, v_nu, v_nu_nu);
+    out->ell_nu_lam = vlk_skewt_tail_shape_cross(nu, v, v_nu, v_lam, v_nu_lam);
     out->ell_lam_lam = q * (R_lam_lam * inv_R - R_lam * R_lam * inv_R2);
     return 1;
 }
@@ -973,7 +966,7 @@ double garch_ll_11_studentt(const double* __restrict parameters,
     const double nu    = parameters[3];
 
     const double nu_minus_2 = nu - 2;
-    const double constant = n * (lgamma(0.5 * (nu + 1)) - lgamma(0.5 * nu) - 0.5 * log(M_PI * nu_minus_2));
+    const double constant = n * (vlk_student_normalization(nu, 1, 0, 0).value);
                                 
     double r2os2 = residuals2[0] / sigma2[0];
     double var1 = log(sigma2[0]);
@@ -1005,7 +998,7 @@ double garch_ll_pq_studentt(const double* __restrict parameters,
 
     const double nu = parameters[1 + p + q];
     const double inv_nu_minus_2 = 1.0 / (nu - 2);
-    const double constant = n * (lgamma(0.5 * (nu + 1)) - lgamma(0.5 * nu) - 0.5 * log(M_PI / inv_nu_minus_2));
+    const double constant = n * (vlk_student_normalization(nu, 1, 0, 0).value);
 
     double r2os2 = residuals2[0] / sigma2[0];
     double var1 = log(sigma2[0]);
@@ -1036,8 +1029,7 @@ void garch_ll_grad_11_studentt(const double * __restrict params,
     const double nu    = params[3];
 
     const double inv_nu_minus_2 = 1.0 / (nu - 2.0);
-    const double digamma_half_nu_plus_1 = digamma_approx(0.5 * (nu + 1.0));
-    const double digamma_half_nu = digamma_approx(0.5 * nu);
+    const double student_normalizer_first = vlk_student_normalization(nu, 0, 1, 0).first;
 
     /* clear output */
     dzeros(grad, 4);
@@ -1062,13 +1054,8 @@ void garch_ll_grad_11_studentt(const double * __restrict params,
             grad[i] += s_grad_variance * d_prev[i];
 
         /* gradient wrt ν */
-        const double g_nu_single = -0.5 * digamma_half_nu_plus_1
-                                   + 0.5 * digamma_half_nu
-                                   + 0.5 * inv_nu_minus_2
-                                   + 0.5 * log(one_plus_tail)
-                                   - 0.5 * (nu + 1.0) * residuals2[0]
-                                         * inv_nu_minus_2 * inv_nu_minus_2
-                                         * inv_sigma2 / one_plus_tail;
+        const double g_nu_single = -student_normalizer_first
+            + vlk_student_tail_shape_first(nu, res_over_sigma2);
         grad[3] += g_nu_single;
     }
 
@@ -1096,13 +1083,8 @@ void garch_ll_grad_11_studentt(const double * __restrict params,
         for (size_t i = 0; i < 3; ++i)
             grad[i] += s_grad_variance * d_curr[i];
 
-        const double g_nu_single = -0.5 * digamma_half_nu_plus_1
-                                   + 0.5 * digamma_half_nu
-                                   + 0.5 * inv_nu_minus_2
-                                   + 0.5 * log(one_plus_tail)
-                                   - 0.5 * (nu + 1.0) * residuals2[t]
-                                         * inv_nu_minus_2 * inv_nu_minus_2
-                                         * inv_sigma2 / one_plus_tail;
+        const double g_nu_single = -student_normalizer_first
+            + vlk_student_tail_shape_first(nu, res_over_sigma2);
         grad[3] += g_nu_single;
 
         /* 4. roll forward */
@@ -1128,8 +1110,7 @@ void garch_ll_hess_11_studentt(const double * __restrict params,
     const double inv_nu_minus_2_2 = inv_nu_minus_2 * inv_nu_minus_2;
     const double inv_nu_minus_2_3 = inv_nu_minus_2_2 * inv_nu_minus_2;
 
-    const double trigamma_half_nu_plus_1 = trigamma_approx(0.5 * (nu + 1.0));
-    const double trigamma_half_nu = trigamma_approx(0.5 * nu);
+    const double student_normalizer_second = vlk_student_normalization(nu, 0, 0, 1).second;
 
     const size_t K = 4;                    /* ω α β ν */
     dzeros(hess, K * K);
@@ -1165,12 +1146,8 @@ void garch_ll_hess_11_studentt(const double * __restrict params,
                               / (one_plus_tail * one_plus_tail) 
                               * (3.0 * one_plus_tail - (nu + 1.0) * zi);
 
-        const double H_nu_nu =  -0.25 * trigamma_half_nu_plus_1
-                                + 0.25 * trigamma_half_nu
-                                - 0.5  * inv_nu_minus_2_2
-                                - zi   * inv_nu_minus_2 / one_plus_tail
-                                + 0.5  * (nu + 1.0) * zi * (2.0 + zi)
-                                * inv_nu_minus_2_2 / (one_plus_tail * one_plus_tail);
+        const double H_nu_nu = -student_normalizer_second
+            + vlk_student_tail_shape_second(nu, res_over_sigma2);
 
         {
             /* Iterate upper triangle only (j >= i) to avoid double counting */
@@ -1233,12 +1210,8 @@ void garch_ll_hess_11_studentt(const double * __restrict params,
                               / (one_plus_tail * one_plus_tail) 
                               * (3.0 * one_plus_tail - (nu + 1.0) * zi);
 
-        const double H_nu_nu =  -0.25 * trigamma_half_nu_plus_1
-                                + 0.25 * trigamma_half_nu
-                                - 0.5  * inv_nu_minus_2_2
-                                - zi   * inv_nu_minus_2 / one_plus_tail
-                                + 0.5  * (nu + 1.0) * zi * (2.0 + zi)
-                                * inv_nu_minus_2_2 / (one_plus_tail * one_plus_tail);
+        const double H_nu_nu = -student_normalizer_second
+            + vlk_student_tail_shape_second(nu, res_over_sigma2);
 
         {
             /* Iterate upper triangle only (j >= i) to avoid double counting */
@@ -1278,8 +1251,7 @@ void garch_ll_grad_pq_studentt(const double * __restrict params,
     const double  nu    = params[K - 1];
     const double  inv_nu_minus_2 = 1.0 / (nu - 2.0);
 
-    const double digamma_half_nu_plus_1 = digamma_approx(0.5 * (nu + 1.0));
-    const double digamma_half_nu = digamma_approx(0.5 * nu);
+    const double student_normalizer_first = vlk_student_normalization(nu, 0, 1, 0).first;
 
     /* clear output */
     dzeros(grad, K);
@@ -1306,13 +1278,8 @@ void garch_ll_grad_pq_studentt(const double * __restrict params,
         for (size_t i = 0; i < K - 1; ++i)      /* skip ν for now */
             grad[i] += S_var * d0[i];
 
-        const double g_nu_single = -0.5 * digamma_half_nu_plus_1
-                                   + 0.5 * digamma_half_nu
-                                   + 0.5 * inv_nu_minus_2
-                                   + 0.5 * log(one_plus_tail)
-                                   - 0.5 * (nu + 1.0) * residuals2[0]
-                                         * inv_nu_minus_2 * inv_nu_minus_2
-                                         * inv_sigma2 / one_plus_tail;
+        const double g_nu_single = -student_normalizer_first
+            + vlk_student_tail_shape_first(nu, res_over_sigma2);
         grad[K - 1] += g_nu_single;
     }
 
@@ -1350,13 +1317,8 @@ void garch_ll_grad_pq_studentt(const double * __restrict params,
         for (size_t i = 0; i < K - 1; ++i)
             grad[i] += S_var * d_t[i];
 
-        const double g_nu_single = -0.5 * digamma_half_nu_plus_1
-                                   + 0.5 * digamma_half_nu
-                                   + 0.5 * inv_nu_minus_2
-                                   + 0.5 * log(one_plus_tail)
-                                   - 0.5 * (nu + 1.0) * residuals2[t]
-                                         * inv_nu_minus_2 * inv_nu_minus_2
-                                         * inv_sigma2 / one_plus_tail;
+        const double g_nu_single = -student_normalizer_first
+            + vlk_student_tail_shape_first(nu, res_over_sigma2);
         grad[K - 1] += g_nu_single;
     }
 
@@ -1384,8 +1346,7 @@ void garch_ll_hess_pq_studentt(const double * __restrict params,
     const double  inv_nu_minus_2_2 = inv_nu_minus_2 * inv_nu_minus_2;
     const double  inv_nu_minus_2_3 = inv_nu_minus_2_2 * inv_nu_minus_2;
 
-    const double trigamma_half_nu_plus_1 = trigamma_approx(0.5 * (nu + 1.0));
-    const double trigamma_half_nu = trigamma_approx(0.5 * nu);
+    const double student_normalizer_second = vlk_student_normalization(nu, 0, 0, 1).second;
 
     /* clear output */
     dzeros(hess, K * K);
@@ -1431,12 +1392,8 @@ void garch_ll_hess_pq_studentt(const double * __restrict params,
                               / (one_plus_tail * one_plus_tail) 
                               * (3.0 * one_plus_tail - (nu + 1.0) * zi);
 
-        const double H_nu_nu =  -0.25 * trigamma_half_nu_plus_1
-                                + 0.25 * trigamma_half_nu
-                                - 0.5  * inv_nu_minus_2_2
-                                - zi   * inv_nu_minus_2 / one_plus_tail
-                                + 0.5  * (nu + 1.0) * zi * (2.0 + zi)
-                                * inv_nu_minus_2_2 / (one_plus_tail * one_plus_tail);
+        const double H_nu_nu = -student_normalizer_second
+            + vlk_student_tail_shape_second(nu, res_over_sigma2);
 
         {
             /* Iterate upper triangle only (j >= i) to avoid double counting */
@@ -1517,12 +1474,8 @@ void garch_ll_hess_pq_studentt(const double * __restrict params,
                               / (one_plus_tail * one_plus_tail) 
                               * (3.0 * one_plus_tail - (nu + 1.0) * zi);
 
-        const double H_nu_nu =  -0.25 * trigamma_half_nu_plus_1
-                                + 0.25 * trigamma_half_nu
-                                - 0.5  * inv_nu_minus_2_2
-                                - zi   * inv_nu_minus_2 / one_plus_tail
-                                + 0.5  * (nu + 1.0) * zi * (2.0 + zi)
-                                * inv_nu_minus_2_2 / (one_plus_tail * one_plus_tail);
+        const double H_nu_nu = -student_normalizer_second
+            + vlk_student_tail_shape_second(nu, res_over_sigma2);
 
         {
             /* Iterate upper triangle only (j >= i) to avoid double counting */

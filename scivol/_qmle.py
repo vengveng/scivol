@@ -536,6 +536,7 @@ def fit_qmle(
     h0 = np.mean(data ** 2)
 
     if has_arma:
+        covariance_sample_size = n - max(p_ar, q_ma, P_arch, Q_garch, 1)
         try:
             opg_core, hess_core = _compute_arma_garch_robust_se(
                 core_params, data, p_ar, q_ma, P_arch, Q_garch, h0,
@@ -547,6 +548,7 @@ def fit_qmle(
             )
             return fit_result
     elif is_gjr:
+        covariance_sample_size = n
         # GJR-GARCH: use raw residuals (not squared)
         try:
             opg_core, hess_core = _compute_robust_se_gjrgarch_c(
@@ -559,6 +561,7 @@ def fit_qmle(
             )
             return fit_result
     else:
+        covariance_sample_size = n
         # Standard GARCH
         resid2 = data ** 2
         try:
@@ -581,8 +584,8 @@ def fit_qmle(
     # Covariance matrices
     try:
         hess_inv_core = np.linalg.inv(hess_core)
-        cov_mle_core = hess_inv_core / n
-        cov_robust_core = hess_inv_core @ opg_core @ hess_inv_core / n
+        cov_mle_core = hess_inv_core / covariance_sample_size
+        cov_robust_core = hess_inv_core @ opg_core @ hess_inv_core / covariance_sample_size
     except np.linalg.LinAlgError:
         warnings.warn("Hessian is singular, cannot compute covariance matrix")
         return fit_result

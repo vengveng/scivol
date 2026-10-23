@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <memory>
 
 namespace vlk::experiment::runtime {
 namespace {
@@ -36,6 +37,7 @@ struct MapScratch {
     double* local_jacobian = nullptr;
     double* reflection_scratch = nullptr;
     double* weights = nullptr;
+    generated::SimplexTailPoint* simplex = nullptr;
 };
 
 [[nodiscard]] double persistence_limit(std::size_t contributions) noexcept
@@ -79,10 +81,12 @@ struct MapScratch {
     scratch.local_jacobian = arena.take<double>(maximum_order * maximum_order);
     scratch.reflection_scratch = arena.take<double>(
         reflection_inverse_scratch_doubles(maximum_order));
-    scratch.weights = arena.take<double>(layout.p_vol + layout.q_vol);
+    scratch.simplex = arena.take<generated::SimplexTailPoint>(1u);
+    scratch.weights = arena.take<double>(layout.parameter_count - layout.mean_parameters - 1u);
     return scratch.reflection != nullptr && scratch.coefficients != nullptr
         && scratch.local_jacobian != nullptr
-        && scratch.reflection_scratch != nullptr && scratch.weights != nullptr;
+        && scratch.reflection_scratch != nullptr && scratch.weights != nullptr
+        && scratch.simplex != nullptr;
 }
 
 [[nodiscard]] bool map_reflection_block(
@@ -115,8 +119,7 @@ struct MapScratch {
         if (jacobian == nullptr)
             continue;
         for (std::size_t column = 0; column < order; ++column) {
-            const double first = 1.0
-                - scratch.reflection[column] * scratch.reflection[column];
+            const double first = ad::coordinate_tanh_first(coordinates[start + column]);
             jacobian[(start + row) * width + start + column] = sign
                 * scratch.local_jacobian[row * order + column] * first;
         }
@@ -167,7 +170,8 @@ std::size_t arma_garch_map_workspace_bytes(
     sizer.add<double>(maximum_order);
     sizer.add<double>(square);
     sizer.add<double>(reflection_count);
-    sizer.add<double>(layout.p_vol + layout.q_vol);
+    sizer.add<generated::SimplexTailPoint>(1u);
+    sizer.add<double>(layout.parameter_count - layout.mean_parameters - 1u);
     return sizer.size();
 }
 
@@ -217,13 +221,17 @@ bool arma_garch_coordinate_forward(
     }
     const std::size_t contribution_count = layout.p_vol + layout.q_vol;
     double maximum = 0.0;
+    std::size_t dominant = 0u;
     for (std::size_t contribution = 0; contribution < contribution_count;
          ++contribution) {
-        maximum = std::max(
-            maximum,
-            coordinates[contribution_coordinate(layout, contribution)]);
+        const double coordinate = coordinates[contribution_coordinate(layout, contribution)];
+        if (coordinate > maximum) {
+            maximum = coordinate;
+            dominant = contribution;
+        }
     }
-    double denominator = std::exp(-maximum);
+    const double slack = std::exp(-maximum);
+    double denominator = slack;
     for (std::size_t contribution = 0; contribution < contribution_count;
          ++contribution) {
         scratch.weights[contribution] = std::exp(
@@ -233,19 +241,20 @@ bool arma_garch_coordinate_forward(
     }
     const double limit = persistence_limit(contribution_count);
     for (std::size_t output = 0; output < contribution_count; ++output) {
-        scratch.weights[output] /= denominator;
         parameters[contribution_coordinate(layout, output)] =
-            limit * scratch.weights[output];
+            limit * (scratch.weights[output] / denominator);
     }
     if (need_jacobian) {
+        const auto& simplex = *std::construct_at(scratch.simplex,
+            generated::SimplexTailPoint::from_shifted(
+                contribution_count, dominant, denominator, slack, scratch.weights));
         for (std::size_t output = 0; output < contribution_count; ++output) {
             const std::size_t row = contribution_coordinate(layout, output);
             for (std::size_t column = 0; column < contribution_count; ++column) {
                 jacobian[row * width
                          + contribution_coordinate(layout, column)] =
-                    parameters[row]
-                    * ((output == column ? 1.0 : 0.0)
-                       - scratch.weights[column]);
+                    simplex.first(output, column, parameters[row],
+                        simplex.weight(column));
             }
         }
     }
@@ -315,8 +324,8 @@ std::size_t arma_garch_curvature_workspace_bytes(
         std::max(
             std::max(layout.p_ar, layout.q_ma), std::size_t {1u}));
     WorkspaceSizer sizer;
-    sizer.add<double>(count);
-    return count == 0u ? 0u : sizer.size();
+    return count != 0u && sizer.add<double>(count)
+        && sizer.add<double>(layout.p_vol + layout.q_vol) ? sizer.size() : 0u;
 }
 
 bool add_arma_garch_coordinate_curvature(
@@ -326,7 +335,8 @@ bool add_arma_garch_coordinate_curvature(
     const double* theta_gradient,
     void* workspace,
     std::size_t workspace_bytes,
-    double* coordinate_hessian) noexcept
+    double* coordinate_hessian, void* map_workspace,
+    std::size_t map_workspace_bytes) noexcept
 {
     const std::size_t required = arma_garch_curvature_workspace_bytes(layout);
     const std::size_t width = layout.parameter_count;
@@ -361,22 +371,35 @@ bool add_arma_garch_coordinate_curvature(
         * generated::softplus_second_from_positive(positive);
 
     const std::size_t contribution_count = layout.p_vol + layout.q_vol;
-    const double limit = persistence_limit(contribution_count);
+    double* shifted_weights = arena.take<double>(contribution_count);
+    if (shifted_weights == nullptr) return false;
+    generated::SimplexTailPoint local;
+    const generated::SimplexTailPoint* prepared = nullptr;
+    MapScratch map;
+    if (map_workspace != nullptr) {
+        if (map_workspace_bytes < arma_garch_map_workspace_bytes(layout)
+            || !take_map_scratch(layout, map_workspace, map_workspace_bytes, map)) return false;
+        prepared = map.simplex;
+    } else {
+        local = generated::SimplexTailPoint(contribution_count,
+            [&](std::size_t index) {
+                return coordinates[contribution_coordinate(layout, index)];
+            }, shifted_weights);
+        prepared = &local;
+    }
+    const auto& simplex = *prepared;
     for (std::size_t output = 0; output < contribution_count; ++output) {
         const std::size_t output_index = contribution_coordinate(layout, output);
         const double output_value = parameters[output_index];
         for (std::size_t left = 0; left < contribution_count; ++left) {
             const std::size_t left_index = contribution_coordinate(layout, left);
-            const double left_value = parameters[left_index] / limit;
+            const double left_value = simplex.weight(left);
             for (std::size_t right = left; right < contribution_count; ++right) {
                 const std::size_t right_index =
                     contribution_coordinate(layout, right);
-                const double right_value = parameters[right_index] / limit;
-                const double second = output_value * (
-                    ((output == right ? 1.0 : 0.0) - right_value)
-                        * ((output == left ? 1.0 : 0.0) - left_value)
-                    - left_value
-                        * ((left == right ? 1.0 : 0.0) - right_value));
+                const double right_value = simplex.weight(right);
+                const double second = simplex.second(
+                    output, left, right, output_value, left_value, right_value);
                 const double curvature = theta_gradient[output_index] * second;
                 coordinate_hessian[left_index * width + right_index] += curvature;
                 if (left != right) {
@@ -458,7 +481,9 @@ bool arma_gjr_garch_coordinate_forward(
         || !gjr_coordinate_forward(
             layout.p_vol, layout.q_vol, density,
             coordinates + layout.mean_parameters, need_jacobian,
-            parameters + layout.mean_parameters, sub_jacobian)) {
+            parameters + layout.mean_parameters, sub_jacobian,
+            need_jacobian ? std::construct_at(scratch.simplex) : nullptr,
+            need_jacobian ? scratch.weights : nullptr)) {
         return false;
     }
     if (need_jacobian) {
@@ -543,7 +568,8 @@ bool add_arma_gjr_garch_coordinate_curvature(
     const double* jacobian,
     void* workspace,
     std::size_t workspace_bytes,
-    double* coordinate_hessian) noexcept
+    double* coordinate_hessian, void* map_workspace,
+    std::size_t map_workspace_bytes) noexcept
 {
     const std::size_t shape = density_shape_parameters(density);
     const std::size_t required = arma_gjr_garch_curvature_workspace_bytes(
@@ -588,11 +614,19 @@ bool add_arma_gjr_garch_coordinate_curvature(
             sub, sub_jacobian + row * sub);
     }
     std::fill_n(sub_hessian, sub_square, 0.0);
+    MapScratch map;
+    const generated::SimplexTailPoint* prepared = nullptr;
+    if (map_workspace != nullptr) {
+        if (map_workspace_bytes < arma_gjr_garch_map_workspace_bytes(layout, density)
+            || !take_map_scratch(layout, map_workspace, map_workspace_bytes, map)) return false;
+        prepared = map.simplex;
+    }
     if (!add_gjr_coordinate_curvature(
             layout.p_vol, layout.q_vol, density,
+            coordinates + layout.mean_parameters,
             parameters + layout.mean_parameters,
             theta_gradient + layout.mean_parameters,
-            sub_jacobian, moment_hessian, sub_hessian)) {
+            sub_jacobian, moment_hessian, sub_hessian, prepared)) {
         return false;
     }
     for (std::size_t row = 0; row < sub; ++row) {

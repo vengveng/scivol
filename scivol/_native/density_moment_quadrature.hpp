@@ -23,6 +23,16 @@ struct Jet {
     std::array<double, packed_shape> hessian {};
 };
 
+template<std::size_t ShapeParameters>
+[[nodiscard]] bool finite(const Jet<ShapeParameters>& jet) noexcept
+{
+    return jet.valid && std::isfinite(jet.value)
+        && std::all_of(jet.gradient.begin(), jet.gradient.end(),
+            [](double value) { return std::isfinite(value); })
+        && std::all_of(jet.hessian.begin(), jet.hessian.end(),
+            [](double value) { return std::isfinite(value); });
+}
+
 inline constexpr double half_pi = 1.57079632679489661923;
 inline constexpr unsigned maximum_depth = 20u;
 
@@ -101,7 +111,8 @@ template<int Order, class Density, class Prepared>
 [[nodiscard]] Jet<Density::shape_parameters> weighted_density(
     const Prepared& prepared,
     double standardized,
-    double weight) noexcept
+    double weight,
+    double log_multiplier = 0.0) noexcept
 {
     constexpr std::size_t D = Density::shape_parameters;
     Jet<D> result;
@@ -123,7 +134,7 @@ template<int Order, class Density, class Prepared>
     }
     Density::accumulate_value(accumulated, observation);
     const double nll = Density::finalize_value(accumulated, prepared);
-    if (!std::isfinite(nll) || !std::isfinite(weight)) {
+    if (!std::isfinite(nll) || !std::isfinite(weight) || !std::isfinite(log_multiplier)) {
         return result;
     }
     result.valid = true;
@@ -131,7 +142,7 @@ template<int Order, class Density, class Prepared>
         return result;
 
     const double contribution = std::copysign(
-        std::exp(std::log(std::abs(weight)) - nll), weight);
+        std::exp((std::log(std::abs(weight)) - nll) + log_multiplier), weight);
     if (!std::isfinite(contribution))
         return {};
     result.value = contribution;
@@ -153,13 +164,7 @@ template<int Order, class Density, class Prepared>
             }
         }
     }
-    result.valid = std::isfinite(result.value)
-        && std::all_of(
-            result.gradient.begin(), result.gradient.end(),
-            [](double value) { return std::isfinite(value); })
-        && std::all_of(
-            result.hessian.begin(), result.hessian.end(),
-            [](double value) { return std::isfinite(value); });
+    result.valid = finite(result);
     return result;
 }
 
@@ -170,7 +175,7 @@ template<int Order, std::size_t ShapeParameters>
     double width) noexcept
 {
     const auto acceptable = [width](double high, double low) {
-        return std::abs(high - low)
+        return std::isfinite(high) && std::isfinite(low) && std::abs(high - low)
             <= integration_tolerance<Order> * (width + std::abs(high));
     };
     if (!acceptable(kronrod.value, gauss.value))
@@ -192,7 +197,8 @@ template<int Order, class Integrand, std::size_t ShapeParameters>
     double lower,
     double upper,
     unsigned depth,
-    Jet<ShapeParameters>& output) noexcept
+    Jet<ShapeParameters>& output,
+    double absolute_scale = 1.0) noexcept
 {
     const double midpoint = 0.5 * (lower + upper);
     const double half_width = 0.5 * (upper - lower);
@@ -228,36 +234,39 @@ template<int Order, class Integrand, std::size_t ShapeParameters>
     for (double& value : kronrod.hessian) value *= half_width;
     for (double& value : gauss.hessian) value *= half_width;
 
-    if (interval_converged<Order>(kronrod, gauss, upper - lower)) {
+    if (interval_converged<Order>(kronrod, gauss, (upper - lower) * absolute_scale)) {
         add(output, kronrod);
         return true;
     }
     if (depth == maximum_depth)
         return false;
     return integrate_interval<Order>(
-               integrand, lower, midpoint, depth + 1u, output)
+               integrand, lower, midpoint, depth + 1u, output, absolute_scale)
         && integrate_interval<Order>(
-               integrand, midpoint, upper, depth + 1u, output);
+               integrand, midpoint, upper, depth + 1u, output, absolute_scale);
 }
 
 template<int Order, std::size_t ShapeParameters, class Integrand>
 [[nodiscard]] Jet<ShapeParameters> integrate(
     const Integrand& integrand,
     const double* boundaries,
-    std::size_t boundary_count) noexcept
+    std::size_t boundary_count,
+    double absolute_scale = 1.0) noexcept
 {
     Jet<ShapeParameters> result;
-    if (boundaries == nullptr || boundary_count < 2u)
+    if (boundaries == nullptr || boundary_count < 2u
+        || !(absolute_scale >= 0.0) || !std::isfinite(absolute_scale))
         return result;
     result.valid = true;
     for (std::size_t interval = 1u; interval < boundary_count; ++interval) {
         if (!(boundaries[interval] > boundaries[interval - 1u])
             || !integrate_interval<Order>(
                 integrand, boundaries[interval - 1u], boundaries[interval],
-                0u, result)) {
+                0u, result, absolute_scale)) {
             return {};
         }
     }
+    result.valid = finite(result);
     return result;
 }
 
@@ -339,6 +348,40 @@ template<int Order>
     return result;
 }
 
+template<int Order, std::size_t Width>
+ad::Differential<Order,Width> normal_negative_second_tail(
+    const ad::Differential<Order,Width>& standardized) noexcept
+{
+    const double t = standardized.value;
+    const double pdf = 0.39894228040143267794 * std::exp(-0.5*t*t);
+    if (t < 4.0) {
+        const double cdf = 0.5*std::erfc(t/std::sqrt(2.0));
+        return ad::unary(standardized, (1.0+t*t)*cdf-t*pdf,
+                         2.0*(t*cdf-pdf), 2.0*cdf);
+    }
+    // J_n = integral_0^inf u^n exp(-t*u-u^2/2) du (DLMF 12.5.1).
+    // r_n=J_n/J_(n-1)=n/(t+r_(n+1)). Positive tail bounds avoid cancellation.
+    double ratio = 0.0;
+    bool converged = false;
+    for (unsigned depth = 8; depth <= 256; depth *= 2) {
+        double lower = 0.0, upper = static_cast<double>(depth)/t;
+        for (unsigned n = depth-1; n >= 2; --n) {
+            const double next_lower = static_cast<double>(n)/(t+upper);
+            upper = static_cast<double>(n)/(t+lower);
+            lower = next_lower;
+        }
+        ratio = 0.5*(lower+upper);
+        if (upper-lower <= 4.0*std::numeric_limits<double>::epsilon()*ratio) {
+            converged = true;
+            break;
+        }
+    }
+    if (!converged) return ad::Differential<Order,Width>::constant(NAN);
+    const double r1 = 1.0/(t+ratio);
+    const double mass = pdf/(t+r1);
+    return ad::unary(standardized, (mass*r1)*ratio, -2.0*mass*r1, 2.0*mass);
+}
+
 template<int Order, NormalMoment Moment>
 [[nodiscard]] Jet<2> variance_gamma_mixture(const double* shape) noexcept
 {
@@ -372,11 +415,16 @@ template<int Order, NormalMoment Moment>
                 2.0 * pdf.value, -2.0 * standardized.value * pdf.value);
             partial = (Number::constant(2.0 * root) * pdf + mean * erf) / scale;
         } else {
-            const Number cdf = ad::unary(-standardized,
-                0.5 * std::erfc(standardized.value / std::sqrt(2.0)),
-                pdf.value, standardized.value * pdf.value);
-            partial = ((mean * mean + Number::constant(mixing)) * cdf
-                - mean * Number::constant(root) * pdf) / variance;
+            if (standardized.value >= 4.0) {
+                partial = Number::constant(mixing)
+                    * normal_negative_second_tail(standardized) / variance;
+            } else {
+                const Number cdf = ad::unary(-standardized,
+                    0.5 * std::erfc(standardized.value / std::sqrt(2.0)),
+                    pdf.value, standardized.value * pdf.value);
+                partial = ((mean * mean + Number::constant(mixing)) * cdf
+                    - mean * Number::constant(root) * pdf) / variance;
+            }
         }
         const double log_jacobian = std::log(2.0 * half_pi * root * (1.0 + mixing));
         const Number mass = ad::exp(

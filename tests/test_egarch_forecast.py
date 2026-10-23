@@ -85,3 +85,17 @@ def test_egarch_ged_fixed_forecast_and_quantiles_are_finite() -> None:
     assert np.all(np.isfinite(forecast_a.residual_variance))
     assert np.all(forecast_a.residual_variance > 0.0)
     assert np.all(np.isfinite(forecast_b.quantile(np.array([0.01, 0.05]))))
+@pytest.mark.parametrize("nu", [2.1,3.,8.])
+@pytest.mark.parametrize("skew", [0.,-.8,.8])
+def test_skewt_forecast_centering_keeps_the_unbounded_tails(nu,skew):
+    from scipy.integrate import quad
+    from scivol._evaluation import _egarch_skewt_abs_moment,_hansen_skewt_pdf_scalar
+    from scipy.special import gammaln
+
+    half=np.exp(gammaln((nu+1)/2)-gammaln(nu/2)-.5*np.log(np.pi*(nu-2)))*(nu-2)/(nu-1)
+    a=4*skew*half; b=np.sqrt(1+3*skew**2-a*a)
+    boundaries=sorted([-np.inf,-a/b,0.,np.inf])
+    expected=sum(quad(lambda z: abs(z)*_hansen_skewt_pdf_scalar(z,nu,skew),lo,hi,
+                      epsabs=1e-12,epsrel=1e-12,limit=300)[0]
+                 for lo,hi in zip(boundaries,boundaries[1:]) if lo<hi)
+    assert _egarch_skewt_abs_moment(nu,skew)==pytest.approx(expected,rel=3e-11)

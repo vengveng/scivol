@@ -150,6 +150,8 @@ def test_fit_info_is_exposed_in_result_and_dict():
             "solver": "slsqp",
             "log_mode": True,
             "optimization_space": "z-space",
+            "optimizer_controller": "joint-two-route",
+            "route_iteration_budgets": [300, 300],
             "used_default_solver": False,
             "used_default_log_mode": True,
             "warnings": ["small sample"],
@@ -159,12 +161,18 @@ def test_fit_info_is_exposed_in_result_and_dict():
     assert res.fit_info.solver == "slsqp"
     assert res.fit_info.log_mode is True
     assert res.fit_info.optimization_space == "z-space"
+    assert res.fit_info.optimizer_controller == "joint-two-route"
+    assert res.fit_info.route_iteration_budgets == [300, 300]
     assert res.fit_info.warnings == ("small sample",)
     assert res.warnings == ("small sample",)
 
     d = res.to_dict()
     assert d["fit_info"]["solver"] == "slsqp"
     assert d["fit_info"]["optimization_space"] == "z-space"
+    assert d["fit_info"]["optimizer_controller"] == "joint-two-route"
+    assert d["fit_info"]["route_iteration_budgets"] == [300, 300]
+    d["fit_info"]["route_iteration_budgets"].append(1)
+    assert res.fit_info.route_iteration_budgets == [300, 300]
     assert d["fit_info"]["used_default_log_mode"] is True
     assert d["fit_info"]["warnings"] == ["small sample"]
     assert d["warnings"] == ["small sample"]

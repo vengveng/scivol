@@ -61,8 +61,9 @@ integrate(const double* shape) noexcept
 
 template<int Order, class Density>
 [[nodiscard]] NegativeSecondMoment<Density::shape_parameters>
-negative_second_moment(const double* shape) noexcept
+negative_second_moment_prevalidated(const double* shape) noexcept
 {
+    // The caller has already checked the density's model-owned shape domain.
     constexpr std::size_t D = Density::shape_parameters;
     if constexpr (
         std::is_same_v<Density, NormalDensity>
@@ -77,6 +78,15 @@ negative_second_moment(const double* shape) noexcept
         return density_moment::variance_gamma_mixture<
             Order, density_moment::NormalMoment::negative_second>(shape);
     return gjr_moment_detail::integrate<Order, Density>(shape);
+}
+
+template<int Order, class Density>
+[[nodiscard]] NegativeSecondMoment<Density::shape_parameters>
+negative_second_moment(const double* shape) noexcept
+{
+    if (!Density::valid_shape(shape))
+        return {};
+    return negative_second_moment_prevalidated<Order, Density>(shape);
 }
 
 template<class Density>
@@ -119,7 +129,7 @@ template<class Density>
     if (!(persistence_lower < 1.0))
         return false;
 
-    const auto moment = negative_second_moment<0, Density>(shape);
+    const auto moment = negative_second_moment_prevalidated<0, Density>(shape);
     if (!moment.valid)
         return false;
     double persistence = 0.0;

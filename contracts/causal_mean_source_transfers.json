@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "record_kind": "causal_mean_source_transfers",
+  "status": "prototype/incomplete",
+  "qualification_state": "pending",
+  "source_revision": "bb30f26f36adda7cfd3400443b1a541569c5ab1b",
+  "source_state": "Reviewed current working-tree comparator sources, unmodified by this worker. Hashes below bind the handoff snapshot, not HEAD-only contents.",
+  "public_registration": false,
+  "transfer_kind": "behavioral_reexpression",
+  "transfers": [
+    {
+      "source": "scivol/components/mean.py",
+      "source_sha256": "07398630f7678d495a9aad75eb8d77dca5aba9e275c0b8094125d6775ddb1eda",
+      "sections": ["ARX.__init__", "ARX.required_hold_back", "ARX.pack", "HARX.__init__", "HARX.required_hold_back", "HARX.pack"],
+      "destination": "core/src/sample/causal_mean.hpp",
+      "adaptations": [
+        "Structural native kinds and size_t order axes; no display-signature parser or Python integer coercion.",
+        "Caller-borrowed immutable HAR horizons; optional virtual intercept; generated-feature width and input exogenous width remain separate.",
+        "Parameter roles preserve intercept, ascending AR lags/HAR horizons, then input exogenous-column order.",
+        "Historical coefficient boxes and fit-start policy are not extracted as mathematical domains."
+      ]
+    },
+    {
+      "source": "scivol/_validation.py",
+      "source_sha256": "714b2768894468c6219dc55412cf212227aad985f6eda35b61b4cf9c0205dc2c",
+      "sections": ["infer_required_hold_back", "prepare_series_input", "validate_regressors"],
+      "destination": "core/src/sample/causal_mean.cpp",
+      "adaptations": [
+        "Retained begin=max(requested removal, mean required removal); no volatility-order contribution.",
+        "Preserve original-position score selection independently of physical removal; every retained row is eligible.",
+        "Validate all original finite inputs, including the removed prefix; no implicit sorting or dropping.",
+        "Require at least two retained rows, matching the downstream canonical PreparedMean validation.",
+        "Copy response/design into checked caller-owned output prefixes; reject used-buffer overlap and short/misaligned scratch before writing.",
+        "Public scale and internal unit maps remain integrator-owned, explicit pending work; this policy accepts inputs already in declared coordinates."
+      ]
+    },
+    {
+      "source": "scivol/_kernels/linear_mean_normal_common.py",
+      "source_sha256": "cbcb79f2df43bdad896e1b0aa3e42e274d110b31e6ee29a1b3b79c234ac5c713",
+      "sections": ["build_linear_mean_features", "_har_history_means", "_block_history_means"],
+      "destination": "core/src/sample/causal_mean.cpp",
+      "adaptations": [
+        "Generate consecutive AR response lags and nested preceding-response HAR averages after physical trim, with reset history.",
+        "HAR row zero is zero; other rows divide by min(retained index,horizon), not the full horizon.",
+        "Store only non-intercept columns for the existing ExternalLinearDesign virtual-intercept adapter.",
+        "Replace global-prefix subtraction/compensated block sums with fixed-size exact binary rolling add/remove and correctly rounded mean division.",
+        "A 70-limb signed radix-2^32 accumulator covers binary64 range plus a 64-bit sample count. It uses 1120 aligned caller scratch bytes, reused across horizons, with a zero-scratch horizon-one path.",
+        "No global scaling or floating intermediate sum: expired huge values cancel exactly, tiny terms survive nested cancellation, and overflowing raw sums can have finite means.",
+        "This is equation-preserving stronger numerical behavior, not a claim of bitwise identity with legacy prefix rounding or a qualified legacy-reference repair."
+      ]
+    },
+    {
+      "source": "scivol/_mean_fit.py",
+      "source_sha256": "cf5c70b25e5019667cff6605a75d345d1a81bac3a3d764091563d35b66f19cbc",
+      "sections": ["PreparedMean.__init__: ARX identity and HAR basis construction"],
+      "destination": "core/src/sample/causal_mean.cpp",
+      "adaptations": [
+        "Return a separate PolynomialDomain view with coefficient offset=int(intercept).",
+        "ARX uses the existing null-basis identity representation; HAR basis[l-1,j]=I(l<=h_j)/h_j is written to caller storage.",
+        "Reuse existing native stability-domain equations without copying Schur evaluation.",
+        "No polynomial block is forced on arbitrary external LinearMean or ARX(0). No parameters, stationary certificate, optimizer or seed are evaluated by this policy."
+      ]
+    }
+  ],
+  "new_adapters": [
+    {"path": "core/src/sample/causal_mean.hpp", "sha256": "3726526b383d9ad8c86fdf1c01d3fcf892fef1dd471fab7b13b3d5f2b2ba3a57"},
+    {"path": "core/src/sample/causal_mean.cpp", "sha256": "87a20f31d963ee473853d353c78cddf21f7bb7c16afa1393087f8690c68e8934"},
+    {"path": "tests/native/test_causal_mean.cpp", "sha256": "b302cf61256f3bf5474a0338419e260372028d7a56a65daacbc79f7a1f2cf5d6"}
+  ],
+  "reused_owners": [
+    {"path": "core/src/models/mean/stability_domain.hpp", "sha256_at_handoff": "cbe686463a787a1a9970853930e31ebf6690ca90c7f4389bbf90564aca43b390"},
+    {"path": "core/src/models/mean/design_adapters.hpp", "sha256_at_handoff": "9e32de16f7e3bb8f8cbf98c6a3dc3b8a5d7bcf5145da8f5cecb969950a31c645"},
+    {"path": "core/src/math/runtime_workspace.hpp", "sha256_at_handoff": "1ffb2ddb07e01d5286595545c05a85658557440877d10a29dc463ba509a1a66a"}
+  ],
+  "sample_contract": {
+    "original_positions": "Score first/stop are half-open positions in the full original input, before removal.",
+    "physical_removal": "max(requested_hold_back, ar_lags or max(har_horizons)); zero required removal for arbitrary external linear.",
+    "finite_history": "Trim then reset; removed response prefix never supplies generated-column histories.",
+    "ar_columns": "Retained response[t-l] for t>=l, otherwise zero; l=1..ar_lags.",
+    "har_columns": "Zero at retained t=0; mean(response[max(0,t-h):t]) for t>0, divided by min(t,h).",
+    "exogenous_columns": "Contemporaneous original input[retained_begin+t,j], unchanged, after generated columns.",
+    "intercept": "Virtual coefficient metadata only; never materialized as a design column.",
+    "score_eligibility": "retained_begin in original coordinates; no second lag/horizon removal.",
+    "scored_suffix": "Changing first or stop scoring does not regenerate/reset history or shorten the retained training response.",
+    "row_identifiers": "Optional strictly increasing caller IDs are borrowed and sliced; not sorted or renumbered.",
+    "histories_and_seeds": "Not accepted by this policy. Integrator must reject unsupported supplied histories rather than dropping them. Default joint seed remains the separate model-owned mean-square of the whole retained training response, not a fitted-residual or score-only seed.",
+    "failure": "Allocation-free typed status. Admission failure leaves required/tail buffers and returned view unchanged."
+  },
+  "unit_metadata_requirements": {
+    "state": "pending; no unit-map implementation in this extraction",
+    "public_scale": "Finite positive response multiplier s; fitting response=s*raw response; exogenous input is not multiplied by s. Reported likelihood and parameters remain in fitting units.",
+    "internal_response_scale": "Separate finite positive divider r; generated lag/HAR columns inherit fitting_response/r, not unrelated column scales.",
+    "internal_design_scales": "One finite positive divider per input exogenous column, distinct from generated-feature width and virtual intercept.",
+    "identity_and_provenance": "Record labels, actual scales, model unit-map identity, history/seed original and internal coordinates, and training-information provenance.",
+    "derivative_back_map": "Exact fitting-coordinate theta/G/H and n_eff*log(r) likelihood offset. Retain original z through chart composition. APARCH omega/r^delta curvature and EGARCH omega/beta coupling remain required debt.",
+    "no_implicit_policy": "This policy estimates no automatic scale, applies no multiplier/divider, and cannot certify a nonidentity unit map from metadata alone."
+  },
+  "test_mapping_proposals": [
+    {
+      "old_node_id": "tests/test_native_mean.py::test_har_features_use_only_the_current_window",
+      "old_source_sha256": "ae60e8e3f77fe3a8eb6d70cafa332c01ad1da7f67220e4bafbe658e84e0a4373",
+      "new_test": "tests/native/test_causal_mean.cpp::test_old_har_windows",
+      "case_slice": "Four response sequences and three horizons [1,3,7]. Old three Python builder imports share the mathematical design owner; this test exercises the one new pure native owner, not three separate imports.",
+      "independence": "Closed integer/constant values and explicit huge-pair cancellation; discarded prefix is supplied independently. No old imports or calls.",
+      "disposition": "deferred",
+      "reason": "Bounded native execution recorded; chief must review complete old assertion/case/source/execution mapping before any global ledger transfer. No whole-jet qualification implied."
+    }
+  ],
+  "local_execution": {
+    "state": "passed_bounded_native_check",
+    "compiler": "Apple clang 17.0.0 (clang-1700.3.19.1), arm64-apple-darwin24.6.0",
+    "flags": ["-std=c++20", "-O3", "-fno-fast-math", "-ffp-contract=fast", "-fno-math-errno", "-Wall", "-Wextra", "-Werror", "-Wframe-larger-than=16384", "-Werror=frame-larger-than", "-Werror=vla", "-Werror=alloca", "-Icore/include"],
+    "translation_units": ["core/src/sample/causal_mean.cpp", "tests/native/test_causal_mean.cpp"],
+    "binary": "localdev/transition_phase1_20261014/causal_mean/test_causal_mean",
+    "binary_sha256": "72fc847dd9ed0b278e0b509e9b9d70d6486766d2dca91bd89e1a4795e66a6d8c",
+    "stdout": "causal mean: 37 cases, 3970 checks, 137 allocation-free scopes",
+    "compile_wall_seconds": 2.03,
+    "test_wall_seconds": 0.17,
+    "allocation_scope": "All planning and compute success/rejection calls plus reused domain value checks. All eight allocating new forms are interposed and the probe is verified; source contains no direct malloc or dynamic stack allocation.",
+    "reference_scope": "Independent closed-form causal columns, exact small-integer means, constant extreme/subnormal means, explicit nested/overflow cancellation, normal/subnormal ties-to-even and existing native PolynomialDomain basis consumption.",
+    "limitations": "Single local native binary, not public integration or complete jets. No full build, JAX, fit, timing gate, whole-binary frame audit, cross-platform qualification or execution of impractically wide (>2^32) window counts."
+  },
+  "compiler_dependency_audit": {
+    "method": "clang++ -std=c++20 -Icore/include -MM core/src/sample/causal_mean.cpp tests/native/test_causal_mean.cpp",
+    "legacy_or_python_headers": false,
+    "scope": "Direct two-translation-unit header dependency scan only; not a complete linked public-core ownership audit."
+  },
+  "qualification_debt": [
+    "Chief public registration, integration and compiled-model/problem ownership and lease lifetimes.",
+    "Source/execution mapping review before old test dispositions change; all existing scope/test-transfer promises remain unchanged.",
+    "Complete ARX/HARX theta/original-z jets, all densities/volatility compositions, arbitrary/fixed layouts and actual binary dispatch.",
+    "Strict stationary mean-domain admission and request-specific validity through public consumers; this policy only returns a reusable domain view.",
+    "Explicit public/internal unit maps, metadata, transformed derivatives and histories/seed conversions.",
+    "Supplied histories, continuation and causal training cutoffs, without silently reusing a removed prefix.",
+    "Production complete-binary frame and allocation audit, paired performance attribution and cross-platform integer/IEEE qualification."
+  ],
+  "handoff": "localdev/transition_phase1_20261014/causal_mean/HANDOFF.md"
+}

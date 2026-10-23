@@ -39,16 +39,17 @@ struct DiagonalConstraints {
     std::size_t equalities() const noexcept
     { return runtime_kraft_detail::equality_count(inner); }
     bool evaluate(kraft::ConstraintRequest request, const double* x,
-                  double* values, double* jacobian) const noexcept
+                  double* values, double* jacobian, ConstraintColumns columns={}) const noexcept
     {
         for (std::size_t i=0; i<dimension(); ++i)
             point[i] = x[i]*scales[i];
-        if (!inner.evaluate(request,point,values,jacobian))
+        if (!runtime_kraft_detail::invoke_constraints(inner,request,point,values,jacobian,columns))
             return false;
         if (request != kraft::ConstraintRequest::value)
             for (std::size_t j=0; j<dimension(); ++j)
-                for (std::size_t i=0; i<count(); ++i)
-                    jacobian[i+j*count()] *= scales[j];
+                if (columns.contains(j))
+                    for (std::size_t i=0; i<count(); ++i)
+                        jacobian[i+j*count()] *= scales[j];
         return true;
     }
 };

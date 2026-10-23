@@ -451,6 +451,61 @@ def test_variance_gamma_center_has_finite_observed_hessian() -> None:
     assert np.all(np.isfinite(hess))
 
 
+def test_python_vg_logpdf_retains_finite_bessel_product_near_center():
+    mp=pytest.importorskip("mpmath")
+    values=np.array([[1e-8,-1e-8],[0.,1e-200]])
+    actual=standardized_vg_logpdf(values,0.,50.)
+    expected=np.empty_like(actual)
+    with mp.workdps(80):
+        shape=mp.mpf(50); order=shape-mp.mpf(".5")
+        constant=mp.log(shape)/2+mp.log(2)-mp.log(2*mp.pi)/2-mp.loggamma(shape)
+        for index in np.ndindex(values.shape):
+            y=mp.sqrt(shape)*abs(mp.mpf(values[index]))
+            kernel=((order-1)*mp.log(2)+mp.loggamma(order)-order*mp.log(2)
+                    if y==0 else order*(mp.log(y)-mp.log(2)/2)+mp.log(mp.besselk(order,mp.sqrt(2)*y)))
+            expected[index]=float(constant+kernel)
+    np.testing.assert_allclose(actual,expected,rtol=0,atol=3e-13)
+    np.testing.assert_array_equal(standardized_vg_logpdf(values[:,::-1],0.,50.),actual[:,::-1])
+    assert standardized_vg_logpdf(np.array([]),0.,50.).size==0
+    assert np.isneginf(standardized_vg_logpdf(np.array([np.inf]),0.,50.)[0])
+    assert np.isnan(standardized_vg_logpdf(np.array([np.nan]),0.,50.)[0])
+
+
+@pytest.mark.parametrize("backend", ["python", "legacy", "native-F", "native-FG", "native-FGH"])
+def test_variance_gamma_lower_shape_near_center_matches_exact_density(backend):
+    mp = pytest.importorskip("mpmath")
+    # The canonical native domain extends below the historical Python fit bound.
+    params = np.array([0.0, 1.5000000000000018])
+    values = np.array([5.7735026918962544e-6])
+
+    def exact_nll(residual, variance):
+        with mp.workdps(70):
+            shape = mp.mpf(float(params[1]))
+            standardized = mp.mpf(float(residual)) / mp.sqrt(float(variance))
+            centered = mp.sqrt(shape) * standardized
+            order = shape - mp.mpf("0.5")
+            logpdf = (mp.log(shape)/2 + mp.log(2) - mp.log(2*mp.pi)/2
+                      - mp.loggamma(shape) + order*(mp.log(centered)-mp.log(2)/2)
+                      + mp.log(mp.besselk(order, mp.sqrt(2)*centered)))
+            return float(mp.log(float(variance))/2-logpdf)
+
+    expected = exact_nll(values[0], 1.0)
+    if backend == "python":
+        actual = -standardized_vg_logpdf(values, *params)[0]
+    elif backend == "legacy":
+        actual = _core._vg_standardized_nll(params.ctypes.data, values.ctypes.data, 1)
+    else:
+        from scivol import ARX
+        from scivol._joint_mean_fit import JointMeanModel
+
+        data = np.repeat(values, 2)
+        model = JointMeanModel(ARX(0) + GARCH(1, 1) + VarianceGamma(), data, None)
+        theta = np.array([0., 1., 0., 0., *params])
+        actual = model.evaluate(theta, {"native-F": 1, "native-FG": 3, "native-FGH": 7}[backend])[0]
+        expected += exact_nll(values[0], model.h0)
+    assert actual == pytest.approx(expected, rel=3e-10, abs=3e-10)
+
+
 def test_variance_gamma_near_center_derivatives_remain_finite() -> None:
     params = np.array([0.0, 3.0])
     values = np.array([-1e-8, 0.0, 1e-10, 1e-8])
@@ -684,6 +739,22 @@ def test_garch_variance_gamma_log_transform_matches_ad_chain_rule() -> None:
     )
 
 
+def _assert_retained_boundary_fit(result, reference_likelihood):
+    """A historical solver success is not a strict stationarity certificate."""
+    info = result.fit_info
+    assert np.isfinite(result.log_likelihood)
+    assert result.log_likelihood >= reference_likelihood-1e-8
+    assert info.maximum_constraint_violation <= 1e-10
+    assert info.objective_parity_error <= 1e-8
+    if result.converged:
+        assert info.kkt_residual <= info.kkt_tolerance
+    else:
+        assert info.kkt_residual > info.kkt_tolerance
+        assert any("Strict credibility check failed" in message for message in info.warnings)
+        assert any("Standard errors are unavailable" in message for message in info.warnings)
+        assert result.std_errors is None
+
+
 def test_public_nig_workflow_keeps_lambda_fixed() -> None:
     rng = np.random.default_rng(72)
     data = 0.01 * rng.standard_t(8, 180)
@@ -691,7 +762,7 @@ def test_public_nig_workflow_keeps_lambda_fixed() -> None:
     state = result.filter()
     forecast = result.forecast(3)
 
-    assert result.converged
+    _assert_retained_boundary_fit(result, 542.4867630800777)
     assert result.dist_params.shape_lambda == NIG_LAMBDA
     assert result.dist_params.shape_lambda_fixed
     assert result.dist_params.to_array().shape == (2,)
@@ -706,7 +777,7 @@ def test_public_hyperbolic_workflow_keeps_lambda_fixed() -> None:
     state = result.filter()
     forecast = result.forecast(3)
 
-    assert result.converged
+    _assert_retained_boundary_fit(result, 554.9679076178344)
     assert result.dist_params.shape_lambda == HYPERBOLIC_LAMBDA
     assert result.dist_params.shape_lambda_fixed
     assert result.dist_params.to_array().shape == (2,)
@@ -726,7 +797,7 @@ def test_public_variance_gamma_workflow() -> None:
     forecast = result.forecast(3)
     simulated = spec.simulate(40, result.params, burn=20, seed=75)
 
-    assert result.converged
+    _assert_retained_boundary_fit(result, 693.0613023072463)
     assert result.dist_params.rho is not None
     assert result.dist_params.shape_lambda is not None
     assert not result.dist_params.shape_lambda_fixed

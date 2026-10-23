@@ -137,18 +137,9 @@ def _hansen_skewt_pdf_scalar(z: float, nu: float, lam: float) -> float:
 
 @lru_cache(maxsize=64)
 def _egarch_skewt_abs_moment(nu: float, lam: float) -> float:
-    c_log = gammaln(0.5 * (nu + 1.0)) - gammaln(0.5 * nu) - 0.5 * np.log(np.pi * (nu - 2.0))
-    a = 4.0 * lam * np.exp(c_log) * (nu - 2.0) / (nu - 1.0)
-    b = np.sqrt(1.0 + 3.0 * lam * lam - a * a)
-    split = float(-a / b)
+    from . import _native_core
 
-    def integrand(z: float) -> float:
-        return abs(z) * _hansen_skewt_pdf_scalar(z, nu, lam)
-
-    bound = 50.0
-    points = [split] if -bound < split < bound else None
-    value, _ = quad(integrand, -bound, bound, epsabs=1e-9, epsrel=1e-9, limit=400, points=points)
-    return float(value)
+    return _native_core._skewt_absolute_moment(nu, lam)
 
 
 def _ged_scale(nu: float) -> float:
@@ -932,7 +923,7 @@ def _filter_aparch(
     compute_hessian: bool,
 ) -> FilteredState:
     from ._native_fit import (
-        _aparch_volatility_domain,
+        _aparch_persistence_evidence,
         _describe_model,
         _evaluate_theta_request,
         _materialize_native_aparch_state,
@@ -950,8 +941,9 @@ def _filter_aparch(
         model, data, theta
     )
     if vol.fitted_params is not None:
-        _, _, persistence = _aparch_volatility_domain(model, theta)
+        persistence, slack = _aparch_persistence_evidence(model, theta)
         vol.fitted_params["persistence"] = persistence
+        vol.fitted_params["stationarity_slack"] = slack
     score = -gradient if compute_score else None
     observed_hessian = -hessian if compute_hessian else None
 
@@ -2866,7 +2858,9 @@ def simulate_spec(
     delta = 2.0
     aparch_power = np.ones(total, dtype=np.float64)
     if isinstance(vol, APARCH):
-        from ._native_fit import _aparch_volatility_domain, _describe_model
+        from ._native_fit import (
+            _aparch_persistence_evidence, _aparch_volatility_domain, _describe_model,
+        )
 
         omega = float(vol.fitted_params["omega"])  # type: ignore[index]
         alpha = np.asarray(vol.fitted_params["alpha"], dtype=np.float64)  # type: ignore[index]
@@ -2875,9 +2869,10 @@ def simulate_spec(
         delta = float(vol.fitted_params["delta"])  # type: ignore[index]
         domain_spec = vol + sim_spec.get_component(Role.DENSITY) if isinstance(mean_comp, (ARX, HARX)) else sim_spec
         domain_theta = theta[mean_comp.n_params:] if isinstance(mean_comp, (ARX, HARX)) else theta
-        violation, feasible, persistence = _aparch_volatility_domain(
-            _describe_model(domain_spec), domain_theta
-        )
+        domain_model = _describe_model(domain_spec)
+        persistence, persistence_slack = _aparch_persistence_evidence(domain_model, domain_theta)
+        violation, feasible, _ = _aparch_volatility_domain(domain_model, domain_theta,
+            persistence_evidence=(persistence, persistence_slack))
         if not feasible:
             raise ValueError(
                 "APARCH simulation requires parameters in the exact stationary "
@@ -2914,7 +2909,7 @@ def simulate_spec(
         persistence = 0.0
 
     if isinstance(vol, APARCH):
-        unconditional_power = omega / (1.0 - persistence)
+        unconditional_power = omega / persistence_slack
         unconditional_variance = unconditional_power ** (2.0 / delta)
         aparch_power[:] = unconditional_power
     elif isinstance(vol, EGARCH):

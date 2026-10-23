@@ -151,6 +151,41 @@ static aparch_jet_t ap_lgamma(aparch_jet_t x, size_t width)
                     trigamma_approx(x.value), width);
 }
 
+static aparch_jet_t ap_student_normalization(aparch_jet_t nu, size_t width)
+{
+    const vlk_student_normalization_t c = vlk_student_normalization(
+        nu.value, 1, nu.order > 0, nu.order > 1);
+    return ap_unary(nu, c.value, c.first, c.second, width);
+}
+
+static aparch_jet_t ap_student_tail(aparch_jet_t nu, aparch_jet_t square, size_t width)
+{
+    const double inverse = 1.0 / (nu.value - 2.0 + square.value);
+    const double ds = 0.5 * (nu.value + 1.0) * inverse;
+    const double dn = vlk_student_tail_shape_first(nu.value, square.value);
+    const double dss = -ds * inverse;
+    const double dsn = vlk_student_tail_squared_shape(nu.value, square.value);
+    const double dnn = vlk_student_tail_shape_second(nu.value, square.value);
+    aparch_jet_t out = ap_constant(
+        0.5 * (nu.value + 1.0) * log1p(square.value / (nu.value - 2.0)), nu.order);
+    if (nu.order > 0) {
+        for (size_t i = 0; i < width; ++i)
+            out.grad[i] = ds * square.grad[i] + dn * nu.grad[i];
+    }
+    if (nu.order > 1) {
+        for (size_t i = 0; i < width; ++i) {
+            for (size_t j = 0; j < width; ++j) {
+                const size_t ij = i * width + j;
+                out.hess[ij] = ds * square.hess[ij] + dn * nu.hess[ij]
+                    + dss * square.grad[i] * square.grad[j]
+                    + dsn * (square.grad[i] * nu.grad[j] + nu.grad[i] * square.grad[j])
+                    + dnn * nu.grad[i] * nu.grad[j];
+            }
+        }
+    }
+    return out;
+}
+
 static aparch_jet_t aparch_observation(
     double residual, aparch_jet_t variance, aparch_jet_t *shape,
     int distribution, size_t width)
@@ -174,63 +209,20 @@ static aparch_jet_t aparch_observation(
 
     if (distribution == APARCH_STUDENTT) {
         const aparch_jet_t nu = shape[0];
-        const aparch_jet_t nu_minus_two = ap_sub(nu, ap_constant(2.0, order), width);
-        aparch_jet_t log_constant = ap_sub(
-            ap_lgamma(ap_scale(ap_add(nu, one, width), 0.5, width), width),
-            ap_lgamma(ap_scale(nu, 0.5, width), width),
-            width
-        );
-        log_constant = ap_sub(
-            log_constant,
-            ap_scale(
-                ap_log(ap_scale(nu_minus_two, M_PI, width), width), 0.5, width
-            ),
-            width
-        );
-        const aparch_jet_t ratio = ap_div(
-            ap_constant(residual2, order),
-            ap_mul(variance, nu_minus_two, width),
-            width
-        );
-        return ap_add(
-            ap_scale(log_constant, -1.0, width),
-            ap_add(
-                half_log_h,
-                ap_mul(
-                    ap_scale(ap_add(nu, one, width), 0.5, width),
-                    ap_log(ap_add(one, ratio, width), width),
-                    width
-                ),
-                width
-            ),
-            width
-        );
+        const aparch_jet_t square = ap_div(ap_constant(residual2, order), variance, width);
+        return ap_add(ap_sub(half_log_h, ap_student_normalization(nu, width), width),
+                      ap_student_tail(nu, square, width), width);
     }
 
     if (distribution == APARCH_SKEWT) {
         const aparch_jet_t nu = shape[0];
         const aparch_jet_t lam = shape[1];
-        const aparch_jet_t nu_minus_one = ap_sub(nu, one, width);
-        const aparch_jet_t nu_minus_two = ap_sub(nu, ap_constant(2.0, order), width);
-        aparch_jet_t c_log = ap_sub(
-            ap_lgamma(ap_scale(ap_add(nu, one, width), 0.5, width), width),
-            ap_lgamma(ap_scale(nu, 0.5, width), width),
-            width
-        );
-        c_log = ap_sub(
-            c_log,
-            ap_scale(ap_log(ap_scale(nu_minus_two, M_PI, width), width), 0.5, width),
-            width
-        );
-        const aparch_jet_t a = ap_scale(
-            ap_div(
-                ap_mul(ap_mul(lam, ap_exp(c_log, width), width), nu_minus_two, width),
-                nu_minus_one,
-                width
-            ),
-            4.0,
-            width
-        );
+        const aparch_jet_t c_log = ap_student_normalization(nu, width);
+        const double inverse = 1.0 / (nu.value - 1.0);
+        const aparch_jet_t moment_ratio = ap_unary(nu, (nu.value - 2.0) * inverse,
+            inverse * inverse, -2.0 * inverse * inverse * inverse, width);
+        const aparch_jet_t a = ap_scale(ap_mul(ap_mul(lam, ap_exp(c_log, width), width),
+                                              moment_ratio, width), 4.0, width);
         const aparch_jet_t b = ap_sqrt(
             ap_sub(
                 ap_add(one, ap_scale(ap_mul(lam, lam, width), 3.0, width), width),
@@ -247,20 +239,10 @@ static aparch_jet_t aparch_observation(
         const aparch_jet_t adjusted = ap_div(
             u, ap_add(one, ap_scale(lam, sign, width), width), width
         );
-        const aparch_jet_t ratio = ap_div(
-            ap_mul(adjusted, adjusted, width), nu_minus_two, width
-        );
+        const aparch_jet_t square = ap_mul(adjusted, adjusted, width);
         aparch_jet_t out = ap_sub(ap_scale(c_log, -1.0, width), ap_log(b, width), width);
         out = ap_add(out, half_log_h, width);
-        return ap_add(
-            out,
-            ap_mul(
-                ap_scale(ap_add(nu, one, width), 0.5, width),
-                ap_log(ap_add(one, ratio, width), width),
-                width
-            ),
-            width
-        );
+        return ap_add(out, ap_student_tail(nu, square, width), width);
     }
 
     if (distribution == APARCH_GED) {
