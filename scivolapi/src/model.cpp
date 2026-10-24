@@ -1,5 +1,6 @@
 #include <scivolapi/model.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -98,6 +99,16 @@ std::vector<double> Model::start(const Sample& sample) const
     for (std::size_t j = 1; j <= spec_.q; ++j)
         theta[spec_.p + j] = 0.80 * persistence / static_cast<double>(spec_.q);
     return theta;
+}
+
+// GARCH: h scales by factor^2, so omega does; the coefficients are scale free.
+void Model::rescale(std::span<const double> theta, double factor, std::span<double> scaled) const
+{
+    check_size(theta, dimension());
+    require(scaled.size() == dimension(), "scaled output has the wrong length");
+    require(std::isfinite(factor) && factor > 0.0, "the scale factor must be positive and finite");
+    std::copy(theta.begin(), theta.end(), scaled.begin());
+    scaled[0] = theta[0] * factor * factor;
 }
 
 void Model::to_theta(std::span<const double> z, std::span<double> theta) const

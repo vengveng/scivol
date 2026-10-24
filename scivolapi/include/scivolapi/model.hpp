@@ -59,6 +59,10 @@ public:
 
     [[nodiscard]] std::vector<double> start(const Sample& sample) const;
 
+    // Exact data scaling: theta for data y maps to `scaled` for data y * factor,
+    // with the same likelihood up to the change of variables.
+    void rescale(std::span<const double> theta, double factor, std::span<double> scaled) const;
+
     // Coordinate map theta = theta(z), always differentiated at the given z.
     void to_theta(std::span<const double> z, std::span<double> theta) const;
     [[nodiscard]] bool to_z(std::span<const double> theta, std::span<double> z) const;

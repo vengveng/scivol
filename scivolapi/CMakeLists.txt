@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(scivolapi LANGUAGES CXX)
+project(scivolapi LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,9 +8,13 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
+file(GLOB SCIVOLAPI_OPTIMIZE_SOURCES CONFIGURE_DEPENDS src/optimize/*.cpp src/optimize/*.c)
 add_library(scivolapi
     src/model.cpp
     src/jet.cpp
+    src/fit.cpp
+    src/finalize.cpp
+    ${SCIVOLAPI_OPTIMIZE_SOURCES}
 )
 add_library(scivolapi::scivolapi ALIAS scivolapi)
 target_include_directories(scivolapi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -19,6 +23,19 @@ set_target_properties(scivolapi PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_options(scivolapi PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -fno-fast-math>
 )
+
+option(SCIVOLAPI_TESTS "Build native tests" ON)
+if(SCIVOLAPI_TESTS)
+    enable_testing()
+    file(GLOB_RECURSE SCIVOLAPI_TEST_SOURCES CONFIGURE_DEPENDS tests/*.cpp)
+    foreach(source ${SCIVOLAPI_TEST_SOURCES})
+        get_filename_component(name ${source} NAME_WE)
+        add_executable(${name} ${source})
+        target_link_libraries(${name} PRIVATE scivolapi)
+        target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        add_test(NAME ${name} COMMAND ${name})
+    endforeach()
+endif()
 
 option(SCIVOLAPI_PYTHON "Build the scivol._scivolapi Python module" OFF)
 if(SCIVOLAPI_PYTHON)

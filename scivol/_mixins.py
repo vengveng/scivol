@@ -428,6 +428,13 @@ class FitsMixin:
         from ._validation import prepare_series_input, validate_spec
 
         spec = validate_spec(self.spec)
+        if kwargs.get("engine") == "scivolapi":
+            # Migration path: compositions covered by the new native library.
+            kwargs.pop("engine")
+            from ._scivolapi_fit import fit_spec
+
+            prepared = prepare_series_input(spec, data, x=x, hold_back=hold_back, scale=scale)
+            return fit_spec(spec, prepared.data, index=index, name=name, **kwargs)
         from .components.mean import ARMA
         from .components.vol import APARCH, EGARCH
         from .roles import Role
