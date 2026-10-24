@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 
 import mpmath as mp
@@ -16,7 +17,8 @@ from test_native_anchored_mean_chart import Jet
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EVIDENCE = ROOT / "localdev/jet_math_recovery_20261013/density_range_followup"
+_SCRATCH = tempfile.TemporaryDirectory(prefix="scivol-test-")  # build images are scratch
+EVIDENCE = Path(_SCRATCH.name)
 SENTINEL = 12345.0
 
 

@@ -20,6 +20,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from types import SimpleNamespace
 
@@ -30,7 +31,8 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-REVIEW = ROOT / "localdev/coordinate_006_chief/anchored"
+_SCRATCH = tempfile.TemporaryDirectory(prefix="scivol-test-")  # build images are scratch
+REVIEW = Path(_SCRATCH.name)
 SIZE = ctypes.c_size_t
 PTR = ctypes.c_void_p
 SENTINEL = 271828.125

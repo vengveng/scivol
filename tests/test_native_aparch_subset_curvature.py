@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from types import SimpleNamespace
 
@@ -32,7 +33,8 @@ from test_native_anchored_mean_chart import Jet, Spec as ChartSpec, chart_oracle
 ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ROOT / "scivol/_native"
 SOURCE = ROOT / "tests/native_aparch_subset_curvature.cpp"
-EVIDENCE = ROOT / "localdev/aparch42_chart_integration_20261010/shared_precision_review/seed_tracked"
+_SCRATCH = tempfile.TemporaryDirectory(prefix="scivol-test-")  # build images are scratch
+EVIDENCE = Path(_SCRATCH.name)
 SENTINEL = 271828.125
 ORDERS = [(1, 1, 1, 1), (3, 2, 3, 2), (1, 0, 1, 2)]
 FIXED = {(1, 1, 1, 1): 1, (1, 0, 1, 2): 2}

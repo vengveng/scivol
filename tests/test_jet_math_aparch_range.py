@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from types import SimpleNamespace
 import warnings
@@ -28,7 +29,8 @@ NATIVE = ROOT / "scivol/_native"
 SOURCE = ROOT / "tests/native_jet_math_aparch_range.cpp"
 PRECISION_SOURCE = NATIVE / "aparch_moment_precision.cpp"
 GH_SOURCE = NATIVE / "gh_math_translation.cpp"
-EVIDENCE = ROOT / "localdev/jet_math_recovery_20261013/aparch_range"
+_SCRATCH = tempfile.TemporaryDirectory(prefix="scivol-test-")  # build images are scratch
+EVIDENCE = Path(_SCRATCH.name)
 SENTINEL = 271828.125
 F_ATOL = 2e-11
 G_RTOL, G_ATOL = 1e-10, 1e-10

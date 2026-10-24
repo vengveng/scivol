@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import tempfile
 import time
 from types import SimpleNamespace
 
@@ -24,7 +25,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "tests/native_residual_mean_chart.cpp"
-REVIEW = ROOT / "localdev/aparch42_chart_integration_20261010/full_controller/canonical_chart_test_review"
+_SCRATCH = tempfile.TemporaryDirectory(prefix="scivol-test-")  # build images are scratch
+REVIEW = Path(_SCRATCH.name)
 MODES = ("intentions", "lifecycle", "guards", "analytic", "poisoned")
 
 

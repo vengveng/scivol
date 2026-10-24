@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import tempfile
 import time
 from types import SimpleNamespace
 
@@ -24,7 +25,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "tests/native/transfer_006_residual_mean_chart.cpp"
-REVIEW = ROOT / "localdev/coordinate_006_chief/residual"
+_SCRATCH = tempfile.TemporaryDirectory(prefix="scivol-test-")  # build images are scratch
+REVIEW = Path(_SCRATCH.name)
 MODES = ("intentions", "lifecycle", "guards", "analytic", "poisoned")
 
 
