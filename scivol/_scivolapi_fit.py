@@ -53,13 +53,16 @@ _DENSITIES = {
 
 def native_spec(spec: Any) -> Optional[api.ModelSpec]:
     """The native specification for a composition, or None if not yet covered."""
-    from .components.vol import GARCH, GJRGARCH
+    from .components.vol import APARCH, EGARCH, GARCH, GJRGARCH
 
     if spec.get_component(Role.MEAN) is not None:
         return None
     volatility = spec.get_component(Role.VOLATILITY)
     density = spec.get_component(Role.DENSITY)
-    volatility_kind = {GARCH: api.VolatilityKind.garch, GJRGARCH: api.VolatilityKind.gjr}.get(type(volatility))
+    volatility_kind = {
+        GARCH: api.VolatilityKind.garch, GJRGARCH: api.VolatilityKind.gjr, EGARCH: api.VolatilityKind.egarch,
+        APARCH: api.VolatilityKind.aparch,
+    }.get(type(volatility))
     if volatility_kind is None or getattr(volatility, "_is_auto", False):
         return None
     kind = _DENSITIES.get("Normal" if density is None else type(density).__name__)

@@ -44,6 +44,8 @@ public:
         return true;
     }
 
+    [[nodiscard]] bool prepare(const double*, int) noexcept { return true; }
+
     [[nodiscard]] bool step(const double* theta, const Sample& sample, std::size_t t, int order,
                             VolatilityWork& w, VolatilityStep& out) const noexcept
     {

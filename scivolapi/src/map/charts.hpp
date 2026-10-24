@@ -3,8 +3,10 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <type_traits>
 
 #include "../detail/numeric.hpp"
+#include "../math/dual2.hpp"
 
 namespace scivolapi::detail {
 
@@ -175,6 +177,107 @@ struct SimplexChart {
             }
         }
     }
+};
+
+// Coefficients beta_1..q of a stable lag polynomial 1 - sum_j beta_j L^j (all
+// roots outside the unit circle), parameterized by reflection coefficients
+// kappa_k in (-1, 1) (Barndorff-Nielsen and Schou 1973):
+//   phi^(k)_k = kappa_k,  phi^(k)_j = phi^(k-1)_j - kappa_k phi^(k-1)_{k-j}  (j < k),  beta = phi^(q).
+// The polynomial is stable exactly when every |kappa_k| < 1; the step-down
+// recursion inverts the map. The chart is kappa_k = c' tanh(z_k), c' the greatest
+// double below one. Derivatives come from Dual2 numbers in the q coordinates.
+struct StableChart {
+    static constexpr std::size_t max_order = 8;
+    using D = Dual2<max_order>;
+    static double bound() noexcept { return std::nextafter(1.0, 0.0); }
+
+    template<class T>
+    static void levinson(const T* kappa, std::size_t q, T* beta) noexcept
+    {
+        T previous[max_order];
+        for (std::size_t k = 0; k < q; ++k) {
+            for (std::size_t j = 0; j < k; ++j) previous[j] = beta[j];
+            for (std::size_t j = 0; j < k; ++j) beta[j] = previous[j] - kappa[k] * previous[k - 1 - j];
+            beta[k] = kappa[k];
+        }
+    }
+
+    // Reflection coefficients of beta; false if some |kappa_k| >= 1.
+    template<class T>
+    static bool step_down(const double* beta, std::size_t q, T* kappa) noexcept
+    {
+        T phi[max_order], next[max_order];
+        for (std::size_t j = 0; j < q; ++j) phi[j] = make<T>(beta[j], j);
+        for (std::size_t k = q; k-- > 0;) {
+            kappa[k] = phi[k];
+            const double v = value(kappa[k]);
+            if (!(std::abs(v) < 1.0) || !std::isfinite(v)) return false;
+            const T scale = 1.0 - kappa[k] * kappa[k];
+            for (std::size_t j = 0; j < k; ++j) next[j] = (phi[j] + kappa[k] * phi[k - 1 - j]) / scale;
+            for (std::size_t j = 0; j < k; ++j) phi[j] = next[j];
+        }
+        return true;
+    }
+
+    static void theta(const double* z, std::size_t q, double* beta) noexcept
+    {
+        double kappa[max_order];
+        for (std::size_t k = 0; k < q; ++k) kappa[k] = bound() * std::tanh(z[k]);
+        levinson(kappa, q, beta);
+    }
+
+    static bool z(const double* beta, std::size_t q, double* out) noexcept
+    {
+        double kappa[max_order];
+        if (!step_down(beta, q, kappa)) return false;
+        for (std::size_t k = 0; k < q; ++k) {
+            if (!(std::abs(kappa[k]) < bound())) return false;
+            out[k] = std::atanh(kappa[k] / bound());
+        }
+        return true;
+    }
+
+    // beta(z) as Dual2 numbers in z.
+    static void dual(const double* z, std::size_t q, D* beta) noexcept
+    {
+        D kappa[max_order];
+        for (std::size_t k = 0; k < q; ++k) {
+            const double t = std::tanh(z[k]), c = bound();
+            const double e = std::exp(-2.0 * std::abs(z[k])), sech2 = 4.0 * e / ((1.0 + e) * (1.0 + e));
+            kappa[k] = lift(D::variable(z[k], k), c * t, c * sech2, -2.0 * c * t * sech2);
+        }
+        levinson(kappa, q, beta);
+    }
+
+    static void jacobian(const double* z, std::size_t q, std::size_t at, std::size_t dim, double* jac) noexcept
+    {
+        D beta[max_order];
+        dual(z, q, beta);
+        for (std::size_t i = 0; i < q; ++i)
+            for (std::size_t j = 0; j < q; ++j) jac[(at + i) * dim + at + j] = beta[i].g[j];
+    }
+
+    static void curvature(const double* z, const double* g, std::size_t q, std::size_t at, std::size_t dim,
+                          double* out) noexcept
+    {
+        D beta[max_order];
+        dual(z, q, beta);
+        for (std::size_t i = 0; i < q; ++i)
+            for (std::size_t j = 0; j < q; ++j)
+                for (std::size_t k = 0; k < q; ++k)
+                    out[(at + j) * dim + at + k] += g[i] * beta[i].h[j <= k ? packed(max_order, j, k) : packed(max_order, k, j)];
+    }
+
+private:
+    template<class T>
+    static T make(double v, std::size_t index) noexcept
+    {
+        if constexpr (std::is_same_v<T, double>) return v;
+        else return T::variable(v, index);
+    }
+    static double value(double v) noexcept { return v; }
+    template<class T>
+    static double value(const T& v) noexcept { return v.v; }
 };
 
 }  // namespace scivolapi::detail

@@ -69,6 +69,7 @@ Jet::Jet(const Model& model, const Sample& sample) : model_(model), sample_(samp
 {
     if (sample.size() < 2 || sample.first_scored >= sample.size())
         throw std::invalid_argument("the sample must contain scored observations");
+    if (detail::assembler_for(model.spec()) == nullptr) throw std::invalid_argument("this model is not available yet");
     const detail::Layout layout(model.spec());
     const detail::VolatilityShape shape = detail::volatility_shape(model.spec());
     work_.assign(detail::work_size(layout, shape, sample.size()), 0.0);
@@ -109,21 +110,25 @@ JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
         return {};
     Work work = detail::carve(work_.data(), layout, detail::volatility_shape(model_.spec()), n);
 
-    layout.theta(z.data(), work.theta);
+    if (!layout.theta(z.data(), work.theta)) {  // a moment the chart needs does not exist here
+        JetResult failed;
+        failed.status = Status::not_evaluable;
+        return failed;
+    }
     double v = 0.0;
     const ThetaResult r = detail::assembler_for(model_.spec())(
         {model_.spec(), layout, sample_, work.theta, order_for(request)}, work, v);
     if (r.status != Status::ok) return finish(request, r, false);
 
-    if (request & (gradient | hessian)) layout.jacobian(z.data(), work.share, work.jac);
-    if ((request & gradient) && r.gradient_ok) {
+    const bool chart_ok = !(request & (gradient | hessian)) || layout.jacobian(z.data(), work.jac);
+    if ((request & gradient) && r.gradient_ok && chart_ok) {
         for (std::size_t j = 0; j < dim; ++j) {
             double s = 0.0;
             for (std::size_t i = 0; i < dim; ++i) s += work.jac[i * dim + j] * work.g[i];
             out.gradient[j] = s;
         }
     }
-    bool hessian_ok = r.hessian_ok && r.gradient_ok;
+    bool hessian_ok = r.hessian_ok && r.gradient_ok && chart_ok;
     if ((request & hessian) && hessian_ok) {
         expand(work.hp, dim, work.hd);
         for (std::size_t i = 0; i < dim; ++i)  // tmp = H_theta J
@@ -138,14 +143,14 @@ JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
                 for (std::size_t k = 0; k < dim; ++k) s += work.jac[k * dim + i] * work.tmp[k * dim + j];
                 out.hessian[i * dim + j] = s;
             }
-        layout.curvature(z.data(), work.share, work.g, work.tmp, out.hessian.data());
-        hessian_ok = detail::all_finite(out.hessian.data(), dim * dim);
+        hessian_ok = layout.curvature(z.data(), work.g, out.hessian.data())
+            && detail::all_finite(out.hessian.data(), dim * dim);
     }
     if (request & value) out.value = v;
     if (request & paths) write_paths(work, n, out.paths);
 
     ThetaResult zr = r;
-    zr.gradient_ok = r.gradient_ok && (!(request & gradient) || detail::all_finite(out.gradient.data(), dim));
+    zr.gradient_ok = r.gradient_ok && chart_ok && (!(request & gradient) || detail::all_finite(out.gradient.data(), dim));
     zr.hessian_ok = hessian_ok;
     return finish(request, zr, true);
 }

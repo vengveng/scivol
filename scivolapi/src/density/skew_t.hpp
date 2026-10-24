@@ -14,6 +14,7 @@ namespace scivolapi::detail {
 // curvature: second derivatives do not exist there.
 struct SkewTDensity {
     static constexpr std::size_t shapes = 2;
+    static constexpr bool symmetric = false;
 
     struct Prepared {
         Constant<2> constant;
@@ -21,6 +22,8 @@ struct SkewTDensity {
         // Shape derivatives of a and b, indexed (nu, lambda) and packed (nn, nl, ll).
         double a1[2]{}, b1[2]{}, a2[3]{}, b2[3]{};
     };
+
+    static std::array<double, 1> nonsmooth_points(const Prepared& p) noexcept { return {-p.a / p.b}; }
 
     [[nodiscard]] static bool prepare(const double* shape, int order, Prepared& p) noexcept
     {
@@ -72,11 +75,21 @@ struct SkewTDensity {
 
     [[nodiscard]] static Terms<2> observe(const Prepared& p, double x, int order) noexcept
     {
+        return observation(p, x, order, false);
+    }
+
+    static Terms<2> observe_for_moments(const Prepared& p, double x, int order) noexcept
+    {
+        return observation(p, x, order, true);
+    }
+
+    static Terms<2> observation(const Prepared& p, double x, int order, bool moment) noexcept
+    {
         const double n = p.b * x + p.a;
         const double s = n >= 0.0 ? 1.0 : -1.0;
         const double d = 1.0 + p.lambda * s;
         const double u = n / d;
-        const TKernel k = t_kernel(u, p.nu, order);
+        const TKernel k = moment ? t_moment_kernel(u, p.nu, order) : t_kernel(u, p.nu, order);
 
         Terms<2> t;
         t.g = k.t;

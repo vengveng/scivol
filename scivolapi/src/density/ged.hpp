@@ -14,11 +14,14 @@ namespace scivolapi::detail {
 // x = 0 disappears, so variance and shape derivatives exist for every x.
 struct GedDensity {
     static constexpr std::size_t shapes = 1;
+    static constexpr bool symmetric = true;
 
     struct Prepared {
         Constant<1> constant;
         double nu = 0.0, kappa = 0.0, kappa1 = 0.0, kappa2 = 0.0;
     };
+
+    static std::array<double, 1> nonsmooth_points(const Prepared&) noexcept { return {0.0}; }
 
     [[nodiscard]] static bool prepare(const double* shape, int order, Prepared& p) noexcept
     {

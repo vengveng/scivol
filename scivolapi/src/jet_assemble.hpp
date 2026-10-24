@@ -9,6 +9,8 @@
 #include "density/density.hpp"
 #include "detail/numeric.hpp"
 #include "model_layout.hpp"
+#include "volatility/aparch.hpp"
+#include "volatility/egarch.hpp"
 #include "volatility/garch.hpp"
 #include "volatility/volatility.hpp"
 
@@ -27,6 +29,9 @@ inline VolatilityShape volatility_shape(const ModelSpec& spec) noexcept
 {
     switch (spec.volatility) {
     case VolatilityKind::gjr: return {1u + 2u * spec.p + spec.q, std::max<std::size_t>(spec.q, 1u)};
+    case VolatilityKind::egarch:
+        return {1u + 2u * spec.p + spec.q + shape_domains(spec.density).size(), std::max(spec.p, spec.q)};
+    case VolatilityKind::aparch: return {2u + 2u * spec.p + spec.q, std::max<std::size_t>(spec.q, 1u)};
     default: return {1u + spec.p + spec.q, std::max<std::size_t>(spec.q, 1u)};
     }
 }
@@ -112,7 +117,7 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
 {
     constexpr std::size_t shapes = Density::shapes;
     ThetaResult result;
-    const Volatility volatility(in.spec);
+    Volatility volatility(in.spec);
     const double* theta = in.theta;
     const int order = in.order;
     const std::size_t n = in.sample.size();
@@ -122,7 +127,8 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
     const std::size_t sh = in.layout.shapes;
 
     typename Density::Prepared density;
-    if (!volatility.evaluable(theta) || !Density::prepare(theta + sh, order, density)) {
+    if (!volatility.evaluable(theta) || !Density::prepare(theta + sh, order, density)
+        || !volatility.prepare(theta, order)) {
         result.status = Status::not_evaluable;
         return result;
     }
@@ -153,7 +159,10 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
             for (std::size_t a = 0; a < w; ++a) {
                 for (std::size_t b = a; b < w; ++b)
                     work.hp[packed(dim, a, b)] += l.lamlam * l1[a] * l1[b] + l.lam * l2[packed(w, a, b)];
-                for (std::size_t i = 0; i < shapes; ++i) add_packed(work.hp, dim, a, sh + i, l.lams[i] * l1[a]);
+                // l_lambda,s_i lambda_a; when a is s_i itself (EGARCH) the diagonal receives
+                // it twice, from d(l_s)/ds and from d(l_lambda lambda_s)/ds.
+                for (std::size_t i = 0; i < shapes; ++i)
+                    add_packed(work.hp, dim, a, sh + i, (a == sh + i ? 2.0 : 1.0) * l.lams[i] * l1[a]);
             }
             for (std::size_t i = 0; i < shapes; ++i)
                 for (std::size_t j = i; j < shapes; ++j)
@@ -188,6 +197,8 @@ Assembler assembler_with(VolatilityKind kind) noexcept
     switch (kind) {
     case VolatilityKind::garch: return assemble<GarchVolatility<false>, Density>;
     case VolatilityKind::gjr: return assemble<GarchVolatility<true>, Density>;
+    case VolatilityKind::egarch: return assemble<EgarchVolatility<Density>, Density>;
+    case VolatilityKind::aparch: return assemble<AparchVolatility, Density>;
     }
     return nullptr;
 }

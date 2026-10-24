@@ -7,10 +7,13 @@ namespace scivolapi::detail {
 // Standard normal:  c = 0.5 log 2pi,  g = x^2 / 2.
 struct NormalDensity {
     static constexpr std::size_t shapes = 0;
+    static constexpr bool symmetric = true;
 
     struct Prepared {
         Constant<0> constant;
     };
+
+    static std::array<double, 0> nonsmooth_points(const Prepared&) noexcept { return {}; }
 
     [[nodiscard]] static bool prepare(const double* /*shape*/, int /*order*/, Prepared& out) noexcept
     {

@@ -8,7 +8,7 @@
 namespace scivolapi {
 
 enum class MeanKind { zero };
-enum class VolatilityKind { garch, gjr };
+enum class VolatilityKind { garch, gjr, egarch, aparch };
 enum class DensityKind {
     normal,
     student_t,

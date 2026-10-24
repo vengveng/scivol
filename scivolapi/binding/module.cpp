@@ -105,7 +105,9 @@ NB_MODULE(_scivolapi, m)
     nb::enum_<MeanKind>(m, "MeanKind").value("zero", MeanKind::zero);
     nb::enum_<VolatilityKind>(m, "VolatilityKind")
         .value("garch", VolatilityKind::garch)
-        .value("gjr", VolatilityKind::gjr);
+        .value("gjr", VolatilityKind::gjr)
+        .value("egarch", VolatilityKind::egarch)
+        .value("aparch", VolatilityKind::aparch);
     nb::enum_<DensityKind>(m, "DensityKind")
         .value("normal", DensityKind::normal)
         .value("student_t", DensityKind::student_t)

@@ -21,15 +21,38 @@ struct TKernel {
 {
     TKernel r;
     const double k = nu - 2.0, u2 = u * u, q = k + u2, v = u2 / q;
-    r.t = -0.5 * (nu + 1.0) * std::log1p(-v);
+    const double l = std::log1p(u2 / k);  // not -log1p(-v): v rounds to one in the far tail
+    r.t = 0.5 * (nu + 1.0) * l;
     if (order >= 1) {
         r.u = (nu + 1.0) * u / q;
-        r.nu = -0.5 * log1pmx(-v) - 1.5 * v / k;
+        // Both forms are T_nu; the first has no cancellation for small v, the
+        // second none once v >= 1/2.
+        r.nu = v < 0.5 ? -0.5 * log1pmx(-v) - 1.5 * v / k : 0.5 * l - 0.5 * (nu + 1.0) * v / k;
     }
     if (order >= 2) {
         r.uu = (nu + 1.0) * (k - u2) / (q * q);
         r.unu = u * (u2 - 3.0) / (q * q);
         r.nunu = -0.5 * v * v / k + 1.5 * v * (k + q) / (k * k * q);
+    }
+    return r;
+}
+
+// Moment integration reaches tails where u^2/(nu-2+u^2) rounds to one.
+// Retain log(1+u^2/(nu-2)) rather than recovering it from that ratio.
+[[nodiscard]] inline TKernel t_moment_kernel(double u, double nu, int order) noexcept
+{
+    const double k = nu - 2.0, u2 = u * u, q = k + u2, v = u2 / q;
+    const double l = std::log1p(u2 / k);
+    TKernel r;
+    r.t = 0.5 * (nu + 1.0) * l;
+    if (order >= 1) {
+        r.u = (nu + 1.0) * (u / q);
+        r.nu = 0.5 * l - 0.5 * (nu + 1.0) * v / k;
+    }
+    if (order >= 2) {
+        r.uu = (nu + 1.0) * ((1.0 - 2.0 * v) / q);
+        r.unu = (u / q) * (1.0 - (nu + 1.0) / q);
+        r.nunu = (-v + 0.5 * (nu + 1.0) * v * (2.0 - v) / k) / k;
     }
     return r;
 }
@@ -52,11 +75,24 @@ struct LogNormalizer {
 // Standardized Student-t, nu > 2:  c = -log c(nu),  g = T(x; nu).
 struct StudentTDensity {
     static constexpr std::size_t shapes = 1;
+    static constexpr bool symmetric = true;
 
     struct Prepared {
         Constant<1> constant;
         double nu = 0.0;
     };
+
+    static std::array<double, 0> nonsmooth_points(const Prepared&) noexcept { return {}; }
+
+    static Terms<1> observe_for_moments(const Prepared& p, double x, int order) noexcept
+    {
+        const TKernel k = t_moment_kernel(x, p.nu, order);
+        Terms<1> t;
+        t.g = k.t;
+        if (order >= 1) t.s[0] = k.nu;
+        if (order >= 2) t.ss[0] = k.nunu;
+        return t;
+    }
 
     [[nodiscard]] static bool prepare(const double* shape, int /*order*/, Prepared& out) noexcept
     {

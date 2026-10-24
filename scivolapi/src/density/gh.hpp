@@ -144,6 +144,7 @@ struct VarianceGamma {
 template<class Member>
 struct GhFamilyDensity {
     static constexpr std::size_t shapes = Member::shapes;
+    static constexpr bool symmetric = false;
     enum Intermediate { ALPHA, MINUS, PLUS, D2, MU, NU, INTERMEDIATES };
 
     struct Prepared {
@@ -152,6 +153,12 @@ struct GhFamilyDensity {
         std::array<std::array<double, shapes>, INTERMEDIATES> grad{};
         std::array<std::array<double, packed_size(shapes)>, INTERMEDIATES> hess{};
     };
+
+    static auto nonsmooth_points(const Prepared& p) noexcept
+    {
+        if constexpr (Member::has_delta) return std::array<double, 0>{};
+        else return std::array<double, 1>{p.mu};
+    }
 
     [[nodiscard]] static bool prepare(const double* shape, int /*order*/, Prepared& p) noexcept
     {
