@@ -79,6 +79,14 @@ for standardized innovations `z`; the weight is 0.5 for symmetric densities.
 
 ## 3. Performance rules
 
+- **Eliminate work with mathematics before tuning code.** For any new expensive
+  computation, or one that profiling shows dominates, first look for an
+  equivalent formulation: identities, changes of variables, exchanged integration
+  order, analytical marginalization, factorization, reusable quantities (for
+  example `E[a*b]` instead of `a*E[b]`, or `a/b` directly instead of `a` then `b`).
+  This often gains more speed and stability than low-level tuning. The
+  reformulation must keep the model, normalization, domain and derivatives, and is
+  checked against the AD oracle and measured.
 - **Double precision on the hot path.** Use stable algebra (log space, scaled Bessel
   ratios, compensated sums where needed). When double cannot represent a result,
   return an explicit failure status rather than a wrong number.
