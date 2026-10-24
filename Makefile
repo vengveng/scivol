@@ -5,7 +5,7 @@ b:
 
 dev:
 	rm -rf build/ dist/
-	pip install -e .[dev] --no-build-isolation --config-settings="--build-option=build_ext --build-option=--inplace"
+	pip install -e .[dev] --no-build-isolation
 
 t:
 	pytest -q tests/test_spec_core.py
