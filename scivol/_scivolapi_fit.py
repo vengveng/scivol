@@ -38,9 +38,17 @@ class NativeOptimizationResult:
     njev: int
 
 
+# Densities scivolapi covers, by component class name.
+_DENSITIES = {
+    "Normal": api.DensityKind.normal,
+    "StudentT": api.DensityKind.student_t,
+    "SkewT": api.DensityKind.skew_t,
+    "GED": api.DensityKind.ged,
+}
+
+
 def native_spec(spec: Any) -> Optional[api.ModelSpec]:
     """The native specification for a composition, or None if not yet covered."""
-    from .components.density import Normal
     from .components.vol import GARCH
 
     if spec.get_component(Role.MEAN) is not None:
@@ -49,12 +57,13 @@ def native_spec(spec: Any) -> Optional[api.ModelSpec]:
     density = spec.get_component(Role.DENSITY)
     if type(volatility) is not GARCH or getattr(volatility, "_is_auto", False):
         return None
-    if density is not None and type(density) is not Normal:
+    kind = _DENSITIES.get("Normal" if density is None else type(density).__name__)
+    if kind is None:
         return None
     native = api.ModelSpec()
     native.volatility = api.VolatilityKind.garch
     native.p, native.q = int(volatility.p), int(volatility.q)
-    native.density = api.DensityKind.normal
+    native.density = kind
     return native
 
 

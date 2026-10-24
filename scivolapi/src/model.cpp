@@ -30,6 +30,7 @@ Model::Model(const ModelSpec& spec) : spec_(spec)
     names_.push_back("omega");
     for (std::size_t i = 1; i <= spec.p; ++i) names_.push_back("alpha[" + std::to_string(i) + "]");
     for (std::size_t j = 1; j <= spec.q; ++j) names_.push_back("beta[" + std::to_string(j) + "]");
+    for (const detail::ShapeDomain& shape : detail::shape_domains(spec.density)) names_.push_back(shape.name);
 }
 
 Sample Model::prepare(std::span<const double> y) const
@@ -48,26 +49,30 @@ Sample Model::prepare(std::span<const double> y) const
 
 bool Model::evaluable(std::span<const double> theta) const
 {
-    return theta.size() == dimension() && detail::GarchRecursion(spec_.p, spec_.q).evaluable(theta.data());
+    return theta.size() == dimension() && detail::GarchRecursion(spec_.p, spec_.q).evaluable(theta.data())
+        && detail::Layout(spec_).shapes_inside(theta.data());
 }
 
 bool Model::feasible(std::span<const double> theta) const
 {
     if (!evaluable(theta)) return false;
     double persistence = 0.0;
-    for (std::size_t k = 1; k < dimension(); ++k) persistence += theta[k];
+    for (std::size_t k = 1; k <= spec_.p + spec_.q; ++k) persistence += theta[k];
     return persistence < 1.0;
 }
 
 void Model::bounds(std::span<double> lower, std::span<double> upper) const
 {
     require(lower.size() == dimension() && upper.size() == dimension(), "bounds have the wrong length");
-    const double none = std::numeric_limits<double>::quiet_NaN();
-    lower[0] = detail::PositiveChart::floor;
-    upper[0] = none;
-    for (std::size_t k = 1; k < dimension(); ++k) {
-        lower[k] = 0.0;
-        upper[k] = none;
+    const detail::Layout layout(spec_);
+    for (std::size_t k = 0; k < dimension(); ++k) {
+        if (k >= layout.coefficients && k < layout.shapes) {
+            lower[k] = 0.0;
+            upper[k] = std::numeric_limits<double>::quiet_NaN();
+        } else {
+            lower[k] = layout.scalar(k).lower_bound();
+            upper[k] = layout.scalar(k).upper_bound();
+        }
     }
 }
 
@@ -82,8 +87,8 @@ void Model::constraints(std::span<const double> theta, std::span<double> values,
     require(values.size() == 1 && jacobian.size() == dimension(), "constraint outputs have the wrong length");
     const std::size_t k = spec_.p + spec_.q;
     double c = detail::SimplexChart::limit(k);
-    jacobian[0] = 0.0;
-    for (std::size_t i = 1; i < dimension(); ++i) {
+    std::fill(jacobian.begin(), jacobian.end(), 0.0);
+    for (std::size_t i = 1; i <= k; ++i) {
         c -= theta[i];
         jacobian[i] = -1.0;
     }
@@ -98,10 +103,12 @@ std::vector<double> Model::start(const Sample& sample) const
     for (std::size_t i = 1; i <= spec_.p; ++i) theta[i] = 0.20 * persistence / static_cast<double>(spec_.p);
     for (std::size_t j = 1; j <= spec_.q; ++j)
         theta[spec_.p + j] = 0.80 * persistence / static_cast<double>(spec_.q);
+    const detail::Layout layout(spec_);
+    for (std::size_t i = 0; i < layout.shape_count; ++i) theta[layout.shapes + i] = layout.shape_domain[i].start;
     return theta;
 }
 
-// GARCH: h scales by factor^2, so omega does; the coefficients are scale free.
+// GARCH: h scales by factor^2, so omega does; coefficients and shapes are scale free.
 void Model::rescale(std::span<const double> theta, double factor, std::span<double> scaled) const
 {
     check_size(theta, dimension());

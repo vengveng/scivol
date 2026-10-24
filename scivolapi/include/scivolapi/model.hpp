@@ -9,7 +9,16 @@ namespace scivolapi {
 
 enum class MeanKind { zero };
 enum class VolatilityKind { garch };
-enum class DensityKind { normal };
+enum class DensityKind {
+    normal,
+    student_t,
+    skew_t,  // Hansen (1994)
+    ged,
+    generalized_hyperbolic,
+    nig,
+    hyperbolic,
+    variance_gamma,
+};
 
 // What the user asked for. Compiled once into a Model.
 struct ModelSpec {

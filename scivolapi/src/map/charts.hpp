@@ -14,29 +14,88 @@ namespace scivolapi::detail {
 // Jacobian and curvature are written into dense (dimension x dimension)
 // matrices at the block's offset.
 
-// theta = floor + softplus(z) on (0, inf). The floor is the smallest normal
-// double: softplus underflows to zero for z < -745, and zero is outside (0, inf).
-struct PositiveChart {
-    static constexpr double floor = std::numeric_limits<double>::min();
+// One scalar parameter on an open interval, from the model's declared domain.
+// Every chart keeps theta inside a closed interval [lower_bound, upper_bound]
+// of representable values strictly inside the open domain:
+//   lower:      (a, inf)   theta = a' + softplus(z),  a' the least normal double > a
+//   symmetric:  (-c, c)    theta = c' tanh(z),        c' the greatest double < c
+//   free:       (-inf, inf) theta = z
+// The margins a', c' are floating-point margins, not model restrictions.
+struct ScalarChart {
+    enum class Kind { lower, symmetric, free };
+    Kind kind = Kind::free;
+    double bound = 0.0;  // a' or c'
 
-    static double theta(double z) noexcept { return floor + softplus(z); }
-
-    static bool z(double theta, double& out) noexcept
+    static ScalarChart for_domain(double lower, double upper) noexcept
     {
-        if (!(theta > floor) || !std::isfinite(theta)) return false;
-        out = inverse_softplus(theta - floor);
+        if (std::isfinite(lower) && std::isfinite(upper))  // symmetric intervals only
+            return {Kind::symmetric, std::nextafter(upper, 0.0)};
+        if (std::isfinite(lower))
+            return {Kind::lower, lower == 0.0 ? std::numeric_limits<double>::min()
+                                              : std::nextafter(lower, std::numeric_limits<double>::infinity())};
+        return {Kind::free, 0.0};
+    }
+
+    // Closed bounds for the optimizer (NaN = none).
+    [[nodiscard]] double lower_bound() const noexcept
+    {
+        return kind == Kind::lower ? bound : kind == Kind::symmetric ? -bound : std::numeric_limits<double>::quiet_NaN();
+    }
+    [[nodiscard]] double upper_bound() const noexcept
+    {
+        return kind == Kind::symmetric ? bound : std::numeric_limits<double>::quiet_NaN();
+    }
+
+    [[nodiscard]] double theta(double z) const noexcept
+    {
+        switch (kind) {
+        case Kind::lower: return bound + softplus(z);
+        case Kind::symmetric: return bound * std::tanh(z);
+        default: return z;
+        }
+    }
+
+    [[nodiscard]] bool z(double theta, double& out) const noexcept
+    {
+        if (!std::isfinite(theta)) return false;
+        switch (kind) {
+        case Kind::lower:
+            if (!(theta > bound)) return false;
+            out = inverse_softplus(theta - bound);
+            break;
+        case Kind::symmetric:
+            if (!(std::abs(theta) < bound)) return false;
+            out = std::atanh(theta / bound);
+            break;
+        default: out = theta;
+        }
         return std::isfinite(out);
     }
 
-    static void jacobian(double z, std::size_t at, std::size_t dim, double* jac) noexcept
+    // d theta / dz and d^2 theta / dz^2 at z.
+    [[nodiscard]] double first(double z) const noexcept
     {
-        jac[at * dim + at] = logistic(z);
+        switch (kind) {
+        case Kind::lower: return logistic(z);
+        case Kind::symmetric: return bound * sech2(z);
+        default: return 1.0;
+        }
+    }
+    [[nodiscard]] double second(double z) const noexcept
+    {
+        switch (kind) {
+        case Kind::lower: { const double s = logistic(z); return s * (1.0 - s); }
+        case Kind::symmetric: return -2.0 * bound * std::tanh(z) * sech2(z);
+        default: return 0.0;
+        }
     }
 
-    static void curvature(double z, double g, std::size_t at, std::size_t dim, double* out) noexcept
+private:
+    // sech^2 z = 4 e / (1 + e)^2 with e = exp(-2|z|), finite for every z.
+    static double sech2(double z) noexcept
     {
-        const double s = logistic(z);
-        out[at * dim + at] += g * s * (1.0 - s);
+        const double e = std::exp(-2.0 * std::abs(z));
+        return 4.0 * e / ((1.0 + e) * (1.0 + e));
     }
 };
 

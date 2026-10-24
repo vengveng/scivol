@@ -9,12 +9,16 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 file(GLOB SCIVOLAPI_OPTIMIZE_SOURCES CONFIGURE_DEPENDS src/optimize/*.cpp src/optimize/*.c)
+file(GLOB SCIVOLAPI_MATH_SOURCES CONFIGURE_DEPENDS src/math/*.cpp)
+file(GLOB SCIVOLAPI_JET_SOURCES CONFIGURE_DEPENDS src/jet_*.cpp)
 add_library(scivolapi
     src/model.cpp
     src/jet.cpp
+    ${SCIVOLAPI_JET_SOURCES}
     src/fit.cpp
     src/finalize.cpp
     ${SCIVOLAPI_OPTIMIZE_SOURCES}
+    ${SCIVOLAPI_MATH_SOURCES}
 )
 add_library(scivolapi::scivolapi ALIAS scivolapi)
 target_include_directories(scivolapi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

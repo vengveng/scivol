@@ -104,7 +104,15 @@ NB_MODULE(_scivolapi, m)
 
     nb::enum_<MeanKind>(m, "MeanKind").value("zero", MeanKind::zero);
     nb::enum_<VolatilityKind>(m, "VolatilityKind").value("garch", VolatilityKind::garch);
-    nb::enum_<DensityKind>(m, "DensityKind").value("normal", DensityKind::normal);
+    nb::enum_<DensityKind>(m, "DensityKind")
+        .value("normal", DensityKind::normal)
+        .value("student_t", DensityKind::student_t)
+        .value("skew_t", DensityKind::skew_t)
+        .value("ged", DensityKind::ged)
+        .value("generalized_hyperbolic", DensityKind::generalized_hyperbolic)
+        .value("nig", DensityKind::nig)
+        .value("hyperbolic", DensityKind::hyperbolic)
+        .value("variance_gamma", DensityKind::variance_gamma);
 
     m.attr("VALUE") = static_cast<unsigned>(value);
     m.attr("GRADIENT") = static_cast<unsigned>(gradient);
@@ -124,6 +132,11 @@ NB_MODULE(_scivolapi, m)
         .def_prop_ro("dimension", &Model::dimension)
         .def_prop_ro("parameter_names", &Model::parameter_names)
         .def("feasible", [](const Model& m, const Vector& theta) { return m.feasible(view(theta)); })
+        .def("bounds", [](const Model& m) {
+            std::vector<double> lower(m.dimension()), upper(m.dimension());
+            m.bounds(lower, upper);
+            return nb::make_tuple(owned_vector(std::move(lower)), owned_vector(std::move(upper)));
+        })
         .def("to_theta", [](const Model& m, const Vector& z) {
             std::vector<double> theta(m.dimension());
             m.to_theta(view(z), theta);
