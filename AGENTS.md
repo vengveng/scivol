@@ -74,8 +74,8 @@ Covariance-stationary GARCH domain, as an example of a declared domain:
 omega > 0,  alpha_i >= 0,  beta_j >= 0,  sum(alpha) + sum(beta) < 1
 ```
 
-GJR-GARCH persistence is density dependent: `alpha + gamma * P(z < 0) + beta < 1`,
-with `P(z < 0) = 0.5` for symmetric densities.
+GJR-GARCH persistence is density dependent: `alpha + gamma * E[z^2 I(z < 0)] + beta < 1`
+for standardized innovations `z`; the weight is 0.5 for symmetric densities.
 
 ## 3. Performance rules
 
