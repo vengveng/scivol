@@ -3,9 +3,10 @@ b:
 	python -m build -w
 	python -m pip install --force-reinstall dist/scivol-*.whl
 
+# Editable install: Python loads from the tree, extensions from the persistent
+# build/ directory, so rerunning `make dev` rebuilds only what changed.
 dev:
-	rm -rf build/ dist/
-	pip install -e .[dev] --no-build-isolation
+	CMAKE_BUILD_PARALLEL_LEVEL=4 pip install -e .[dev] --no-build-isolation
 
 t:
 	pytest -q tests/test_spec_core.py

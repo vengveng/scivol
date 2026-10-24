@@ -229,7 +229,7 @@ Hessians additionally track second-order sensitivities of `e_t` and `h_t`.
 ## 9. Build and test
 
 ```bash
-make dev        # editable install with in-place extension build
+make dev        # editable install; incremental rebuild (needs ninja, scikit-build-core, nanobind)
 make t          # core test subset
 make deriv      # derivative validation suite
 make dgp        # DGP estimation tests
