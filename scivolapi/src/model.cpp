@@ -22,13 +22,32 @@ void check_size(std::span<const double> values, std::size_t expected)
     require(values.size() == expected, "parameter vector has the wrong length");
 }
 
+bool symmetric(DensityKind kind)
+{
+    return kind == DensityKind::normal || kind == DensityKind::student_t || kind == DensityKind::ged;
+}
+
+bool volatility_evaluable(const ModelSpec& spec, const double* theta)
+{
+    switch (spec.volatility) {
+    case VolatilityKind::gjr: return detail::GarchVolatility<true>(spec).evaluable(theta);
+    default: return detail::GarchVolatility<false>(spec).evaluable(theta);
+    }
+}
+
 }  // namespace
 
 Model::Model(const ModelSpec& spec) : spec_(spec)
 {
     require(spec.p >= 1 && spec.q >= 1, "GARCH orders p and q must be at least 1");
     names_.push_back("omega");
+    // The GJR persistence weight E[z^2 1(z<0)] of a skewed density needs the
+    // moment engine; until it is in place only symmetric densities (weight 1/2).
+    require(spec.volatility != VolatilityKind::gjr || symmetric(spec.density),
+            "GJR-GARCH with a skewed density is not available yet");
     for (std::size_t i = 1; i <= spec.p; ++i) names_.push_back("alpha[" + std::to_string(i) + "]");
+    if (spec.volatility == VolatilityKind::gjr)
+        for (std::size_t i = 1; i <= spec.p; ++i) names_.push_back("gamma[" + std::to_string(i) + "]");
     for (std::size_t j = 1; j <= spec.q; ++j) names_.push_back("beta[" + std::to_string(j) + "]");
     for (const detail::ShapeDomain& shape : detail::shape_domains(spec.density)) names_.push_back(shape.name);
 }
@@ -49,16 +68,14 @@ Sample Model::prepare(std::span<const double> y) const
 
 bool Model::evaluable(std::span<const double> theta) const
 {
-    return theta.size() == dimension() && detail::GarchRecursion(spec_.p, spec_.q).evaluable(theta.data())
+    return theta.size() == dimension() && volatility_evaluable(spec_, theta.data())
         && detail::Layout(spec_).shapes_inside(theta.data());
 }
 
 bool Model::feasible(std::span<const double> theta) const
 {
     if (!evaluable(theta)) return false;
-    double persistence = 0.0;
-    for (std::size_t k = 1; k <= spec_.p + spec_.q; ++k) persistence += theta[k];
-    return persistence < 1.0;
+    return detail::Layout(spec_).persistence(theta.data()) < 1.0;
 }
 
 void Model::bounds(std::span<double> lower, std::span<double> upper) const
@@ -78,37 +95,40 @@ void Model::bounds(std::span<double> lower, std::span<double> upper) const
 
 std::size_t Model::constraint_count() const noexcept { return 1; }
 
-// Covariance stationarity: L - sum(alpha) - sum(beta) >= 0, with L the
-// floating-point margin of the simplex chart.
+// Covariance stationarity: L - sum w_k theta_k >= 0 over the coefficients, with
+// L the floating-point margin of the simplex chart.
 void Model::constraints(std::span<const double> theta, std::span<double> values,
                         std::span<double> jacobian) const
 {
     check_size(theta, dimension());
     require(values.size() == 1 && jacobian.size() == dimension(), "constraint outputs have the wrong length");
-    const std::size_t k = spec_.p + spec_.q;
-    double c = detail::SimplexChart::limit(k);
+    const detail::Layout layout(spec_);
     std::fill(jacobian.begin(), jacobian.end(), 0.0);
-    for (std::size_t i = 1; i <= k; ++i) {
-        c -= theta[i];
-        jacobian[i] = -1.0;
-    }
-    values[0] = c;
+    for (std::size_t k = 0; k < layout.coefficient_count; ++k) jacobian[layout.coefficients + k] = -layout.weight(k);
+    values[0] = detail::SimplexChart::limit(layout.coefficient_count) - layout.persistence(theta.data());
 }
 
+// Persistence 0.9: 80% on beta; the rest on alpha, or for GJR 60% on alpha and
+// 40% (in persistence units) on gamma.
 std::vector<double> Model::start(const Sample& sample) const
 {
     constexpr double persistence = 0.90;
+    const detail::Layout layout(spec_);
+    const double p = static_cast<double>(spec_.p), q = static_cast<double>(spec_.q);
+    const double shock = 0.20 * persistence, leverage = layout.leverage_count ? 0.4 * shock : 0.0;
     std::vector<double> theta(dimension());
     theta[0] = sample.variance_seed * (1.0 - persistence);
-    for (std::size_t i = 1; i <= spec_.p; ++i) theta[i] = 0.20 * persistence / static_cast<double>(spec_.p);
-    for (std::size_t j = 1; j <= spec_.q; ++j)
-        theta[spec_.p + j] = 0.80 * persistence / static_cast<double>(spec_.q);
-    const detail::Layout layout(spec_);
+    for (std::size_t i = 0; i < spec_.p; ++i) {
+        theta[layout.coefficients + i] = (shock - leverage) / p;
+        if (layout.leverage_count) theta[layout.leverage + i] = leverage / (p * layout.kappa);
+    }
+    for (std::size_t j = 0; j < spec_.q; ++j)
+        theta[layout.coefficients + layout.coefficient_count - spec_.q + j] = 0.80 * persistence / q;
     for (std::size_t i = 0; i < layout.shape_count; ++i) theta[layout.shapes + i] = layout.shape_domain[i].start;
     return theta;
 }
 
-// GARCH: h scales by factor^2, so omega does; coefficients and shapes are scale free.
+// GARCH and GJR: h scales by factor^2, so omega does; coefficients and shapes are scale free.
 void Model::rescale(std::span<const double> theta, double factor, std::span<double> scaled) const
 {
     check_size(theta, dimension());

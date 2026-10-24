@@ -3,9 +3,9 @@
 
 namespace scivolapi::detail {
 
-ThetaResult assemble_nig(const AssembleInput& in, Work& work, double& value)
+Assembler assembler_nig(VolatilityKind kind)
 {
-    return assemble<GhFamilyDensity<NormalInverseGaussian>>(in, work, value);
+    return assembler_with<GhFamilyDensity<NormalInverseGaussian>>(kind);
 }
 
 }  // namespace scivolapi::detail

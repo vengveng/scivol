@@ -10,51 +10,65 @@
 #include "detail/numeric.hpp"
 #include "model_layout.hpp"
 #include "volatility/garch.hpp"
+#include "volatility/volatility.hpp"
 
-// The likelihood pass shared by every density. Each density instantiates
-// `assemble` in its own translation unit (jet_<density>.cpp).
+// The likelihood pass shared by every model. Each density instantiates
+// `assemble` for every volatility recursion in its own translation unit
+// (jet_<density>.cpp), so each (volatility, density) pair is one inlined loop.
 namespace scivolapi::detail {
+
+// Sizes of the volatility part of the workspace.
+struct VolatilityShape {
+    std::size_t width = 0;  // leading theta entries the recursion depends on
+    std::size_t slots = 0;  // ring slots
+};
+
+inline VolatilityShape volatility_shape(const ModelSpec& spec) noexcept
+{
+    switch (spec.volatility) {
+    case VolatilityKind::gjr: return {1u + 2u * spec.p + spec.q, std::max<std::size_t>(spec.q, 1u)};
+    default: return {1u + spec.p + spec.q, std::max<std::size_t>(spec.q, 1u)};
+    }
+}
 
 // Fixed slices of the jet's workspace.
 struct Work {
-    double* e;            // residuals (n)
-    double* e2;           // squared residuals (n)
-    double* h;            // variance path (n)
-    double* first_ring;   // slots * width
-    double* second_ring;  // slots * packed(width)
-    double* d;            // D_t (width)
-    double* s;            // S_t (packed width)
-    double* g;            // theta gradient (dimension)
-    double* hp;           // theta Hessian, packed (dimension)
-    double* hd;           // theta Hessian, dense (dimension^2)
-    double* theta;        // theta mapped from z (dimension)
-    double* jac;          // d theta / dz (dimension^2)
-    double* tmp;          // dimension^2
-    double* share;        // simplex shares (dimension)
+    VolatilityWork vol;
+    double* e;      // residuals (n)
+    double* e2;     // squared residuals (n)
+    double* g;      // theta gradient (dimension)
+    double* hp;     // theta Hessian, packed (dimension)
+    double* hd;     // theta Hessian, dense (dimension^2)
+    double* theta;  // theta mapped from z (dimension)
+    double* jac;    // d theta / dz (dimension^2)
+    double* tmp;    // dimension^2
+    double* share;  // simplex shares (dimension)
 };
 
-inline std::size_t work_size(const Layout& layout, std::size_t n, std::size_t slots)
+inline std::size_t work_size(const Layout& layout, const VolatilityShape& v, std::size_t n)
 {
-    const std::size_t w = 1u + layout.p + layout.q;
-    const std::size_t d = layout.dimension;
-    return 3u * n + slots * w + slots * packed_size(w) + w + packed_size(w) + d + packed_size(d)
-        + 3u * d * d + 2u * d;
+    const std::size_t w = v.width, pw = packed_size(w), d = layout.dimension;
+    return 4u * n + v.slots * (w + pw) + 2u * (w + pw) + d + packed_size(d) + 3u * d * d + 2u * d;
 }
 
-inline Work carve(double* base, const Layout& layout, std::size_t n, std::size_t slots)
+inline Work carve(double* base, const Layout& layout, const VolatilityShape& v, std::size_t n)
 {
-    const std::size_t w = 1u + layout.p + layout.q;
-    const std::size_t d = layout.dimension;
+    const std::size_t w = v.width, pw = packed_size(w), d = layout.dimension;
     Work k{};
     double* at = base;
     auto take = [&](std::size_t count) { double* p = at; at += count; return p; };
     k.e = take(n);
     k.e2 = take(n);
-    k.h = take(n);
-    k.first_ring = take(slots * w);
-    k.second_ring = take(slots * packed_size(w));
-    k.d = take(w);
-    k.s = take(packed_size(w));
+    k.vol.e = k.e;
+    k.vol.e2 = k.e2;
+    k.vol.h = take(n);
+    k.vol.state = take(n);
+    k.vol.first_ring = take(v.slots * w);
+    k.vol.second_ring = take(v.slots * pw);
+    k.vol.d = take(w);
+    k.vol.s = take(pw);
+    k.vol.l1 = take(w);
+    k.vol.l2 = take(pw);
     k.g = take(d);
     k.hp = take(packed_size(d));
     k.hd = take(d * d);
@@ -66,8 +80,8 @@ inline Work carve(double* base, const Layout& layout, std::size_t n, std::size_t
 }
 
 struct AssembleInput {
+    const ModelSpec& spec;
     const Layout& layout;
-    const GarchRecursion& recursion;
     const Sample& sample;
     const double* theta;
     int order;  // 0 value, 1 + gradient, 2 + Hessian
@@ -85,82 +99,68 @@ inline bool all_finite(const double* x, std::size_t n) noexcept
     return true;
 }
 
+// Adds v to the packed symmetric entry (i, j) in either order.
+inline void add_packed(double* hp, std::size_t dim, std::size_t i, std::size_t j, double v) noexcept
+{
+    hp[i <= j ? packed(dim, i, j) : packed(dim, j, i)] += v;
+}
+
 // One pass over the sample: value, theta gradient (work.g) and packed theta
-// Hessian (work.hp) as requested, plus the variance path in work.h.
-template<class Density>
+// Hessian (work.hp) as requested, plus the variance path in work.vol.h.
+template<class Volatility, class Density>
 ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
 {
     constexpr std::size_t shapes = Density::shapes;
     ThetaResult result;
-    const Layout& layout = in.layout;
-    const GarchRecursion& recursion = in.recursion;
+    const Volatility volatility(in.spec);
     const double* theta = in.theta;
     const int order = in.order;
     const std::size_t n = in.sample.size();
-    const std::size_t w = recursion.width();
-    const std::size_t dim = layout.dimension;
-    const std::size_t sh = layout.shapes;
-    const std::size_t slots = recursion.ring_slots();
+    const std::size_t w = volatility.width();
     const std::size_t pw = packed_size(w);
+    const std::size_t dim = in.layout.dimension;
+    const std::size_t sh = in.layout.shapes;
 
     typename Density::Prepared density;
-    if (!recursion.evaluable(theta) || !Density::prepare(theta + sh, order, density)) {
+    if (!volatility.evaluable(theta) || !Density::prepare(theta + sh, order, density)) {
         result.status = Status::not_evaluable;
         return result;
     }
-
-    if (order >= 1) {
-        std::fill_n(work.g, dim, 0.0);
-        std::fill_n(work.first_ring, slots * w, 0.0);
-    }
-    if (order >= 2) {
-        std::fill_n(work.hp, packed_size(dim), 0.0);
-        std::fill_n(work.second_ring, slots * pw, 0.0);
-    }
+    if (order >= 1) std::fill_n(work.g, dim, 0.0);
+    if (order >= 2) std::fill_n(work.hp, packed_size(dim), 0.0);
 
     int defined = 2;
     CompensatedSum total;
+    VolatilityStep step;
+    const double* l1 = work.vol.l1;
+    const double* l2 = work.vol.l2;
     for (std::size_t t = 0; t < n; ++t) {
-        const double h = t == 0 ? in.sample.variance_seed : recursion.variance(theta, work.e2, work.h, t);
-        if (!(h > 0.0) || !std::isfinite(h)) {
+        if (!volatility.step(theta, in.sample, t, order, work.vol, step)) {
             result.status = Status::numerical_range;
             return result;
         }
-        work.h[t] = h;
+        if (t < in.sample.first_scored) continue;
 
+        const double x = work.e[t] / std::sqrt(step.h);
+        const Local<shapes> l = local(Density::observe(density, x, order), step.lambda, order);
+        defined = std::min(defined, l.defined);
+        total.add(l.value);
         if (order >= 1) {
-            if (t == 0) std::fill_n(work.d, w, 0.0);
-            else recursion.first(theta, work.e2, work.h, t, work.first_ring, work.d);
+            for (std::size_t a = 0; a < w; ++a) work.g[a] += l.lam * l1[a];
+            for (std::size_t i = 0; i < shapes; ++i) work.g[sh + i] += l.s[i];
         }
         if (order >= 2) {
-            if (t == 0) std::fill_n(work.s, pw, 0.0);
-            else recursion.second(theta, t, work.first_ring, work.second_ring, work.s);
-        }
-
-        if (t >= in.sample.first_scored) {
-            const double x = work.e[t] / std::sqrt(h);
-            const Local<shapes> l = local(Density::observe(density, x, order), std::log(h), h, order);
-            defined = std::min(defined, l.defined);
-            total.add(l.value);
-            if (order >= 1) {
-                for (std::size_t a = 0; a < w; ++a) work.g[a] += l.h * work.d[a];
-                for (std::size_t i = 0; i < shapes; ++i) work.g[sh + i] += l.s[i];
+            for (std::size_t a = 0; a < w; ++a) {
+                for (std::size_t b = a; b < w; ++b)
+                    work.hp[packed(dim, a, b)] += l.lamlam * l1[a] * l1[b] + l.lam * l2[packed(w, a, b)];
+                for (std::size_t i = 0; i < shapes; ++i) add_packed(work.hp, dim, a, sh + i, l.lams[i] * l1[a]);
             }
-            if (order >= 2) {
-                for (std::size_t a = 0; a < w; ++a) {
-                    for (std::size_t b = a; b < w; ++b)
-                        work.hp[packed(dim, a, b)] += l.hh * work.d[a] * work.d[b] + l.h * work.s[packed(w, a, b)];
-                    for (std::size_t i = 0; i < shapes; ++i) work.hp[packed(dim, a, sh + i)] += l.hs[i] * work.d[a];
-                }
-                for (std::size_t i = 0; i < shapes; ++i)
-                    for (std::size_t j = i; j < shapes; ++j)
-                        work.hp[packed(dim, sh + i, sh + j)] += l.ss[packed(shapes, i, j)];
-            }
+            for (std::size_t i = 0; i < shapes; ++i)
+                for (std::size_t j = i; j < shapes; ++j)
+                    work.hp[packed(dim, sh + i, sh + j)] += l.ss[packed(shapes, i, j)];
         }
-
-        if (order >= 1) std::copy_n(work.d, w, work.first_ring + (t % slots) * w);
-        if (order >= 2) std::copy_n(work.s, pw, work.second_ring + (t % slots) * pw);
     }
+    (void)pw;
 
     const double scored = static_cast<double>(in.sample.scored());
     const Constant<shapes>& c = density.constant;
@@ -180,27 +180,39 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
 
 using Assembler = ThetaResult (*)(const AssembleInput&, Work&, double&);
 
-ThetaResult assemble_normal(const AssembleInput&, Work&, double&);
-ThetaResult assemble_student_t(const AssembleInput&, Work&, double&);
-ThetaResult assemble_skew_t(const AssembleInput&, Work&, double&);
-ThetaResult assemble_ged(const AssembleInput&, Work&, double&);
-ThetaResult assemble_generalized_hyperbolic(const AssembleInput&, Work&, double&);
-ThetaResult assemble_nig(const AssembleInput&, Work&, double&);
-ThetaResult assemble_hyperbolic(const AssembleInput&, Work&, double&);
-ThetaResult assemble_variance_gamma(const AssembleInput&, Work&, double&);
-
-// The assembler for a density.
-inline Assembler assembler_for(DensityKind kind) noexcept
+// The loop for a density with a given volatility recursion, one per density
+// translation unit.
+template<class Density>
+Assembler assembler_with(VolatilityKind kind) noexcept
 {
     switch (kind) {
-    case DensityKind::normal: return assemble_normal;
-    case DensityKind::student_t: return assemble_student_t;
-    case DensityKind::skew_t: return assemble_skew_t;
-    case DensityKind::ged: return assemble_ged;
-    case DensityKind::generalized_hyperbolic: return assemble_generalized_hyperbolic;
-    case DensityKind::nig: return assemble_nig;
-    case DensityKind::hyperbolic: return assemble_hyperbolic;
-    case DensityKind::variance_gamma: return assemble_variance_gamma;
+    case VolatilityKind::garch: return assemble<GarchVolatility<false>, Density>;
+    case VolatilityKind::gjr: return assemble<GarchVolatility<true>, Density>;
+    }
+    return nullptr;
+}
+
+Assembler assembler_normal(VolatilityKind);
+Assembler assembler_student_t(VolatilityKind);
+Assembler assembler_skew_t(VolatilityKind);
+Assembler assembler_ged(VolatilityKind);
+Assembler assembler_generalized_hyperbolic(VolatilityKind);
+Assembler assembler_nig(VolatilityKind);
+Assembler assembler_hyperbolic(VolatilityKind);
+Assembler assembler_variance_gamma(VolatilityKind);
+
+// The loop for a model, chosen once per evaluation.
+inline Assembler assembler_for(const ModelSpec& spec) noexcept
+{
+    switch (spec.density) {
+    case DensityKind::normal: return assembler_normal(spec.volatility);
+    case DensityKind::student_t: return assembler_student_t(spec.volatility);
+    case DensityKind::skew_t: return assembler_skew_t(spec.volatility);
+    case DensityKind::ged: return assembler_ged(spec.volatility);
+    case DensityKind::generalized_hyperbolic: return assembler_generalized_hyperbolic(spec.volatility);
+    case DensityKind::nig: return assembler_nig(spec.volatility);
+    case DensityKind::hyperbolic: return assembler_hyperbolic(spec.volatility);
+    case DensityKind::variance_gamma: return assembler_variance_gamma(spec.volatility);
     }
     return nullptr;
 }

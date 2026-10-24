@@ -13,7 +13,7 @@
 //     x g_x,  x^2 g_xx,  g_s,  x g_xs,  g_ss
 // per observation. The products with x stay finite and exact where g itself
 // has a kink at x = 0 (GED, Variance-Gamma at exact zero returns), so the
-// variance derivatives follow exactly by the chain rule (see `local`).
+// derivatives in log h follow exactly by the chain rule (see `local`).
 //
 // Density concept:
 //   static constexpr std::size_t shapes;
@@ -45,35 +45,35 @@ struct Terms {
     int defined = 2;
 };
 
-// Derivatives of l(e, h; s) - c(s) with respect to h and s.
+// Derivatives of l - c(s) with respect to lambda = log h and the shapes.
 template<std::size_t Shapes>
 struct Local {
     double value = 0.0;
-    double h = 0.0;
-    double hh = 0.0;
+    double lam = 0.0;
+    double lamlam = 0.0;
     std::array<double, Shapes> s{};
-    std::array<double, Shapes> hs{};
+    std::array<double, Shapes> lams{};
     std::array<double, packed_size(Shapes)> ss{};
     int defined = 2;
 };
 
-// Chain rule from x = e h^(-1/2):  dx/dh = -x / (2h).
-//   l_h  = (1 - x g_x) / (2h)
-//   l_hh = (x^2 g_xx + 3 x g_x - 2) / (4h^2)
-//   l_hs = -x g_xs / (2h)
+// Chain rule from x = e exp(-lambda / 2), dx/dlambda = -x / 2, so that
+// l - c = lambda / 2 + g(x):
+//   l_lambda        = (1 - x g_x) / 2
+//   l_lambda,lambda = (x g_x + x^2 g_xx) / 4
+//   l_lambda,s      = -x g_xs / 2
 template<std::size_t Shapes>
-[[nodiscard]] inline Local<Shapes> local(const Terms<Shapes>& t, double log_h, double h, int order) noexcept
+[[nodiscard]] inline Local<Shapes> local(const Terms<Shapes>& t, double lambda, int order) noexcept
 {
     Local<Shapes> l;
-    l.value = 0.5 * log_h + t.g;
+    l.value = 0.5 * lambda + t.g;
     l.defined = t.defined;
     if (order >= 1) {
-        const double inv = 1.0 / h;
-        l.h = 0.5 * (1.0 - t.xg) * inv;
+        l.lam = 0.5 * (1.0 - t.xg);
         l.s = t.s;
         if (order >= 2) {
-            l.hh = 0.25 * (t.xxg + 3.0 * t.xg - 2.0) * inv * inv;
-            for (std::size_t i = 0; i < Shapes; ++i) l.hs[i] = -0.5 * t.xs[i] * inv;
+            l.lamlam = 0.25 * (t.xg + t.xxg);
+            for (std::size_t i = 0; i < Shapes; ++i) l.lams[i] = -0.5 * t.xs[i];
             l.ss = t.ss;
         }
     }

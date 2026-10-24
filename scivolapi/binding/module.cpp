@@ -103,7 +103,9 @@ NB_MODULE(_scivolapi, m)
     m.doc() = "scivolapi: native volatility-model mathematics";
 
     nb::enum_<MeanKind>(m, "MeanKind").value("zero", MeanKind::zero);
-    nb::enum_<VolatilityKind>(m, "VolatilityKind").value("garch", VolatilityKind::garch);
+    nb::enum_<VolatilityKind>(m, "VolatilityKind")
+        .value("garch", VolatilityKind::garch)
+        .value("gjr", VolatilityKind::gjr);
     nb::enum_<DensityKind>(m, "DensityKind")
         .value("normal", DensityKind::normal)
         .value("student_t", DensityKind::student_t)

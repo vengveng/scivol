@@ -3,9 +3,9 @@
 
 namespace scivolapi::detail {
 
-ThetaResult assemble_student_t(const AssembleInput& in, Work& work, double& value)
+Assembler assembler_student_t(VolatilityKind kind)
 {
-    return assemble<StudentTDensity>(in, work, value);
+    return assembler_with<StudentTDensity>(kind);
 }
 
 }  // namespace scivolapi::detail

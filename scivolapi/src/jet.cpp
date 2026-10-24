@@ -41,8 +41,8 @@ void write_paths(const Work& work, std::size_t n, Paths& paths)
 {
     for (std::size_t t = 0; t < n; ++t) {
         paths.residual[t] = work.e[t];
-        paths.variance[t] = work.h[t];
-        paths.innovation[t] = work.e[t] / std::sqrt(work.h[t]);
+        paths.variance[t] = work.vol.h[t];
+        paths.innovation[t] = work.e[t] / std::sqrt(work.vol.h[t]);
     }
 }
 
@@ -70,9 +70,9 @@ Jet::Jet(const Model& model, const Sample& sample) : model_(model), sample_(samp
     if (sample.size() < 2 || sample.first_scored >= sample.size())
         throw std::invalid_argument("the sample must contain scored observations");
     const detail::Layout layout(model.spec());
-    const detail::GarchRecursion recursion(layout.p, layout.q);
-    work_.assign(detail::work_size(layout, sample.size(), recursion.ring_slots()), 0.0);
-    Work work = detail::carve(work_.data(), layout, sample.size(), recursion.ring_slots());
+    const detail::VolatilityShape shape = detail::volatility_shape(model.spec());
+    work_.assign(detail::work_size(layout, shape, sample.size()), 0.0);
+    Work work = detail::carve(work_.data(), layout, shape, sample.size());
     for (std::size_t t = 0; t < sample.size(); ++t) {  // zero mean: residuals are the data
         work.e[t] = sample.y[t];
         work.e2[t] = sample.y[t] * sample.y[t];
@@ -85,12 +85,11 @@ JetResult Jet::theta(std::span<const double> theta, unsigned request, JetOutput&
     const std::size_t dim = layout.dimension, n = sample_.size();
     if (request == 0u || (request & ~all_requests) || theta.size() != dim || !outputs_fit(request, out, dim, n))
         return {};
-    const detail::GarchRecursion recursion(layout.p, layout.q);
-    Work work = detail::carve(work_.data(), layout, n, recursion.ring_slots());
+    Work work = detail::carve(work_.data(), layout, detail::volatility_shape(model_.spec()), n);
 
     double v = 0.0;
-    const ThetaResult r = detail::assembler_for(model_.spec().density)(
-        {layout, recursion, sample_, theta.data(), order_for(request)}, work, v);
+    const ThetaResult r = detail::assembler_for(model_.spec())(
+        {model_.spec(), layout, sample_, theta.data(), order_for(request)}, work, v);
     if (r.status == Status::ok) {
         if (request & value) out.value = v;
         if (request & gradient) std::copy_n(work.g, dim, out.gradient.data());
@@ -108,13 +107,12 @@ JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
     if (request == 0u || (request & ~all_requests) || z.size() != dim || !outputs_fit(request, out, dim, n)
         || !detail::all_finite(z.data(), dim))
         return {};
-    const detail::GarchRecursion recursion(layout.p, layout.q);
-    Work work = detail::carve(work_.data(), layout, n, recursion.ring_slots());
+    Work work = detail::carve(work_.data(), layout, detail::volatility_shape(model_.spec()), n);
 
     layout.theta(z.data(), work.theta);
     double v = 0.0;
-    const ThetaResult r = detail::assembler_for(model_.spec().density)(
-        {layout, recursion, sample_, work.theta, order_for(request)}, work, v);
+    const ThetaResult r = detail::assembler_for(model_.spec())(
+        {model_.spec(), layout, sample_, work.theta, order_for(request)}, work, v);
     if (r.status != Status::ok) return finish(request, r, false);
 
     if (request & (gradient | hessian)) layout.jacobian(z.data(), work.share, work.jac);

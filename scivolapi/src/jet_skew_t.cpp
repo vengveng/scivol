@@ -3,9 +3,9 @@
 
 namespace scivolapi::detail {
 
-ThetaResult assemble_skew_t(const AssembleInput& in, Work& work, double& value)
+Assembler assembler_skew_t(VolatilityKind kind)
 {
-    return assemble<SkewTDensity>(in, work, value);
+    return assembler_with<SkewTDensity>(kind);
 }
 
 }  // namespace scivolapi::detail

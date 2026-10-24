@@ -3,9 +3,9 @@
 
 namespace scivolapi::detail {
 
-ThetaResult assemble_generalized_hyperbolic(const AssembleInput& in, Work& work, double& value)
+Assembler assembler_generalized_hyperbolic(VolatilityKind kind)
 {
-    return assemble<GhFamilyDensity<GeneralizedHyperbolic>>(in, work, value);
+    return assembler_with<GhFamilyDensity<GeneralizedHyperbolic>>(kind);
 }
 
 }  // namespace scivolapi::detail

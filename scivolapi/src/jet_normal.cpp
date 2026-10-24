@@ -3,9 +3,9 @@
 
 namespace scivolapi::detail {
 
-ThetaResult assemble_normal(const AssembleInput& in, Work& work, double& value)
+Assembler assembler_normal(VolatilityKind kind)
 {
-    return assemble<NormalDensity>(in, work, value);
+    return assembler_with<NormalDensity>(kind);
 }
 
 }  // namespace scivolapi::detail

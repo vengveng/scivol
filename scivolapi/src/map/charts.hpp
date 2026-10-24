@@ -99,17 +99,19 @@ private:
     }
 };
 
-// k coefficients with theta_i >= 0 and sum theta_i < 1, via a softmax with an
-// implicit zero coordinate for the slack:  theta_i = L * e^{z_i} / (1 + sum_k e^{z_k}).
-// L = 1 - 8 (k + 1) eps keeps the rounded sum strictly below one; it is a
-// floating-point margin, not a model restriction.
+// k coefficients with theta_i >= 0 and sum w_i theta_i < 1 for positive weights
+// w_i (all one for GARCH; GJR weights its leverage terms by E[z^2 1(z<0)]), via a
+// softmax with an implicit zero coordinate for the slack:
+//   theta_i = L s_i / w_i,  s_i = e^{z_i} / (1 + sum_k e^{z_k}).
+// L = 1 - 8 (k + 1) eps keeps the rounded weighted sum strictly below one; it is
+// a floating-point margin, not a model restriction. `Weight` maps i to w_i.
 struct SimplexChart {
     static double limit(std::size_t k) noexcept
     {
         return 1.0 - 8.0 * static_cast<double>(k + 1u) * std::numeric_limits<double>::epsilon();
     }
 
-    // Softmax shares s_i written to `share` (k values); returns nothing on failure.
+    // Softmax shares s_i written to `share` (k values).
     static void shares(const double* z, std::size_t k, double* share) noexcept
     {
         double top = 0.0;  // the slack coordinate is zero
@@ -119,48 +121,52 @@ struct SimplexChart {
         for (std::size_t i = 0; i < k; ++i) share[i] /= total;
     }
 
-    static void theta(const double* z, std::size_t k, double* theta) noexcept
+    template<class Weight>
+    static void theta(const double* z, std::size_t k, const Weight& w, double* theta) noexcept
     {
         shares(z, k, theta);
         const double l = limit(k);
-        for (std::size_t i = 0; i < k; ++i) theta[i] *= l;
+        for (std::size_t i = 0; i < k; ++i) theta[i] *= l / w(i);
     }
 
-    static bool z(const double* theta, std::size_t k, double* out) noexcept
+    template<class Weight>
+    static bool z(const double* theta, std::size_t k, const Weight& w, double* out) noexcept
     {
         const double l = limit(k);
         double slack = 1.0;
         for (std::size_t i = 0; i < k; ++i) {
             if (!(theta[i] > 0.0) || !std::isfinite(theta[i])) return false;
-            slack -= theta[i] / l;
+            slack -= w(i) * theta[i] / l;
         }
         if (!(slack > 0.0)) return false;
-        for (std::size_t i = 0; i < k; ++i) out[i] = std::log(theta[i] / l) - std::log(slack);
+        for (std::size_t i = 0; i < k; ++i) out[i] = std::log(w(i) * theta[i] / l) - std::log(slack);
         return true;
     }
 
-    // d theta_i / d z_j = L s_i (delta_ij - s_j).
-    static void jacobian(const double* share, std::size_t k, std::size_t at, std::size_t dim,
+    // d theta_i / d z_j = (L / w_i) s_i (delta_ij - s_j).
+    template<class Weight>
+    static void jacobian(const double* share, std::size_t k, const Weight& w, std::size_t at, std::size_t dim,
                          double* jac) noexcept
     {
         const double l = limit(k);
         for (std::size_t i = 0; i < k; ++i)
             for (std::size_t j = 0; j < k; ++j)
-                jac[(at + i) * dim + at + j] = l * share[i] * ((i == j ? 1.0 : 0.0) - share[j]);
+                jac[(at + i) * dim + at + j] = l / w(i) * share[i] * ((i == j ? 1.0 : 0.0) - share[j]);
     }
 
-    // sum_i g_i d^2 theta_i / dz_j dz_k with a_i = g_i L s_i and A = sum a_i:
+    // sum_i g_i d^2 theta_i / dz_j dz_k with a_i = (g_i / w_i) L s_i and A = sum a_i:
     //   delta_jk (a_j - A s_j) - a_j s_k - a_k s_j + 2 A s_j s_k.
-    static void curvature(const double* share, const double* g, std::size_t k, std::size_t at,
+    template<class Weight>
+    static void curvature(const double* share, const double* g, std::size_t k, const Weight& w, std::size_t at,
                           std::size_t dim, double* out) noexcept
     {
         const double l = limit(k);
         double total = 0.0;
-        for (std::size_t i = 0; i < k; ++i) total += g[i] * l * share[i];
+        for (std::size_t i = 0; i < k; ++i) total += g[i] / w(i) * l * share[i];
         for (std::size_t j = 0; j < k; ++j) {
-            const double aj = g[j] * l * share[j];
+            const double aj = g[j] / w(j) * l * share[j];
             for (std::size_t m = 0; m < k; ++m) {
-                const double am = g[m] * l * share[m];
+                const double am = g[m] / w(m) * l * share[m];
                 double c = -aj * share[m] - am * share[j] + 2.0 * total * share[j] * share[m];
                 if (j == m) c += aj - total * share[j];
                 out[(at + j) * dim + at + m] += c;

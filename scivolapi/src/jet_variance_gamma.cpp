@@ -3,9 +3,9 @@
 
 namespace scivolapi::detail {
 
-ThetaResult assemble_variance_gamma(const AssembleInput& in, Work& work, double& value)
+Assembler assembler_variance_gamma(VolatilityKind kind)
 {
-    return assemble<GhFamilyDensity<VarianceGamma>>(in, work, value);
+    return assembler_with<GhFamilyDensity<VarianceGamma>>(kind);
 }
 
 }  // namespace scivolapi::detail
