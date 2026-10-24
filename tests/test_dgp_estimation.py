@@ -1341,9 +1341,7 @@ class TestGARCHHyperbolic:
             p["zeta"],
             1.0,
         )
-        return (GARCH(1, 1) + Hyperbolic()).fit(
-            data, solver="slsqp", log_mode=False
-        )
+        return (GARCH(1, 1) + Hyperbolic()).fit(data, engine="scivolapi")
 
     def test_convergence(self, result) -> None:
         assert result.converged

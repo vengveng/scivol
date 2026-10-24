@@ -69,8 +69,6 @@ Jet::Jet(const Model& model, const Sample& sample) : model_(model), sample_(samp
 {
     if (sample.size() < 2 || sample.first_scored >= sample.size())
         throw std::invalid_argument("the sample must contain scored observations");
-    if (detail::assembler_for(model.spec().density) == nullptr)
-        throw std::invalid_argument("this density is not available yet");
     const detail::Layout layout(model.spec());
     const detail::GarchRecursion recursion(layout.p, layout.q);
     work_.assign(detail::work_size(layout, sample.size(), recursion.ring_slots()), 0.0);

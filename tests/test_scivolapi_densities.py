@@ -6,14 +6,37 @@ import numpy as np
 import pytest
 
 api = pytest.importorskip("scivol._scivolapi")
-from scivol._devtools.ad_oracle import _jax_modules, garch_value_grad_hess  # noqa: E402
+from scivol._devtools.ad_oracle import (  # noqa: E402
+    _jax_modules,
+    garch_value_grad_hess,
+    gh_surface_value_grad_hess,
+)
 
 ORACLE_NAME = {"student_t": "studentt", "skew_t": "skewt", "ged": "ged"}
+GH_ORACLE = {  # the GH oracle evaluates log K by quadrature, accurate to ~1e-13
+    "generalized_hyperbolic": {},
+    "nig": {"fixed_lambda": -0.5},
+    "hyperbolic": {"fixed_lambda": 1.0},
+    "variance_gamma": {"variance_gamma": True},
+}
 SHAPES = {  # shape points per density, including near-limit values
     "student_t": [[8.0], [2.3], [150.0]],
     "skew_t": [[7.0, -0.3], [3.1, 0.6], [60.0, 0.05]],
     "ged": [[1.4], [0.7], [3.5]],
+    "generalized_hyperbolic": [[-0.3, 1.4, -0.7], [0.5, 3.0, 2.5], [0.2, 0.4, 0.3]],
+    "nig": [[-0.2, 1.1], [0.6, 4.0]],
+    "hyperbolic": [[0.4, 0.6], [-0.5, 2.0]],
+    "variance_gamma": [[-0.3, 2.5], [0.6, 1.8]],
 }
+DENSITIES = list(SHAPES)
+
+
+def oracle(density: str, theta: np.ndarray, y: np.ndarray, p: int, q: int):
+    """(value, gradient, Hessian, tolerance) from the independent AD oracle."""
+    if density in ORACLE_NAME:
+        return (*garch_value_grad_hess(theta, y * y, p, q, ORACLE_NAME[density], resid=y), 1e-12)
+    return (*gh_surface_value_grad_hess(theta, y, p_vol=p, q_vol=q, initial_variance=float(np.mean(y * y)),
+                                        **GH_ORACLE[density]), 1e-11)
 ORDERS = [(1, 1), (2, 1), (1, 2)]
 
 
@@ -39,23 +62,40 @@ def assert_close(actual, expected, rtol):
     assert float(np.max(np.abs(np.asarray(actual) - expected))) <= rtol * scale
 
 
+def check_against_oracle(series, density, p, q, shapes):
+    model = model_for(density, p, q)
+    jet = api.Jet(model, series)
+    for shape in shapes:
+        theta = point(p, q, shape)
+        value, gradient, hessian, tolerance = oracle(density, theta, series, p, q)
+        full = jet.theta(theta, api.VALUE | api.GRADIENT | api.HESSIAN)
+        assert full["status"] == "ok", shape
+        assert full["value"] == pytest.approx(value, rel=tolerance), shape
+        assert_close(full["gradient"], gradient, tolerance)
+        assert_close(full["hessian"], hessian, tolerance)
+
+
 @pytest.mark.parametrize("density", list(ORACLE_NAME))
 @pytest.mark.parametrize("p,q", ORDERS)
 def test_theta_jet_matches_ad_oracle(series, density, p, q):
-    model = model_for(density, p, q)
-    jet = api.Jet(model, series)
-    for shape in SHAPES[density]:
-        theta = point(p, q, shape)
-        value, gradient, hessian = garch_value_grad_hess(
-            theta, series * series, p, q, ORACLE_NAME[density], resid=series)
-        full = jet.theta(theta, api.VALUE | api.GRADIENT | api.HESSIAN)
-        assert full["status"] == "ok", shape
-        assert full["value"] == pytest.approx(value, rel=1e-12), shape
-        assert_close(full["gradient"], gradient, 1e-12)
-        assert_close(full["hessian"], hessian, 1e-12)
+    check_against_oracle(series, density, p, q, SHAPES[density])
 
 
-@pytest.mark.parametrize("density", list(ORACLE_NAME))
+# The GH oracle recompiles a quadrature per call (5-15 s): one point per member
+# routinely, the full matrix with --run-slow.
+@pytest.mark.parametrize("density", list(GH_ORACLE))
+def test_gh_family_jet_matches_ad_oracle(series, density):
+    check_against_oracle(series[:150], density, 1, 1, SHAPES[density][:1])
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("density", list(GH_ORACLE))
+@pytest.mark.parametrize("p,q", ORDERS)
+def test_gh_family_jet_matches_ad_oracle_everywhere(series, density, p, q):
+    check_against_oracle(series[:300], density, p, q, SHAPES[density])
+
+
+@pytest.mark.parametrize("density", DENSITIES)
 def test_every_sparse_request_equals_the_full_request(series, density):
     model = model_for(density, 2, 1)
     jet = api.Jet(model, series)
@@ -91,7 +131,7 @@ def jax_theta(jnp, jax, model, z):
     return jnp.stack(out)
 
 
-@pytest.mark.parametrize("density", list(ORACLE_NAME))
+@pytest.mark.parametrize("density", DENSITIES)
 def test_z_jet_includes_chart_curvature(series, density):
     jax, jnp, _ = _jax_modules()
     model = model_for(density, 1, 2)
@@ -131,6 +171,30 @@ def test_ged_with_shape_two_is_normal(series):
     assert_close(a["hessian"][:3, :3], b["hessian"], 1e-11)
 
 
+@pytest.mark.parametrize("twice_lambda,member", [(-1, "nig"), (2, "hyperbolic")])
+def test_gh_with_fixed_index_is_its_member(series, twice_lambda, member):
+    gh, fixed = api.Jet(model_for("generalized_hyperbolic"), series), api.Jet(model_for(member), series)
+    a = gh.theta(point(1, 1, [0.35, 1.7, 0.5 * twice_lambda]), 7)
+    b = fixed.theta(point(1, 1, [0.35, 1.7]), 7)
+    assert a["value"] == pytest.approx(b["value"], rel=1e-14)
+    assert_close(a["gradient"][:5], b["gradient"], 1e-12)
+    assert_close(a["hessian"][:5, :5], b["hessian"], 1e-12)
+
+
+def test_variance_gamma_derivatives_exist_at_its_centre(series):
+    """rho = 0 puts the centre at x = 0: the jet is continuous there (lambda > 3/2)."""
+    theta = point(1, 1, [0.0, 2.2])
+    exact, near = series.copy(), series.copy()
+    exact[::9] = 0.0
+    near[::9] = 1e-300
+    at = api.Jet(model_for("variance_gamma"), exact).theta(theta, 7)
+    beside = api.Jet(model_for("variance_gamma"), near).theta(theta, 7)
+    assert at["status"] == beside["status"] == "ok"
+    assert at["value"] == pytest.approx(beside["value"], rel=1e-14)
+    assert_close(at["gradient"], beside["gradient"], 1e-12)
+    assert_close(at["hessian"], beside["hessian"], 1e-12)
+
+
 def test_ged_derivatives_exist_at_exact_zero_returns(series):
     data = series.copy()
     data[::7] = 0.0
@@ -144,7 +208,44 @@ def test_ged_derivatives_exist_at_exact_zero_returns(series):
     assert_close(out["hessian"], hessian, 1e-9)
 
 
-@pytest.mark.parametrize("density,bad", [("student_t", [2.0]), ("skew_t", [5.0, 1.0]), ("ged", [0.0])])
+def mp_gh_nll(x, rho, zeta, lam):
+    """Standardized GH negative log density summed over x, in 80-digit arithmetic."""
+    import mpmath as mp
+
+    with mp.workdps(80):
+        rho, zeta, lam = mp.mpf(rho), mp.mpf(zeta), mp.mpf(lam)
+        k = mp.besselk
+        kappa = k(lam + 1, zeta) / k(lam, zeta) / zeta
+        kappa_next = k(lam + 2, zeta) / k(lam + 1, zeta) / zeta
+        rho2 = 1 - rho * rho
+        alpha = mp.sqrt(zeta**2 * kappa * (1 + rho**2 * zeta**2 * (kappa_next - kappa) / rho2) / rho2)
+        beta, delta = alpha * rho, zeta / (alpha * mp.sqrt(rho2))
+        mu, gamma = -beta * delta**2 * kappa, alpha * mp.sqrt(rho2)
+        total = 0
+        for value in x:
+            c = mp.mpf(value) - mu
+            r = mp.sqrt(delta**2 + c**2)
+            total -= (lam * mp.log(gamma / delta) - mp.log(2 * mp.pi) / 2 - mp.log(k(lam, zeta)) + beta * c
+                      + mp.log(k(lam - mp.mpf(1) / 2, alpha * r)) - (mp.mpf(1) / 2 - lam) * (mp.log(r) - mp.log(alpha)))
+        return float(total)
+
+
+@pytest.mark.parametrize("member,lam", [("nig", -0.5), ("hyperbolic", 1.0)])
+@pytest.mark.parametrize("rho,zeta", [(1 - 1e-14, 998.0), (-(1 - 1e-12), 50.0), (0.5, 1e4)])
+def test_gh_family_is_accurate_at_extreme_skew_and_concentration(member, lam, rho, zeta):
+    rng = np.random.default_rng(1)
+    data = (rng.gamma(4.0, size=40) - 4.0) / 2.0
+    out = api.Jet(model_for(member), data).theta(point(1, 1, [rho, zeta]), api.VALUE | api.PATHS)
+    assert out["status"] == "ok"
+    h = out["variance"]
+    expected = mp_gh_nll(data / np.sqrt(h), rho, zeta, lam) + 0.5 * np.sum(np.log(h))
+    assert out["value"] == pytest.approx(expected, rel=1e-11)
+
+
+@pytest.mark.parametrize("density,bad", [
+    ("student_t", [2.0]), ("skew_t", [5.0, 1.0]), ("ged", [0.0]),
+    ("generalized_hyperbolic", [1.0, 1.0, 0.5]), ("nig", [0.2, 0.0]), ("variance_gamma", [0.1, 1.5]),
+])
 def test_shapes_outside_the_domain_are_not_evaluable(series, density, bad):
     jet = api.Jet(model_for(density), series)
     assert jet.theta(point(1, 1, bad), api.VALUE)["status"] == "not_evaluable"
@@ -154,9 +255,14 @@ def test_shapes_outside_the_domain_are_not_evaluable(series, density, bad):
 # Complete fits through the public API
 # --------------------------------------------------------------------------- #
 
-from scivol import GARCH, GED, SkewT, StudentT  # noqa: E402
+from scivol import (  # noqa: E402
+    GARCH, GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, SkewT, StudentT, VarianceGamma,
+)
 
-COMPONENTS = {"student_t": StudentT, "skew_t": SkewT, "ged": GED}
+COMPONENTS = {
+    "student_t": StudentT, "skew_t": SkewT, "ged": GED, "generalized_hyperbolic": GeneralizedHyperbolic,
+    "nig": NormalInverseGaussian, "hyperbolic": Hyperbolic, "variance_gamma": VarianceGamma,
+}
 
 
 def simulate(n: int, innovations: np.ndarray) -> np.ndarray:
@@ -173,10 +279,22 @@ def t_data() -> np.ndarray:
     return simulate(4000, rng.standard_t(5, 4000) * np.sqrt(3.0 / 5.0))
 
 
+@pytest.fixture(scope="module")
+def hyperbolic_data() -> np.ndarray:
+    from scipy.stats import genhyperbolic
+
+    from scivol._gh import standardized_gh_parameters
+
+    z = genhyperbolic.rvs(*standardized_gh_parameters(-0.25, 2.5, 1.0), size=4000, random_state=2)
+    return simulate(4000, z)
+
+
 @pytest.mark.parametrize("density", list(COMPONENTS))
-def test_fit_matches_the_production_likelihood(t_data, density):
-    new = (GARCH(1, 1) + COMPONENTS[density]()).fit(t_data, engine="scivolapi")
-    old = (GARCH(1, 1) + COMPONENTS[density]()).fit(t_data)
+def test_fit_matches_the_production_likelihood(t_data, hyperbolic_data, density):
+    # On Student-t data the GH optimum is its zeta -> 0 limit, a boundary point.
+    data = hyperbolic_data if density == "generalized_hyperbolic" else t_data
+    new = (GARCH(1, 1) + COMPONENTS[density]()).fit(data, engine="scivolapi")
+    old = (GARCH(1, 1) + COMPONENTS[density]()).fit(data)
     assert new.converged and new.fit_info.inference_status == "available"
     assert new.log_likelihood == pytest.approx(old.log_likelihood, abs=1e-6)
 

@@ -44,6 +44,10 @@ _DENSITIES = {
     "StudentT": api.DensityKind.student_t,
     "SkewT": api.DensityKind.skew_t,
     "GED": api.DensityKind.ged,
+    "GeneralizedHyperbolic": api.DensityKind.generalized_hyperbolic,
+    "NormalInverseGaussian": api.DensityKind.nig,
+    "Hyperbolic": api.DensityKind.hyperbolic,
+    "VarianceGamma": api.DensityKind.variance_gamma,
 }
 
 

@@ -184,8 +184,12 @@ ThetaResult assemble_normal(const AssembleInput&, Work&, double&);
 ThetaResult assemble_student_t(const AssembleInput&, Work&, double&);
 ThetaResult assemble_skew_t(const AssembleInput&, Work&, double&);
 ThetaResult assemble_ged(const AssembleInput&, Work&, double&);
+ThetaResult assemble_generalized_hyperbolic(const AssembleInput&, Work&, double&);
+ThetaResult assemble_nig(const AssembleInput&, Work&, double&);
+ThetaResult assemble_hyperbolic(const AssembleInput&, Work&, double&);
+ThetaResult assemble_variance_gamma(const AssembleInput&, Work&, double&);
 
-// The assembler for a density, or nullptr if it is not available.
+// The assembler for a density.
 inline Assembler assembler_for(DensityKind kind) noexcept
 {
     switch (kind) {
@@ -193,8 +197,12 @@ inline Assembler assembler_for(DensityKind kind) noexcept
     case DensityKind::student_t: return assemble_student_t;
     case DensityKind::skew_t: return assemble_skew_t;
     case DensityKind::ged: return assemble_ged;
-    default: return nullptr;
+    case DensityKind::generalized_hyperbolic: return assemble_generalized_hyperbolic;
+    case DensityKind::nig: return assemble_nig;
+    case DensityKind::hyperbolic: return assemble_hyperbolic;
+    case DensityKind::variance_gamma: return assemble_variance_gamma;
     }
+    return nullptr;
 }
 
 }  // namespace scivolapi::detail
