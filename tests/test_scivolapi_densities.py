@@ -125,7 +125,7 @@ def jax_theta(jnp, jax, model, z):
         elif np.isfinite(upper[i]):
             out.append(upper[i] * jnp.tanh(z[i]))
         elif np.isfinite(lower[i]):
-            out.append(lower[i] + jax.nn.softplus(z[i]))
+            out.append(lower[i] + jnp.exp(z[i]))
         else:
             out.append(z[i])
     return jnp.stack(out)

@@ -83,8 +83,9 @@ void Model::bounds(std::span<double> lower, std::span<double> upper) const
     require(lower.size() == dimension() && upper.size() == dimension(), "bounds have the wrong length");
     const detail::Layout layout(spec_);
     for (std::size_t k = 0; k < dimension(); ++k) {
-        if (k >= layout.coefficients && k < layout.shapes) {
-            lower[k] = 0.0;
+        if (k >= layout.coefficients && k < layout.shapes) {  // gamma is bounded jointly with alpha
+            const bool leverage = k >= layout.leverage && k < layout.leverage + layout.leverage_count;
+            lower[k] = leverage ? std::numeric_limits<double>::quiet_NaN() : 0.0;
             upper[k] = std::numeric_limits<double>::quiet_NaN();
         } else {
             lower[k] = layout.scalar(k).lower_bound();
@@ -93,19 +94,27 @@ void Model::bounds(std::span<double> lower, std::span<double> upper) const
     }
 }
 
-std::size_t Model::constraint_count() const noexcept { return 1; }
+std::size_t Model::constraint_count() const noexcept { return 1 + detail::Layout(spec_).leverage_count; }
 
 // Covariance stationarity: L - sum w_k theta_k >= 0 over the coefficients, with
-// L the floating-point margin of the simplex chart.
+// L the floating-point margin of the simplex chart; for GJR also
+// alpha_i + gamma_i >= 0.
 void Model::constraints(std::span<const double> theta, std::span<double> values,
                         std::span<double> jacobian) const
 {
     check_size(theta, dimension());
-    require(values.size() == 1 && jacobian.size() == dimension(), "constraint outputs have the wrong length");
     const detail::Layout layout(spec_);
+    const std::size_t m = constraint_count(), d = dimension();
+    require(values.size() == m && jacobian.size() == m * d, "constraint outputs have the wrong length");
     std::fill(jacobian.begin(), jacobian.end(), 0.0);
     for (std::size_t k = 0; k < layout.coefficient_count; ++k) jacobian[layout.coefficients + k] = -layout.weight(k);
     values[0] = detail::SimplexChart::limit(layout.coefficient_count) - layout.persistence(theta.data());
+    for (std::size_t i = 0; i < layout.leverage_count; ++i) {
+        const std::size_t alpha = layout.coefficients + i, gamma = layout.leverage + i;
+        values[1 + i] = theta[alpha] + theta[gamma];
+        jacobian[(1 + i) * d + alpha] = 1.0;
+        jacobian[(1 + i) * d + gamma] = 1.0;
+    }
 }
 
 // Persistence 0.9: 80% on beta; the rest on alpha, or for GJR 60% on alpha and
@@ -149,7 +158,8 @@ bool Model::to_z(std::span<const double> theta, std::span<double> z) const
 {
     check_size(theta, dimension());
     require(z.size() == dimension(), "z output has the wrong length");
-    return detail::Layout(spec_).z(theta.data(), z.data());
+    std::vector<double> scratch(dimension());
+    return detail::Layout(spec_).z(theta.data(), z.data(), scratch.data());
 }
 
 }  // namespace scivolapi

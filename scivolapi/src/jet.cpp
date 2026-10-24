@@ -138,7 +138,7 @@ JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
                 for (std::size_t k = 0; k < dim; ++k) s += work.jac[k * dim + i] * work.tmp[k * dim + j];
                 out.hessian[i * dim + j] = s;
             }
-        layout.curvature(z.data(), work.share, work.g, out.hessian.data());
+        layout.curvature(z.data(), work.share, work.g, work.tmp, out.hessian.data());
         hessian_ok = detail::all_finite(out.hessian.data(), dim * dim);
     }
     if (request & value) out.value = v;

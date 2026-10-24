@@ -70,33 +70,38 @@ def test_gjr_without_leverage_is_garch(series):
     assert_close(gjr["hessian"][np.ix_(keep, keep)], garch["hessian"], 1e-14)
 
 
-def test_gjr_z_jet_includes_weighted_simplex_curvature(series):
-    """theta_k = L s_k / w_k with w = 1/2 on gamma (symmetric density)."""
+def test_gjr_z_jet_includes_chart_curvature(series):
+    """The simplex holds c+ = (1 - k) alpha, c- = k (alpha + gamma), beta with k = 1/2."""
     jax, jnp, _ = _jax_modules()
     model = gjr_model("normal", 1, 2)
     jet = api.Jet(model, series)
-    theta = gjr_point(1, 2, [])
+    theta = np.array([0.08, 0.05, -0.02, 0.5, 0.3])  # negative leverage inside the domain
     z = model.to_z(theta)
-    assert np.allclose(model.to_theta(z), theta, rtol=1e-13, atol=0.0)
-    weights = jnp.array([1.0, 0.5, 1.0, 1.0])
-    limit = 1.0 - 8.0 * 5 * np.finfo(float).eps
+    assert np.allclose(model.to_theta(z), theta, rtol=1e-13, atol=1e-16)
+    limit, kappa = 1.0 - 8.0 * 5 * np.finfo(float).eps, 0.5
 
-    def chart(v):
-        e = jnp.exp(v[1:])
-        return jnp.concatenate([np.finfo(float).tiny + jax.nn.softplus(v[:1]), limit * e / (1.0 + jnp.sum(e)) / weights])
+    def chart(u):
+        e = jnp.exp(u[1:])
+        v = limit * e / (1.0 + jnp.sum(e))
+        alpha = v[0] / (1.0 - kappa)
+        return jnp.stack([np.finfo(float).tiny + jnp.exp(u[0]), alpha, v[1] / kappa - alpha, v[2], v[3]])
 
     full = jet.theta(theta, api.GRADIENT | api.HESSIAN)
     jac = np.asarray(jax.jacfwd(chart)(jnp.asarray(z)))
-    curvature = np.asarray(jax.hessian(lambda v: jnp.dot(jnp.asarray(full["gradient"]), chart(v)))(jnp.asarray(z)))
+    curvature = np.asarray(jax.hessian(lambda u: jnp.dot(jnp.asarray(full["gradient"]), chart(u)))(jnp.asarray(z)))
     out = jet.z(z, api.GRADIENT | api.HESSIAN)
     assert_close(out["gradient"], jac.T @ full["gradient"], 1e-12)
     assert_close(out["hessian"], jac.T @ full["hessian"] @ jac + curvature, 1e-11)
 
 
-def test_gjr_persistence_weights_leverage_by_one_half(series):
+def test_gjr_domain_admits_negative_leverage_down_to_minus_alpha(series):
     model = gjr_model("normal")
     assert model.feasible(np.array([0.1, 0.05, 0.3, 0.79]))      # 0.05 + 0.15 + 0.79 < 1
     assert not model.feasible(np.array([0.1, 0.05, 0.4, 0.79]))  # 0.05 + 0.20 + 0.79 > 1
+    assert model.feasible(np.array([0.1, 0.05, -0.04, 0.9]))     # alpha + gamma >= 0
+    assert not model.feasible(np.array([0.1, 0.05, -0.06, 0.9]))
+    jet = api.Jet(model, series)
+    assert jet.theta(np.array([0.1, 0.05, -0.06, 0.9]), api.VALUE)["status"] == "not_evaluable"
 
 
 # --------------------------------------------------------------------------- #

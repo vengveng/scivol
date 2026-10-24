@@ -70,7 +70,7 @@ def test_z_jet_includes_chart_curvature(series, p, q):
     r2 = jnp.asarray(series * series)
 
     def objective(zj):
-        omega = np.finfo(float).tiny + jax.nn.softplus(zj[0])
+        omega = np.finfo(float).tiny + jnp.exp(zj[0])
         e = jnp.exp(zj[1:])
         coefficients = limit * e / (1.0 + jnp.sum(e))
         alpha, beta = coefficients[:p], coefficients[p:]

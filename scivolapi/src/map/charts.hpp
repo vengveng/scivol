@@ -17,10 +17,12 @@ namespace scivolapi::detail {
 // One scalar parameter on an open interval, from the model's declared domain.
 // Every chart keeps theta inside a closed interval [lower_bound, upper_bound]
 // of representable values strictly inside the open domain:
-//   lower:      (a, inf)   theta = a' + softplus(z),  a' the least normal double > a
+//   lower:      (a, inf)   theta = a' + exp(z),       a' the least normal double > a
 //   symmetric:  (-c, c)    theta = c' tanh(z),        c' the greatest double < c
 //   free:       (-inf, inf) theta = z
-// The margins a', c' are floating-point margins, not model restrictions.
+// The margins a', c' are floating-point margins, not model restrictions. The
+// exponential keeps scale-like parameters on a log scale at both ends, so a
+// parameter heading to infinity (nu on Gaussian data) moves like log nu.
 struct ScalarChart {
     enum class Kind { lower, symmetric, free };
     Kind kind = Kind::free;
@@ -49,7 +51,7 @@ struct ScalarChart {
     [[nodiscard]] double theta(double z) const noexcept
     {
         switch (kind) {
-        case Kind::lower: return bound + softplus(z);
+        case Kind::lower: return bound + std::exp(z);
         case Kind::symmetric: return bound * std::tanh(z);
         default: return z;
         }
@@ -61,7 +63,7 @@ struct ScalarChart {
         switch (kind) {
         case Kind::lower:
             if (!(theta > bound)) return false;
-            out = inverse_softplus(theta - bound);
+            out = std::log(theta - bound);
             break;
         case Kind::symmetric:
             if (!(std::abs(theta) < bound)) return false;
@@ -76,7 +78,7 @@ struct ScalarChart {
     [[nodiscard]] double first(double z) const noexcept
     {
         switch (kind) {
-        case Kind::lower: return logistic(z);
+        case Kind::lower: return std::exp(z);
         case Kind::symmetric: return bound * sech2(z);
         default: return 1.0;
         }
@@ -84,7 +86,7 @@ struct ScalarChart {
     [[nodiscard]] double second(double z) const noexcept
     {
         switch (kind) {
-        case Kind::lower: { const double s = logistic(z); return s * (1.0 - s); }
+        case Kind::lower: return std::exp(z);
         case Kind::symmetric: return -2.0 * bound * std::tanh(z) * sech2(z);
         default: return 0.0;
         }

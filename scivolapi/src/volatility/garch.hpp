@@ -31,11 +31,16 @@ public:
     [[nodiscard]] std::size_t width() const noexcept { return beta_ + q_; }
     [[nodiscard]] std::size_t ring_slots() const noexcept { return std::max<std::size_t>(q_, 1u); }
 
+    // h_t > 0 for all data: omega > 0, alpha_i >= 0, beta_j >= 0 and, for GJR,
+    // alpha_i + gamma_i >= 0 (gamma itself may be negative).
     [[nodiscard]] bool evaluable(const double* theta) const noexcept
     {
         if (!(theta[0] > 0.0) || !std::isfinite(theta[0])) return false;
-        for (std::size_t k = 1; k < width(); ++k)
-            if (!(theta[k] >= 0.0) || !std::isfinite(theta[k])) return false;
+        for (std::size_t k = 1; k < width(); ++k) {
+            if (!std::isfinite(theta[k])) return false;
+            const bool leverage = Leverage && k > p_ && k <= 2 * p_;
+            if (!(leverage ? theta[k] + theta[k - p_] >= 0.0 : theta[k] >= 0.0)) return false;
+        }
         return true;
     }
 
