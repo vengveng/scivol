@@ -41,7 +41,15 @@ Record minimize_slsqp(const Problem& problem, std::span<const double> start, con
     state.itermax = options.maximum_iterations;
     state.n = static_cast<std::int64_t>(problem.dimension);
     state.m = static_cast<std::int64_t>(problem.constraint_count);
+    // The full step (the first trial of a line search) is usually accepted, so
+    // it requests the gradient with the value; acceptance then reuses it.
+    // Backtracking trials request the value only.
+    // A fused request that fails is retried for the value alone, so a point
+    // whose gradient fails is still a valid trial, as it is when requested
+    // separately; `trial` then remembers that its gradient is unavailable.
+    enum class Gradient { none, available, failed };
     bool trial_pending = false;
+    Gradient trial_gradient = Gradient::none;
     while (true) {
         __slsqp_body(&state, &value, w.gradient, w.normals, w.values, w.x,
             w.multipliers, w.lower, w.upper, w.buffer, w.indices, w.nnls);
@@ -50,19 +58,32 @@ Record minimize_slsqp(const Problem& problem, std::span<const double> start, con
             // exactly this point, including any bound roundoff correction.
             detail::project_bounds(problem, w.x);
             trial_pending = true;
-            const bool constraints_ok = evaluate.constraints(w.x, w.values, w.normals);
-            const bool objective_ok = constraints_ok && evaluate.objective(w.x, value, nullptr);
+            trial_gradient = Gradient::none;
+            bool objective_ok = evaluate.constraints(w.x, w.values, w.normals);
+            if (objective_ok && state.line == 1) {
+                trial_gradient = evaluate.objective(w.x, value, w.trial_gradient) ? Gradient::available
+                                                                                   : Gradient::failed;
+                std::copy_n(w.x, problem.dimension, w.trial);
+            }
+            if (objective_ok && trial_gradient != Gradient::available)
+                objective_ok = evaluate.objective(w.x, value, nullptr);
             if (!objective_ok) {
                 state.mode = VLK_SLSQP_REJECT_OBJECTIVE;
             } else {
-                points.retain(w.x, value, nullptr, w.values);
+                points.retain(w.x, value, trial_gradient == Gradient::available ? w.trial_gradient : nullptr,
+                              w.values);
             }
             continue;
         }
         if (state.mode == -1 || (state.mode == 0 && trial_pending)) {
             // No BFGS update is possible until the derivative at this accepted
             // candidate has succeeded. A failed request restores the old record.
-            if (!evaluate.objective(w.x, value, w.gradient)) {
+            const bool at_trial = trial_gradient != Gradient::none
+                && std::equal(w.x, w.x + problem.dimension, w.trial);
+            if (at_trial && trial_gradient == Gradient::available) {
+                std::copy_n(w.trial_gradient, problem.dimension, w.gradient);
+            } else if ((at_trial && trial_gradient == Gradient::failed)
+                       || !evaluate.objective(w.x, value, w.gradient)) {
                 state.mode = VLK_SLSQP_INVALID_OBJECTIVE;
                 break;
             }

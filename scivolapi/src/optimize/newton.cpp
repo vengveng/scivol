@@ -126,15 +126,23 @@ bool feasible_trial(const Problem& p, detail::SolverWorkspace& w, detail::Evalua
 
 // Accepts the feasible trial (constraints already evaluated) on sufficient
 // decrease. A real descent onto a face can gain less than one ulp, so an equal
-// value passes when the Armijo margin rounds away.
+// value passes when the Armijo margin rounds away. A trial that is likely
+// accepted (Newton's full step) requests its gradient with the value.
 bool accept_trial(const Problem& p, detail::SolverWorkspace& w, detail::Evaluation& evaluate,
-    detail::Points& points, double& value, double descent)
+    detail::Points& points, double& value, double descent, bool likely)
 {
     double candidate;
-    if (!evaluate.objective(w.trial, candidate, nullptr)) return false;
-    points.retain(w.trial, candidate, nullptr, w.trial_values);
-    if (candidate > value + 1e-4 * descent) return false;
-    if (!evaluate.objective(w.trial, candidate, w.trial_gradient)) return false;
+    if (!likely) {
+        if (!evaluate.objective(w.trial, candidate, nullptr)) return false;
+        points.retain(w.trial, candidate, nullptr, w.trial_values);
+        if (candidate > value + 1e-4 * descent) return false;
+    }
+    if (!evaluate.objective(w.trial, candidate, w.trial_gradient)) {
+        // As with separate requests, a valid value still counts as a trial point.
+        if (likely && evaluate.objective(w.trial, candidate, nullptr))
+            points.retain(w.trial, candidate, nullptr, w.trial_values);
+        return false;
+    }
     points.retain(w.trial, candidate, w.trial_gradient, w.trial_values);
     if (candidate > value + 1e-4 * descent) return false;
     std::copy_n(w.trial, p.dimension, w.x);
@@ -159,7 +167,7 @@ bool take_step(const Problem& p, detail::SolverWorkspace& w, detail::Evaluation&
         for (std::size_t i = 0; i < p.dimension; ++i)
             descent += w.gradient[i] * (w.trial[i] - w.x[i]);
         if (!(descent < 0) || !std::isfinite(descent)) continue;
-        if (accept_trial(p, w, evaluate, points, value, descent)) return true;
+        if (accept_trial(p, w, evaluate, points, value, descent, line == 0)) return true;
     }
     return false;
 }
@@ -179,7 +187,7 @@ bool take_face_step(const Problem& p, detail::SolverWorkspace& w, detail::Evalua
         w.trial[i] = bound;
         if (!evaluate.constraints(w.trial, w.trial_values, w.trial_normals)
             || !detail::feasible(p, w.trial, w.trial_values)) continue;
-        if (accept_trial(p, w, evaluate, points, value, descent)) return true;
+        if (accept_trial(p, w, evaluate, points, value, descent, false)) return true;
     }
     return false;
 }

@@ -115,6 +115,7 @@ int main()
     assert(r.termination == Termination::line_search_failed);
     close(r.accepted.x[0], 0); close(r.best_feasible.x[0], -1);
     close(r.best_feasible.value, -1e-5); close(r.best_feasible.gradient[0], -1.5 + 3e-5);
-    assert(r.work.value_requests == 32 && r.work.gradient_requests == 2);
+    // The full step requests value and gradient together; 31 backtracks fail.
+    assert(r.work.value_requests == 31 && r.work.gradient_requests == 2);
     assert(r.work.rejected_trials == 31 && r.work.hessian_requests == 1);
 }

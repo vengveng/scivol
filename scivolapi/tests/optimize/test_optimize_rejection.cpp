@@ -63,7 +63,8 @@ int main()
         };
         r = minimize_slsqp(p, std::array{0.0}, {});
         assert(r.termination == Termination::line_search_failed);
-        assert(r.work.rejected_trials == 11 && failures == 11);
+        // The full step fails fused and again for the value alone; 10 backtracks fail.
+        assert(r.work.rejected_trials == 12 && failures == 12);
         assert(r.work.value_requests == values && r.work.gradient_requests == gradients);
         close(r.accepted.x[0], 0); close(r.accepted.value, 1); close(r.accepted.gradient[0], -2);
         close(r.best_feasible.x[0], 0);
@@ -80,7 +81,8 @@ int main()
     assert(r.termination == Termination::line_search_failed);
     close(r.accepted.x[0], 0); close(r.accepted.gradient[0], -2);
     close(r.best_feasible.x[0], 1); close(r.best_feasible.value, 0);
-    assert(r.best_feasible.gradient.empty() && r.work.rejected_trials == 2);
+    // Failed gradients: the fused full step at x = 2, the accepted x = 1, and the best point's request.
+    assert(r.best_feasible.gradient.empty() && r.work.rejected_trials == 3);
 
     p.objective = [](const double*, double& f, double* g) {
         f = -1e100; if (g) g[0] = 0; return false;
