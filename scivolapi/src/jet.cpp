@@ -119,7 +119,11 @@ JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
         return {};
     Work work = detail::carve(work_.data(), layout, detail::volatility_shape(model_.spec()), n);
 
-    if (!layout.theta(z.data(), work.theta)) {  // a moment the chart needs does not exist here
+    // One chart point serves theta(z), the Jacobian and the curvature.
+    detail::Layout::ChartPoint point;
+    const int chart_order = (request & hessian) ? 2 : (request & gradient) ? 1 : 0;
+    if ((layout.simplex_count && !layout.prepare(z.data(), chart_order, point))
+        || !layout.theta(z.data(), point, work.theta)) {  // a moment the chart needs does not exist here
         JetResult failed;
         failed.status = Status::not_evaluable;
         return failed;
@@ -131,7 +135,7 @@ JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
         work, v);
     if (r.status != Status::ok) return finish(request, r, false);
 
-    const bool chart_ok = !(request & (gradient | hessian)) || layout.jacobian(z.data(), work.jac);
+    const bool chart_ok = !(request & (gradient | hessian)) || layout.jacobian(z.data(), point, work.jac);
     if ((request & gradient) && r.gradient_ok && chart_ok) {
         for (std::size_t j = 0; j < dim; ++j) {
             double s = 0.0;
@@ -154,7 +158,7 @@ JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
                 for (std::size_t k = 0; k < dim; ++k) s += work.jac[k * dim + i] * work.tmp[k * dim + j];
                 out.hessian[i * dim + j] = s;
             }
-        hessian_ok = layout.curvature(z.data(), work.g, out.hessian.data())
+        hessian_ok = layout.curvature(z.data(), point, work.g, out.hessian.data())
             && detail::all_finite(out.hessian.data(), dim * dim);
     }
     if (request & value) out.value = v;

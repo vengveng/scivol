@@ -69,6 +69,25 @@ def test_gjr_every_sparse_request_equals_the_full_request(series):
                 assert np.array_equal(part[key], full[key])
 
 
+@pytest.mark.parametrize("case", [
+    lambda: (gjr_model("skew_t"), gjr_point(1, 1, [1/6.0, -0.3])),
+    lambda: (gjr_model("nig"), gjr_point(1, 1, [-0.2, 1.5])),
+    lambda: (aparch_model("student_t"), aparch_point(1, 1, 1.4, [1/6.0])),
+])
+def test_z_jet_every_sparse_request_equals_the_full_request(series, case):
+    """The chart's moment weights are prepared once per request, to its order; values agree bitwise."""
+    model, theta = case()
+    jet = api.Jet(model, series)
+    z = model.to_z(theta)
+    full = jet.z(z, 15)
+    assert full["status"] == "ok"
+    for mask in range(1, 16):
+        part = jet.z(z, mask)
+        for key, bit in (("value", 1), ("gradient", 2), ("hessian", 4), ("variance", 8)):
+            if mask & bit:
+                assert np.array_equal(part[key], full[key])
+
+
 def test_gjr_without_leverage_is_garch(series):
     spec = api.ModelSpec()
     garch = api.Jet(api.Model(spec), series).theta(np.array([0.08, 0.1, 0.8]), 7)

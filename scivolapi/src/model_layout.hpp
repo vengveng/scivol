@@ -239,27 +239,57 @@ struct Layout {
         return std::isfinite(value);
     }
 
+    // The simplex point at z: shares, v = L s, and the moment weights at
+    // theta(z) with derivatives to `order`. Prepared once per z and shared by
+    // theta, jacobian and curvature (the weights are quadratures for most
+    // densities). A weight's value does not depend on the order prepared.
+    struct ChartPoint {
+        Weight w[max_weights];
+        double share[max_simplex], v[max_simplex];
+        double limit = 1.0;
+        std::size_t count = 0;
+        // d v_j / d z_jj = L s_j (delta - s_jj)
+        [[nodiscard]] double dv(std::size_t j, std::size_t jj) const noexcept
+        {
+            return limit * share[j] * ((j == jj ? 1.0 : 0.0) - share[jj]);
+        }
+    };
+
+    [[nodiscard]] bool prepare(const double* z, int order, ChartPoint& s) const noexcept
+    {
+        double theta[max_dimension];
+        for (std::size_t k = 0; k < dimension; ++k) theta[k] = scalar_entry[k] ? chart[k].theta(z[k]) : 0.0;
+        if (!weights(theta, order, s.w)) return false;
+        double zs[max_simplex];
+        for (std::size_t k = 0; k < simplex_count; ++k) zs[k] = z[simplex_index[k]];
+        SimplexChart::shares(zs, simplex_count, s.share);
+        s.count = simplex_count;
+        s.limit = SimplexChart::limit(simplex_count);
+        for (std::size_t k = 0; k < simplex_count; ++k) s.v[k] = s.limit * s.share[k];
+        return true;
+    }
+
     // theta(z). Scalar entries first: the weights depend on them.
     [[nodiscard]] bool theta(const double* z, double* theta) const noexcept
+    {
+        ChartPoint point;
+        return (!simplex_count || prepare(z, 0, point)) && this->theta(z, point, theta);
+    }
+
+    [[nodiscard]] bool theta(const double* z, const ChartPoint& s, double* theta) const noexcept
     {
         for (std::size_t k = 0; k < dimension; ++k)
             if (scalar_entry[k]) theta[k] = chart[k].theta(z[k]);
         for (std::size_t b = 0; b < stable_blocks; ++b) {
-            const Stable& s = stable[b];
-            StableChart::theta(z + s.at, s.count, theta + s.at);
-            for (std::size_t k = 0; k < s.count; ++k) theta[s.at + k] *= s.sign;
+            const Stable& st = stable[b];
+            StableChart::theta(z + st.at, st.count, theta + st.at);
+            for (std::size_t k = 0; k < st.count; ++k) theta[st.at + k] *= st.sign;
         }
-        if (!simplex_count) return true;
-        Weight w[max_weights];
-        if (!weights(theta, 0, w)) return false;
-        double v[max_simplex], zs[max_simplex];
-        for (std::size_t k = 0; k < simplex_count; ++k) zs[k] = z[simplex_index[k]];
-        SimplexChart::theta(zs, simplex_count, unit, v);
         Term t[2];
         for (std::size_t k = 0; k < simplex_count; ++k) {
             std::size_t r;
             double value = 0.0;
-            for (std::size_t n = row(k, w, r, t), m = 0; m < n; ++m) value += t[m].c * v[t[m].j];
+            for (std::size_t n = row(k, s.w, r, t), m = 0; m < n; ++m) value += t[m].c * s.v[t[m].j];
             theta[simplex_index[k]] = value;
         }
         return true;
@@ -295,18 +325,22 @@ struct Layout {
     // Dense Jacobian d theta / d z (dimension x dimension).
     [[nodiscard]] bool jacobian(const double* z, double* jac) const noexcept
     {
+        ChartPoint point;
+        return (!simplex_count || prepare(z, 1, point)) && jacobian(z, point, jac);
+    }
+
+    [[nodiscard]] bool jacobian(const double* z, const ChartPoint& s, double* jac) const noexcept
+    {
         std::fill_n(jac, dimension * dimension, 0.0);
         for (std::size_t k = 0; k < dimension; ++k)
             if (scalar_entry[k]) jac[k * dimension + k] = chart[k].first(z[k]);
         for (std::size_t b = 0; b < stable_blocks; ++b) {
-            const Stable& s = stable[b];
-            StableChart::jacobian(z + s.at, s.count, s.at, dimension, jac);
-            for (std::size_t i = 0; i < s.count; ++i)
-                for (std::size_t j = 0; j < s.count; ++j) jac[(s.at + i) * dimension + s.at + j] *= s.sign;
+            const Stable& st = stable[b];
+            StableChart::jacobian(z + st.at, st.count, st.at, dimension, jac);
+            for (std::size_t i = 0; i < st.count; ++i)
+                for (std::size_t j = 0; j < st.count; ++j) jac[(st.at + i) * dimension + st.at + j] *= st.sign;
         }
         if (!simplex_count) return true;
-        Simplex s;
-        if (!prepare(z, 1, s)) return false;
         Term t[2];
         for (std::size_t k = 0; k < simplex_count; ++k) {
             std::size_t r;
@@ -328,18 +362,22 @@ struct Layout {
     // Adds sum_i g_i d^2 theta_i / dz dz' to `out` (dimension x dimension).
     [[nodiscard]] bool curvature(const double* z, const double* g, double* out) const noexcept
     {
+        ChartPoint point;
+        return (!simplex_count || prepare(z, 2, point)) && curvature(z, point, g, out);
+    }
+
+    [[nodiscard]] bool curvature(const double* z, const ChartPoint& s, const double* g, double* out) const noexcept
+    {
         const std::size_t d = dimension;
         for (std::size_t k = 0; k < d; ++k)
             if (scalar_entry[k]) out[k * d + k] += g[k] * chart[k].second(z[k]);
         for (std::size_t b = 0; b < stable_blocks; ++b) {
-            const Stable& s = stable[b];
+            const Stable& st = stable[b];
             double signed_g[StableChart::max_order];
-            for (std::size_t i = 0; i < s.count; ++i) signed_g[i] = s.sign * g[s.at + i];
-            StableChart::curvature(z + s.at, signed_g, s.count, s.at, d, out);
+            for (std::size_t i = 0; i < st.count; ++i) signed_g[i] = st.sign * g[st.at + i];
+            StableChart::curvature(z + st.at, signed_g, st.count, st.at, d, out);
         }
         if (!simplex_count) return true;
-        Simplex s;
-        if (!prepare(z, 2, s)) return false;
 
         // The simplex block: the simplex's curvature contracted with M' g.
         double gt[max_simplex] = {};
@@ -404,33 +442,6 @@ struct Layout {
 
 private:
     static constexpr auto unit = [](std::size_t) { return 1.0; };
-
-    // The simplex point at z: shares, v = L s, and the weights at theta(z).
-    struct Simplex {
-        Weight w[max_weights];
-        double share[max_simplex], v[max_simplex];
-        double limit = 1.0;
-        std::size_t count = 0;
-        // d v_j / d z_jj = L s_j (delta - s_jj)
-        [[nodiscard]] double dv(std::size_t j, std::size_t jj) const noexcept
-        {
-            return limit * share[j] * ((j == jj ? 1.0 : 0.0) - share[jj]);
-        }
-    };
-
-    [[nodiscard]] bool prepare(const double* z, int order, Simplex& s) const noexcept
-    {
-        double theta[max_dimension];
-        for (std::size_t k = 0; k < dimension; ++k) theta[k] = scalar_entry[k] ? chart[k].theta(z[k]) : 0.0;
-        if (!weights(theta, order, s.w)) return false;
-        double zs[max_simplex];
-        for (std::size_t k = 0; k < simplex_count; ++k) zs[k] = z[simplex_index[k]];
-        SimplexChart::shares(zs, simplex_count, s.share);
-        s.count = simplex_count;
-        s.limit = SimplexChart::limit(simplex_count);
-        for (std::size_t k = 0; k < simplex_count; ++k) s.v[k] = s.limit * s.share[k];
-        return true;
-    }
 };
 
 }  // namespace scivolapi::detail
