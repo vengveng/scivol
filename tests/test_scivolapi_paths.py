@@ -214,7 +214,7 @@ def test_a_fitted_result_filters_and_forecasts_natively(data):
 
     y, x = data
     spec = ARX(lags=2) + GJRGARCH(1, 1) + StudentT()
-    result = spec.fit(y, x=x, engine="scivolapi")
+    result = spec.fit(y, x=x)
     state = result.filter()
     np.testing.assert_allclose(state.residuals, result.resid, rtol=1e-14)
     np.testing.assert_allclose(state.sigma2, result.sigma2, rtol=1e-14)
@@ -236,7 +236,7 @@ def test_fixed_parameter_evaluation_matches_the_fit(data):
 
     y, _ = data
     spec = ARMA(1, 1) + EGARCH(1, 1) + GED()
-    result = spec.fit(y, engine="scivolapi")
+    result = spec.fit(y)
     theta = np.array(result.params)
     assert native_eval.loglikelihood(spec, y, theta) == pytest.approx(result.log_likelihood, rel=1e-14)
     np.testing.assert_allclose(native_eval.hessian(spec, y, theta), -np.array(result.hessian), rtol=1e-12)

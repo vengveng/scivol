@@ -1077,10 +1077,10 @@ TRUE_PARAMS = {
         "lam": -0.15,
     },
     "arx_normal": {
-        "params": np.array([0.25, 0.40, 0.90], dtype=np.float64),
+        "params": np.array([0.25, 0.40, 0.90, 1.0], dtype=np.float64),  # const, ar, exog, sigma2
     },
     "harx_normal": {
-        "params": np.array([0.10, 0.55, 0.20, 0.80], dtype=np.float64),
+        "params": np.array([0.10, 0.55, 0.20, 0.80, 1.0], dtype=np.float64),  # const, har[1], har[5], exog, sigma2
     },
     "arx_studentt": {
         "params": np.array([0.15, 0.35, 0.70, 0.60, 8.0], dtype=np.float64),
@@ -1230,7 +1230,7 @@ class TestGARCHGED:
         from scivol import GARCH, GED
 
         spec = GARCH(1, 1) + GED()
-        result = spec.fit(data, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, coordinates="theta")
 
         assert result.params is not None
         assert len(result.params) == 4
@@ -1241,7 +1241,7 @@ class TestGARCHGED:
         from scivol import GARCH, GED
 
         spec = GARCH(1, 1) + GED()
-        result = spec.fit(data, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, coordinates="theta")
 
         true = TRUE_PARAMS["garch_ged"]
         alpha_hat = result.params[1]
@@ -1275,7 +1275,7 @@ class TestGARCHGeneralizedHyperbolic:
             p["lambda"],
         )
         return (GARCH(1, 1) + GeneralizedHyperbolic()).fit(
-            data, solver="slsqp", log_mode=False
+            data, coordinates="theta"
         )
 
     def test_convergence(self, result) -> None:
@@ -1309,7 +1309,7 @@ class TestGARCHNormalInverseGaussian:
             -0.5,
         )
         return (GARCH(1, 1) + NormalInverseGaussian()).fit(
-            data, solver="slsqp", log_mode=False
+            data, coordinates="theta"
         )
 
     def test_convergence(self, result) -> None:
@@ -1341,7 +1341,7 @@ class TestGARCHHyperbolic:
             p["zeta"],
             1.0,
         )
-        return (GARCH(1, 1) + Hyperbolic()).fit(data, engine="scivolapi")
+        return (GARCH(1, 1) + Hyperbolic()).fit(data)
 
     def test_convergence(self, result) -> None:
         assert result.converged
@@ -1372,7 +1372,7 @@ class TestGARCHVarianceGamma:
             p["lambda"],
         )
         return (GARCH(1, 1) + VarianceGamma()).fit(
-            data, solver="slsqp", log_mode=False
+            data, coordinates="theta"
         )
 
     def test_convergence(self, result) -> None:
@@ -1786,7 +1786,7 @@ class TestARMANormal:
         result = spec.fit(data)
         
         assert result.params is not None
-        assert len(result.params) == 3  # c, phi, theta
+        assert len(result.params) == 4  # c, phi, theta, sigma2
         assert np.all(np.isfinite(result.params))
         assert result.log_likelihood > 0
     
@@ -2307,7 +2307,7 @@ class TestARXHARXStandalone:
         params = TRUE_PARAMS["arx_normal"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3101)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
         assert result.converged
         np.testing.assert_allclose(result.params, params, atol=0.18, rtol=0.0)
@@ -2319,7 +2319,7 @@ class TestARXHARXStandalone:
         params = TRUE_PARAMS["harx_normal"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3102)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
         assert result.converged
         np.testing.assert_allclose(result.params, params, atol=0.20, rtol=0.0)
@@ -2331,7 +2331,7 @@ class TestARXHARXStandalone:
         params = TRUE_PARAMS["arx_studentt"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3103)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
         assert result.converged
         assert len(result.params) == params.size
@@ -2344,7 +2344,7 @@ class TestARXHARXStandalone:
         params = TRUE_PARAMS["harx_skewt"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3104)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
         assert result.converged
         assert len(result.params) == params.size
@@ -2357,7 +2357,7 @@ class TestARXHARXStandalone:
         params = TRUE_PARAMS["arx_ged"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3105)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
         assert result.converged
         assert len(result.params) == params.size
@@ -2372,7 +2372,7 @@ class TestARXHARXEGARCH:
         params = TRUE_PARAMS["arx_egarch_normal"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3201)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
         assert result.converged
         np.testing.assert_allclose(result.params[:3], params[:3], atol=0.16, rtol=0.0)
@@ -2385,7 +2385,7 @@ class TestARXHARXEGARCH:
         params = TRUE_PARAMS["arx_egarch_studentt"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3202)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
         assert result.converged
         assert len(result.params) == params.size
@@ -2398,7 +2398,7 @@ class TestARXHARXEGARCH:
         params = TRUE_PARAMS["harx_egarch_skewt"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3203)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
         assert result.converged
         assert len(result.params) == params.size
@@ -2411,7 +2411,7 @@ class TestARXHARXEGARCH:
         params = TRUE_PARAMS["arx_egarch_ged"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3204)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
         assert result.converged
         assert len(result.params) == params.size

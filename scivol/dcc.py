@@ -1341,8 +1341,6 @@ class DCC:
         **kwargs: Any,
     ) -> DCCResult:
         returns_np, index, columns = _extract_multivariate_input(returns)
-        if kwargs.get("engine") == "scivolapi":
-            univariate_fit_kwargs = {"engine": "scivolapi", **(univariate_fit_kwargs or {})}
         std_resid, uni_res = _prepare_univariate_results(
             returns_np,
             univariate_spec,
@@ -1397,7 +1395,7 @@ class DCC:
                     f"expected {self.distribution}."
                 )
             theta0 = initial_result.theta
-        if engine == "scivolapi":
+        if True:
             from ._scivolapi_dcc import fit_from_residuals as fit_native
 
             return fit_native(p, q, self.distribution, eps, Qbar=Qbar, theta0=theta0,

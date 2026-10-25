@@ -350,16 +350,30 @@ def gjr_data() -> np.ndarray:
     return y
 
 
+# Maximized log-likelihoods from the previous production engine on the same
+# data and likelihood: the fit must reach at least these values.
+PRODUCTION_LOG_LIKELIHOOD = {
+    "gjr_Normal": -6672.984987994012,
+    "gjr_StudentT": -6565.1803279297865,
+    "gjr_GED": -6578.702792687239,
+    "egarch_Normal": -4861.208404301725,
+    "aparch_Normal": -4551.4396952828265,
+    "egarch_StudentT": -4671.111941620415,
+    "aparch_StudentT": -4380.192499173566,
+    "egarch_SkewT": -4670.948308403579,
+    "aparch_SkewT": -4380.036350027015,
+}
+
+
 @pytest.mark.parametrize("density", [Normal, StudentT, GED])
-def test_gjr_fit_matches_the_production_likelihood(gjr_data, density):
-    new = (GJRGARCH(1, 1) + density()).fit(gjr_data, engine="scivolapi")
-    old = (GJRGARCH(1, 1) + density()).fit(gjr_data)
-    assert new.converged and new.fit_info.inference_status == "available"
-    assert new.log_likelihood == pytest.approx(old.log_likelihood, abs=1e-6)
+def test_gjr_fit_reaches_the_production_optimum(gjr_data, density):
+    result = (GJRGARCH(1, 1) + density()).fit(gjr_data)
+    assert result.converged and result.fit_info.inference_status == "available"
+    assert result.log_likelihood >= PRODUCTION_LOG_LIKELIHOOD["gjr_" + density.__name__] - 1e-6
 
 
 def test_gjr_fit_recovers_the_leverage_effect(gjr_data):
-    result = (GJRGARCH(1, 1) + StudentT()).fit(gjr_data, engine="scivolapi")
+    result = (GJRGARCH(1, 1) + StudentT()).fit(gjr_data)
     gamma, se = result.params[2], result.std_errors[2]
     assert abs(gamma - 0.10) < 4.0 * se
 
@@ -376,16 +390,15 @@ def egarch_data() -> np.ndarray:
 
 
 @pytest.mark.parametrize("density", [Normal, StudentT, SkewT])
-def test_egarch_fit_matches_the_production_likelihood(egarch_data, density):
-    new = (EGARCH(1, 1) + density()).fit(egarch_data, engine="scivolapi")
-    old = (EGARCH(1, 1) + density()).fit(egarch_data)
-    assert new.converged and new.fit_info.inference_status == "available"
-    assert new.log_likelihood == pytest.approx(old.log_likelihood, abs=1e-6)
+def test_egarch_fit_reaches_the_production_optimum(egarch_data, density):
+    result = (EGARCH(1, 1) + density()).fit(egarch_data)
+    assert result.converged and result.fit_info.inference_status == "available"
+    assert result.log_likelihood >= PRODUCTION_LOG_LIKELIHOOD["egarch_" + density.__name__] - 1e-6
 
 
 def test_egarch_fit_is_exactly_equivariant_to_data_scale(egarch_data):
-    base = (EGARCH(1, 1) + StudentT()).fit(egarch_data, engine="scivolapi")
-    scaled = (EGARCH(1, 1) + StudentT()).fit(10.0 * egarch_data, engine="scivolapi")
+    base = (EGARCH(1, 1) + StudentT()).fit(egarch_data)
+    scaled = (EGARCH(1, 1) + StudentT()).fit(10.0 * egarch_data)
     beta = base.params[3]
     assert scaled.params[0] == pytest.approx(base.params[0] + 2.0 * np.log(10.0) * (1.0 - beta), abs=1e-7)
     assert scaled.params[1:] == pytest.approx(base.params[1:], rel=1e-6)
@@ -404,16 +417,15 @@ def aparch_data() -> np.ndarray:
 
 
 @pytest.mark.parametrize("density", [Normal, StudentT, SkewT])
-def test_aparch_fit_matches_the_production_likelihood(aparch_data, density):
-    new = (APARCH(1, 1) + density()).fit(aparch_data, engine="scivolapi")
-    old = (APARCH(1, 1) + density()).fit(aparch_data)
-    assert new.converged and new.fit_info.inference_status == "available"
-    assert new.log_likelihood == pytest.approx(old.log_likelihood, abs=1e-6)
+def test_aparch_fit_reaches_the_production_optimum(aparch_data, density):
+    result = (APARCH(1, 1) + density()).fit(aparch_data)
+    assert result.converged and result.fit_info.inference_status == "available"
+    assert result.log_likelihood >= PRODUCTION_LOG_LIKELIHOOD["aparch_" + density.__name__] - 1e-6
 
 
 def test_aparch_fit_is_exactly_equivariant_to_data_scale(aparch_data):
-    base = (APARCH(1, 1) + StudentT()).fit(aparch_data, engine="scivolapi")
-    scaled = (APARCH(1, 1) + StudentT()).fit(10.0 * aparch_data, engine="scivolapi")
+    base = (APARCH(1, 1) + StudentT()).fit(aparch_data)
+    scaled = (APARCH(1, 1) + StudentT()).fit(10.0 * aparch_data)
     delta = base.params[4]
     assert scaled.params[0] == pytest.approx(base.params[0] * 10.0 ** delta, rel=1e-6)
     assert scaled.params[1:] == pytest.approx(base.params[1:], rel=1e-6)

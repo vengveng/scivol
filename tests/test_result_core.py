@@ -323,7 +323,7 @@ def test_forecast_convergence():
         y[t] = np.sqrt(sigma2[t]) * rng.standard_normal()
     
     spec = GARCH(1, 1) + Normal()
-    res = spec.fit(y, solver='slsqp', verbose=False)
+    res = spec.fit(y)
     
     # Skip if no GARCH params
     gp = res.garch_params

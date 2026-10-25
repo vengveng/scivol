@@ -112,6 +112,50 @@ def unpack_components(spec: Any, theta: NDArray[np.float64]) -> None:
     _apply_theta_to_spec(spec, theta)
 
 
+@dataclass(frozen=True)
+class PreparedSample:
+    """The rows a model sees: y and x from row `skip` on (scaled), so that the
+    first scored row is max(hold_back, lags)."""
+
+    native: Any
+    y: NDArray[np.float64]
+    x: Optional[NDArray[np.float64]]
+    skip: int
+    hold_back: int
+    original_n_obs: int
+    scale: float
+
+
+def prepare_sample(spec: Any, data: Any, x: Any = None, hold_back: int = 0,
+                   scale: Optional[float] = None) -> PreparedSample:
+    from ._validation import validate_data, validate_hold_back, validate_regressors, validate_scale
+
+    y = validate_data(np.asarray(data, dtype=np.float64))
+    held = validate_hold_back(hold_back)
+    if held >= len(y):
+        raise ValueError("hold_back leaves no observations to estimate on")
+    scale_factor = validate_scale(scale)
+    x_all = None if x is None else validate_regressors(x, len(y))
+    mean = spec.get_component(Role.MEAN)
+    if x_all is not None and hasattr(mean, "set_n_exog"):
+        mean.set_n_exog(x_all.shape[1])
+    elif x_all is None and getattr(mean, "n_exog", 0):
+        raise ValueError(f"{mean.signature} requires exogenous regressors via `x=`.")
+    native = native_spec(spec, 0 if x_all is None else x_all.shape[1])
+    if native is None:
+        raise NotImplementedError(f"{spec} cannot be estimated: unsupported component combination")
+    skip = max(held - native.mean.conditioning, 0)  # rows before the lag rows of the first scored row
+    return PreparedSample(
+        native=native,
+        y=np.ascontiguousarray(y[skip:] * scale_factor, dtype=np.float64),
+        x=None if x_all is None else np.ascontiguousarray(x_all[skip:]),
+        skip=skip,
+        hold_back=held,
+        original_n_obs=len(y),
+        scale=scale_factor,
+    )
+
+
 def fit_spec(
     spec: Any,
     data: NDArray[np.float64],
@@ -126,31 +170,23 @@ def fit_spec(
     initial_params: Optional[NDArray[np.float64]] = None,
     index: Any = None,
     name: Optional[str] = None,
+    **unknown: Any,
 ) -> EstimationResult:
     """Fit a covered composition with scivolapi.
 
-    `hold_back` rows are dropped; the mean's lags then come from the rows that
-    remain, and the likelihood scores every row after the largest lag. Paths and
-    the index cover the scored rows. `method="qmle"` fits the mean and variance
+    The likelihood scores the rows from max(hold_back, lags) on, where lags is
+    the mean's largest y lag: held-back rows are not scored but still supply the
+    mean's lags, so every model with the same hold_back scores the same rows.
+    Paths and the index cover the scored rows. `method="qmle"` fits the mean and variance
     parameters by Gaussian quasi-maximum likelihood with sandwich covariance;
     with a non-Normal density the shape parameters follow in a second stage.
     """
-    from ._validation import validate_data, validate_hold_back, validate_regressors, validate_scale
-
-    y = validate_data(data)
-    skip = validate_hold_back(hold_back)
-    if skip >= len(y):
-        raise ValueError("hold_back leaves no observations to estimate on")
-    original_n_obs = len(y)
-    scale_factor = validate_scale(scale)
-    x_arr = None if x is None else validate_regressors(x, len(y))[skip:]
-    y = np.ascontiguousarray(y[skip:] * scale_factor, dtype=np.float64)
-    mean = spec.get_component(Role.MEAN)
-    if x_arr is not None and hasattr(mean, "set_n_exog"):
-        mean.set_n_exog(x_arr.shape[1])
-    native = native_spec(spec, 0 if x_arr is None else x_arr.shape[1])
-    if native is None:
-        raise NotImplementedError(f"scivolapi does not cover {spec} yet")
+    if unknown:
+        raise TypeError(f"fit() got unexpected keyword argument(s) {', '.join(map(repr, unknown))}; its estimation "
+                        "options are method, coordinates, maxiter, accuracy and initial_params")
+    sample = prepare_sample(spec, data, x, hold_back, scale)
+    native, y, x_arr, skip, held = sample.native, sample.y, sample.x, sample.skip, sample.hold_back
+    original_n_obs, scale_factor = sample.original_n_obs, sample.scale
     if coordinates not in _COORDINATES:
         raise ValueError("coordinates must be 'automatic', 'z' or 'theta'")
     estimator = {"mle": api.Estimator.mle, "qmle": api.Estimator.qmle}.get(str(method).lower())
@@ -164,8 +200,14 @@ def fit_spec(
     options.maximum_iterations = int(maxiter)
     options.accuracy = float(accuracy)
     if initial_params is not None:  # parameters, or a previous result to warm start from
-        start = getattr(initial_params, "params", initial_params)
-        options.start = [float(v) for v in np.asarray(start, dtype=np.float64)]
+        source = getattr(initial_params, "spec", None)
+        if source is not None and str(source) != str(spec):
+            raise ValueError(f"Warm-start result is for {source}; this fit is {spec}.")
+        start = np.asarray(getattr(initial_params, "params", initial_params), dtype=np.float64).ravel()
+        if start.size != model.dimension:
+            raise ValueError(f"initial_params needs {model.dimension} values ({', '.join(model.parameter_names)}), "
+                             f"received {start.size}.")
+        options.start = [float(v) for v in start]
 
     started = time.perf_counter()
     native_result = api.fit(model, y, options, x_arr)
@@ -199,9 +241,10 @@ def fit_spec(
         gradient_evaluations=optimization.njev,
         hessian_evaluations=sum(phase.hessian_requests for phase in phases),
         maxiter=int(maxiter),
+        warm_started=initial_params is not None,
         internal_data_scale=float(native_result.data_scale),
         likelihood_n_obs=int(native_result.scored),
-        requested_hold_back=skip,
+        requested_hold_back=held,
         effective_hold_back=skip + native.mean.conditioning,  # rows before the first scored row
         original_n_obs=original_n_obs,
         effective_n_obs=len(y),

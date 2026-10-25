@@ -152,23 +152,14 @@ def test_staged_qmle_is_not_offered_for_egarch(returns):
     assert r.estimator == api.Estimator.qmle and r.success
 
 
-def test_gaussian_qmle_standard_errors_match_production(returns):
-    from scivol import GARCH, Normal
-
-    _, r = gaussian_fit(returns, mean_spec(constant=False), "garch", estimator="qmle")
-    production = (GARCH(1, 1) + Normal()).fit(returns, method="qmle")
-    np.testing.assert_allclose(r.theta, production.params, rtol=2e-3)
-    np.testing.assert_allclose(r.std_errors, production.std_errors_robust, rtol=2e-2)
-
-
 def test_public_qmle_fit(returns):
     import io
     from contextlib import redirect_stdout
 
     from scivol import ARMA, GJRGARCH, SkewT
 
-    mle = (ARMA(1, 0) + GJRGARCH(1, 1) + SkewT()).fit(returns, engine="scivolapi")
-    qmle = (ARMA(1, 0) + GJRGARCH(1, 1) + SkewT()).fit(returns, engine="scivolapi", method="qmle")
+    mle = (ARMA(1, 0) + GJRGARCH(1, 1) + SkewT()).fit(returns)
+    qmle = (ARMA(1, 0) + GJRGARCH(1, 1) + SkewT()).fit(returns, method="qmle")
     _, native = gaussian_fit(returns, mean_spec(ar=1), "gjr", "skew_t", estimator="qmle")
     assert mle.method == "MLE" and qmle.method == "QMLE"
     np.testing.assert_allclose(qmle.params, native.theta, rtol=1e-10)

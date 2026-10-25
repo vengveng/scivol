@@ -4,6 +4,7 @@
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/tuple.h>
 #include <nanobind/stl/vector.h>
 
 #include <array>
@@ -156,6 +157,25 @@ nb::dict simulation_dict(Simulation s)
 
 std::span<const double> view(const Matrix& m) { return {m.data(), m.shape(0) * m.shape(1)}; }
 
+// Pickle state of a specification (Models are rebuilt from it).
+using SpecState = std::tuple<bool, std::size_t, std::vector<std::size_t>, std::size_t, std::size_t, int, std::size_t,
+                             std::size_t, int>;
+
+SpecState spec_state(const ModelSpec& s)
+{
+    return {s.mean.constant, s.mean.ar, s.mean.har, s.mean.exog, s.mean.ma, static_cast<int>(s.volatility), s.p, s.q,
+            static_cast<int>(s.density)};
+}
+
+ModelSpec spec_from(const SpecState& t)
+{
+    ModelSpec s;
+    std::tie(s.mean.constant, s.mean.ar, s.mean.har, s.mean.exog, s.mean.ma, std::ignore, s.p, s.q, std::ignore) = t;
+    s.volatility = static_cast<VolatilityKind>(std::get<5>(t));
+    s.density = static_cast<DensityKind>(std::get<8>(t));
+    return s;
+}
+
 nb::dict evaluate(BoundJet& self, const Vector& point, unsigned request, bool in_z)
 {
     const std::size_t d = self.model->dimension(), n = self.sample.scored();
@@ -234,6 +254,8 @@ NB_MODULE(_scivolapi, m)
 
     nb::class_<Model>(m, "Model")
         .def("__init__", [](Model* self, const ModelSpec& spec) { new (self) Model(spec); }, "spec"_a)
+        .def("__getstate__", [](const Model& m) { return spec_state(m.spec()); })
+        .def("__setstate__", [](Model& self, const SpecState& state) { new (&self) Model(spec_from(state)); })
         .def_prop_ro("dimension", &Model::dimension)
         .def_prop_ro("parameter_names", &Model::parameter_names)
         .def("feasible", [](const Model& m, const Vector& theta) { return m.feasible(view(theta)); })
@@ -378,6 +400,16 @@ NB_MODULE(_scivolapi, m)
     nb::class_<CorrelationModel>(m, "CorrelationModel")
         .def("__init__", [](CorrelationModel* self, const CorrelationSpec& spec) { new (self) CorrelationModel(spec); },
              "spec"_a)
+        .def("__getstate__", [](const CorrelationModel& m) {
+            return std::make_tuple(m.spec().p, m.spec().q, static_cast<int>(m.spec().density));
+        })
+        .def("__setstate__", [](CorrelationModel& self, const std::tuple<std::size_t, std::size_t, int>& state) {
+            CorrelationSpec spec;
+            spec.p = std::get<0>(state);
+            spec.q = std::get<1>(state);
+            spec.density = static_cast<CorrelationDensity>(std::get<2>(state));
+            new (&self) CorrelationModel(spec);
+        })
         .def_prop_ro("dimension", &CorrelationModel::dimension)
         .def_prop_ro("parameter_names", &CorrelationModel::parameter_names)
         .def("feasible", [](const CorrelationModel& m, const Vector& theta) { return m.feasible(view(theta)); })
@@ -437,6 +469,10 @@ NB_MODULE(_scivolapi, m)
           "density"_a, "shape"_a, "u"_a, "upper"_a = false,
           "Quantiles of the standardized density at lower-tail (or, with upper, upper-tail) probabilities.");
     nb::class_<MarginalDensity>(m, "MarginalDensity")
+        .def("__getstate__", [](const MarginalDensity& d) { return std::make_tuple(static_cast<int>(d.density), d.shape); })
+        .def("__setstate__", [](MarginalDensity& self, const std::tuple<int, std::vector<double>>& state) {
+            new (&self) MarginalDensity{static_cast<DensityKind>(std::get<0>(state)), std::get<1>(state)};
+        })
         .def("__init__", [](MarginalDensity* self, DensityKind density, std::vector<double> shape) {
             new (self) MarginalDensity{density, std::move(shape)};
         }, "density"_a, "shape"_a = std::vector<double>{})

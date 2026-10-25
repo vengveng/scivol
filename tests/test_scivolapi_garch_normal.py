@@ -134,7 +134,7 @@ def garch_data() -> np.ndarray:
 
 
 def test_fit_recovers_known_parameters(garch_data):
-    result = (GARCH(1, 1) + Normal()).fit(garch_data, engine="scivolapi")
+    result = (GARCH(1, 1) + Normal()).fit(garch_data)
     assert result.converged
     assert result.fit_info.inference_status == "available"
     omega, alpha, beta = result.params
@@ -143,15 +143,19 @@ def test_fit_recovers_known_parameters(garch_data):
     assert abs(omega - 0.05) < 4 * se[0]
 
 
-def test_fit_matches_the_production_likelihood(garch_data):
-    new = (GARCH(1, 1) + Normal()).fit(garch_data, engine="scivolapi")
-    old = (GARCH(1, 1) + Normal()).fit(garch_data)
-    assert new.log_likelihood == pytest.approx(old.log_likelihood, abs=1e-6)
+# Maximized log-likelihoods from the previous production engine on the same
+# data and likelihood: the fit must reach at least these values.
+PRODUCTION_LOG_LIKELIHOOD = -8989.06549636074
+
+
+def test_fit_reaches_the_production_optimum(garch_data):
+    result = (GARCH(1, 1) + Normal()).fit(garch_data)
+    assert result.log_likelihood >= PRODUCTION_LOG_LIKELIHOOD - 1e-6
 
 
 def test_theta_and_z_paths_run_independently_and_agree(garch_data):
-    theta = (GARCH(1, 1) + Normal()).fit(garch_data, engine="scivolapi", coordinates="theta")
-    z = (GARCH(1, 1) + Normal()).fit(garch_data, engine="scivolapi", coordinates="z")
+    theta = (GARCH(1, 1) + Normal()).fit(garch_data, coordinates="theta")
+    z = (GARCH(1, 1) + Normal()).fit(garch_data, coordinates="z")
     assert theta.fit_info.optimizer_phases == ("theta:slsqp", "theta:newton")
     assert z.fit_info.optimizer_phases == ("z:slsqp",)
     assert theta.converged and z.converged
@@ -159,15 +163,15 @@ def test_theta_and_z_paths_run_independently_and_agree(garch_data):
 
 
 def test_fit_is_exactly_equivariant_to_data_scale(garch_data):
-    base = (GARCH(1, 1) + Normal()).fit(garch_data, engine="scivolapi")
-    scaled = (GARCH(1, 1) + Normal()).fit(10.0 * garch_data, engine="scivolapi")
+    base = (GARCH(1, 1) + Normal()).fit(garch_data)
+    scaled = (GARCH(1, 1) + Normal()).fit(10.0 * garch_data)
     assert scaled.params[0] == pytest.approx(100.0 * base.params[0], rel=1e-8)
     assert scaled.params[1:] == pytest.approx(base.params[1:], rel=1e-8)
     assert scaled.log_likelihood == pytest.approx(base.log_likelihood - garch_data.size * np.log(10.0), abs=1e-6)
 
 
 def test_reported_paths_reproduce_the_reported_likelihood(garch_data):
-    result = (GARCH(1, 1) + Normal()).fit(garch_data, engine="scivolapi")
+    result = (GARCH(1, 1) + Normal()).fit(garch_data)
     h = result.sigma2
     assert result.log_likelihood == pytest.approx(
         -0.5 * np.sum(LOG_2PI + np.log(h) + garch_data**2 / h), abs=1e-8)
@@ -175,6 +179,6 @@ def test_reported_paths_reproduce_the_reported_likelihood(garch_data):
 
 def test_boundary_estimate_reports_no_standard_errors():
     white_noise = np.random.default_rng(3).standard_normal(3000) * 0.7  # true alpha = beta = 0
-    result = (GARCH(1, 1) + Normal()).fit(white_noise, engine="scivolapi")
+    result = (GARCH(1, 1) + Normal()).fit(white_noise)
     assert result.fit_info.inference_status == "at_boundary"
     assert result.cov_matrix is None

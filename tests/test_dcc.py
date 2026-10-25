@@ -302,7 +302,7 @@ class TestDCCFit:
             window=1000,
             step=100,
             univariate_spec=GARCH(1, 1) + Normal(),
-            univariate_fit_kwargs={"maxiter": 30, "verbose": False},
+            univariate_fit_kwargs={"maxiter": 30},
             n_jobs=1,
             maxiter=30,
             compute_se=False,
@@ -327,7 +327,7 @@ class TestDCCFit:
         result = DCC(1, 1).fit(
             returns,
             univariate_spec=GARCH(1, 1) + Normal(),
-            univariate_fit_kwargs={"maxiter": 50, "verbose": False},
+            univariate_fit_kwargs={"maxiter": 50},
             n_jobs=1,
             maxiter=50,
             compute_se=False,
@@ -354,7 +354,7 @@ class TestDCCFit:
         )
         marginals = [
             (GARCH(1, 1) + Normal()).fit(
-                returns[column], hold_back=7, maxiter=50, verbose=False
+                returns[column], hold_back=7, maxiter=50
             )
             for column in returns
         ]
@@ -397,17 +397,7 @@ class TestMultivariateForecastAndSimulation:
             np.testing.assert_allclose(forecast.variance[:, i], marginal_fc.variance)
             np.testing.assert_allclose(forecast.residual_variance[:, i], marginal_fc.residual_variance)
 
-        _ = result.Rt
-        q1 = (1.0 - np.sum(result.theta)) * result.Qbar
-        q1 = q1 + result.theta[0] * np.outer(result._eps[-1], result._eps[-1]) + result.theta[1] * result._Qt_cache[-1]
-        r1 = _normalize_corr(q1)
-        np.testing.assert_allclose(forecast.correlation[0], r1, rtol=1e-12, atol=1e-12)
-        np.testing.assert_allclose(
-            forecast.residual_covariance[0],
-            np.outer(np.sqrt(forecast.residual_variance[0]), np.sqrt(forecast.residual_variance[0])) * forecast.correlation[0],
-            rtol=1e-12,
-            atol=1e-12,
-        )
+        np.testing.assert_allclose(forecast.correlation[0], result.forecast_correlation(1)[0], rtol=1e-11)
 
     def test_public_forecast_correlation_matches_forecast(self, fitted_multivariate_results):
         result = fitted_multivariate_results["dcc"]

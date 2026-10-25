@@ -289,17 +289,29 @@ def hyperbolic_data() -> np.ndarray:
     return simulate(4000, z)
 
 
+# Maximized log-likelihoods from the previous production engine on the same
+# data and likelihood: the fit must reach at least these values.
+PRODUCTION_LOG_LIKELIHOOD = {
+    "density_student_t": -7068.881540527609,
+    "density_skew_t": -7068.871131226216,
+    "density_ged": -7104.880821423252,
+    "density_generalized_hyperbolic": -7031.970718976294,
+    "density_nig": -7076.930666437685,
+    "density_hyperbolic": -7085.301819616398,
+    "density_variance_gamma": -7091.9755165130555,
+}
+
+
 @pytest.mark.parametrize("density", list(COMPONENTS))
-def test_fit_matches_the_production_likelihood(t_data, hyperbolic_data, density):
+def test_fit_reaches_the_production_optimum(t_data, hyperbolic_data, density):
     # On Student-t data the GH optimum is its zeta -> 0 limit, a boundary point.
     data = hyperbolic_data if density == "generalized_hyperbolic" else t_data
-    new = (GARCH(1, 1) + COMPONENTS[density]()).fit(data, engine="scivolapi")
-    old = (GARCH(1, 1) + COMPONENTS[density]()).fit(data)
-    assert new.converged and new.fit_info.inference_status == "available"
-    assert new.log_likelihood == pytest.approx(old.log_likelihood, abs=1e-6)
+    result = (GARCH(1, 1) + COMPONENTS[density]()).fit(data)
+    assert result.converged and result.fit_info.inference_status == "available"
+    assert result.log_likelihood >= PRODUCTION_LOG_LIKELIHOOD["density_" + density] - 1e-6
 
 
 def test_student_t_fit_recovers_the_tail_index(t_data):
-    result = (GARCH(1, 1) + StudentT()).fit(t_data, engine="scivolapi")
+    result = (GARCH(1, 1) + StudentT()).fit(t_data)
     assert abs(result.params[3] - 5.0) < 4.0 * result.std_errors[3]
     assert abs(result.params[1] - 0.08) < 4.0 * result.std_errors[1]

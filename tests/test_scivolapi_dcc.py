@@ -119,16 +119,14 @@ def test_domain_and_starts():
         api.fit_correlation(model, eps, options)
 
 
-def test_fit_agrees_with_production_and_is_certified():
+def test_fit_recovers_the_simulation_and_is_certified():
     from scivol.dcc import DCC
 
     eps = simulate(2000, 5)
-    native = DCC(1, 1).fit_from_residuals(eps, engine="scivolapi")
-    production = DCC(1, 1).fit_from_residuals(eps)
+    native = DCC(1, 1).fit_from_residuals(eps)
     assert native.success and native.inference == "available" and native.phases == ("z:slsqp", "theta:newton")
-    np.testing.assert_allclose(native.theta, production.theta, atol=2e-4)
-    np.testing.assert_allclose(native.std_errors, production.std_errors, rtol=0.02)
-    assert native.log_likelihood == pytest.approx(production.log_likelihood, abs=0.05)  # Q_0 convention
+    for estimate, se, truth in zip(native.theta, native.std_errors, (0.04, 0.93)):
+        assert abs(estimate - truth) < 4.0 * se
     jet = api.CorrelationJet(native._native_model, eps)
     out = jet.theta(native.theta, api.HESSIAN | api.SCORES)
     np.testing.assert_allclose(native.cov_mle, np.linalg.inv(out["hessian"]), rtol=1e-8)
@@ -142,7 +140,7 @@ def test_student_t_fit_recovers_the_tail():
 
     eps = simulate(3000, 4, seed=5, nu=6.0)
     eps /= eps.std(0)
-    r = DCC(1, 1, distribution="studentt").fit_from_residuals(eps, engine="scivolapi")
+    r = DCC(1, 1, distribution="studentt").fit_from_residuals(eps)
     assert r.success and 4.0 < r.params.nu < 9.0
     assert r.params.persistence == pytest.approx(0.97, abs=0.03)
 
@@ -155,7 +153,7 @@ def test_dcc_fit_with_native_marginals():
 
     eps = simulate(1500, 3, seed=7)
     frame = pd.DataFrame(0.01 * eps, index=pd.date_range("2000", periods=1500), columns=["a", "b", "c"])
-    r = DCC(1, 1).fit(frame, univariate_spec=GARCH(1, 1) + Normal(), engine="scivolapi", n_jobs=1)
+    r = DCC(1, 1).fit(frame, univariate_spec=GARCH(1, 1) + Normal(), n_jobs=1)
     assert all(isinstance(m, NativeEstimationResult) for m in r.univariate_results)
     assert r.corr("a", "b").index[0] == frame.index[0]
     assert r.forecast_correlation(4).shape == (4, 3, 3)
@@ -171,9 +169,9 @@ def dcc_fit():
 
     eps = simulate(1200, 3, seed=11)
     frame = pd.DataFrame(0.01 * eps, index=pd.date_range("2000", periods=1200), columns=["a", "b", "c"])
-    gaussian = DCC(1, 1).fit(frame, univariate_spec=GARCH(1, 1) + Normal(), engine="scivolapi", n_jobs=1)
+    gaussian = DCC(1, 1).fit(frame, univariate_spec=GARCH(1, 1) + Normal(), n_jobs=1)
     skewed = DCC(1, 1, distribution="studentt").fit(frame, univariate_spec=GJRGARCH(1, 1) + SkewT(),
-                                                    engine="scivolapi", n_jobs=1)
+                                                    n_jobs=1)
     return gaussian, skewed
 
 

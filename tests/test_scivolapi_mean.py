@@ -409,24 +409,24 @@ def test_arma_garch_fit_recovers_the_parameters():
 
 
 @pytest.mark.parametrize("components", ["arma", "arx", "harx"])
-def test_public_fit_agrees_with_production(components):
-    """Same model up to the conditioning convention: estimates agree closely."""
-    from scivol import ARMA, ARX, GARCH, GJRGARCH, HARX
+def test_public_fits_recover_the_simulation(components):
+    """ARMA(1,1)-GARCH(1,1) data; ARX and HARX nest its AR part, with an irrelevant regressor."""
+    from scivol import ARMA, ARX, GARCH, HARX
 
     rng = np.random.default_rng(23)
     y = simulate_arma_garch(2500, 29)
     x = rng.standard_normal((len(y), 1))
     if components == "arma":
-        spec, kwargs = ARMA(1, 1) + GJRGARCH(1, 1), {}  # Normal data: StudentT would run nu to infinity
+        spec, kwargs, truth = ARMA(1, 1) + GARCH(1, 1), {}, {0: 0.05, 1: 0.4, 2: 0.2, 4: 0.08, 5: 0.88}
     elif components == "arx":
-        spec, kwargs = ARX(1) + GARCH(1, 1), {"x": x}
+        spec, kwargs, truth = ARX(1) + GARCH(1, 1), {"x": x}, {2: 0.0, 5: 0.88}
     else:
-        spec, kwargs = HARX([1, 5]) + GARCH(1, 1), {"x": x}
-    ours = spec.fit(y, engine="scivolapi", **kwargs)
-    production = spec.fit(y, **kwargs)
-    assert ours.optimization_result.success, ours.optimization_result.message
-    assert len(ours.sigma2) == len(ours.resid) == len(ours.data)
-    np.testing.assert_allclose(ours.optimization_result.x, production.optimization_result.x, atol=0.02)
+        spec, kwargs, truth = HARX([1, 5]) + GARCH(1, 1), {"x": x}, {3: 0.0, 6: 0.88}
+    result = spec.fit(y, **kwargs)
+    assert result.optimization_result.success, result.optimization_result.message
+    assert len(result.sigma2) == len(result.resid) == len(result.data)
+    for i, value in truth.items():
+        assert abs(result.params[i] - value) < 4.0 * result.std_errors[i], (i, result.params[i])
 
 
 def test_public_fit_keeps_the_index_aligned_with_the_scored_rows():
@@ -435,9 +435,11 @@ def test_public_fit_keeps_the_index_aligned_with_the_scored_rows():
 
     y = simulate_arma_garch(800, 31)
     series = pd.Series(y, index=pd.date_range("2020-01-01", periods=len(y), freq="D"))
-    result = (ARX(3) + GARCH(1, 1)).fit(series, engine="scivolapi", hold_back=10)
-    assert len(result.sigma2) == len(y) - 13
-    assert result.sigma2.index[0] == series.index[13]
+    result = (ARX(3) + GARCH(1, 1)).fit(series, hold_back=10)  # held rows supply the lags
+    assert len(result.sigma2) == len(y) - 10
+    assert result.sigma2.index[0] == series.index[10]
+    short = (ARX(3) + GARCH(1, 1)).fit(series)
+    assert short.sigma2.index[0] == series.index[3]
 
 
 @pytest.mark.parametrize("mean,density", [(dict(ar=1, ma=1), "normal"), (dict(har=(1, 5), exog=1), "skew_t"),
@@ -446,7 +448,7 @@ def test_constant_variance_matches_the_oracle(data, mean, density):
     check_against_oracle(data, mean_spec(**mean), "constant", density, p=0, q=0)
 
 
-def test_mean_only_fits_match_production():
+def test_mean_only_fits_recover_the_simulation():
     from scivol import ARMA, Normal, StudentT
 
     rng = np.random.default_rng(0)
@@ -455,13 +457,13 @@ def test_mean_only_fits_match_production():
     y = np.zeros(n)
     for t in range(1, n):
         y[t] = 0.2 + 0.5 * y[t - 1] + e[t] + 0.3 * e[t - 1]
-    normal = (ARMA(1, 1) + Normal()).fit(y, engine="scivolapi")
-    production = (ARMA(1, 1) + Normal()).fit(y)  # profiles sigma2
-    np.testing.assert_allclose(normal.params[:3], production.params, rtol=1e-5)
-    assert normal.log_likelihood == pytest.approx(production.log_likelihood, rel=1e-9)
+    normal = (ARMA(1, 1) + Normal()).fit(y)
     assert normal._get_param_names() == ["const", "phi[1]", "theta[1]", "sigma2"]
-    t = (ARMA(1, 1) + StudentT()).fit(y, engine="scivolapi")
-    np.testing.assert_allclose(t.params, (ARMA(1, 1) + StudentT()).fit(y).params, rtol=1e-4)
+    assert normal.params[3] == pytest.approx(np.mean(normal.resid ** 2), rel=1e-6)  # the sigma2 FOC
+    t = (ARMA(1, 1) + StudentT()).fit(y)
+    truth = [0.2, 0.5, 0.3, 0.25 * 5 / 3, 5.0]  # sigma2 = Var(0.5 t_5)
+    for i, value in enumerate(truth):
+        assert abs(t.params[i] - value) < 4.0 * t.std_errors[i], (i, t.params[i])
     assert t.dist_params.nu == pytest.approx(t.params[-1])
     with pytest.raises(ValueError, match="p and q must be 0"):
         model_for(mean_spec(), "constant", "normal", 1, 1)

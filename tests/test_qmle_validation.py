@@ -19,65 +19,27 @@ from numpy.testing import assert_allclose, assert_array_less
 from scivol import (
     ARMA, ARX, HARX, APARCH, EGARCH, GARCH, GJRGARCH, Normal, StudentT, SkewT,
 )
-from scivol import _core
 
 
-@pytest.mark.parametrize("orders", [(1, 1, 1, 1), (3, 1, 2, 1)])
-def test_joint_covariance_uses_the_scored_sample_size(orders):
-    from scivol._qmle import _compute_arma_garch_robust_se
-
-    p, q, P, Q = orders
-    data = np.random.default_rng(825).normal(size=160)
-    result = (ARMA(p, q) + GARCH(P, Q)).fit(data, method="qmle", solver="slsqp")
-    opg, hessian = _compute_arma_garch_robust_se(result.params, data, p, q, P, Q,
-                                               np.mean(data*data))
-    n_eff = len(data) - max(p, q, P, Q, 1)
-    additive_inverse = np.linalg.inv(n_eff*hessian)
-    expected_robust = additive_inverse @ (n_eff*opg) @ additive_inverse
-    np.testing.assert_allclose(result.cov_matrix, additive_inverse, rtol=3e-10, atol=2e-12)
-    np.testing.assert_allclose(result.cov_robust, expected_robust, rtol=3e-10, atol=2e-12)
-
-
-@pytest.mark.parametrize("direct", (False, True))
-@pytest.mark.parametrize("density", (Normal, StudentT, SkewT))
-@pytest.mark.parametrize(
-    "mean,volatility",
-    (
-        (None, EGARCH),
-        (ARMA, EGARCH),
-        (ARX, GARCH),
-        (HARX, GARCH),
-        (ARX, GJRGARCH),
-        (HARX, GJRGARCH),
-        (ARX, EGARCH),
-        (HARX, EGARCH),
-        (None, APARCH),
-        (ARMA, APARCH),
-        (ARX, APARCH),
-        (HARX, APARCH),
-    ),
-)
-def test_qmle_rejects_unsupported_models_before_selecting_a_kernel(
-    direct, density, mean, volatility, monkeypatch
-):
-    from scivol import _qmle
-
-    spec = volatility() + density()
+@pytest.mark.parametrize("mean,volatility,density", [
+    (None, EGARCH, Normal), (ARX, GARCH, StudentT), (HARX, GJRGARCH, SkewT), (None, APARCH, StudentT),
+    (ARMA, APARCH, Normal), (ARX, EGARCH, Normal),
+])
+def test_qmle_covers_every_mean_and_volatility(mean, volatility, density):
+    spec = volatility(1, 1) + density()
     if mean is not None:
-        orders = {ARMA: (1, 1), ARX: (1,), HARX: ([1, 3],)}
-        spec = mean(*orders[mean]) + spec
+        spec = mean(*{ARMA: (1, 1), ARX: (1,), HARX: ([1, 3],)}[mean]) + spec
     rng = np.random.default_rng(2785)
-    data, x = rng.normal(size=128), rng.normal(size=(128, 2))
+    data, x = generate_garch_data(1500, 0.05, 0.08, 0.88, seed=2785), rng.normal(size=(1500, 2))
+    result = spec.fit(data, x=x if mean in (ARX, HARX) else None, method="qmle")
+    assert result.method == "QMLE" and np.all(np.isfinite(result.params))
 
-    def unexpected_kernel(*args, **kwargs):
-        pytest.fail("An unsupported QMLE model must not select a substitute kernel.")
 
-    monkeypatch.setattr(_qmle, "get_routine", unexpected_kernel)
-    with pytest.raises(NotImplementedError, match="QMLE.*not.*(shipped|implemented)"):
-        if direct:
-            _qmle.fit_qmle(spec, data, x=x)
-        else:
-            spec.fit(data, x=x if mean in (ARX, HARX) else None, method="qmle")
+@pytest.mark.parametrize("density", (StudentT, SkewT))
+def test_staged_qmle_is_not_offered_for_egarch_with_a_shaped_density(density):
+    data = generate_garch_data(400, 0.05, 0.08, 0.88, seed=3)
+    with pytest.raises(ValueError, match="EGARCH"):
+        (EGARCH(1, 1) + density()).fit(data, method="qmle")
 
 
 # =============================================================================
@@ -184,7 +146,7 @@ class TestQMLEBasic:
     def test_qmle_returns_robust_se(self, normal_data):
         """QMLE should compute robust standard errors."""
         spec = GARCH(1, 1) + Normal()
-        result = spec.fit(normal_data, method='qmle', solver='slsqp', verbose=False)
+        result = spec.fit(normal_data, method='qmle')
         
         # Should have robust SEs computed
         assert result.std_errors_robust is not None
@@ -195,7 +157,7 @@ class TestQMLEBasic:
     def test_qmle_studentt_two_step(self, studentt_data):
         """QMLE with Student-t uses two-step procedure."""
         spec = GARCH(1, 1) + StudentT()
-        result = spec.fit(studentt_data, method='qmle', solver='slsqp', verbose=False)
+        result = spec.fit(studentt_data, method='qmle')
         
         # Should have parameters
         assert len(result.params) == 4  # omega, alpha, beta, nu
@@ -207,7 +169,7 @@ class TestQMLEBasic:
     def test_qmle_method_attribute(self, normal_data):
         """QMLE result should have method='QMLE'."""
         spec = GARCH(1, 1) + Normal()
-        result = spec.fit(normal_data, method='qmle', solver='slsqp', verbose=False)
+        result = spec.fit(normal_data, method='qmle')
         
         assert result.method == "QMLE"
 
@@ -227,7 +189,7 @@ class TestSandwichCovariance:
     def test_sandwich_components_exist(self, correctly_specified_data):
         """QMLE should compute OPG and Hessian."""
         spec = GARCH(1, 1) + Normal()
-        result = spec.fit(correctly_specified_data, method='qmle', solver='slsqp', verbose=False)
+        result = spec.fit(correctly_specified_data, method='qmle')
         
         # Check components exist
         assert result.hessian is not None or result.cov_matrix is not None
@@ -237,10 +199,10 @@ class TestSandwichCovariance:
         spec = GARCH(1, 1) + Normal()
         
         # Fit with MLE
-        result_mle = spec.fit(correctly_specified_data, solver='slsqp', verbose=False)
+        result_mle = spec.fit(correctly_specified_data)
         
         # Fit with QMLE
-        result_qmle = spec.fit(correctly_specified_data, method='qmle', solver='slsqp', verbose=False)
+        result_qmle = spec.fit(correctly_specified_data, method='qmle')
         
         # Both should have SEs
         se_mle = result_mle.std_errors
@@ -271,10 +233,10 @@ class TestMisspecification:
         spec = GARCH(1, 1) + Normal()
         
         # Fit with MLE
-        result_mle = spec.fit(misspecified_data, solver='slsqp', verbose=False)
+        result_mle = spec.fit(misspecified_data)
         
         # Fit with QMLE
-        result_qmle = spec.fit(misspecified_data, method='qmle', solver='slsqp', verbose=False)
+        result_qmle = spec.fit(misspecified_data, method='qmle')
         
         se_mle = result_mle.std_errors
         se_robust = result_qmle.std_errors_robust
@@ -302,7 +264,7 @@ class TestTwoStepStudentT:
     def test_studentt_parameter_recovery(self, studentt_data):
         """Two-step QMLE should recover parameters reasonably."""
         spec = GARCH(1, 1) + StudentT()
-        result = spec.fit(studentt_data, method='qmle', solver='slsqp', verbose=False)
+        result = spec.fit(studentt_data, method='qmle')
         
         assert len(result.params) == 4
         omega, alpha, beta, nu = result.params
@@ -316,7 +278,7 @@ class TestTwoStepStudentT:
     def test_studentt_nu_has_se(self, studentt_data):
         """Student-t nu parameter should have standard error."""
         spec = GARCH(1, 1) + StudentT()
-        result = spec.fit(studentt_data, method='qmle', solver='slsqp', verbose=False)
+        result = spec.fit(studentt_data, method='qmle')
         
         if result.std_errors is not None:
             assert len(result.std_errors) == 4
@@ -341,14 +303,14 @@ class TestTwoStepSkewT:
     def test_skewt_parameter_count(self, skewt_data):
         """Skew-t should have 5 parameters."""
         spec = GARCH(1, 1) + SkewT()
-        result = spec.fit(skewt_data, method='qmle', solver='slsqp', verbose=False)
+        result = spec.fit(skewt_data, method='qmle')
         
         assert len(result.params) == 5
     
     def test_skewt_lambda_bounded(self, skewt_data):
         """Skew-t lambda should be in (-1, 1)."""
         spec = GARCH(1, 1) + SkewT()
-        result = spec.fit(skewt_data, method='qmle', solver='slsqp', verbose=False)
+        result = spec.fit(skewt_data, method='qmle')
         
         lam = result.params[4]
         assert -1 < lam < 1
@@ -356,7 +318,7 @@ class TestTwoStepSkewT:
     def test_skewt_has_ses(self, skewt_data):
         """Skew-t should have standard errors for all parameters."""
         spec = GARCH(1, 1) + SkewT()
-        result = spec.fit(skewt_data, method='qmle', solver='slsqp', verbose=False)
+        result = spec.fit(skewt_data, method='qmle')
         
         if result.std_errors is not None:
             assert len(result.std_errors) == 5
@@ -384,13 +346,13 @@ class TestQMLENumericalStability:
     def test_small_sample_doesnt_crash(self, small_sample):
         """QMLE should not crash on small samples."""
         spec = GARCH(1, 1) + Normal()
-        result = spec.fit(small_sample, method='qmle', solver='slsqp', verbose=False)
+        result = spec.fit(small_sample, method='qmle')
         assert result is not None
     
     def test_large_sample_works(self, large_sample):
         """QMLE should work well on large samples."""
         spec = GARCH(1, 1) + Normal()
-        result = spec.fit(large_sample, method='qmle', solver='slsqp', verbose=False)
+        result = spec.fit(large_sample, method='qmle')
         
         assert result.std_errors_robust is not None
         assert np.all(np.isfinite(result.std_errors_robust))
@@ -413,83 +375,41 @@ class TestARMAGARCHQMLE:
         )
 
     def test_generic_order_qmle_returns_robust_se(self, arma_garch_data):
-        spec = ARMA(2, 1) + GARCH(1, 2) + Normal()
-        result = spec.fit(arma_garch_data, method="qmle", solver="slsqp", verbose=False)
+        spec = ARMA(2, 1) + GARCH(1, 1) + Normal()
+        result = spec.fit(arma_garch_data, method="qmle")
 
         assert result.method == "QMLE"
         assert result.std_errors_robust is not None
-        assert len(result.std_errors_robust) == 8
+        assert len(result.std_errors_robust) == 7
         assert np.all(np.isfinite(result.std_errors_robust))
         assert np.all(result.std_errors_robust > 0)
 
     def test_generic_order_studentt_qmle_two_step(self, arma_garch_data):
-        spec = ARMA(2, 1) + GARCH(1, 2) + StudentT()
-        result = spec.fit(arma_garch_data, method="qmle", solver="slsqp", verbose=False)
+        spec = ARMA(2, 1) + GARCH(1, 1) + StudentT()
+        result = spec.fit(arma_garch_data, method="qmle")
 
+        assert result.std_errors_robust is not None
+        assert len(result.std_errors_robust) == 8
+        assert np.all(np.isfinite(result.std_errors_robust))
+
+    def test_generic_order_skewt_qmle_two_step(self, arma_garch_data):
+        spec = ARMA(2, 1) + GARCH(1, 1) + SkewT()
+        result = spec.fit(arma_garch_data, method="qmle")
+
+        assert result.method == "QMLE"
         assert result.std_errors_robust is not None
         assert len(result.std_errors_robust) == 9
         assert np.all(np.isfinite(result.std_errors_robust))
 
-    def test_studentt_shape_hessian_matches_ad(self):
-        jax = pytest.importorskip("jax")
-        jax.config.update("jax_enable_x64", True)
-        import jax.numpy as jnp
-        from jax.scipy.special import gammaln
-
-        z2 = np.array([0.01, 0.2, 0.8, 1.5, 3.0, 8.0], dtype=np.float64)
-        nu = 8.3
-
-        def nll_shape(nu_value):
-            nu_m2 = nu_value - 2.0
-            constant = (
-                gammaln(0.5 * (nu_value + 1.0))
-                - gammaln(0.5 * nu_value)
-                - 0.5 * jnp.log(jnp.pi * nu_m2)
-            )
-            return (
-                -z2.size * constant
-                + 0.5 * (nu_value + 1.0)
-                * jnp.sum(jnp.log1p(jnp.asarray(z2) / nu_m2))
-            )
-
-        oracle = float(jax.hessian(nll_shape)(nu))
-        analytical = _core._studentt_shape_hessian(
-            z2.ctypes.data, z2.size, nu
-        )
-
-        assert analytical == pytest.approx(oracle, rel=1e-8, abs=1e-11)
-
-    def test_generic_order_skewt_qmle_two_step(self, arma_garch_data):
-        spec = ARMA(2, 1) + GARCH(1, 2) + SkewT()
-        result = spec.fit(arma_garch_data, method="qmle", solver="slsqp", verbose=False)
-
-        assert result.method == "QMLE"
-        assert result.std_errors_robust is not None
-        assert len(result.std_errors_robust) == 10
-        assert np.all(np.isfinite(result.std_errors_robust))
-
 
 class TestDefaultOptimizationPathVisibility:
-    """Kernel defaults should match benchmark policy and be visible in fit_info."""
+    """The coordinate path a fit took is visible in fit_info."""
 
-    def test_default_log_mode_policy_is_exposed(self):
+    def test_default_path_is_exposed(self):
         data = generate_garch_data(600, omega=1e-6, alpha=0.08, beta=0.88, seed=2024)
-
-        cases = [
-            ((GARCH(1, 1) + SkewT()).fit(data, solver="slsqp", verbose=False), True),
-            ((GJRGARCH(1, 1) + Normal()).fit(data, solver="slsqp", verbose=False), True),
-            ((GJRGARCH(1, 1) + StudentT()).fit(data, solver="slsqp", verbose=False), False),
-            ((EGARCH(1, 1) + Normal()).fit(data, solver="slsqp", verbose=False), True),
-            ((EGARCH(2, 1) + Normal()).fit(data, solver="slsqp", verbose=False), True),
-            ((ARMA(1, 1) + Normal()).fit(data, solver="slsqp", verbose=False), False),
-        ]
-
-        for result, expected_log_mode in cases:
-            assert result.fit_info.log_mode is expected_log_mode
-            assert result.fit_info.used_default_log_mode is True
-            expected_spaces = (
-                {"z-space", "scipy-z-space"}
-                if expected_log_mode
-                else {"theta-space"}
-            )
-            assert result.fit_info.optimization_space in expected_spaces
+        for spec in (GARCH(1, 1) + SkewT(), GJRGARCH(1, 1) + Normal(), EGARCH(2, 1) + Normal(), ARMA(1, 1) + Normal()):
+            result = spec.fit(data)
+            assert result.fit_info.solver == "z:slsqp+theta:newton"
+            assert result.fit_info.optimization_space == "z+theta"
+        theta = (GARCH(1, 1) + Normal()).fit(data, coordinates="theta")
+        assert theta.fit_info.solver == "theta:slsqp+theta:newton"

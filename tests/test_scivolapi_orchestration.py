@@ -43,7 +43,7 @@ def test_row_terms_sum_to_the_likelihood(returns, volatility, density):
 
 
 def test_oos_losses_are_the_likelihood_terms(returns):
-    result = (GJRGARCH(1, 1) + StudentT()).fit(returns, hold_back=10, engine="scivolapi")
+    result = (GJRGARCH(1, 1) + StudentT()).fit(returns, hold_back=10)
     assert isinstance(result, NativeEstimationResult)
     n = len(returns)
     logscore = oos_losses(result, returns, full_x=None, start=10, stop=n, loss="logscore")
@@ -55,18 +55,26 @@ def test_oos_losses_are_the_likelihood_terms(returns):
         oos_losses(result, returns, full_x=None, start=5, stop=n, loss="logscore")
 
 
-@pytest.mark.parametrize("select_by", ["aic+diag", "bic", "oos"])
-def test_auto_selection_agrees_with_production(returns, select_by):
+@pytest.mark.parametrize("select_by", ["aic", "bic"])
+def test_auto_selection_picks_the_best_criterion(returns, select_by):
     kwargs = dict(n_jobs=1, show_progress=False, select_by=select_by)
-    native = (GJRGARCH(auto=True) + AutoDensity()).fit(returns, engine="scivolapi", **kwargs)
-    production = (GJRGARCH(auto=True) + AutoDensity()).fit(returns, **kwargs)
-    assert isinstance(native, NativeEstimationResult)
-    assert str(native.spec) == str(production.spec)
-    assert native.log_likelihood == pytest.approx(production.log_likelihood, abs=1e-3)
+    best = (GJRGARCH(auto={"max_p": 2, "max_q": 2}) + StudentT()).fit(returns, **kwargs)
+    assert isinstance(best, NativeEstimationResult)
+    criteria = []
+    for p in (1, 2):
+        for q in (1, 2):
+            fit = (GJRGARCH(p, q) + StudentT()).fit(returns, hold_back=2)  # the candidates' common sample
+            criteria.append(getattr(fit, select_by))
+    assert getattr(best, select_by) == pytest.approx(min(criteria), abs=1e-6)
+
+
+def test_oos_selection_runs(returns):
+    result = (GJRGARCH(auto=True) + AutoDensity()).fit(returns, n_jobs=1, show_progress=False, select_by="oos")
+    assert isinstance(result, NativeEstimationResult)
 
 
 def test_mean_auto_selection_runs_on_scivolapi(returns):
-    result = (AutoMean() + GARCH(1, 1) + Normal()).fit(returns, engine="scivolapi", n_jobs=1, show_progress=False)
+    result = (AutoMean() + GARCH(1, 1) + Normal()).fit(returns, n_jobs=1, show_progress=False)
     assert isinstance(result, NativeEstimationResult) and "ARMA" in str(result.spec)
 
 
@@ -74,21 +82,26 @@ def test_batches_rolling_windows_and_frames():
     index = pd.date_range("2000", periods=900)
     frame = pd.DataFrame({f"s{i}": simulate(10 + i, 900) for i in range(3)}, index=index)
     spec = GARCH(1, 1) + Normal()
-    batch = spec.fit_many(frame, n_jobs=1, engine="scivolapi")
+    batch = spec.fit_many(frame, n_jobs=1)
     assert set(batch) == {"s0", "s1", "s2"} and not batch.failures
-    rolling = spec.fit_rolling(frame.iloc[:, :2], window=600, step=150, n_jobs=1, engine="scivolapi")
+    rolling = spec.fit_rolling(frame.iloc[:, :2], window=600, step=150, n_jobs=1)
     assert len(rolling) == 3 and all(not w.batch.failures for w in rolling)
     for w in rolling:  # warm starts reach the same optimum as cold fits
-        cold = spec.fit(frame["s0"].iloc[w.start:w.stop], engine="scivolapi")
+        cold = spec.fit(frame["s0"].iloc[w.start:w.stop])
         assert w.batch["s0"].log_likelihood == pytest.approx(cold.log_likelihood, abs=1e-6)
-    multi = (GARCH(1, 1) + StudentT()).fit(frame, n_jobs=1, show_progress=False, engine="scivolapi")
+    multi = (GARCH(1, 1) + StudentT()).fit(frame, n_jobs=1, show_progress=False)
     assert all(isinstance(r, NativeEstimationResult) for r in multi.values())
     assert multi["s1"].sigma2.index[0] == index[0]
 
 
-def test_index_alignment_in_batches_skips_hold_back_and_lag_rows():
+def test_hold_back_rows_supply_lags_and_fix_the_scored_sample():
     index = pd.date_range("2000", periods=600)
     frame = pd.DataFrame({"a": simulate(1, 600), "b": simulate(2, 600)}, index=index)
-    batch = (ARMA(2, 0) + GARCH(1, 1) + Normal()).fit_many(frame, n_jobs=1, engine="scivolapi", hold_back=5)
-    assert batch["a"].sigma2.index[0] == index[5 + 2]
-    assert len(batch["a"].sigma2) == 600 - 7
+    batch = (ARMA(2, 0) + GARCH(1, 1) + Normal()).fit_many(frame, n_jobs=1, hold_back=5)
+    assert batch["a"].sigma2.index[0] == index[5] and len(batch["a"].sigma2) == 595
+    y = frame["a"].to_numpy()
+    zero = (GARCH(1, 1) + Normal()).fit(y, hold_back=5)
+    ar = (ARMA(2, 0) + GARCH(1, 1) + Normal()).fit(y, hold_back=5)
+    assert zero.fit_info.likelihood_n_obs == ar.fit_info.likelihood_n_obs == 595  # comparable criteria
+    short = (ARMA(2, 0) + GARCH(1, 1) + Normal()).fit(y)
+    assert short.fit_info.likelihood_n_obs == 598  # without hold_back, scoring starts after the lags

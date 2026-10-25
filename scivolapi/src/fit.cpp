@@ -44,10 +44,35 @@ FitResult failure(const ModelT& model, const SampleT& sample, double scale, std:
     return failed;
 }
 
+// z coordinates of a start; a start on the boundary of the domain (a warm start
+// from a boundary estimate) is moved along the segment toward the model's own
+// interior start until z exists. Only the starting point changes.
+template<class ModelT>
+bool interior_z(const ModelT& model, std::span<const double> start, std::span<const double> inside,
+                std::span<double> z)
+{
+    if (model.to_z(start, z)) return true;
+    std::vector<double> blend(start.size());
+    for (double lambda : {1e-8, 1e-6, 1e-4, 1e-2, 0.1, 0.5, 1.0}) {
+        for (std::size_t i = 0; i < start.size(); ++i) blend[i] = (1.0 - lambda) * start[i] + lambda * inside[i];
+        if (model.feasible(blend) && model.to_z(blend, z)) return true;
+    }
+    return false;
+}
+
 // The coordinate paths (see Coordinates) from a theta start, on one jet.
+// Keeps the candidates inside the model's domain (an accepted iterate may
+// violate a constraint by the solver's tolerance).
+template<class ModelT>
+void keep_feasible(const ModelT& model, std::vector<Candidate>& candidates)
+{
+    std::erase_if(candidates, [&](const Candidate& c) { return !model.feasible(c.theta); });
+}
+
+// `inside` is the model's own (interior) start, for warm starts on the boundary.
 template<class ModelT, class JetT>
-void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, const FitOptions& options,
-           std::vector<FitPhase>& phases, std::vector<Candidate>& candidates)
+void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, std::span<const double> inside,
+           const FitOptions& options, std::vector<FitPhase>& phases, std::vector<Candidate>& candidates)
 {
     const std::size_t d = model.dimension();
     const int budget = options.maximum_iterations;
@@ -69,7 +94,7 @@ void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, c
         }
     } else {
         std::vector<double> z(d);
-        if (!model.to_z(start, z))
+        if (!interior_z(model, start, inside, z))
             throw std::invalid_argument("z coordinates need a starting point strictly inside the domain");
         // The automatic path keeps a refinement reserve so the exact-curvature
         // phase always runs; an explicit z fit uses the whole budget in z.
@@ -101,10 +126,9 @@ FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const
     Jet unit_jet(model, unit_sample);
     Jet data_jet(model, data_sample);
 
-    std::vector<double> start(model.dimension());
-    if (options.start.empty()) {
-        start = model.start(unit_sample);
-    } else {
+    const std::vector<double> inside = model.start(unit_sample);
+    std::vector<double> start = inside;
+    if (!options.start.empty()) {
         if (options.start.size() != model.dimension() || !model.feasible(options.start))
             throw std::invalid_argument("the starting point must have the model's dimension and lie in its domain");
         model.rescale(options.start, 1.0 / scale, start);
@@ -112,7 +136,8 @@ FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const
 
     std::vector<FitPhase> phases;
     std::vector<Candidate> candidates;
-    solve(model, unit_jet, start, options, phases, candidates);
+    solve(model, unit_jet, start, inside, options, phases, candidates);
+    keep_feasible(model, candidates);
 
     if (candidates.empty())
         return failure(model, data_sample, scale, std::move(phases), "no phase produced a finite, feasible estimate");
@@ -310,7 +335,8 @@ FitResult fit(const CorrelationModel& model, std::span<const double> eps, std::s
 
     std::vector<FitPhase> phases;
     std::vector<Candidate> candidates;
-    solve(model, jet, start, options, phases, candidates);
+    solve(model, jet, start, model.start(), options, phases, candidates);
+    keep_feasible(model, candidates);
     if (candidates.empty())
         return failure(model, sample, 1.0, std::move(phases), "no phase produced a finite, feasible estimate");
     // Standardized residuals need no internal scaling: the solved and the

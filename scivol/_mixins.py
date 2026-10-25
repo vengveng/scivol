@@ -273,12 +273,10 @@ class FitsMixin:
         scale: Optional[float] = None,
     ) -> float:
         """Evaluate the log-likelihood at fixed parameters without fitting."""
-        from ._evaluation import loglikelihood_spec
-        from ._validation import prepare_series_input
+        from ._scivolapi_eval import loglikelihood
 
         _, _, data_np, _ = self._extract_pandas_info(data)
-        prepared = prepare_series_input(self.spec, data_np, x=x, hold_back=hold_back, scale=scale)
-        return loglikelihood_spec(self.spec, prepared.data, params, x=prepared.x)
+        return loglikelihood(self.spec, data_np, params, x=x, hold_back=hold_back, scale=scale)
 
     def score(
         self,
@@ -290,12 +288,10 @@ class FitsMixin:
         scale: Optional[float] = None,
     ) -> np.ndarray:
         """Evaluate the score (gradient of the log-likelihood)."""
-        from ._evaluation import score_spec
-        from ._validation import prepare_series_input
+        from ._scivolapi_eval import score
 
         _, _, data_np, _ = self._extract_pandas_info(data)
-        prepared = prepare_series_input(self.spec, data_np, x=x, hold_back=hold_back, scale=scale)
-        return score_spec(self.spec, prepared.data, params, x=prepared.x)
+        return score(self.spec, data_np, params, x=x, hold_back=hold_back, scale=scale)
 
     def hessian(
         self,
@@ -307,12 +303,10 @@ class FitsMixin:
         scale: Optional[float] = None,
     ) -> np.ndarray:
         """Evaluate the Hessian of the log-likelihood."""
-        from ._evaluation import hessian_spec
-        from ._validation import prepare_series_input
+        from ._scivolapi_eval import hessian
 
         _, _, data_np, _ = self._extract_pandas_info(data)
-        prepared = prepare_series_input(self.spec, data_np, x=x, hold_back=hold_back, scale=scale)
-        return hessian_spec(self.spec, prepared.data, params, x=prepared.x)
+        return hessian(self.spec, data_np, params, x=x, hold_back=hold_back, scale=scale)
 
     def filter(
         self,
@@ -324,12 +318,10 @@ class FitsMixin:
         scale: Optional[float] = None,
     ) -> "FilteredState":
         """Run the model filter at fixed parameters and return the full state."""
-        from ._evaluation import filter_spec
-        from ._validation import prepare_series_input
+        from ._scivolapi_eval import filter_state
 
         _, _, data_np, _ = self._extract_pandas_info(data)
-        prepared = prepare_series_input(self.spec, data_np, x=x, hold_back=hold_back, scale=scale)
-        return filter_spec(self.spec, prepared.data, params, x=prepared.x)
+        return filter_state(self.spec, data_np, params, x=x, hold_back=hold_back, scale=scale)
 
     def fix(
         self,
@@ -341,15 +333,11 @@ class FitsMixin:
         scale: Optional[float] = None,
     ) -> "FixedResult":
         """Create a result-like fixed-parameter workflow without optimization."""
-        from ._evaluation import fixed_result_from_spec
-        from ._validation import prepare_series_input
+        from ._scivolapi_eval import fixed_result
 
         index, name, data_np, _ = self._extract_pandas_info(data)
-        prepared = prepare_series_input(self.spec, data_np, x=x, hold_back=hold_back, scale=scale)
-        result = fixed_result_from_spec(self.spec, prepared.data, params, x=prepared.x)
-        result._index = None if index is None else index[prepared.effective_hold_back:]
-        result._name = name
-        return result
+        return fixed_result(self.spec, data_np, params, x=x, hold_back=hold_back, scale=scale, index=index,
+                            name=name)
 
     def simulate(
         self,
@@ -361,9 +349,9 @@ class FitsMixin:
         x: Any = None,
     ) -> "SimulationResult":
         """Simulate from the specification at fixed parameters."""
-        from ._evaluation import simulate_spec
+        from ._scivolapi_eval import simulate
 
-        return simulate_spec(self.spec, n_obs, params, burn=burn, seed=seed, x=x)
+        return simulate(self.spec, n_obs, params, burn=burn, seed=seed, x=x)
 
     # -----------------------------------------------------------------
     # Pandas helpers
@@ -425,128 +413,10 @@ class FitsMixin:
         **kwargs: Any,
     ) -> EstimationResult:
         """Fit a single time series."""
-        from ._validation import prepare_series_input, validate_spec
+        from ._validation import small_sample_warning, validate_spec
 
         spec = validate_spec(self.spec)
-        if kwargs.get("engine") == "scivolapi" and not self._has_auto_components():
-            # Migration path: compositions covered by the new native library.
-            kwargs.pop("engine")
-            from ._scivolapi_fit import fit_spec
-
-            return fit_spec(
-                spec, data, x=x, hold_back=hold_back, scale=scale, method=method, index=index, name=name, **kwargs
-            )
-        from .components.mean import ARMA
-        from .components.vol import APARCH, EGARCH
-        from .roles import Role
-        force_legacy_engine = bool(kwargs.pop("_force_legacy_engine", False))
-        from ._mean_fit import supports_mean
-        canonical_mean = supports_mean(spec) and not force_legacy_engine
-        legacy_requested = str(kwargs.get("solver", "")).lower() == "legacy"
-        mean_component = spec.get_component(Role.MEAN)
-        canonical_egarch = (
-            isinstance(spec.get_component(Role.VOLATILITY), EGARCH)
-            and (mean_component is None or isinstance(mean_component, ARMA))
-        )
-        canonical_aparch = (
-            isinstance(spec.get_component(Role.VOLATILITY), APARCH)
-            and (mean_component is None or isinstance(mean_component, ARMA))
-        )
-        has_auto_components = self._has_auto_components()
-        native_requested = str(kwargs.get("solver", "")).lower() == "native"
-        native_engine = self._should_use_native_engine(
-            spec,
-            method=method,
-            has_auto_components=has_auto_components,
-            has_exogenous_data=x is not None,
-            force_legacy_engine=force_legacy_engine,
-            kwargs=kwargs,
-        )
-        fit_kwargs = dict(kwargs)
-        if legacy_requested:
-            fit_kwargs["solver"] = "lbfgsb" if canonical_egarch else "slsqp"
-
-        requested_solver = str(kwargs.get("solver", "")).lower()
-        if (
-            canonical_egarch
-            and method.lower() == "mle"
-            and kwargs.get("log_mode") is False
-        ):
-            raise ValueError(
-                "EGARCH no longer exposes log_mode=False because its "
-                "historical theta-space bounds do not encode the general-order "
-                "stationarity domain. Use the default native path or an explicit "
-                "canonical SciPy solver."
-            )
-        if (
-            canonical_egarch
-            and method.lower() == "mle"
-            and requested_solver
-            and requested_solver not in {"native", "legacy", "slsqp"}
-        ):
-            raise NotImplementedError(
-                f"solver='{requested_solver}' is not yet wired to the canonical "
-                "EGARCH jet; use 'native', 'legacy', or 'slsqp'."
-            )
-        if (
-            canonical_aparch
-            and method.lower() == "mle"
-            and kwargs.get("log_mode") is False
-        ):
-            raise ValueError(
-                "APARCH no longer exposes log_mode=False because the historical "
-                "theta-space constraints do not encode density-dependent "
-                "stationarity. Use the default native path or canonical SciPy."
-            )
-        if (
-            canonical_aparch
-            and method.lower() == "mle"
-            and requested_solver
-            and requested_solver not in {"native", "legacy", "slsqp"}
-        ):
-            raise NotImplementedError(
-                f"solver='{requested_solver}' is not wired to the canonical "
-                "APARCH jet; use 'native', 'legacy', or 'slsqp'."
-            )
-
-        if native_requested and method.lower() == "qmle":
-            raise NotImplementedError(
-                "solver='native' supports MLE only; omit solver='native' for QMLE."
-            )
-        if native_requested and has_auto_components:
-            raise NotImplementedError(
-                "solver='native' currently requires a fixed model specification."
-            )
-
-        if method.lower() == "qmle" and isinstance(
-            spec.get_component(Role.VOLATILITY), APARCH
-        ):
-            raise NotImplementedError("APARCH QMLE is not yet implemented; use method='mle'.")
-        if (
-            not native_engine and not canonical_mean
-            and any(key in fit_kwargs for key in ("initial_params", "maxiter", "maxfev"))
-        ):
-            from .components.mean import ARMA
-            from .components.vol import EGARCH, GARCH, GJRGARCH
-
-            mean = spec.get_component(Role.MEAN)
-            vol = spec.get_component(Role.VOLATILITY)
-            standalone_supported = mean is None and isinstance(
-                vol, (GARCH, GJRGARCH, EGARCH, APARCH)
-            )
-            joint_budget_supported = (
-                isinstance(mean, ARMA)
-                and isinstance(vol, (GARCH, EGARCH, APARCH))
-            )
-            if not (standalone_supported or joint_budget_supported):
-                raise NotImplementedError(
-                    "initial_params currently supports fixed standalone volatility "
-                    "models; optimizer budgets also support fixed joint ARMA-GARCH "
-                    "ARMA-EGARCH, and ARMA-APARCH."
-                )
-            if method.lower() == "qmle" and "initial_params" in fit_kwargs:
-                raise NotImplementedError("QMLE warm starts are not yet supported.")
-        if has_auto_components:
+        if self._has_auto_components():
             result = self._auto_fit(
                 data,
                 x=x,
@@ -569,130 +439,22 @@ class FitsMixin:
                 allow_density_blind_loss=allow_density_blind_loss,
                 selection_warm_start=selection_warm_start,
                 degeneracy_weight=degeneracy_weight,
-                **fit_kwargs,
+                **kwargs,
             )
-        else:
-            # Direct (non-auto) fit
-            method_lower = method.lower() if isinstance(method, str) else "mle"
-            prepared = prepare_series_input(spec, data, x=x, hold_back=hold_back, scale=scale)
-            from ._validation import small_sample_warning
+            effective_hold_back = result.fit_info.effective_hold_back or 0
+            result._index = None if index is None else index[effective_hold_back:]
+            result._name = name
+            return result
 
-            fit_warning = small_sample_warning(spec, prepared.data)
-            if method_lower == "qmle":
-                from ._qmle import fit_qmle
-                result = fit_qmle(spec, prepared.data, x=prepared.x, **fit_kwargs)
-            elif canonical_mean:
-                from ._mean_fit import fit_mean_spec
+        from ._scivolapi_fit import fit_spec
 
-                result = fit_mean_spec(spec, prepared.data, x=prepared.x, **fit_kwargs)
-                result._fit_x = prepared.x
-            elif native_engine:
-                from ._native_fit import fit_native_spec
-                from ._joint_mean_fit import supports_joint_mean, fit_joint_mean_spec
-
-                fit_engine = fit_joint_mean_spec if supports_joint_mean(spec) else fit_native_spec
-                result = fit_engine(
-                    spec, prepared.data, x=prepared.x, **fit_kwargs
-                )
-                result._fit_x = prepared.x
-            elif (
-                (canonical_egarch or canonical_aparch)
-                and requested_solver in {"legacy", "slsqp"}
-            ):
-                from ._native_fit import fit_scipy_canonical_spec
-
-                result = fit_scipy_canonical_spec(
-                    spec, prepared.data, x=prepared.x, **fit_kwargs
-                )
-                result._fit_x = prepared.x
-            else:
-                from ._kernels import get_routine
-
-                routine = get_routine(str(spec))
-                if force_legacy_engine and supports_mean(spec):
-                    from importlib import import_module
-                    from ._kernels import _family_module
-
-                    module = import_module(_family_module(str(spec), canonical_mean=False))
-                    routine = module.get_routine(str(spec))
-                result = routine.fit(prepared.data, x=prepared.x, **fit_kwargs)
-                result._fit_x = prepared.x
-
-            if fit_warning is not None:
-                result.fit_info.add_warning(fit_warning)
-            result.fit_info.requested_hold_back = prepared.requested_hold_back
-            result.fit_info.effective_hold_back = prepared.effective_hold_back
-            result.fit_info.original_n_obs = prepared.original_n_obs
-            result.fit_info.effective_n_obs = prepared.effective_n_obs
-            result.fit_info.scale = prepared.scale
-            result.fit_info.common_sample = common_sample
-
-        self._annotate_fit_request_metadata(result, kwargs)
-
-        # Attach pandas metadata
-        effective_hold_back = result.fit_info.effective_hold_back
-        if effective_hold_back is None:
-            effective_hold_back = hold_back
-        result._index = None if index is None else index[effective_hold_back:]
-        result._name = name
-
+        result = fit_spec(spec, data, x=x, hold_back=hold_back, scale=scale, method=method, index=index, name=name,
+                          **kwargs)
+        result.fit_info.common_sample = common_sample
+        fit_warning = small_sample_warning(spec, result.data)
+        if fit_warning is not None:
+            result.fit_info.add_warning(fit_warning)
         return result
-
-    @staticmethod
-    def _should_use_native_engine(
-        spec: "CompositeSpec",
-        *,
-        method: str,
-        has_auto_components: bool,
-        has_exogenous_data: bool,
-        force_legacy_engine: bool,
-        kwargs: Dict[str, Any],
-    ) -> bool:
-        requested_solver = kwargs.get("solver")
-        if requested_solver is not None:
-            return str(requested_solver).lower() == "native"
-        from ._joint_mean_fit import uses_joint_native_by_default
-
-        if (
-            not force_legacy_engine
-            and not has_auto_components
-            and method.lower() == "mle"
-            and uses_joint_native_by_default(spec)
-        ):
-            return True
-        if (
-            force_legacy_engine
-            or has_auto_components
-            or has_exogenous_data
-            or method.lower() != "mle"
-            or kwargs.get("log_mode") is False
-        ):
-            return False
-
-        from ._native_fit import _uses_native_by_default
-
-        return _uses_native_by_default(spec)
-
-    @staticmethod
-    def _annotate_fit_request_metadata(result: "EstimationResult", kwargs: Dict[str, Any]) -> None:
-        """Record whether solver/log_mode were explicit or defaulted."""
-        fit_info = getattr(result, "fit_info", None)
-        if fit_info is None:
-            return
-
-        if "solver" in kwargs:
-            fit_info.requested_solver = str(kwargs["solver"])
-            fit_info.used_default_solver = False
-        else:
-            fit_info.requested_solver = None
-            fit_info.used_default_solver = True
-
-        if "log_mode" in kwargs:
-            fit_info.requested_log_mode = bool(kwargs["log_mode"])
-            fit_info.used_default_log_mode = False
-        else:
-            fit_info.requested_log_mode = None
-            fit_info.used_default_log_mode = True
 
     # -----------------------------------------------------------------
     # Auto-detection helpers

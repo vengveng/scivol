@@ -7,6 +7,7 @@ and draws the standardized innovations a simulation consumes.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Optional
 
 import numpy as np
@@ -114,14 +115,45 @@ class NativeForecastResult(ForecastResult):
         return out[:, 0] if levels.ndim == 0 else out
 
 
-class _Bound:
-    """A spec at fixed parameters on a prepared sample."""
+_DISPLAY = {"phi": "ar", "theta": "ma", "x": "exog", "lambda": "lam"}
 
-    def __init__(self, spec: Any, data: Any, params: Any, x: Any = None) -> None:
-        self.y = np.ascontiguousarray(np.asarray(data, dtype=np.float64))
-        self.x = _regressors(x, len(self.y))
-        self.model = _native_model(spec, self.x)
-        self.theta = np.ascontiguousarray(_coerce_params(spec, params))
+
+def _parameters(spec: Any, model: "api.Model", params: Any) -> NDArray[np.float64]:
+    """theta in the model's order from an array, a mapping by parameter name, or (None) the components'
+    fitted values."""
+    names = list(model.parameter_names)
+    if isinstance(params, Mapping):
+        flat = {}
+        for key, value in params.items():
+            base, bracket, rest = str(key).partition("[")
+            native = _DISPLAY.get(base, base) + bracket + rest
+            if native == "lam" and "lam" not in names and "lambda" in names:
+                native = "lambda"
+            flat[native] = value
+        if all(name in flat for name in names):
+            theta = np.array([float(flat[name]) for name in names])
+        else:
+            theta = np.asarray(_coerce_params(spec, params), dtype=np.float64)
+    elif params is None:
+        theta = np.asarray(_coerce_params(spec, None), dtype=np.float64)
+    else:
+        theta = np.asarray(params, dtype=np.float64).ravel()
+    if theta.size != len(names):
+        raise ValueError(f"Expected {len(names)} parameters ({', '.join(names)}), received {theta.size}.")
+    return np.ascontiguousarray(theta)
+
+
+class _Bound:
+    """A spec at fixed parameters on the rows fit() would use."""
+
+    def __init__(self, spec: Any, data: Any, params: Any, x: Any = None, hold_back: int = 0,
+                 scale: Optional[float] = None) -> None:
+        from ._scivolapi_fit import prepare_sample
+
+        self.sample = prepare_sample(spec, data, x, hold_back, scale)
+        self.y, self.x = self.sample.y, self.sample.x
+        self.model = api.Model(self.sample.native)
+        self.theta = _parameters(spec, self.model, params)
         self.jet = api.Jet(self.model, self.y, self.x)
 
     def evaluate(self, request: int) -> dict[str, Any]:
@@ -131,21 +163,53 @@ class _Bound:
         return out
 
 
-def loglikelihood(spec: Any, data: Any, params: Any, *, x: Any = None) -> float:
-    return -float(_Bound(spec, data, params, x).evaluate(api.VALUE)["value"])
+def loglikelihood(spec: Any, data: Any, params: Any, *, x: Any = None, hold_back: int = 0,
+                  scale: Optional[float] = None) -> float:
+    return -float(_Bound(spec, data, params, x, hold_back, scale).evaluate(api.VALUE)["value"])
 
 
-def score(spec: Any, data: Any, params: Any, *, x: Any = None) -> NDArray[np.float64]:
-    return -np.asarray(_Bound(spec, data, params, x).evaluate(api.GRADIENT)["gradient"])
+def score(spec: Any, data: Any, params: Any, *, x: Any = None, hold_back: int = 0,
+          scale: Optional[float] = None) -> NDArray[np.float64]:
+    return -np.asarray(_Bound(spec, data, params, x, hold_back, scale).evaluate(api.GRADIENT)["gradient"])
 
 
-def hessian(spec: Any, data: Any, params: Any, *, x: Any = None) -> NDArray[np.float64]:
-    return -np.asarray(_Bound(spec, data, params, x).evaluate(api.HESSIAN)["hessian"])
+def hessian(spec: Any, data: Any, params: Any, *, x: Any = None, hold_back: int = 0,
+            scale: Optional[float] = None) -> NDArray[np.float64]:
+    return -np.asarray(_Bound(spec, data, params, x, hold_back, scale).evaluate(api.HESSIAN)["hessian"])
 
 
-def filter_state(spec: Any, data: Any, params: Any, *, x: Any = None) -> FilteredState:
-    bound = _Bound(spec, data, params, x)
+def filter_state(spec: Any, data: Any, params: Any, *, x: Any = None, hold_back: int = 0,
+                 scale: Optional[float] = None) -> FilteredState:
+    bound = _Bound(spec, data, params, x, hold_back, scale)
     return _state(spec, bound.model, bound.jet, bound.y, bound.theta)
+
+
+def fixed_result(spec: Any, data: Any, params: Any, *, x: Any = None, hold_back: int = 0,
+                 scale: Optional[float] = None, index: Any = None, name: Optional[str] = None
+                 ) -> "NativeEstimationResult":
+    """A result at supplied parameters: the fitted paths, likelihood and Hessian without optimization."""
+    from ._evaluation import FixedResult, _FixedOptResult
+    from ._scivolapi_fit import unpack_components
+    from .result import FitMetadata
+
+    bound = _Bound(spec, data, params, x, hold_back, scale)
+    state = _state(spec, bound.model, bound.jet, bound.y, bound.theta)
+    unpack_components(spec, bound.theta)
+    first = bound.sample.skip + bound.jet.first_scored
+    result = NativeFixedResult(
+        spec, _FixedOptResult(bound.theta.copy(), -state.log_likelihood), state.data,
+        sigma2=state.sigma2.copy(), hessian=None if state.hessian is None else -state.hessian,
+        fit_info=FitMetadata(engine="scivolapi", likelihood_n_obs=len(state.data),
+                             requested_hold_back=bound.sample.hold_back, effective_hold_back=first,
+                             original_n_obs=bound.sample.original_n_obs, effective_n_obs=len(bound.y),
+                             scale=bound.sample.scale),
+        method="FIXED", parameter_source="supplied", index=None if index is None else index[first:], name=name,
+    )
+    result._resid = state.residuals.copy()
+    result._fit_x = bound.x
+    result._attach(bound.model, bound.y, bound.x, bound.sample.skip)
+    result._filtered_state_cache = state
+    return result
 
 
 def _state(spec: Any, model: "api.Model", jet: "api.Jet", y: NDArray[np.float64],
@@ -219,7 +283,7 @@ def simulate(spec: Any, n_obs: int, params: Any, *, burn: int = 500, seed: Any =
     total = n_obs + burn
     regressors = _regressors(x, total)
     model = _native_model(spec, regressors)
-    theta = np.ascontiguousarray(_coerce_params(spec, params))
+    theta = _parameters(spec, model, params)
     z = _innovations(innovation_density(spec, theta), 1, total, seed)
     out = api.simulate_series(model, theta, z, regressors)
     keep = slice(burn, total)
@@ -306,3 +370,8 @@ class NativeEstimationResult(EstimationResult):
             self._filtered_state_cache = _state(self.spec, self._native_model, jet, self._native_y,
                                                 np.ascontiguousarray(self.params))
         return self._filtered_state_cache
+
+
+class NativeFixedResult(NativeEstimationResult):
+    def __repr__(self) -> str:
+        return f"FixedResult({self.spec}, LL={self.log_likelihood:.4f})"
