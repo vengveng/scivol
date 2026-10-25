@@ -23,12 +23,22 @@ namespace scivolapi::detail {
 //   S_t[a,b] = sum_j beta_j S_{t-j}[a,b] + [a = beta_j] D_{t-j}[b] + [b = beta_j] D_{t-j}[a]
 // and the step reports lambda = log h with
 //   dlambda = D / h,  d2lambda = S / h - dlambda dlambda'.
-template<bool Leverage>
+// Coupled, the innovation term c_i e^2 (c_i = alpha_i + gamma_i [e < 0]) adds, for
+// mean entries a, b with E = de, F = d2e of the lagged residual:
+//   u[a] = 2 c_i e E_a,  du[a,b] = 2 c_i (E_a E_b + e F_ab),
+//   du[alpha_i, a] = 2 e E_a,  du[gamma_i, a] = 2 e [e < 0] E_a.
+// At e = 0 with gamma_i != 0 the second derivative jumps (2 alpha_i against
+// 2 (alpha_i + gamma_i)): the Hessian does not exist there.
+template<bool Leverage, bool Coupled = false>
 class GarchVolatility {
 public:
-    explicit GarchVolatility(const ModelSpec& spec) noexcept : p_(spec.p), q_(spec.q) {}
+    explicit GarchVolatility(const ModelSpec& spec, std::size_t mean = 0) noexcept
+        : p_(spec.p), q_(spec.q), m_(Coupled ? mean : 0)
+    {
+    }
 
-    [[nodiscard]] std::size_t width() const noexcept { return beta_ + q_; }
+    [[nodiscard]] std::size_t own() const noexcept { return beta_ + q_; }
+    [[nodiscard]] std::size_t width() const noexcept { return own() + m_; }
     [[nodiscard]] std::size_t ring_slots() const noexcept { return std::max<std::size_t>(q_, 1u); }
 
     // h_t > 0 for all data: omega > 0, alpha_i >= 0, beta_j >= 0 and, for GJR,
@@ -36,7 +46,7 @@ public:
     [[nodiscard]] bool evaluable(const double* theta) const noexcept
     {
         if (!(theta[0] > 0.0) || !std::isfinite(theta[0])) return false;
-        for (std::size_t k = 1; k < width(); ++k) {
+        for (std::size_t k = 1; k < own(); ++k) {
             if (!std::isfinite(theta[k])) return false;
             const bool leverage = Leverage && k > p_ && k <= 2 * p_;
             if (!(leverage ? theta[k] + theta[k - p_] >= 0.0 : theta[k] >= 0.0)) return false;
@@ -72,6 +82,11 @@ public:
             for (std::size_t i = 1, n = std::min(p_, t); i <= n; ++i) {
                 w.d[i] = w.e2[t - i];
                 if (Leverage && w.e[t - i] < 0.0) w.d[p_ + i] = w.e2[t - i];
+                if constexpr (Coupled) {
+                    const double f = 2.0 * shock_weight(theta, w, t - i, i) * w.e[t - i];
+                    const double* de = w.de + ((t - i) % w.mean_slots) * m_;
+                    for (std::size_t a = 0; a < m_; ++a) w.d[own() + a] += f * de[a];
+                }
             }
             for (std::size_t j = 1, n = std::min(q_, t); j <= n; ++j) {
                 w.d[beta_ + j - 1] += w.h[t - j];
@@ -85,6 +100,8 @@ public:
 
         if (order >= 2) {
             std::fill_n(w.s, m, 0.0);
+            if constexpr (Coupled)
+                for (std::size_t i = 1, n = std::min(p_, t); i <= n; ++i) couple(theta, w, t - i, i, out);
             for (std::size_t j = 1, n = std::min(q_, t); j <= n; ++j) {
                 const std::size_t slot = (t - j) % slots;
                 const double beta = theta[beta_ + j - 1];
@@ -108,7 +125,29 @@ public:
     }
 
 private:
-    std::size_t p_, q_;
+    // c_i = alpha_i + gamma_i [e_k < 0]
+    double shock_weight(const double* theta, const VolatilityWork& w, std::size_t k, std::size_t i) const noexcept
+    {
+        return theta[i] + (Leverage && w.e[k] < 0.0 ? theta[p_ + i] : 0.0);
+    }
+
+    // Second-order terms of lag i (observation k) that involve the mean entries.
+    void couple(const double* theta, VolatilityWork& w, std::size_t k, std::size_t i, VolatilityStep& out) const noexcept
+    {
+        const std::size_t width = this->width(), o = own(), slot = k % w.mean_slots;
+        const double e = w.e[k], c2 = 2.0 * shock_weight(theta, w, k, i);
+        const double* de = w.de + slot * m_;
+        const double* dde = w.dde ? w.dde + slot * packed_size(m_) : nullptr;
+        if (Leverage && e == 0.0 && theta[p_ + i] != 0.0) out.defined = std::min(out.defined, 1);
+        for (std::size_t a = 0; a < m_; ++a) {
+            for (std::size_t b = a; b < m_; ++b)
+                w.s[packed(width, o + a, o + b)] += c2 * (de[a] * de[b] + (dde ? e * dde[packed(m_, a, b)] : 0.0));
+            w.s[packed(width, i, o + a)] += 2.0 * e * de[a];
+            if (Leverage && e < 0.0) w.s[packed(width, p_ + i, o + a)] += 2.0 * e * de[a];
+        }
+    }
+
+    std::size_t p_, q_, m_;
     std::size_t beta_ = 1u + (Leverage ? 2u : 1u) * p_;  // index of beta_1
 };
 

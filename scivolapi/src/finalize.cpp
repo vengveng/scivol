@@ -68,10 +68,10 @@ FitResult finalize(const Model& model, Jet& unit_jet, Jet& data_jet, double data
                    const Candidate& selected, std::vector<FitPhase> phases, double accuracy)
 {
     const std::size_t d = model.dimension();
-    const std::size_t n = data_jet.sample().size();
+    const std::size_t n = data_jet.sample().scored();  // paths cover the scored rows
     FitResult r;
     r.names = model.parameter_names();
-    r.observations = n;
+    r.observations = data_jet.sample().size();
     r.scored = data_jet.sample().scored();
     r.data_scale = data_scale;
     r.phases = std::move(phases);

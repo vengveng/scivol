@@ -3,9 +3,9 @@
 
 namespace scivolapi::detail {
 
-Assembler assembler_student_t(VolatilityKind kind)
+Assembler assembler_student_t(VolatilityKind kind, bool mean)
 {
-    return assembler_with<StudentTDensity>(kind);
+    return assembler_with<StudentTDensity>(kind, mean);
 }
 
 }  // namespace scivolapi::detail

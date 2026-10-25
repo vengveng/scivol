@@ -79,17 +79,18 @@ const Candidate& select(const std::vector<Candidate>& candidates)
 
 }  // namespace
 
-FitResult fit(const Model& model, std::span<const double> y, const FitOptions& options)
+FitResult fit(const Model& model, std::span<const double> y, std::span<const double> x, const FitOptions& options)
 {
     if (!(options.accuracy > 0.0) || options.maximum_iterations < 1)
         throw std::invalid_argument("accuracy must be positive and maximum_iterations at least 1");
 
-    // Exact internal scaling to unit second moment; the finalizer reports in data units.
-    const Sample data_sample = model.prepare(y);
+    // Exact internal scaling of y (not x) to unit second moment; the finalizer
+    // reports in data units.
+    const Sample data_sample = model.prepare(y, x);
     const double scale = std::sqrt(data_sample.variance_seed);
     std::vector<double> unit_y(y.begin(), y.end());
     for (double& v : unit_y) v /= scale;
-    const Sample unit_sample = model.prepare(unit_y);
+    const Sample unit_sample = model.prepare(unit_y, x);
     Jet unit_jet(model, unit_sample);
     Jet data_jet(model, data_sample);
 

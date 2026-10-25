@@ -3,9 +3,9 @@
 
 namespace scivolapi::detail {
 
-Assembler assembler_skew_t(VolatilityKind kind)
+Assembler assembler_skew_t(VolatilityKind kind, bool mean)
 {
-    return assembler_with<SkewTDensity>(kind);
+    return assembler_with<SkewTDensity>(kind, mean);
 }
 
 }  // namespace scivolapi::detail

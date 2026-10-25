@@ -73,6 +73,7 @@ struct SkewTDensity {
         return true;
     }
 
+    template<bool Raw = false>
     [[nodiscard]] static Terms<2> observe(const Prepared& p, double x, int order) noexcept
     {
         return observation(p, x, order, false);
@@ -99,17 +100,21 @@ struct SkewTDensity {
         double uk[2];
         for (int i = 0; i < 2; ++i) uk[i] = (p.b1[i] * x + p.a1[i]) / d;
         uk[1] -= u * s / d;
-        t.xg = x * k.u * ux;
+        t.gx = k.u * ux;
+        t.xg = x * t.gx;
         t.s[0] = k.u * uk[0] + k.nu;
         t.s[1] = k.u * uk[1];
         if (order < 2) return t;
 
         if (n == 0.0 && p.lambda != 0.0) t.defined = 1;
-        t.xxg = x * x * k.uu * ux * ux;
+        t.gxx = k.uu * ux * ux;
+        t.xxg = x * x * t.gxx;
         // u_xk = b_k / d - b s [k = lambda] / d^2.
         double uxk[2] = {p.b1[0] / d, p.b1[1] / d - p.b * s / (d * d)};
-        for (int i = 0; i < 2; ++i)
-            t.xs[i] = x * (k.uu * uk[i] * ux + k.u * uxk[i] + (i == 0 ? k.unu * ux : 0.0));
+        for (int i = 0; i < 2; ++i) {
+            t.gxs[i] = k.uu * uk[i] * ux + k.u * uxk[i] + (i == 0 ? k.unu * ux : 0.0);
+            t.xs[i] = x * t.gxs[i];
+        }
         // u_kl = (b_kl x + a_kl) / d - s ([l = lambda] N_k + [k = lambda] N_l) / d^2
         //        + 2 u [k = l = lambda] / d^2,  N_k = b_k x + a_k.
         const double nk[2] = {p.b1[0] * x + p.a1[0], p.b1[1] * x + p.a1[1]};

@@ -106,16 +106,20 @@ struct StudentTDensity {
         return true;
     }
 
+    template<bool Raw = false>
     [[nodiscard]] static Terms<1> observe(const Prepared& p, double x, int order) noexcept
     {
         const TKernel k = t_kernel(x, p.nu, order);
         Terms<1> t;
         t.g = k.t;
         if (order >= 1) {
+            t.gx = k.u;
             t.xg = x * k.u;
             t.s[0] = k.nu;
         }
         if (order >= 2) {
+            t.gxx = k.uu;
+            t.gxs[0] = k.unu;
             t.xxg = x * x * k.uu;
             t.xs[0] = x * k.unu;
             t.ss[0] = k.nunu;

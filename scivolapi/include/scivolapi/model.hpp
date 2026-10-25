@@ -7,7 +7,6 @@
 
 namespace scivolapi {
 
-enum class MeanKind { zero };
 enum class VolatilityKind { garch, gjr, egarch, aparch };
 enum class DensityKind {
     normal,
@@ -20,21 +19,46 @@ enum class DensityKind {
     variance_gamma,
 };
 
+// The conditional mean, one ARMAX equation:
+//   y_t = r_t' b + sum_{j<=ma} theta_j e_{t-j} + e_t,
+// with the regressor row r_t = [1 (if constant), y_{t-1..t-ar}, HAR averages
+// mean(y_{t-1..t-w}) for each window w, exogenous x_t (contemporaneous)].
+// No entries: the residuals are the data.
+struct MeanSpec {
+    bool constant = false;
+    std::size_t ar = 0;
+    std::vector<std::size_t> har;  // HAR windows, strictly increasing
+    std::size_t exog = 0;
+    std::size_t ma = 0;
+
+    [[nodiscard]] std::size_t regressors() const noexcept { return (constant ? 1u : 0u) + ar + har.size() + exog; }
+    [[nodiscard]] std::size_t width() const noexcept { return regressors() + ma; }
+    // Rows that only supply lags: the largest y lag a regressor uses.
+    [[nodiscard]] std::size_t conditioning() const noexcept
+    {
+        return har.empty() ? ar : (ar > har.back() ? ar : har.back());
+    }
+};
+
 // What the user asked for. Compiled once into a Model.
 struct ModelSpec {
-    MeanKind mean = MeanKind::zero;
+    MeanSpec mean;
     VolatilityKind volatility = VolatilityKind::garch;
     std::size_t p = 1;  // ARCH (squared-residual) lags
     std::size_t q = 1;  // GARCH (variance) lags
     DensityKind density = DensityKind::normal;
 };
 
-// The sample plan: the observations, how the recursion is conditioned, and
-// which rows the likelihood scores. Borrows the data; the caller keeps it alive.
+// The sample plan: the observations, how the recursions are conditioned, and
+// which rows the likelihood scores. The first `first_scored` rows only supply
+// the mean's lags; the recursions start on the first scored row with variance
+// `variance_seed` and pre-sample residuals zero. Borrows y (the caller keeps it
+// alive) and owns the mean's regressor rows for the scored rows.
 struct Sample {
     std::span<const double> y;
-    double variance_seed = 0.0;    // h_0, constant in the parameters
-    std::size_t first_scored = 0;  // rows before it advance the recursion only
+    double variance_seed = 0.0;    // h of the first scored row, constant in the parameters
+    std::size_t first_scored = 0;  // conditioning rows
+    std::vector<double> design;    // scored rows x regressors, row-major
 
     [[nodiscard]] std::size_t size() const noexcept { return y.size(); }
     [[nodiscard]] std::size_t scored() const noexcept { return y.size() - first_scored; }
@@ -52,8 +76,9 @@ public:
     [[nodiscard]] std::size_t dimension() const noexcept { return names_.size(); }
     [[nodiscard]] const std::vector<std::string>& parameter_names() const noexcept { return names_; }
 
-    // Sample plan. Throws std::invalid_argument for unusable data.
-    [[nodiscard]] Sample prepare(std::span<const double> y) const;
+    // Sample plan for y and, with exogenous regressors, x (rows x exog, row-major,
+    // aligned with y). Throws std::invalid_argument for unusable data.
+    [[nodiscard]] Sample prepare(std::span<const double> y, std::span<const double> x = {}) const;
 
     // Theoretical domain.
     [[nodiscard]] bool feasible(std::span<const double> theta) const;
@@ -68,8 +93,9 @@ public:
 
     [[nodiscard]] std::vector<double> start(const Sample& sample) const;
 
-    // Exact data scaling: theta for data y maps to `scaled` for data y * factor,
-    // with the same likelihood up to the change of variables.
+    // Exact data scaling: theta for data y maps to `scaled` for data y * factor
+    // (exogenous regressors unchanged), with the same likelihood up to the change
+    // of variables.
     void rescale(std::span<const double> theta, double factor, std::span<double> scaled) const;
 
     // Coordinate map theta = theta(z), always differentiated at the given z.

@@ -67,23 +67,26 @@ int order_for(unsigned request) { return (request & hessian) ? 2 : (request & gr
 
 Jet::Jet(const Model& model, const Sample& sample) : model_(model), sample_(sample)
 {
-    if (sample.size() < 2 || sample.first_scored >= sample.size())
-        throw std::invalid_argument("the sample must contain scored observations");
+    const std::size_t n = sample.scored(), columns = model.spec().mean.regressors();
+    if (sample.size() < 2 || sample.first_scored >= sample.size() || sample.design.size() != n * columns)
+        throw std::invalid_argument("the sample must contain scored observations and the model's regressor rows");
     if (detail::assembler_for(model.spec()) == nullptr) throw std::invalid_argument("this model is not available yet");
     const detail::Layout layout(model.spec());
     const detail::VolatilityShape shape = detail::volatility_shape(model.spec());
-    work_.assign(detail::work_size(layout, shape, sample.size()), 0.0);
-    Work work = detail::carve(work_.data(), layout, shape, sample.size());
-    for (std::size_t t = 0; t < sample.size(); ++t) {  // zero mean: residuals are the data
-        work.e[t] = sample.y[t];
-        work.e2[t] = sample.y[t] * sample.y[t];
+    work_.assign(detail::work_size(layout, shape, n), 0.0);
+    if (model.spec().mean.width() > 0) return;  // residuals are computed per evaluation
+    Work work = detail::carve(work_.data(), layout, shape, n);
+    for (std::size_t t = 0; t < n; ++t) {  // no mean: residuals are the data
+        const double y = sample.y[sample.first_scored + t];
+        work.e[t] = y;
+        work.e2[t] = y * y;
     }
 }
 
 JetResult Jet::theta(std::span<const double> theta, unsigned request, JetOutput& out)
 {
     const detail::Layout layout(model_.spec());
-    const std::size_t dim = layout.dimension, n = sample_.size();
+    const std::size_t dim = layout.dimension, n = sample_.scored();
     if (request == 0u || (request & ~all_requests) || theta.size() != dim || !outputs_fit(request, out, dim, n))
         return {};
     Work work = detail::carve(work_.data(), layout, detail::volatility_shape(model_.spec()), n);
@@ -104,7 +107,7 @@ JetResult Jet::theta(std::span<const double> theta, unsigned request, JetOutput&
 JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
 {
     const detail::Layout layout(model_.spec());
-    const std::size_t dim = layout.dimension, n = sample_.size();
+    const std::size_t dim = layout.dimension, n = sample_.scored();
     if (request == 0u || (request & ~all_requests) || z.size() != dim || !outputs_fit(request, out, dim, n)
         || !detail::all_finite(z.data(), dim))
         return {};

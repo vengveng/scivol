@@ -3,9 +3,9 @@
 
 namespace scivolapi::detail {
 
-Assembler assembler_ged(VolatilityKind kind)
+Assembler assembler_ged(VolatilityKind kind, bool mean)
 {
-    return assembler_with<GedDensity>(kind);
+    return assembler_with<GedDensity>(kind, mean);
 }
 
 }  // namespace scivolapi::detail

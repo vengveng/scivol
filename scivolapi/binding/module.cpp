@@ -2,10 +2,12 @@
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
+#include <nanobind/stl/optional.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include <scivolapi/scivolapi.hpp>
@@ -17,6 +19,7 @@ using namespace scivolapi;
 namespace {
 
 using Vector = nb::ndarray<const double, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
+using Matrix = nb::ndarray<const double, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
 using NumpyVector = nb::ndarray<nb::numpy, double, nb::ndim<1>>;
 using NumpyMatrix = nb::ndarray<nb::numpy, double, nb::ndim<2>>;
 using ReadOnlyVector = nb::ndarray<nb::numpy, const double, nb::ndim<1>>;
@@ -32,15 +35,23 @@ ReadOnlyMatrix matrix_view(const std::vector<double>& v, std::size_t d)
 
 std::span<const double> view(const Vector& v) { return {v.data(), v.shape(0)}; }
 
-// Owns a copy of the series so the borrowed Sample can never outlive its data.
+// Exogenous regressors (rows x columns), or none.
+std::vector<double> exogenous(const std::optional<Matrix>& x)
+{
+    if (!x) return {};
+    return std::vector<double>(x->data(), x->data() + x->shape(0) * x->shape(1));
+}
+
+// Owns copies of the data so the borrowed Sample can never outlive them.
 struct BoundJet {
     std::shared_ptr<const Model> model;
-    std::vector<double> y;
+    std::vector<double> y, x;
     Sample sample;
     Jet jet;
 
-    BoundJet(std::shared_ptr<const Model> m, std::span<const double> data)
-        : model(std::move(m)), y(data.begin(), data.end()), sample(model->prepare(y)), jet(*model, sample)
+    BoundJet(std::shared_ptr<const Model> m, std::span<const double> data, std::vector<double> regressors)
+        : model(std::move(m)), y(data.begin(), data.end()), x(std::move(regressors)), sample(model->prepare(y, x)),
+          jet(*model, sample)
     {
     }
 };
@@ -73,7 +84,7 @@ const char* status_name(Status s)
 
 nb::dict evaluate(BoundJet& self, const Vector& point, unsigned request, bool in_z)
 {
-    const std::size_t d = self.model->dimension(), n = self.sample.size();
+    const std::size_t d = self.model->dimension(), n = self.sample.scored();
     std::vector<double> g((request & gradient) ? d : 0), h((request & hessian) ? d * d : 0);
     std::vector<double> e((request & paths) ? n : 0), v(e.size()), z(e.size());
     JetOutput out;
@@ -102,7 +113,6 @@ NB_MODULE(_scivolapi, m)
 {
     m.doc() = "scivolapi: native volatility-model mathematics";
 
-    nb::enum_<MeanKind>(m, "MeanKind").value("zero", MeanKind::zero);
     nb::enum_<VolatilityKind>(m, "VolatilityKind")
         .value("garch", VolatilityKind::garch)
         .value("gjr", VolatilityKind::gjr)
@@ -123,6 +133,15 @@ NB_MODULE(_scivolapi, m)
     m.attr("HESSIAN") = static_cast<unsigned>(hessian);
     m.attr("PATHS") = static_cast<unsigned>(paths);
 
+    nb::class_<MeanSpec>(m, "MeanSpec")
+        .def(nb::init<>())
+        .def_rw("constant", &MeanSpec::constant)
+        .def_rw("ar", &MeanSpec::ar)
+        .def_rw("har", &MeanSpec::har)
+        .def_rw("exog", &MeanSpec::exog)
+        .def_rw("ma", &MeanSpec::ma)
+        .def_prop_ro("conditioning", &MeanSpec::conditioning);
+
     nb::class_<ModelSpec>(m, "ModelSpec")
         .def(nb::init<>())
         .def_rw("mean", &ModelSpec::mean)
@@ -141,6 +160,11 @@ NB_MODULE(_scivolapi, m)
             m.bounds(lower, upper);
             return nb::make_tuple(owned_vector(std::move(lower)), owned_vector(std::move(upper)));
         })
+        .def("rescale", [](const Model& m, const Vector& theta, double factor) {
+            std::vector<double> scaled(m.dimension());
+            m.rescale(view(theta), factor, scaled);
+            return owned_vector(std::move(scaled));
+        }, "theta"_a, "factor"_a)
         .def("to_theta", [](const Model& m, const Vector& z) {
             std::vector<double> theta(m.dimension());
             m.to_theta(view(z), theta);
@@ -151,10 +175,10 @@ NB_MODULE(_scivolapi, m)
             if (!m.to_z(view(theta), z)) return nb::none();
             return owned_vector(std::move(z));
         })
-        .def("start", [](const Model& m, const Vector& y) {
-            std::vector<double> data(view(y).begin(), view(y).end());
-            return owned_vector(m.start(m.prepare(data)));
-        });
+        .def("start", [](const Model& m, const Vector& y, const std::optional<Matrix>& x) {
+            std::vector<double> data(view(y).begin(), view(y).end()), regressors = exogenous(x);
+            return owned_vector(m.start(m.prepare(data, regressors)));
+        }, "y"_a, "x"_a = nb::none());
 
     nb::enum_<Coordinates>(m, "Coordinates")
         .value("automatic", Coordinates::automatic)
@@ -215,18 +239,20 @@ NB_MODULE(_scivolapi, m)
         .def_ro("phases", &FitResult::phases)
         .def_ro("warnings", &FitResult::warnings);
 
-    m.def("fit", [](const Model& model, const Vector& y, const FitOptions& options) {
+    m.def("fit", [](const Model& model, const Vector& y, const FitOptions& options, const std::optional<Matrix>& x) {
+              const std::vector<double> regressors = exogenous(x);
               nb::gil_scoped_release release;
-              return fit(model, view(y), options);
+              return fit(model, view(y), regressors, options);
           },
-          "model"_a, "y"_a, "options"_a = FitOptions());
+          "model"_a, "y"_a, "options"_a = FitOptions(), "x"_a = nb::none());
 
     nb::class_<BoundJet>(m, "Jet")
         .def("__init__",
-             [](BoundJet* self, const Model& model, const Vector& y) {
-                 new (self) BoundJet(std::make_shared<const Model>(model), view(y));
+             [](BoundJet* self, const Model& model, const Vector& y, const std::optional<Matrix>& x) {
+                 new (self) BoundJet(std::make_shared<const Model>(model), view(y), exogenous(x));
              },
-             "model"_a, "y"_a)
+             "model"_a, "y"_a, "x"_a = nb::none())
+        .def_prop_ro("first_scored", [](const BoundJet& j) { return j.sample.first_scored; })
         .def_prop_ro("variance_seed", [](const BoundJet& j) { return j.sample.variance_seed; })
         .def("theta", [](BoundJet& j, const Vector& theta, unsigned request) { return evaluate(j, theta, request, false); },
              "theta"_a, "request"_a)

@@ -68,6 +68,12 @@ struct FitResult {
     std::vector<std::string> warnings;
 };
 
-FitResult fit(const Model& model, std::span<const double> y, const FitOptions& options = {});
+// x: exogenous regressors (rows x exog, row-major), empty without them.
+FitResult fit(const Model& model, std::span<const double> y, std::span<const double> x,
+              const FitOptions& options = {});
+inline FitResult fit(const Model& model, std::span<const double> y, const FitOptions& options = {})
+{
+    return fit(model, y, {}, options);
+}
 
 }  // namespace scivolapi

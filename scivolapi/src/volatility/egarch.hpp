@@ -35,17 +35,29 @@ namespace scivolapi::detail {
 //            - sum_i { alpha_i m_ab + [a=alpha_i] m_b + [b=alpha_i] m_a }   (m_a nonzero for shapes only).
 //
 // lambda = x, so the step reports D and S directly.
-template<class Density>
+//
+// Coupled, z = e u with u = exp(-x / 2) also moves with the residual: with E = de
+// and F = d2e over the mean entries,
+//   z_a  = u (E_a - e D_a / 2),
+//   z_ab = u (F_ab - (E_a D_b + E_b D_a) / 2 - e S_ab / 2 + e D_a D_b / 4),
+// and |z|_a = sign(z) z_a. The terms without E or F are the ones above; the rest
+// add, with phi = (alpha_i sign(z) + gamma_i) u,
+//   u_t[a] += phi E_a,
+//   S_t[a,b] += phi (F_ab - (E_a D_b + E_b D_a) / 2),
+//   S_t[alpha_i, a] += sign(z) u E_a,  S_t[gamma_i, a] += u E_a.
+// At e = 0 with alpha_i != 0, |z| has a kink in the mean entries: no derivatives.
+template<class Density, bool Coupled = false>
 class EgarchVolatility {
 public:
     static constexpr std::size_t shapes = Density::shapes;
 
-    explicit EgarchVolatility(const ModelSpec& spec) noexcept
-        : p_(spec.p), q_(spec.q), beta_(1u + 2u * spec.p), shape_(1u + 2u * spec.p + spec.q)
+    explicit EgarchVolatility(const ModelSpec& spec, std::size_t mean = 0) noexcept
+        : p_(spec.p), q_(spec.q), m_(Coupled ? mean : 0), beta_(1u + 2u * spec.p), shape_(1u + 2u * spec.p + spec.q)
     {
     }
 
-    [[nodiscard]] std::size_t width() const noexcept { return shape_ + shapes; }
+    [[nodiscard]] std::size_t own() const noexcept { return shape_ + shapes; }
+    [[nodiscard]] std::size_t width() const noexcept { return own() + m_; }
     [[nodiscard]] std::size_t ring_slots() const noexcept { return std::max(p_, q_); }
 
     [[nodiscard]] bool evaluable(const double* theta) const noexcept
@@ -58,7 +70,7 @@ public:
     // m = E|z| and its shape derivatives at this point.
     [[nodiscard]] bool prepare(const double* theta, int order) noexcept
     {
-        return absolute_moment<Density>(shapes ? theta + shape_ : nullptr, order, m_) && std::isfinite(m_.v);
+        return absolute_moment<Density>(shapes ? theta + shape_ : nullptr, order, moment_) && std::isfinite(moment_.v);
     }
 
     [[nodiscard]] bool step(const double* theta, const Sample& sample, std::size_t t, int order,
@@ -71,7 +83,7 @@ public:
             value = theta[0];
             for (std::size_t i = 1, n = std::min(p_, t); i <= n; ++i) {
                 const double z = shock(w, t - i);
-                value += theta[i] * (std::abs(z) - m_.v) + theta[p_ + i] * z;
+                value += theta[i] * (std::abs(z) - moment_.v) + theta[p_ + i] * z;
             }
             for (std::size_t j = 1, n = std::min(q_, t); j <= n; ++j) value += theta[beta_ + j - 1] * x[t - j];
         }
@@ -89,12 +101,19 @@ public:
             d[0] = 1.0;
             for (std::size_t i = 1, n = std::min(p_, t); i <= n; ++i) {
                 const double z = shock(w, t - i), az = std::abs(z);
-                d[i] += az - m_.v;  // += : earlier lags have already fed back into these entries
+                d[i] += az - moment_.v;  // += : earlier lags have already fed back into these entries
                 d[p_ + i] += z;
-                for (std::size_t k = 0; k < shapes; ++k) d[shape_ + k] -= theta[i] * m_.g[k];
+                for (std::size_t k = 0; k < shapes; ++k) d[shape_ + k] -= theta[i] * moment_.g[k];
                 const double c = -0.5 * (theta[i] * az + theta[p_ + i] * z);
                 const double* previous = w.first_ring + ((t - i) % slots) * width;
                 for (std::size_t a = 0; a < width; ++a) d[a] += c * previous[a];
+                if constexpr (Coupled) {
+                    const std::size_t k = t - i;
+                    if (w.e[k] == 0.0 && theta[i] != 0.0) out.defined = 0;
+                    const double phi = response(theta, w, k, i);
+                    const double* de = w.de + (k % w.mean_slots) * m_;
+                    for (std::size_t a = 0; a < m_; ++a) d[own() + a] += phi * de[a];
+                }
             }
             for (std::size_t j = 1, n = std::min(q_, t); j <= n; ++j) {
                 d[beta_ + j - 1] += x[t - j];
@@ -122,9 +141,10 @@ public:
                 add_cross(s, width, p_ + i, dp, -0.5 * z);  // gamma_i row
                 for (std::size_t k = 0; k < shapes; ++k) {
                     const std::size_t sk = shape_ + k;
-                    s[packed(width, i, sk)] -= m_.g[k];
-                    for (std::size_t l = k; l < shapes; ++l) s[packed(width, sk, shape_ + l)] -= alpha * m_.h[packed(shapes, k, l)];
+                    s[packed(width, i, sk)] -= moment_.g[k];
+                    for (std::size_t l = k; l < shapes; ++l) s[packed(width, sk, shape_ + l)] -= alpha * moment_.h[packed(shapes, k, l)];
                 }
+                if constexpr (Coupled) couple(theta, w, t - i, i, dp, s);
             }
             for (std::size_t j = 1, n = std::min(q_, t); j <= n; ++j) {
                 const std::size_t slot = (t - j) % slots;
@@ -147,6 +167,31 @@ private:
         return w.e[k] * std::exp(-0.5 * w.state[k]);
     }
 
+    // phi = (alpha_i sign(z) + gamma_i) u for lag i at observation k.
+    double response(const double* theta, const VolatilityWork& w, std::size_t k, std::size_t i) const noexcept
+    {
+        const double sign = w.e[k] >= 0.0 ? 1.0 : -1.0;
+        return (theta[i] * sign + theta[p_ + i]) * std::exp(-0.5 * w.state[k]);
+    }
+
+    // Second-order terms of lag i (observation k, sensitivities dp) that involve E or F.
+    void couple(const double* theta, const VolatilityWork& w, std::size_t k, std::size_t i, const double* dp,
+                double* s) const noexcept
+    {
+        const std::size_t width = this->width(), o = own(), slot = k % w.mean_slots;
+        const double u = std::exp(-0.5 * w.state[k]), sign = w.e[k] >= 0.0 ? 1.0 : -1.0;
+        const double phi = (theta[i] * sign + theta[p_ + i]) * u;
+        const double* de = w.de + slot * m_;
+        const double* dde = w.dde ? w.dde + slot * packed_size(m_) : nullptr;
+        for (std::size_t a = 0; a < m_; ++a) {
+            add_cross(s, width, o + a, dp, -0.5 * phi * de[a]);
+            if (dde)
+                for (std::size_t b = a; b < m_; ++b) s[packed(width, o + a, o + b)] += phi * dde[packed(m_, a, b)];
+            s[packed(width, i, o + a)] += sign * u * de[a];
+            s[packed(width, p_ + i, o + a)] += u * de[a];
+        }
+    }
+
     // S[r, b] += f D[b] and S[b, r] += f D[b] for all b (the diagonal twice).
     static void add_cross(double* s, std::size_t width, std::size_t r, const double* d, double f) noexcept
     {
@@ -154,8 +199,8 @@ private:
         s[packed(width, r, r)] += f * d[r];
     }
 
-    std::size_t p_, q_, beta_, shape_;
-    Dual2<shapes> m_{};
+    std::size_t p_, q_, m_, beta_, shape_;
+    Dual2<shapes> moment_{};
 };
 
 }  // namespace scivolapi::detail

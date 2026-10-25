@@ -21,13 +21,20 @@ struct NormalDensity {
         return true;
     }
 
+    template<bool Raw = false>
     [[nodiscard]] static Terms<0> observe(const Prepared&, double x, int order) noexcept
     {
         Terms<0> t;
         const double x2 = x * x;
         t.g = 0.5 * x2;
-        if (order >= 1) t.xg = x2;
-        if (order >= 2) t.xxg = x2;
+        if (order >= 1) {
+            t.xg = x2;
+            t.gx = x;
+        }
+        if (order >= 2) {
+            t.xxg = x2;
+            t.gxx = 1.0;
+        }
         return t;
     }
 };

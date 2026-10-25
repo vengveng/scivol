@@ -188,6 +188,7 @@ struct GhFamilyDensity {
     //   z_c = alpha c / r,  z_alpha = r,  z_d2 = alpha / (2r),  z_cc = alpha d2 / r^3,  z_c,alpha = c / r,
     //   z_c,d2 = -alpha c / (2r^3),  z_alpha,d2 = 1 / (2r),  z_d2,d2 = -alpha / (4r^3).
     // For VG (delta = 0) w vanishes identically and c / r = sign(c), including the centre.
+    template<bool Raw = false>
     [[nodiscard]] static Terms<shapes> observe(const Prepared& p, double x, int order) noexcept
     {
         enum { C, A, G, DD, N, U };
@@ -232,6 +233,7 @@ struct GhFamilyDensity {
         const int index[5] = {MU, ALPHA, c >= 0.0 ? MINUS : PLUS, D2, NU};
         const double factor[5] = {-1.0, 1.0, 1.0, 1.0, 1.0};  // c = x - mu
 
+        t.gx = gu[C];
         t.xg = x * gu[C];
         if (order < 2) {
             for (std::size_t k = 0; k < shapes; ++k) {
@@ -262,6 +264,7 @@ struct GhFamilyDensity {
                 huu[i][j] = huu[j][i] = h;
             }
 
+        t.gxx = huu[C][C];
         t.xxg = x * x * huu[C][C];
         for (std::size_t k = 0; k < shapes; ++k) {
             double s = 0.0, xs = 0.0;
@@ -271,6 +274,7 @@ struct GhFamilyDensity {
                 xs += huu[C][i] * dk;
             }
             t.s[k] = s;
+            t.gxs[k] = xs;
             t.xs[k] = x * xs;
         }
         for (std::size_t k = 0; k < shapes; ++k)

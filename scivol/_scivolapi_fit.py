@@ -51,11 +51,32 @@ _DENSITIES = {
 }
 
 
-def native_spec(spec: Any) -> Optional[api.ModelSpec]:
+def native_mean(mean: Any, exog: int) -> Optional[api.MeanSpec]:
+    """The native mean for a mean component (None: residuals are the data)."""
+    from .components.mean import ARMA, ARX, HARX
+
+    native = api.MeanSpec()
+    if mean is None:
+        return native if exog == 0 else None
+    if isinstance(mean, ARMA):
+        if exog:
+            return None
+        native.constant, native.ar, native.ma = True, int(mean.p), int(mean.q)
+    elif isinstance(mean, ARX):
+        native.constant, native.ar, native.exog = bool(mean.constant), int(mean.lags), exog
+    elif isinstance(mean, HARX):
+        native.constant, native.har, native.exog = bool(mean.constant), [int(h) for h in mean.horizons], exog
+    else:
+        return None
+    return native
+
+
+def native_spec(spec: Any, exog: int = 0) -> Optional[api.ModelSpec]:
     """The native specification for a composition, or None if not yet covered."""
     from .components.vol import APARCH, EGARCH, GARCH, GJRGARCH
 
-    if spec.get_component(Role.MEAN) is not None:
+    mean = native_mean(spec.get_component(Role.MEAN), exog)
+    if mean is None or getattr(spec.get_component(Role.MEAN), "_is_auto", False):
         return None
     volatility = spec.get_component(Role.VOLATILITY)
     density = spec.get_component(Role.DENSITY)
@@ -69,6 +90,7 @@ def native_spec(spec: Any) -> Optional[api.ModelSpec]:
     if kind is None:
         return None
     native = api.ModelSpec()
+    native.mean = mean
     native.volatility = volatility_kind
     native.p, native.q = int(volatility.p), int(volatility.q)
     native.density = kind
@@ -79,6 +101,9 @@ def fit_spec(
     spec: Any,
     data: NDArray[np.float64],
     *,
+    x: Any = None,
+    hold_back: int = 0,
+    scale: Optional[float] = None,
     coordinates: Optional[str] = None,
     maxiter: int = 1000,
     accuracy: float = 1e-10,
@@ -86,8 +111,24 @@ def fit_spec(
     index: Any = None,
     name: Optional[str] = None,
 ) -> EstimationResult:
-    """Fit a covered composition with scivolapi."""
-    native = native_spec(spec)
+    """Fit a covered composition with scivolapi.
+
+    `hold_back` rows are dropped; the mean's lags then come from the rows that
+    remain, and the likelihood scores every row after the largest lag. Paths and
+    the index cover the scored rows.
+    """
+    from ._validation import validate_data, validate_hold_back, validate_regressors, validate_scale
+
+    y = validate_data(data)
+    skip = validate_hold_back(hold_back)
+    if skip >= len(y):
+        raise ValueError("hold_back leaves no observations to estimate on")
+    x_arr = None if x is None else validate_regressors(x, len(y))[skip:]
+    y = np.ascontiguousarray(y[skip:] * validate_scale(scale), dtype=np.float64)
+    mean = spec.get_component(Role.MEAN)
+    if x_arr is not None and hasattr(mean, "set_n_exog"):
+        mean.set_n_exog(x_arr.shape[1])
+    native = native_spec(spec, 0 if x_arr is None else x_arr.shape[1])
     if native is None:
         raise NotImplementedError(f"scivolapi does not cover {spec.uid} yet")
     if coordinates not in _COORDINATES:
@@ -101,9 +142,8 @@ def fit_spec(
     if initial_params is not None:
         options.start = [float(v) for v in np.asarray(initial_params, dtype=np.float64)]
 
-    y = np.ascontiguousarray(data, dtype=np.float64)
     started = time.perf_counter()
-    native_result = api.fit(model, y, options)
+    native_result = api.fit(model, y, options, x_arr)
     elapsed = time.perf_counter() - started
     if not native_result.estimate_available:
         raise RuntimeError("Fit failed: " + "; ".join(native_result.warnings))
@@ -140,16 +180,17 @@ def fit_spec(
     )
     covariance = np.array(native_result.covariance) if native_result.covariance.size else None
     hessian = np.array(native_result.hessian) if native_result.hessian.size else None
+    first = skip + native.mean.conditioning
     result = EstimationResult(
         spec=spec,
         optimization_result=optimization,
-        data=y,
+        data=y[native.mean.conditioning:],
         sigma2=np.array(native_result.variance),
         time_elapsed=elapsed,
         hessian=hessian,
         cov_matrix=covariance,
         fit_info=fit_info,
-        index=index,
+        index=None if index is None else index[first:],
         name=name,
     )
     result._resid = np.array(native_result.residual)

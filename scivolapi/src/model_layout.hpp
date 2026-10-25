@@ -14,14 +14,17 @@
 
 namespace scivolapi::detail {
 
-// Block structure of theta for a spec, and the chart that covers each entry:
-//   GARCH   [omega | alpha_1..p, beta_1..q | shapes]
-//   GJR     [omega | alpha_1..p, gamma_1..p, beta_1..q | shapes]
-//   EGARCH  [omega, alpha_1..p, gamma_1..p | beta_1..q | shapes]
-//   APARCH  [omega | alpha_1..p | gamma_1..p | beta_1..q | delta | shapes]
+// Block structure of theta for a spec, and the chart that covers each entry.
+// theta = [mean | volatility | shapes] with
+//   mean    [const | ar_1..P | har_w.. | exog_1.. | ma_1..Q]
+//   GARCH   [omega | alpha_1..p, beta_1..q]
+//   GJR     [omega | alpha_1..p, gamma_1..p, beta_1..q]
+//   EGARCH  [omega, alpha_1..p, gamma_1..p | beta_1..q]
+//   APARCH  [omega | alpha_1..p | gamma_1..p | beta_1..q | delta]
 // Three kinds of chart:
-//   scalar   each independent entry has its own ScalarChart (omega, EGARCH's free
-//            entries, APARCH's gamma and delta, the shapes);
+//   scalar   each independent entry has its own ScalarChart (the mean's constant,
+//            HAR and exogenous coefficients, omega, EGARCH's free entries,
+//            APARCH's gamma and delta, the shapes);
 //   simplex  the persistence coefficients are a linear image theta = M(w) v of one
 //            simplex v (sum v < 1), where the weights w are density moments:
 //              GARCH   theta = v;
@@ -29,13 +32,17 @@ namespace scivolapi::detail {
 //                      c-_i = kappa (alpha_i + gamma_i), kappa = E[z^2 1(z<0)];
 //              APARCH  v = (M_i alpha_i, beta), M_i = E[(|z| - gamma_i z)^delta];
 //            so persistence = sum v < 1 is the declared stationarity condition;
-//   stable   EGARCH's beta, a stable lag polynomial via reflection coefficients.
+//   stable   lag polynomials with all roots outside the unit circle, via
+//            reflection coefficients: the AR coefficients (1 - sum phi_i L^i), the
+//            MA coefficients (1 + sum theta_j L^j, so -theta is charted) and
+//            EGARCH's beta.
 // The weights depend on other entries (the shapes, APARCH's gamma_i and delta);
 // the chart's Jacobian and curvature include those cross terms exactly.
 // The single definition used by Model (maps, bounds, starts) and Jet (z-space).
 struct Layout {
-    static constexpr std::size_t max_order = 8;  // p, q <= 8 keeps every scratch array small
-    static constexpr std::size_t max_dimension = 1 + 3 * max_order + 1 + max_shapes;
+    static constexpr std::size_t max_order = 8;  // p, q, AR and MA orders <= 8 keep every scratch array small
+    static constexpr std::size_t max_mean = 32;
+    static constexpr std::size_t max_dimension = max_mean + 1 + 3 * max_order + 1 + max_shapes;
     static constexpr std::size_t max_simplex = 3 * max_order;
     static constexpr std::size_t max_weights = max_order;
 
@@ -53,25 +60,41 @@ struct Layout {
         std::size_t j = 0;
         double c = 0.0, dc = 0.0, d2c = 0.0;
     };
+    // theta[at .. at + count) = sign * (coefficients of a stable lag polynomial).
+    struct Stable {
+        std::size_t at = 0, count = 0;
+        double sign = 1.0;
+    };
 
     VolatilityKind kind;
     DensityKind density;
     std::size_t p = 0, q = 0;
+    std::size_t mean = 0;                                    // mean entries, from index 0
+    std::size_t ar = 0, har = 0, exog = 0, ma = 0;           // mean block starts
     std::size_t omega = 0;
     std::size_t alpha = 1, gamma = 0, beta = 0, delta = 0;  // block starts (gamma, delta if present)
     std::size_t shapes = 0, shape_count = 0, dimension = 0;
     std::size_t simplex_count = 0;
     std::array<std::size_t, max_simplex> simplex_index{};
-    std::size_t stable = 0, stable_count = 0;
+    std::array<Stable, 3> stable{};
+    std::size_t stable_blocks = 0;
     std::span<const ShapeDomain> shape_domain;
     std::array<ScalarChart, max_dimension> chart{};
     std::array<bool, max_dimension> scalar_entry{};
 
     explicit Layout(const ModelSpec& spec) noexcept
-        : kind(spec.volatility), density(spec.density), p(spec.p), q(spec.q), shape_domain(shape_domains(spec.density))
+        : kind(spec.volatility), density(spec.density), p(spec.p), q(spec.q), mean(spec.mean.width()),
+          shape_domain(shape_domains(spec.density))
     {
         const double inf = std::numeric_limits<double>::infinity();
         shape_count = shape_domain.size();
+        if (mean > max_mean) return;  // rejected by Model
+        ar = spec.mean.constant ? 1u : 0u;
+        har = ar + spec.mean.ar;
+        exog = har + spec.mean.har.size();
+        ma = exog + spec.mean.exog;
+        omega = mean;
+        alpha = omega + 1;
         gamma = alpha + p;
         switch (kind) {
         case VolatilityKind::garch:
@@ -99,10 +122,16 @@ struct Layout {
         auto add_simplex = [&](std::size_t from, std::size_t count) {
             for (std::size_t k = 0; k < count; ++k) simplex_index[simplex_count++] = from + k;
         };
+        auto add_stable = [&](std::size_t at, std::size_t count, double sign) {
+            if (count) stable[stable_blocks++] = {at, count, sign};
+        };
+        if (spec.mean.constant) set_scalar(0, -inf, inf);
+        add_stable(ar, spec.mean.ar, 1.0);
+        for (std::size_t k = har; k < ma; ++k) set_scalar(k, -inf, inf);  // HAR and exogenous
+        add_stable(ma, spec.mean.ma, -1.0);
         if (kind == VolatilityKind::egarch) {
-            for (std::size_t k = 0; k < beta; ++k) set_scalar(k, -inf, inf);
-            stable = beta;
-            stable_count = q;
+            for (std::size_t k = omega; k < beta; ++k) set_scalar(k, -inf, inf);
+            add_stable(beta, q, 1.0);
         } else {
             set_scalar(omega, 0.0, inf);
             add_simplex(alpha, p);
@@ -210,7 +239,11 @@ struct Layout {
     {
         for (std::size_t k = 0; k < dimension; ++k)
             if (scalar_entry[k]) theta[k] = chart[k].theta(z[k]);
-        if (stable_count) StableChart::theta(z + stable, stable_count, theta + stable);
+        for (std::size_t b = 0; b < stable_blocks; ++b) {
+            const Stable& s = stable[b];
+            StableChart::theta(z + s.at, s.count, theta + s.at);
+            for (std::size_t k = 0; k < s.count; ++k) theta[s.at + k] *= s.sign;
+        }
         if (!simplex_count) return true;
         Weight w[max_weights];
         if (!weights(theta, 0, w)) return false;
@@ -231,7 +264,11 @@ struct Layout {
     {
         for (std::size_t k = 0; k < dimension; ++k)
             if (scalar_entry[k] && !chart[k].z(theta[k], z[k])) return false;
-        if (stable_count && !StableChart::z(theta + stable, stable_count, z + stable)) return false;
+        for (std::size_t b = 0; b < stable_blocks; ++b) {
+            double coefficients[StableChart::max_order];
+            stable_coefficients(theta, b, coefficients);
+            if (!StableChart::z(coefficients, stable[b].count, z + stable[b].at)) return false;
+        }
         if (!simplex_count) return true;
         Weight w[max_weights];
         if (!weights(theta, 0, w)) return false;
@@ -256,7 +293,12 @@ struct Layout {
         std::fill_n(jac, dimension * dimension, 0.0);
         for (std::size_t k = 0; k < dimension; ++k)
             if (scalar_entry[k]) jac[k * dimension + k] = chart[k].first(z[k]);
-        if (stable_count) StableChart::jacobian(z + stable, stable_count, stable, dimension, jac);
+        for (std::size_t b = 0; b < stable_blocks; ++b) {
+            const Stable& s = stable[b];
+            StableChart::jacobian(z + s.at, s.count, s.at, dimension, jac);
+            for (std::size_t i = 0; i < s.count; ++i)
+                for (std::size_t j = 0; j < s.count; ++j) jac[(s.at + i) * dimension + s.at + j] *= s.sign;
+        }
         if (!simplex_count) return true;
         Simplex s;
         if (!prepare(z, 1, s)) return false;
@@ -284,7 +326,12 @@ struct Layout {
         const std::size_t d = dimension;
         for (std::size_t k = 0; k < d; ++k)
             if (scalar_entry[k]) out[k * d + k] += g[k] * chart[k].second(z[k]);
-        if (stable_count) StableChart::curvature(z + stable, g + stable, stable_count, stable, d, out);
+        for (std::size_t b = 0; b < stable_blocks; ++b) {
+            const Stable& s = stable[b];
+            double signed_g[StableChart::max_order];
+            for (std::size_t i = 0; i < s.count; ++i) signed_g[i] = s.sign * g[s.at + i];
+            StableChart::curvature(z + s.at, signed_g, s.count, s.at, d, out);
+        }
         if (!simplex_count) return true;
         Simplex s;
         if (!prepare(z, 2, s)) return false;
@@ -332,6 +379,13 @@ struct Layout {
     }
 
     [[nodiscard]] ScalarChart scalar(std::size_t index) const noexcept { return chart[index]; }
+
+    // The polynomial coefficients sign * theta of stable block b.
+    void stable_coefficients(const double* theta, std::size_t b, double* out) const noexcept
+    {
+        const Stable& s = stable[b];
+        for (std::size_t k = 0; k < s.count; ++k) out[k] = s.sign * theta[s.at + k];
+    }
 
     // Shape parameters strictly inside their open domain.
     [[nodiscard]] bool shapes_inside(const double* theta) const noexcept

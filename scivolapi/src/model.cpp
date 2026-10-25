@@ -14,6 +14,9 @@ namespace scivolapi {
 namespace {
 
 using detail::Layout;
+using detail::StableChart;
+
+constexpr std::size_t max_har_window = 256;
 
 void require(bool condition, const char* message)
 {
@@ -32,19 +35,17 @@ bool power_moment_bounded_by_nu(const ModelSpec& spec)
         && (spec.density == DensityKind::student_t || spec.density == DensityKind::skew_t);
 }
 
-// Where the recursion and the density are defined.
+// Where the recursion and the density are defined. Mean entries need only be finite.
 bool volatility_evaluable(const ModelSpec& spec, const Layout& layout, const double* theta)
 {
+    for (std::size_t k = 0; k < layout.shapes; ++k)
+        if (!std::isfinite(theta[k])) return false;
+    const double* vol = theta + layout.omega;
     switch (spec.volatility) {
-    case VolatilityKind::garch: return detail::GarchVolatility<false>(spec).evaluable(theta);
-    case VolatilityKind::gjr: return detail::GarchVolatility<true>(spec).evaluable(theta);
-    case VolatilityKind::egarch:  // the log-variance recursion is defined for any finite theta
-        for (std::size_t k = 0; k < layout.shapes; ++k)
-            if (!std::isfinite(theta[k])) return false;
-        return true;
+    case VolatilityKind::garch: return detail::GarchVolatility<false>(spec).evaluable(vol);
+    case VolatilityKind::gjr: return detail::GarchVolatility<true>(spec).evaluable(vol);
+    case VolatilityKind::egarch: return true;  // the log-variance recursion is defined for any finite theta
     case VolatilityKind::aparch:  // omega > 0, alpha, beta >= 0, |gamma| < 1, delta > 0
-        for (std::size_t k = 0; k < layout.shapes; ++k)
-            if (!std::isfinite(theta[k])) return false;
         if (!(theta[layout.omega] > 0.0) || !(theta[layout.delta] > 0.0)) return false;
         for (std::size_t i = 0; i < spec.p; ++i)
             if (!(theta[layout.alpha + i] >= 0.0) || !(std::abs(theta[layout.gamma + i]) < 1.0)) return false;
@@ -55,35 +56,95 @@ bool volatility_evaluable(const ModelSpec& spec, const Layout& layout, const dou
     return false;
 }
 
+// 1 - sum a_i L^i has all roots outside the unit circle (step-down recursion).
+bool stationary(const double* a, std::size_t order)
+{
+    double phi[max_har_window], next[max_har_window];
+    std::copy_n(a, order, phi);
+    for (std::size_t k = order; k-- > 0;) {
+        const double kappa = phi[k];
+        if (!(std::abs(kappa) < 1.0) || !std::isfinite(kappa)) return false;
+        const double scale = 1.0 - kappa * kappa;
+        for (std::size_t j = 0; j < k; ++j) next[j] = (phi[j] + kappa * phi[k - 1 - j]) / scale;
+        std::copy_n(next, k, phi);
+    }
+    return true;
+}
+
+// HAR coefficients a_w imply the AR coefficients A_i = sum_{w >= i} a_w / w.
+bool har_stationary(const MeanSpec& mean, const double* a)
+{
+    if (mean.har.empty()) return true;
+    double implied[max_har_window] = {};
+    const std::size_t order = mean.har.back();
+    for (std::size_t k = 0; k < mean.har.size(); ++k)
+        for (std::size_t i = 0; i < mean.har[k]; ++i) implied[i] += a[k] / static_cast<double>(mean.har[k]);
+    return stationary(implied, order);
+}
+
+std::string indexed(const char* name, std::size_t i) { return std::string(name) + "[" + std::to_string(i) + "]"; }
+
 }  // namespace
 
 Model::Model(const ModelSpec& spec) : spec_(spec)
 {
     require(spec.p >= 1 && spec.q >= 1, "orders p and q must be at least 1");
     require(spec.p <= Layout::max_order && spec.q <= Layout::max_order, "orders p and q must be at most 8");
+    const MeanSpec& mean = spec.mean;
+    require(mean.ar <= Layout::max_order && mean.ma <= Layout::max_order, "AR and MA orders must be at most 8");
+    for (std::size_t k = 0; k < mean.har.size(); ++k)
+        require(mean.har[k] >= 1 && mean.har[k] <= max_har_window && (k == 0 || mean.har[k] > mean.har[k - 1]),
+                "HAR windows must be strictly increasing, between 1 and 256");
+    require(mean.width() <= Layout::max_mean, "the mean has more than 32 coefficients");
+
     const Layout layout(spec);
     names_.assign(layout.dimension, "");
+    if (mean.constant) names_[0] = "const";
+    for (std::size_t i = 0; i < mean.ar; ++i) names_[layout.ar + i] = indexed("ar", i + 1);
+    for (std::size_t k = 0; k < mean.har.size(); ++k) names_[layout.har + k] = indexed("har", mean.har[k]);
+    for (std::size_t i = 0; i < mean.exog; ++i) names_[layout.exog + i] = indexed("exog", i + 1);
+    for (std::size_t j = 0; j < mean.ma; ++j) names_[layout.ma + j] = indexed("ma", j + 1);
     names_[layout.omega] = "omega";
-    for (std::size_t i = 0; i < spec.p; ++i) names_[layout.alpha + i] = "alpha[" + std::to_string(i + 1) + "]";
+    for (std::size_t i = 0; i < spec.p; ++i) names_[layout.alpha + i] = indexed("alpha", i + 1);
     if (spec.volatility != VolatilityKind::garch)
-        for (std::size_t i = 0; i < spec.p; ++i) names_[layout.gamma + i] = "gamma[" + std::to_string(i + 1) + "]";
-    for (std::size_t j = 0; j < spec.q; ++j) names_[layout.beta + j] = "beta[" + std::to_string(j + 1) + "]";
+        for (std::size_t i = 0; i < spec.p; ++i) names_[layout.gamma + i] = indexed("gamma", i + 1);
+    for (std::size_t j = 0; j < spec.q; ++j) names_[layout.beta + j] = indexed("beta", j + 1);
     if (spec.volatility == VolatilityKind::aparch) names_[layout.delta] = "delta";
     for (std::size_t i = 0; i < layout.shape_count; ++i) names_[layout.shapes + i] = layout.shape_domain[i].name;
 }
 
-Sample Model::prepare(std::span<const double> y) const
+// Regressor rows for the scored rows t = c, ..., n - 1 (c conditioning rows):
+// [1, y_{t-1..t-ar}, mean(y_{t-1..t-w}) per HAR window, x_t].
+Sample Model::prepare(std::span<const double> y, std::span<const double> x) const
 {
-    require(y.size() >= 2, "at least two observations are required");
+    const MeanSpec& mean = spec_.mean;
+    const std::size_t c = mean.conditioning(), k = mean.regressors();
+    require(y.size() >= c + 2, "at least two observations beyond the mean's lags are required");
+    require(x.size() == y.size() * mean.exog, "exogenous regressors must have one row per observation");
     double sum = 0.0;
     for (double v : y) {
         require(std::isfinite(v), "observations must be finite");
         sum += v * v;
     }
+    for (double v : x) require(std::isfinite(v), "exogenous regressors must be finite");
     const double seed = sum / static_cast<double>(y.size());
     require(std::isfinite(seed) && seed > 0.0,
             "the conditioning variance mean(y^2) must be positive and representable; rescale the data");
-    return Sample{y, seed, 0};
+
+    Sample sample{y, seed, c, {}};
+    sample.design.resize((y.size() - c) * k);
+    for (std::size_t t = c; t < y.size(); ++t) {
+        double* row = sample.design.data() + (t - c) * k;
+        if (mean.constant) *row++ = 1.0;
+        for (std::size_t i = 1; i <= mean.ar; ++i) *row++ = y[t - i];
+        for (std::size_t w : mean.har) {
+            double total = 0.0;
+            for (std::size_t i = 1; i <= w; ++i) total += y[t - i];
+            *row++ = total / static_cast<double>(w);
+        }
+        for (std::size_t i = 0; i < mean.exog; ++i) *row++ = x[t * mean.exog + i];
+    }
+    return sample;
 }
 
 bool Model::evaluable(std::span<const double> theta) const
@@ -93,16 +154,20 @@ bool Model::evaluable(std::span<const double> theta) const
     return volatility_evaluable(spec_, layout, theta.data()) && layout.shapes_inside(theta.data());
 }
 
-// The declared domain: GARCH, GJR and APARCH persistence < 1 (with APARCH's
-// moment existing), EGARCH a stable lag polynomial.
+// The declared domain: stationary AR (and HAR), invertible MA; GARCH, GJR and
+// APARCH persistence < 1 (with APARCH's moment existing), EGARCH a stable lag
+// polynomial.
 bool Model::feasible(std::span<const double> theta) const
 {
     if (!evaluable(theta)) return false;
     const Layout layout(spec_);
-    if (layout.egarch()) {
-        double kappa[detail::StableChart::max_order];
-        return detail::StableChart::step_down(theta.data() + layout.stable, layout.stable_count, kappa);
+    for (std::size_t b = 0; b < layout.stable_blocks; ++b) {
+        double coefficients[StableChart::max_order], kappa[StableChart::max_order];
+        layout.stable_coefficients(theta.data(), b, coefficients);
+        if (!StableChart::step_down(coefficients, layout.stable[b].count, kappa)) return false;
     }
+    if (!har_stationary(spec_.mean, theta.data() + layout.har)) return false;
+    if (layout.egarch()) return true;
     if (power_moment_bounded_by_nu(spec_) && !(theta[layout.delta] < theta[layout.shapes])) return false;
     double persistence = 0.0;
     return layout.persistence(theta.data(), 0, persistence, nullptr) && persistence < 1.0;
@@ -125,27 +190,33 @@ void Model::bounds(std::span<double> lower, std::span<double> upper) const
         const bool leverage = spec_.volatility == VolatilityKind::gjr && index >= layout.gamma && index < layout.beta;
         if (!leverage) lower[index] = 0.0;
     }
-    if (layout.stable_count == 1) {  // EGARCH(p, 1): |beta| < 1 as a box; q >= 2 uses constraints
-        lower[layout.stable] = -detail::StableChart::bound();
-        upper[layout.stable] = detail::StableChart::bound();
-    }
+    for (std::size_t b = 0; b < layout.stable_blocks; ++b)  // order one: |coefficient| < 1 as a box
+        if (layout.stable[b].count == 1) {
+            lower[layout.stable[b].at] = -StableChart::bound();
+            upper[layout.stable[b].at] = StableChart::bound();
+        }
 }
 
 std::size_t Model::constraint_count() const noexcept
 {
     const Layout layout(spec_);
-    if (layout.egarch()) return layout.stable_count == 1 ? 0 : layout.stable_count;
-    std::size_t count = 1;  // persistence
+    std::size_t count = 0;
+    for (std::size_t b = 0; b < layout.stable_blocks; ++b)
+        if (layout.stable[b].count >= 2) count += layout.stable[b].count;
+    if (layout.egarch()) return count;
+    count += 1;  // persistence
     if (spec_.volatility == VolatilityKind::gjr) count += spec_.p;
     if (power_moment_bounded_by_nu(spec_)) count += 1;
     return count;
 }
 
 // c(theta) >= 0 beyond the bounds:
-//   GARCH, GJR, APARCH  L - persistence >= 0, L the simplex chart's floating-point margin;
-//   GJR                 alpha_i + gamma_i >= 0;
-//   APARCH, t family    nu - delta >= 0;
-//   EGARCH, q >= 2      1 - kappa_k(beta)^2 >= 0, kappa the reflection coefficients.
+//   stable blocks of order >= 2   1 - kappa_k^2 >= 0, kappa the reflection coefficients
+//                                 (AR, MA, EGARCH's beta);
+//   GARCH, GJR, APARCH            L - persistence >= 0, L the simplex chart's floating-point margin;
+//   GJR                           alpha_i + gamma_i >= 0;
+//   APARCH, t family              nu - delta >= 0.
+// HAR stationarity is checked by feasible() but has no constraint yet.
 void Model::constraints(std::span<const double> theta, std::span<double> values,
                         std::span<double> jacobian) const
 {
@@ -154,25 +225,33 @@ void Model::constraints(std::span<const double> theta, std::span<double> values,
     const std::size_t m = constraint_count(), d = dimension();
     require(values.size() == m && jacobian.size() == m * d, "constraint outputs have the wrong length");
     std::fill(jacobian.begin(), jacobian.end(), 0.0);
-    if (layout.egarch()) {
-        using D = detail::StableChart::D;
-        D kappa[detail::StableChart::max_order];
-        const bool inside = detail::StableChart::step_down(theta.data() + layout.stable, layout.stable_count, kappa);
-        for (std::size_t k = 0; k < m; ++k) {
-            values[k] = inside ? 1.0 - kappa[k].v * kappa[k].v : -1.0;  // outside: report violation
-            for (std::size_t j = 0; inside && j < layout.stable_count; ++j)
-                jacobian[k * d + layout.stable + j] = -2.0 * kappa[k].v * kappa[k].g[j];
+    std::size_t row = 0;
+    for (std::size_t b = 0; b < layout.stable_blocks; ++b) {
+        const detail::Layout::Stable& s = layout.stable[b];
+        if (s.count < 2) continue;
+        using D = StableChart::D;
+        double coefficients[StableChart::max_order];
+        D kappa[StableChart::max_order];
+        layout.stable_coefficients(theta.data(), b, coefficients);
+        const bool inside = StableChart::step_down(coefficients, s.count, kappa);
+        for (std::size_t k = 0; k < s.count; ++k, ++row) {
+            values[row] = inside ? 1.0 - kappa[k].v * kappa[k].v : -1.0;  // outside: report violation
+            for (std::size_t j = 0; inside && j < s.count; ++j)
+                jacobian[row * d + s.at + j] = -2.0 * kappa[k].v * kappa[k].g[j] * s.sign;
         }
-        return;
     }
+    if (layout.egarch()) return;
+
+    double* persistence_row = jacobian.data() + row * d;
     double persistence = 0.0;
-    if (layout.persistence(theta.data(), 1, persistence, jacobian.data())) {
-        values[0] = detail::SimplexChart::limit(layout.simplex_count) - persistence;
-        for (std::size_t k = 0; k < d; ++k) jacobian[k] = -jacobian[k];
+    if (layout.persistence(theta.data(), 1, persistence, persistence_row)) {
+        values[row] = detail::SimplexChart::limit(layout.simplex_count) - persistence;
+        for (std::size_t k = 0; k < d; ++k) persistence_row[k] = -persistence_row[k];
     } else {
-        values[0] = -1.0;  // the moment does not exist here: report violation
+        values[row] = -1.0;  // the moment does not exist here: report violation
+        std::fill_n(persistence_row, d, 0.0);
     }
-    std::size_t row = 1;
+    ++row;
     if (spec_.volatility == VolatilityKind::gjr)
         for (std::size_t i = 0; i < spec_.p; ++i, ++row) {
             values[row] = theta[layout.alpha + i] + theta[layout.gamma + i];
@@ -186,15 +265,21 @@ void Model::constraints(std::span<const double> theta, std::span<double> values,
     }
 }
 
-// Starts with persistence 0.9 (EGARCH: beta summing to 0.9). GARCH and GJR put
-// 80% on beta and the rest on alpha (GJR: 60% alpha, 40% leverage at kappa 1/2);
-// APARCH starts at delta = 2, gamma = 0, where its moment is E z^2 = 1.
+// The mean starts at its constant = mean(y), every other coefficient zero.
+// Volatility starts with persistence 0.9 (EGARCH: beta summing to 0.9). GARCH
+// and GJR put 80% on beta and the rest on alpha (GJR: 60% alpha, 40% leverage at
+// kappa 1/2); APARCH starts at delta = 2, gamma = 0, where its moment is E z^2 = 1.
 std::vector<double> Model::start(const Sample& sample) const
 {
     constexpr double persistence = 0.90;
     const Layout layout(spec_);
     const double p = static_cast<double>(spec_.p), q = static_cast<double>(spec_.q);
     std::vector<double> theta(dimension(), 0.0);
+    if (spec_.mean.constant) {
+        double total = 0.0;
+        for (double v : sample.y) total += v;
+        theta[0] = total / static_cast<double>(sample.size());
+    }
     for (std::size_t i = 0; i < layout.shape_count; ++i) theta[layout.shapes + i] = layout.shape_domain[i].start;
     if (layout.egarch()) {
         theta[layout.omega] = (1.0 - persistence) * std::log(sample.variance_seed);
@@ -218,10 +303,11 @@ std::vector<double> Model::start(const Sample& sample) const
     return theta;
 }
 
-// Exact data scaling y -> factor y: GARCH and GJR scale omega by factor^2,
-// APARCH by factor^delta (sigma^delta), EGARCH shifts it by
-// 2 log(factor) (1 - sum beta) (log h shifts by 2 log factor). Everything else is
-// scale free.
+// Exact data scaling y -> factor y (x unchanged): the mean's constant and
+// exogenous coefficients scale by factor (AR, HAR and MA coefficients are scale
+// free); GARCH and GJR scale omega by factor^2, APARCH by factor^delta
+// (sigma^delta), EGARCH shifts it by 2 log(factor) (1 - sum beta) (log h shifts
+// by 2 log factor). Everything else is scale free.
 void Model::rescale(std::span<const double> theta, double factor, std::span<double> scaled) const
 {
     check_size(theta, dimension());
@@ -229,6 +315,8 @@ void Model::rescale(std::span<const double> theta, double factor, std::span<doub
     require(std::isfinite(factor) && factor > 0.0, "the scale factor must be positive and finite");
     std::copy(theta.begin(), theta.end(), scaled.begin());
     const Layout layout(spec_);
+    if (spec_.mean.constant) scaled[0] = theta[0] * factor;
+    for (std::size_t i = 0; i < spec_.mean.exog; ++i) scaled[layout.exog + i] = theta[layout.exog + i] * factor;
     switch (spec_.volatility) {
     case VolatilityKind::egarch: {
         double slack = 1.0;
