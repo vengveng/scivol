@@ -8,7 +8,8 @@ import pytest
 api = pytest.importorskip("scivol._scivolapi")
 pd = pytest.importorskip("pandas")
 from scivol import ARMA, GARCH, GJRGARCH, Normal, StudentT  # noqa: E402
-from scivol._scivolapi_eval import NativeEstimationResult, oos_losses  # noqa: E402
+from scivol._evaluation import oos_losses  # noqa: E402
+from scivol.result import EstimationResult  # noqa: E402
 from scivol.components.density import AutoDensity  # noqa: E402
 from scivol.components.mean import AutoMean  # noqa: E402
 from tests.test_scivolapi_mean import mean_point, mean_spec, model_for, volatility_point  # noqa: E402
@@ -44,7 +45,7 @@ def test_row_terms_sum_to_the_likelihood(returns, volatility, density):
 
 def test_oos_losses_are_the_likelihood_terms(returns):
     result = (GJRGARCH(1, 1) + StudentT()).fit(returns, hold_back=10)
-    assert isinstance(result, NativeEstimationResult)
+    assert isinstance(result, EstimationResult)
     n = len(returns)
     logscore = oos_losses(result, returns, full_x=None, start=10, stop=n, loss="logscore")
     assert np.sum(logscore) == pytest.approx(-result.log_likelihood, rel=1e-12)
@@ -59,7 +60,7 @@ def test_oos_losses_are_the_likelihood_terms(returns):
 def test_auto_selection_picks_the_best_criterion(returns, select_by):
     kwargs = dict(n_jobs=1, show_progress=False, select_by=select_by)
     best = (GJRGARCH(auto={"max_p": 2, "max_q": 2}) + StudentT()).fit(returns, **kwargs)
-    assert isinstance(best, NativeEstimationResult)
+    assert isinstance(best, EstimationResult)
     criteria = []
     for p in (1, 2):
         for q in (1, 2):
@@ -70,12 +71,12 @@ def test_auto_selection_picks_the_best_criterion(returns, select_by):
 
 def test_oos_selection_runs(returns):
     result = (GJRGARCH(auto=True) + AutoDensity()).fit(returns, n_jobs=1, show_progress=False, select_by="oos")
-    assert isinstance(result, NativeEstimationResult)
+    assert isinstance(result, EstimationResult)
 
 
 def test_mean_auto_selection_runs_on_scivolapi(returns):
     result = (AutoMean() + GARCH(1, 1) + Normal()).fit(returns, n_jobs=1, show_progress=False)
-    assert isinstance(result, NativeEstimationResult) and "ARMA" in str(result.spec)
+    assert isinstance(result, EstimationResult) and "ARMA" in str(result.spec)
 
 
 def test_batches_rolling_windows_and_frames():
@@ -90,7 +91,7 @@ def test_batches_rolling_windows_and_frames():
         cold = spec.fit(frame["s0"].iloc[w.start:w.stop])
         assert w.batch["s0"].log_likelihood == pytest.approx(cold.log_likelihood, abs=1e-6)
     multi = (GARCH(1, 1) + StudentT()).fit(frame, n_jobs=1, show_progress=False)
-    assert all(isinstance(r, NativeEstimationResult) for r in multi.values())
+    assert all(isinstance(r, EstimationResult) for r in multi.values())
     assert multi["s1"].sigma2.index[0] == index[0]
 
 

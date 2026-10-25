@@ -38,26 +38,6 @@ class APARCH(Component):
     def n_params(self) -> int:
         return 2 + 2 * self.p + self.q
 
-    def default_start(self, data: np.ndarray) -> np.ndarray:
-        self._data = data
-        sample_var = max(float(np.var(data)), 1e-8)
-        alpha = np.full(self.p, 0.08 / self.p, dtype=np.float64)
-        gamma = np.zeros(self.p, dtype=np.float64)
-        beta = np.full(self.q, 0.85 / self.q, dtype=np.float64)
-        omega = max(1e-8, 0.07 * sample_var)
-        return np.concatenate(([omega], alpha, gamma, beta, [2.0]))
-
-    def bounds(self) -> List[Tuple[float, float]]:
-        positive = np.nextafter(0.0, 1.0)
-        unit = np.nextafter(1.0, 0.0)
-        return (
-            [(positive, np.inf)]
-            + [(0.0, np.inf)] * self.p
-            + [(-unit, unit)] * self.p
-            + [(0.0, np.inf)] * self.q
-            + [(positive, np.inf)]
-        )
-
     def pack(self, params_dict: dict) -> np.ndarray:
         return np.asarray(
             [params_dict["omega"]]
@@ -81,22 +61,6 @@ class APARCH(Component):
             "delta": float(flat_params[beta_start + self.q]),
         }
         return self.fitted_params
-
-    def persistence(self) -> float:
-        """Return the fitted density-dependent APARCH persistence."""
-        if self.fitted_params is None:
-            raise RuntimeError("Model not fitted yet.")
-        if "persistence" not in self.fitted_params:
-            raise RuntimeError(
-                "Exact APARCH persistence requires the fitted conditional density."
-            )
-        return float(self.fitted_params["persistence"])
-
-    def is_stationary(self) -> bool:
-        if self.fitted_params and "stationarity_slack" in self.fitted_params:
-            return self.fitted_params["stationarity_slack"] > 0.0
-        return self.persistence() < 1.0 if self.fitted_params else False
-
 
 class GJRGARCH(Component):
     """
@@ -181,34 +145,6 @@ class GJRGARCH(Component):
     @property
     def n_params(self): return 1 + 2 * self.p + self.q  # omega + p alphas + p gammas + q betas
     
-    def default_start(self, data: np.ndarray) -> np.ndarray:
-        self._data = data
-
-        min_positive   = 1e-8
-        persist_target = 0.90
-        beta_share     = 0.80
-
-        total_beta  = persist_target * beta_share
-        total_alpha = persist_target * (1.0 - beta_share) * 0.6  # 60% to alpha
-        total_gamma = persist_target * (1.0 - beta_share) * 0.4  # 40% to gamma
-
-        sample_var = np.var(data)
-        start_persistence = total_alpha + 0.5 * total_gamma + total_beta
-        omega = max(min_positive, sample_var * (1.0 - start_persistence))
-
-        alpha = ([max(min_positive, total_alpha / self.p)] * self.p) if self.p else []
-        gamma = ([max(min_positive, total_gamma / self.p)] * self.p) if self.p else []
-        beta  = ([max(min_positive, total_beta  / self.q)] * self.q) if self.q else []
-
-        return np.array([omega] + alpha + gamma + beta)
-    
-    def bounds(self) -> List[Tuple[float, float]]:
-        omega_bound  = [(1e-8, 1.0)]
-        alpha_bounds = [(1e-8, 0.99)] * self.p  
-        gamma_bounds = [(1e-8, 0.99)] * self.p  # leverage coefficients
-        beta_bounds  = [(1e-8, 0.99)] * self.q
-        return omega_bound + alpha_bounds + gamma_bounds + beta_bounds
-    
     def pack(self, params_dict: dict) -> np.ndarray:
         return np.array([params_dict['omega']] + 
                          params_dict['alpha']  + 
@@ -228,38 +164,6 @@ class GJRGARCH(Component):
         }
         return self.fitted_params
     
-    def persistence(self, negative_second_moment: float = 0.5) -> float:
-        """
-        Compute persistence: α + γ·E[z² I(z<0)] + β.
-        
-        Parameters
-        ----------
-        negative_second_moment : float
-            Negative-half second moment. Default 0.5 for symmetric,
-            variance-standardized innovations.
-        """
-        if self.fitted_params is None:
-            raise RuntimeError("Model not fitted yet.")
-        return (sum(self.fitted_params['alpha']) 
-                + negative_second_moment * sum(self.fitted_params['gamma'])
-                + sum(self.fitted_params['beta']))
-    
-    def is_stationary(self, negative_second_moment: float = 0.5) -> bool:
-        return (
-            self.persistence(negative_second_moment) < 1.0
-            if self.fitted_params
-            else False
-        )
-    
-    def unconditional_variance(self, negative_second_moment: float = 0.5) -> float:
-        if not self.is_stationary(negative_second_moment):
-            return np.inf
-        assert self.fitted_params is not None
-        return self.fitted_params['omega'] / (
-            1 - self.persistence(negative_second_moment)
-        )
-
-
 class EGARCH(Component):
     """
     EGARCH(p, q) volatility component.
@@ -296,21 +200,6 @@ class EGARCH(Component):
     def n_params(self) -> int:
         return 1 + 2 * self.p + self.q
 
-    def default_start(self, data: np.ndarray) -> np.ndarray:
-        self._data = data
-        sample_var = max(float(np.var(data)), 1e-8)
-        beta_total = 0.90
-        alpha_total = 0.10
-        beta = np.full(self.q, beta_total / self.q, dtype=np.float64)
-        alpha = np.full(self.p, alpha_total / self.p, dtype=np.float64)
-        gamma = np.zeros(self.p, dtype=np.float64)
-        gamma[0] = -0.05
-        omega = (1.0 - float(beta.sum())) * np.log(sample_var)
-        return np.concatenate([[omega], alpha, gamma, beta]).astype(np.float64)
-
-    def bounds(self) -> List[Tuple[float, float]]:
-        return [(-20.0, 10.0)] + [(-5.0, 5.0)] * self.p + [(-5.0, 5.0)] * self.p + [(-0.999, 0.999)] * self.q
-
     def pack(self, params_dict: dict) -> np.ndarray:
         return np.array(
             [params_dict["omega"]] + list(params_dict["alpha"]) + list(params_dict["gamma"]) + list(params_dict["beta"]),
@@ -333,30 +222,11 @@ class EGARCH(Component):
         }
         return self.fitted_params
 
-    def persistence(self) -> float:
-        if self.fitted_params is None:
-            raise RuntimeError("Model not fitted yet.")
-        return float(sum(self.fitted_params["beta"]))
-
-    def is_stationary(self) -> bool:
-        return abs(self.persistence()) < 1.0 if self.fitted_params else False
-
     def unconditional_log_variance(self) -> float:
         if not self.is_stationary():
             return np.inf
         assert self.fitted_params is not None
         return float(self.fitted_params["omega"]) / (1.0 - self.persistence())
-
-    def unconditional_variance(self) -> float:
-        """
-        Return the log-variance fixed point exponentiated.
-
-        For EGARCH this is the stationary point of ``log h_t`` rather than the
-        exact unconditional mean of ``h_t``.
-        """
-        log_var = self.unconditional_log_variance()
-        return np.inf if not np.isfinite(log_var) else float(np.exp(log_var))
-
 
 class GARCH(Component):
     """
@@ -454,35 +324,6 @@ class GARCH(Component):
     @property
     def n_params(self): return 1 + self.p + self.q
     
-    def default_start(self, data: np.ndarray) -> np.ndarray:
-        self._data = data
-
-        min_positive   = 1e-8
-        persist_target = 0.90
-        beta_share     = 0.80
-
-        # omega: small fraction of sample variance, scaled by (1 - persistence)
-        sample_var = np.var(data)
-        omega = max(min_positive, 0.05 * sample_var * (1 - persist_target))
-
-        total_beta  = persist_target * beta_share
-        total_alpha = persist_target * (1.0 - beta_share)
-
-        alpha = ([max(min_positive, total_alpha / self.p)] * self.p) if self.p else []
-        beta  = ([max(min_positive, total_beta  / self.q)] * self.q) if self.q else []
-
-        return np.array([omega] + alpha + beta)
-    
-    def bounds(self) -> List[Tuple[float, float]]:
-        """Parameter bounds for optimization"""
-        # omega_bound  = [(0.0, 1.0)]
-        # alpha_bounds = [(0.0, 1.0)] * self.p  
-        # beta_bounds  = [(0.0, 1.0)] * self.q
-        omega_bound  = [(1e-8, 1.0)]
-        alpha_bounds = [(1e-8, 0.99)] * self.p  
-        beta_bounds  = [(1e-8, 0.99)] * self.q
-        return omega_bound + alpha_bounds + beta_bounds
-    
     def pack(self, params_dict: dict) -> np.ndarray:
         """Convert dict to flat array"""
         return np.array([params_dict['omega']] + 
@@ -502,22 +343,6 @@ class GARCH(Component):
         }
         return self.fitted_params
     
-    def persistence(self) -> float:
-        if self.fitted_params is None:
-            raise RuntimeError("Model not fitted yet.")
-        return sum(self.fitted_params['alpha']) + sum(self.fitted_params['beta'])
-    
-    def is_stationary(self) -> bool:
-        return self.persistence() < 1.0 if self.fitted_params else False
-    
-    def unconditional_variance(self) -> float:
-        """Compute unconditional variance if stationary"""
-        if not self.is_stationary():
-            return np.inf
-        assert self.fitted_params is not None, "Unconditional_variance called before fitting"
-        return self.fitted_params['omega'] / (1 - self.persistence())
-
-
 class AutoVol(Component):
     """
     Placeholder component for automatic volatility model selection.
@@ -582,12 +407,6 @@ class AutoVol(Component):
     def n_params(self) -> int:
         # Placeholder - actual n_params depends on selected model
         return 0
-    
-    def default_start(self, data: np.ndarray) -> np.ndarray:
-        return np.array([])
-    
-    def bounds(self) -> List[Tuple[float, float]]:
-        return []
     
     def pack(self, params_dict: dict) -> np.ndarray:
         return np.array([])

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 api = pytest.importorskip("scivol._scivolapi")
-from scivol._devtools.ad_oracle import _jax_modules  # noqa: E402
+from tests._oracle import _jax_modules  # noqa: E402
 
 
 def correlation_model(p=1, q=1, density="normal"):
@@ -127,7 +127,7 @@ def test_fit_recovers_the_simulation_and_is_certified():
     assert native.success and native.inference == "available" and native.phases == ("z:slsqp", "theta:newton")
     for estimate, se, truth in zip(native.theta, native.std_errors, (0.04, 0.93)):
         assert abs(estimate - truth) < 4.0 * se
-    jet = api.CorrelationJet(native._native_model, eps)
+    jet = api.CorrelationJet(native._correlation()[0], eps)
     out = jet.theta(native.theta, api.HESSIAN | api.SCORES)
     np.testing.assert_allclose(native.cov_mle, np.linalg.inv(out["hessian"]), rtol=1e-8)
     s = out["scores"]
@@ -148,13 +148,13 @@ def test_student_t_fit_recovers_the_tail():
 def test_dcc_fit_with_native_marginals():
     pd = pytest.importorskip("pandas")
     from scivol import GARCH, Normal
-    from scivol._scivolapi_eval import NativeEstimationResult
+    from scivol.result import EstimationResult
     from scivol.dcc import DCC
 
     eps = simulate(1500, 3, seed=7)
     frame = pd.DataFrame(0.01 * eps, index=pd.date_range("2000", periods=1500), columns=["a", "b", "c"])
     r = DCC(1, 1).fit(frame, univariate_spec=GARCH(1, 1) + Normal(), n_jobs=1)
-    assert all(isinstance(m, NativeEstimationResult) for m in r.univariate_results)
+    assert all(isinstance(m, EstimationResult) for m in r.univariate_results)
     assert r.corr("a", "b").index[0] == frame.index[0]
     assert r.forecast_correlation(4).shape == (4, 3, 3)
 
@@ -179,7 +179,7 @@ def test_one_step_correlation_is_the_recursion(dcc_fit):
     gaussian, _ = dcc_fit
     eps = np.asarray(gaussian._eps)
     extended = np.vstack([eps, np.ones((1, gaussian.N))])  # R_{T+1} does not depend on row T+1
-    jet = api.CorrelationJet(gaussian._native_model, extended, gaussian.Qbar)
+    jet = api.CorrelationJet(gaussian._correlation()[0], extended, gaussian.Qbar)
     r_next = jet.theta(np.asarray(gaussian.theta), api.PATHS)["correlations"][-1]
     np.testing.assert_allclose(gaussian.forecast_correlation(1)[0], r_next, rtol=1e-13)
     s = gaussian.scenarios(4, seed=1)
@@ -195,7 +195,7 @@ def test_gaussian_scenarios_have_the_forecast_correlation(dcc_fit):
 
 
 def test_copula_innovations_follow_each_marginal_density(dcc_fit):
-    from scivol._scivolapi_eval import innovation_density
+    from scivol._evaluation import innovation_density
 
     _, skewed = dcc_fit
     s = skewed.scenarios(100_000, seed=3)

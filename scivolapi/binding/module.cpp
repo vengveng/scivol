@@ -15,6 +15,7 @@
 #include <scivolapi/scivolapi.hpp>
 
 #include "../src/density/distribution.hpp"
+#include "../src/density/moments.hpp"
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -451,6 +452,14 @@ NB_MODULE(_scivolapi, m)
               return nb::make_tuple(owned_vector(std::move(lower)), owned_vector(std::move(upper)));
           },
           "density"_a, "shape"_a, "z"_a, "Both tails P(Z <= z), P(Z > z) of the standardized density.");
+    m.def("negative_second_moment",
+          [](DensityKind kind, const std::vector<double>& shape) {
+              detail::MomentResult r;
+              if (!detail::negative_second_moment(kind, shape.empty() ? nullptr : shape.data(), 0, r))
+                  throw std::domain_error("E[z^2 1(z < 0)] is not available at these shapes");
+              return r.value;
+          },
+          "density"_a, "shape"_a, "E[z^2 1(z < 0)] of the standardized density (GJR's persistence weight).");
     m.def("quantiles",
           [](DensityKind kind, const std::vector<double>& shape, const Vector& u, bool upper) {
               const std::size_t n = u.shape(0);

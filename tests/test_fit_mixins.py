@@ -45,7 +45,7 @@ def monkeypatched_routine(monkeypatch):
         calls["method"] = kw["method"]
         return DummyResult(spec, len(y), kw)
 
-    monkeypatch.setattr("scivol._scivolapi_fit.fit_spec", fake_fit)
+    monkeypatch.setattr("scivol._fit.fit_spec", fake_fit)
     return calls
 
 

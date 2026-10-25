@@ -5,7 +5,7 @@ build-backend = "scikit_build_core.build"
 [project]
 name            = "scivol"
 dynamic         = ["version"]
-description     = "Volatility modeling in Python with fast GARCH-family C extensions."
+description     = "Volatility models with exact likelihoods and derivatives on a native C++20 core."
 readme          = "README.md"
 license         = "MIT"
 license-files   = ["LICENSE"]
@@ -48,25 +48,12 @@ minimum-version = "0.10"
 cmake.version = ">=3.20"
 build-dir = "build/{wheel_tag}"
 wheel.packages = ["scivol"]
-# Native sources compile into the extensions; the wheel ships Python, stubs
-# and the extensions. Development tools stay out of the wheel.
-wheel.exclude = ["scivol/_csrc/**", "scivol/_native/**", "scivol/_devtools/**"]
-sdist.exclude = ["localdev", "localdev_*", "build", "core", "contracts", "examples"]
+# The wheel ships the Python package and the compiled scivol._scivolapi.
+sdist.exclude = ["localdev", "localdev_*", "build"]
 metadata.version.provider = "scikit_build_core.metadata.regex"
 metadata.version.input = "scivol/_version.py"
 
 [tool.cibuildwheel]
 build = "cp310-* cp311-* cp312-*"
 skip = "*-win32 *-manylinux_i686 *-musllinux_i686"
-test-requires = ["pytest>=7"]
-# Copy only these regressions, never the source package, into the wheel test cwd.
-# These numerical/reporting checks do not replace the matched-fit promotion panel.
-test-sources = ["tests/test_native_joint_mean.py", "tests/egarch_precision_points.json"]
-test-command = [
-  'python -c "import numpy as np; import scivol; import scivol._core; import scivol._native_core; from scivol import GARCH, GJRGARCH, Normal, StudentT, ARX, EGARCH, VarianceGamma; data = np.random.default_rng(0).standard_normal(500).astype(np.float64) * 0.01; r1 = (GARCH(1, 1) + Normal()).fit(data, solver=\"slsqp\", verbose=False, n_jobs=1); assert r1.converged; r2 = (GJRGARCH(1, 1) + StudentT()).fit(data, solver=\"slsqp\", log_mode=True, verbose=False, n_jobs=1); assert r2.params is not None; assert np.all(np.isfinite(r2.params)); r3 = (GARCH(1, 1) + StudentT()).fit(data, maxiter=700); assert np.all(np.isfinite(r3.params)); assert r3.fit_info.optimizer_mode == 0; assert r3.fit_info.engine == \"cpp-function-jet\"; r4 = (ARX(1) + EGARCH(1, 1) + VarianceGamma()).fit(data, x=np.random.default_rng(1).normal(size=(500, 2)), solver=\"native\", maxiter=2); assert np.all(np.isfinite(r4.params)); assert r4.fit_info.scalar_precision == \"double-double primal state; binary64 derivatives\""',
-  "python -m pytest -q tests/test_native_joint_mean.py::test_checked_joint_sparse_requests_and_runtime_agree tests/test_native_joint_mean.py::test_optimizer_records_the_dispatch_it_actually_executes tests/test_native_joint_mean.py::test_joint_egarch_gh_exact_reductions",
-  "python -m pytest -q tests/test_native_joint_mean.py::test_aparch_public_controller_executes_expected_fixed_dispatch tests/test_native_joint_mean.py::test_optimizer_executes_expected_aparch_dispatch tests/test_native_joint_mean.py::test_aparch_execution_proof_parses_without_inventing_dispatch tests/test_native_joint_mean.py::test_aparch_execution_proof_rejects_noninteger_or_invalid_bits tests/test_native_joint_mean.py::test_aparch_execution_proof_keeps_unobserved_phases_unknown tests/test_native_joint_mean.py::test_aparch_execution_proof_survives_final_filter_and_reporting",
-  "python -m pytest -q tests/test_native_joint_mean.py::test_ill_conditioned_egarch_mean_gradient_matches_high_precision tests/test_native_joint_mean.py::test_egarch_vg_trial_mean_volatility_gradient_matches_high_precision tests/test_native_joint_mean.py::test_ill_conditioned_egarch_nig_gradient_matches_high_precision tests/test_native_joint_mean.py::test_ill_conditioned_egarch_gh_value_matches_high_precision",
-  "python -m pytest -q tests/test_native_joint_mean.py::test_egarch_reports_scalar_precision_and_serializes_evidence tests/test_native_joint_mean.py::test_short_budget_returns_unchanged_estimate_with_persistent_warning tests/test_native_joint_mean.py::test_value_only_native_checkpoint_survives_result_assembly tests/test_native_joint_mean.py::test_assembly_preserves_same_point_stationarity_evidence",
-  "python -m pytest -q tests/test_native_joint_mean.py::test_egarch_disputed_endpoints_match_independent_precision tests/test_native_joint_mean.py::test_egarch_stressed_joint_derivatives_match_independent_ad",
-]
+test-command = 'python -c "import numpy as np; from scivol import ARMA, GJRGARCH, EGARCH, StudentT, NormalInverseGaussian, DCC; rng = np.random.default_rng(0); y = 0.01 * rng.standard_t(6, 1500); r = (ARMA(1, 0) + GJRGARCH(1, 1) + StudentT()).fit(y); assert r.success, r.fit_info.warnings; f = r.forecast(5); assert np.all(np.isfinite(f.variance)); e = (EGARCH(1, 1) + NormalInverseGaussian()).fit(y); assert np.all(np.isfinite(e.params)); q = (GJRGARCH(1, 1) + StudentT()).fit(y, method=\"qmle\"); assert np.all(np.isfinite(q.std_errors)); d = DCC(1, 1).fit_from_residuals(rng.standard_normal((800, 3))); assert np.all(np.isfinite(d.theta))"'

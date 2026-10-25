@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 api = pytest.importorskip("scivol._scivolapi")
-from scivol._devtools.ad_oracle import (  # noqa: E402
+from tests._oracle import (  # noqa: E402
     _jax_modules,
     garch_value_grad_hess,
     gh_surface_value_grad_hess,
@@ -283,7 +283,7 @@ def t_data() -> np.ndarray:
 def hyperbolic_data() -> np.ndarray:
     from scipy.stats import genhyperbolic
 
-    from scivol._gh import standardized_gh_parameters
+    from tests._samplers import standardized_gh_parameters
 
     z = genhyperbolic.rvs(*standardized_gh_parameters(-0.25, 2.5, 1.0), size=4000, random_state=2)
     return simulate(4000, z)

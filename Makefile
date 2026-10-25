@@ -9,23 +9,25 @@ dev:
 	CMAKE_BUILD_PARALLEL_LEVEL=4 pip install -e .[dev] --no-build-isolation
 
 t:
-	pytest -q tests/test_spec_core.py
-	pytest -q tests/test_component_view.py 
-	pytest -q tests/test_result_core.py
-	pytest -q tests/test_fit_mixins.py
-	pytest -q tests/test_mle_core.py
+	pytest -q tests/test_spec_core.py tests/test_component_view.py tests/test_result_core.py tests/test_fit_mixins.py
 	pytest -q tests/test_dgp_estimation.py
 
-# Development-time derivative validation suite (requires `make dev`)
+# Derivative validation against independent JAX references (requires jax)
 deriv:
-	pytest -q tests/test_dcc.py
-	pytest -q tests/test_gradients_gjr_garch.py
-	pytest -q tests/test_ad_oracle_models.py
+	pytest -q tests/test_scivolapi_garch_normal.py tests/test_scivolapi_densities.py tests/test_scivolapi_volatility.py tests/test_scivolapi_mean.py tests/test_scivolapi_dcc.py
 
-# Full DGP estimation tests (slower, more thorough)
+# Native library tests (C++)
+native:
+	cmake -S scivolapi -B build/scivolapi-native -G Ninja -DCMAKE_BUILD_TYPE=Release
+	cmake --build build/scivolapi-native -j4
+	ctest --test-dir build/scivolapi-native
+
+# Full DGP estimation tests
 dgp:
 	pytest -v tests/test_dgp_estimation.py
-	
+
+bench:
+	python benchmark.py
 
 f:
 	rm -rf build/ dist/ 

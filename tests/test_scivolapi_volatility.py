@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 api = pytest.importorskip("scivol._scivolapi")
-from scivol._devtools.ad_oracle import (  # noqa: E402
+from tests._oracle import (  # noqa: E402
     _jax_aparch_power_moment,
     _jax_modules,
     aparch_value_grad_hess,

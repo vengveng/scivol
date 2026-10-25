@@ -15,43 +15,16 @@ QMLE estimation, diagnostic tests and automatic model selection.
 - Conditional densities: `Normal()`, `StudentT()`, `SkewT()`, `GED()`,
   `GeneralizedHyperbolic()`, `Hyperbolic()`, `NormalInverseGaussian()`, and
   `VarianceGamma()`
-- Mean model: `ARMA(p, q)` (standalone with `Normal()`, `GED()`, and all GH-family densities)
-- Composite univariate specifications: volatility-only models and
-  `ARMA(p, q) + GARCH(P, Q)` with any shipped linked density, plus
-  `ARMA(p, q) + EGARCH(P, Q)` with any shipped linked density
-- Exogenous-mean specifications: standalone and linked `ARX/HARX` surfaces with
-  all shipped densities
+- Mean models: `ARMA(p, q)`, `ARX`, `HARX` with exogenous regressors, alone
+  (constant variance) or jointly with every volatility model and density; joint
+  fits maximize one likelihood with every mean-volatility-shape cross derivative
 - Multivariate correlation model: `DCC(p, q)` with Gaussian or common-df Student-t copula dynamics
 - Automatic model selection helpers: `AutoMean()`, `AutoVol()`, and `AutoDensity()`
 
 ## Performance
 
-Scivol consistently outperforms other libraries in both speed and optimality. Below are benchmarks on synthetic data. Unless noted, each row uses 1,000,000 observations.
-
-GARCH(1,1)-Normal:
-| Library | Time | Converged | Reported log-likelihood |
-|---|---:|---|---:|
-| scivol | 0.300 s | Yes | -1,379,431.12 |
-| Python `arch` 8.0.0 | 1.951 s | Yes | -1,379,777.40 |
-| MATLAB R2024a `garch(1,1)` | 3.400 s | Yes | -1,379,432.00 |
-| R `rugarch` 1.5.5 | 24.029 s | Yes | -1,379,432.00 |
-| Manual Python | 6.659 s | Yes | -1,383,160.89 |
-
-GJR-GARCH(5,5)+Student-t:
-| Library | Time | Converged | Reported log-likelihood |
-|---|---:|---|---:|
-| scivol | 7.583 s | Yes | -844,600.85 |
-| Python `arch` 8.0.0 | 27.267 s | Yes | -844,604.00 |
-| MATLAB R2024a `gjr(5,5)` | 44.125 s | Yes | -844,604.00 |
-| R `rugarch` 1.5.5 | 477.904 s | Yes | -844,605.57 |
-
-AR(1)+EGARCH(2,1)+Normal:
-| Library | Time | Converged | Reported log-likelihood |
-|---|---:|---|---:|
-| scivol | 1.895 s | Yes | -318,924.29 |
-| Python `arch` 8.0.0 | 9.792 s | Yes | -318,925.65 |
-| MATLAB R2024a `arima` + `egarch` | 83.554 s | Yes | -318,925.47 |
-| R `rugarch` 1.5.5 | 121.280 s | Yes | -318,925.49 |
+`python benchmark.py` reports median fit times, log-likelihoods and fit status
+for a panel of models on your machine.
 
 ## Install
 
@@ -273,7 +246,11 @@ Dynamic Conditional Correlation for multivariate return series, introduced by
 
 `DCC.fit()` uses a two-step workflow:
 1. Fit a univariate volatility model to each series.
-2. Fit Gaussian or Student-t copula DCC dynamics to the standardized residuals.
+2. Fit Gaussian or Student-t copula DCC dynamics to the standardized residuals,
+   with correlation targeting `Qbar = eps'eps / T`.
+
+The correlation stage's standard errors treat the marginal estimates and `Qbar`
+as given.
 
 ```python
 from scivol import DCC, GARCH, StudentT
@@ -302,8 +279,9 @@ empirical = result.scenarios(50_000, seed=7, innovations="empirical")
 
 The fitted DCC distribution supplies the Gaussian or Student-t copula. The
 parametric mode maps its draws through each fitted marginal density; the
-empirical mode uses standardized-residual quantiles. `simulate()` uses the same
-copula and marginals along an evolving time path.
+empirical mode maps the same probabilities through the standardized residuals'
+quantiles. `simulate()` uses the same copula and marginals along an evolving
+time path; correlation forecasts beyond one step are averages over such paths.
 
 Rolling DCC fits warm-start both the marginals and correlation dynamics:
 
@@ -319,9 +297,10 @@ rolling = dcc.fit_rolling(
 
 ### ARMA(p, q)
 
-Conditional mean. Standalone `ARMA(p, q)` supports `Normal()`, `GED()`, GH,
-and NIG. Linked ARMA surfaces support every shipped density. Box and Jenkins
-(1970) is the standard reference for the ARMA model-building framework.
+Conditional mean, alone (constant variance `sigma2`) or jointly with any
+volatility model, with every density. The domain is a stationary AR and an
+invertible MA polynomial. Box and Jenkins (1970) is the standard reference for
+the ARMA model-building framework.
 
 ```python
 spec = ARMA(2, 1)                 # standalone ARMA with Normal errors
@@ -331,8 +310,8 @@ spec = ARMA(1, 1) + EGARCH(1, 1) + StudentT()
 
 ### ARX / HARX
 
-Array-based mean models with explicit regressors via `x=`.
-Standalone and linked `ARX`/`HARX` surfaces support every shipped density.
+Mean models with explicit regressors via `x=`, alone or with any volatility
+model and density.
 `HARX` uses averages over the requested horizons, following the heterogeneous
 autoregressive structure associated with [Corsi's (2009)](<https://doi.org/10.1093/jjfinec/nbp001>)
 HAR model.
@@ -413,112 +392,90 @@ The default method.
 
 ```python
 result = spec.fit(data)
-
-result = spec.fit(
-    data,
-    solver="trust",
-    log_mode=True,
-    verbose=True,
-)
+result = spec.fit(data, coordinates="theta", maxiter=500, accuracy=1e-10)
 ```
 
-Solvers:
+Estimation options:
 
-| Solver | Method | Notes |
-|--------|--------|-------|
-| `"native"` | C++ function-jet SLSQP | Default for promoted fixed MLE volatility and joint ARMA-volatility models |
-| `"slsqp"` | SciPy optimizer over the canonical jet where available | Explicit independent comparison path |
-| `"legacy"` | Established SciPy adapter | Keeps the previous optimizer easy to request |
-| `"nelder-mead"` | Derivative-free simplex | Slow but dependable |
-| `"trust"` | Trust-region (gradient + Hessian) | Fast when it converges |
-| `"trust-exact"` | Trust-region in log-space | Most stable for difficult data |
+| Option | Meaning |
+|--------|---------|
+| `method` | `"mle"` (default) or `"qmle"` |
+| `coordinates` | `"automatic"` (default), `"z"` or `"theta"`: see below |
+| `maxiter` | total iteration budget across the optimizer's phases (default 1000) |
+| `accuracy` | solver accuracy (default `1e-10`); first-order conditions are certified to `max(sqrt(accuracy), sqrt(eps))` |
+| `initial_params` | starting values: an array, a mapping by parameter name, or a previous result |
 
-**Log-mode** (`log_mode=True`) transforms constrained parameters into unconstrained space before optimization:
+Coordinate paths. Each optimizes its own formulation of the same likelihood;
+disagreement between them is a useful signal of a fragile estimate.
 
-| Parameter | Constraint | Transform |
-|-----------|------------|-----------|
-| $\omega$ | $\omega > 0$ | `softplus(z)` |
-| $\alpha, \beta$ | $\ge 0$, sum $< 1$ | `softmax` interior chart |
-| $\gamma$ (GJR) | $\gamma > 0$ | `4-class softmax` |
-| $\nu$ | $\nu > 2$ | `2 + softplus(z)` |
-| $\lambda$ | $-1 < \lambda < 1$ | `tanh(z)` |
+| `coordinates` | Phases |
+|---------------|--------|
+| `"automatic"` | SLSQP in unconstrained coordinates `z`, then exact-Hessian Newton refinement in `theta` |
+| `"z"` | SLSQP in `z` only |
+| `"theta"` | SLSQP in `theta` under the model's bounds and constraints, then Newton in `theta` |
 
-This guarantees stationarity by construction and avoids boundary problems during optimization.
+The `z` coordinates cover the model's domain exactly: `omega` and other scale
+parameters on a log scale, the persistence coefficients on a softmax simplex
+weighted by the density's moments (GJR, APARCH), EGARCH's `beta` and the ARMA
+polynomials through reflection coefficients (stationary AR, invertible MA), and
+bounded shapes through `tanh`. The domain is never narrowed and the likelihood
+is never smoothed or floored.
 
-Fixed MLE GARCH, GJR-GARCH, and EGARCH models use the native transformed engine
-by default across all eight densities. The same is true for genuine joint
-`ARMA + GARCH`, `ARMA + GJR-GARCH`, and `ARMA + EGARCH` models. Pass
-`solver="slsqp"` or `solver="legacy"` to run an independent SciPy path. QMLE
-and unsupported mean-volatility families retain the established engine.
-
-Other model families retain their benchmark-driven `log_mode` defaults. Every
-fit reports the effective path:
+Every fit reports what happened:
 
 ```python
-result = spec.fit(data)
-result.fit_info.to_dict()
-# solver='native-slsqp'/'slsqp', optimization_space='native-z-space'/'z-space'/'theta-space'
+result.converged               # finite, feasible, solver converged and first-order conditions met
+result.fit_info.solver         # e.g. "z:slsqp+theta:newton"
+result.fit_info.kkt_residual   # projected-gradient stationarity residual
+result.fit_info.inference_status  # "available", "at_boundary", "not_stationary", ...
 ```
 
-Volatility orders do not implicitly remove observations. Mean models apply the
-lags they require; `hold_back=k` requests at least `k` leading observations be
-trimmed. Results preserve pandas alignment, and the effective sample is recorded
-in `result.fit_info`.
+Standard errors are withheld when the estimate is on the boundary of the domain
+or the information matrix cannot be inverted reliably.
 
-Standalone volatility fits and promoted native joint ARMA-volatility fits accept
-constrained-space warm starts and explicit optimizer budgets. The same start
-works in theta- or z-space:
+The likelihood scores the rows from `max(hold_back, lags)` on, where `lags` is
+the mean's largest lag: held-back rows are not scored but still supply lags, so
+models with the same `hold_back` are scored on the same rows. Mean-only models
+estimate the innovation variance `sigma2` explicitly. Results preserve pandas
+alignment.
+
+Warm starts:
 
 ```python
-first = spec.fit(returns, maxiter=500)
+first = spec.fit(returns)
 updated = spec.fit(new_returns, initial_params=first, maxiter=100)
 updated.fit_info.warm_started
 ```
-
-Current default path policy:
-
-| Family | Default path |
-|--------|--------------|
-| `GARCH / GJRGARCH / EGARCH / APARCH + any shipped density` | native `z-space` |
-| `ARMA + GARCH / GJRGARCH / EGARCH / APARCH + any shipped density` | native `z-space` |
-| `ARMA + Normal / GED` | `theta-space` |
-| `ARX/HARX + Normal / StudentT / SkewT / GED` | `theta-space` |
-| `ARX/HARX + GARCH + Normal / StudentT / SkewT / GED` | `theta-space` |
-| `ARX/HARX + EGARCH + Normal / StudentT / SkewT / GED` | `theta-space` |
-| `ARX/HARX + APARCH + any shipped density` | native same-start metric portfolio, initially `theta-space` |
 
 ### QMLE
 
 scivol follows the Gaussian quasi-maximum likelihood framework of
 [Bollerslev and Wooldridge (1992)](<https://doi.org/10.1080/07474939208800229>):
-fit under a Normal likelihood, then compute sandwich standard errors that remain
-valid under distributional misspecification when the conditional mean and
-variance are correctly specified. Pass `method='qmle'`:
+the mean and volatility parameters are fitted under a Normal likelihood with the
+sandwich covariance `H^-1 OPG H^-1`, valid under distributional
+misspecification when the conditional mean and variance are correctly specified.
+It is available for every mean and volatility model.
 
 ```python
-spec = GARCH(1, 1) + Normal()
+spec = ARMA(1, 1) + GJRGARCH(1, 1) + Normal()
 result = spec.fit(data, method='qmle')
-
-result.std_errors        # MLE standard errors
-result.std_errors_robust # sandwich (robust) standard errors
+result.std_errors        # sandwich standard errors
 ```
 
-This works for standalone `GARCH`, standalone `GJRGARCH`, and joint `ARMA + GARCH` specifications. For joint fits, the robust covariance is computed for the full mean-plus-volatility parameter vector under the Normal QMLE step.
-
-For Student-t or Skew-t, QMLE runs a two-step procedure: first it estimates the mean/volatility parameters under Normal likelihood with sandwich errors, then it fixes those parameters and estimates the distribution parameters by MLE.
+With a non-Normal density the fit is staged: the shape parameters are then
+fitted by maximum likelihood with the Gaussian estimates held fixed, and the
+covariance is the two-step sandwich of the stacked score equations, so the
+shape standard errors include the first stage's uncertainty. EGARCH with a
+non-Normal density is not offered, because the density enters its variance
+recursion.
 
 ```python
-from scivol import ARMA
-
-spec = GARCH(1, 1) + StudentT()
-result = spec.fit(data, method='qmle')
-
-spec = GJRGARCH(1, 1) + Normal()
-result = spec.fit(data, method='qmle')
-
-spec = ARMA(2, 1) + GARCH(1, 2) + SkewT()
+spec = GJRGARCH(1, 1) + SkewT()
 result = spec.fit(data, method='qmle')
 ```
+
+Every MLE fit also reports the sandwich covariance (`result.cov_robust`,
+`result.std_errors_robust`) and the outer product of the scores (`result.opg`).
 
 ---
 
@@ -814,9 +771,9 @@ result.std_resid     # epsilon_t / sigma_t
 ### Standard errors
 
 ```python
-result.std_errors        # MLE (from inverse Hessian)
-result.std_errors_robust # sandwich (QMLE only)
-result.cov_matrix        # H⁻¹
+result.std_errors        # from the estimator's covariance (H⁻¹ for MLE, the sandwich for QMLE)
+result.std_errors_robust # sandwich
+result.cov_matrix        # H⁻¹ (MLE) or the sandwich (QMLE)
 result.cov_robust        # H⁻¹ @ OPG @ H⁻¹
 result.warnings          # persistent fit warnings shown by result.summary()
 ```
@@ -824,7 +781,7 @@ result.warnings          # persistent fit warnings shown by result.summary()
 ### Output
 
 ```python
-result.fit_info             # effective solver / theta-vs-z path
+result.fit_info             # optimizer phases, coordinate path, stationarity, inference status
 result.summary()              # full table
 result.summary(robust=True)   # with sandwich SEs
 print(result)                 # compact
@@ -928,9 +885,8 @@ diag['ljung_box'][2]['reject']
 
 Auto-selection uses these tests internally to penalize poorly fitting candidates.
 
-Every shipped univariate surface has full theta-space and log-space validation
-against independent AD reference implementations. The machine-checked contract
-and current verification status live in [MODELS.md](MODELS.md).
+Every model's likelihood, gradient and Hessian (in `theta` and in `z`) are
+tested against independent JAX references.
 
 ---
 
@@ -987,16 +943,14 @@ from scivol import (
 ```python
 result = spec.fit(
     data,                      # 1D array, Series, or DataFrame
-    hold_back=0,               # explicit leading observations to trim
+    hold_back=0,               # leading rows not scored (they still supply lags)
     scale=None,                # optional estimation scale
     common_sample=None,        # align auto-selection candidates
     method="mle",              # "mle" or "qmle"
-    solver="trust",
-    log_mode=True,
-    initial_params=None,        # prior result or constrained parameter vector
-    maxiter=5000,               # standalone volatility fits
-    maxfev=50000,               # derivative-free evaluation budget
-    verbose=False,
+    coordinates="automatic",   # "automatic", "z" or "theta"
+    maxiter=1000,              # total iteration budget
+    accuracy=1e-10,            # solver accuracy
+    initial_params=None,       # prior result, mapping or parameter vector
     n_jobs=None,               # parallel workers (selection or multi-series)
     diagnostic_weight=50.0,    # AIC penalty per failed test
     select_by="aic+diag",      # "aic+diag", "aic", "bic", "hqic", or "oos"
@@ -1088,7 +1042,8 @@ result.loglikelihood, result.aic, result.bic, result.hqic
 result.sigma2, result.volatility, result.std_resid
 result.std_errors, result.std_errors_robust
 result.cov_matrix, result.cov_robust
-result.success, result.niter, result.time_elapsed
+result.converged, result.n_iter, result.time_elapsed
+result.forecast(10), result.filter()
 result.summary(), result.to_dict(), result.diagnostic_tests()
 result.selection_summary()
 result.selection.candidates   # list of all evaluated models
@@ -1200,29 +1155,13 @@ print(stock_bond.tail())
 print(result.unconditional_corr)
 ```
 
-### One-step-ahead variance forecast
+### Forecasts
 
 ```python
-from scivol import GARCH, GJRGARCH, Normal
-import numpy as np
+from scivol import GJRGARCH, StudentT
 
-# GARCH(1,1)
-spec = GARCH(1, 1) + Normal()
-result = spec.fit(returns)
-
-gp = result.garch_params
-h_next = gp.omega + gp.alpha[0] * returns[-1]**2 + gp.beta[0] * result.sigma2[-1]
-print(f"GARCH forecast sigma: {np.sqrt(h_next):.6f}")
-
-# GJR-GARCH(1,1)
-spec_gjr = GJRGARCH(1, 1) + Normal()
-result_gjr = spec_gjr.fit(returns)
-
-gp = result_gjr.garch_params
-indicator = 1.0 if returns[-1] < 0 else 0.0
-h_next = (gp.omega
-    + gp.alpha[0] * returns[-1]**2
-    + gp.gamma[0] * indicator * returns[-1]**2
-    + gp.beta[0] * result_gjr.sigma2[-1])
-print(f"GJR forecast sigma:   {np.sqrt(h_next):.6f}")
+result = (GJRGARCH(1, 1) + StudentT()).fit(returns)
+fc = result.forecast(10)
+fc.volatility          # sqrt of the variance forecasts
+fc.quantile(0.01)      # exact one step ahead; simulated beyond
 ```

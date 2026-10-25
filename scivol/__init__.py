@@ -2,11 +2,11 @@
 from ._version import __version__
 
 try:
-    from . import _core as _core
+    from . import _scivolapi as _scivolapi
 except ModuleNotFoundError:
     raise ImportError(
-        "scivol was installed without its compiled core."
-        "Build wheels or run `pip install .` with a C compiler."
+        "scivol was installed without its compiled library. "
+        "Build wheels or run `pip install .` with a C++20 compiler."
     )
 
 from .components import (
@@ -45,7 +45,6 @@ from .dcc import (
     RollingDCCWindow,
 )
 from .batch import BatchFitFailure, BatchFitResult, FitTimeoutError, RollingFitResult, RollingFitWindow
-# from ._kernels import get_routine
 
 __all__: list[str] = [
     "ARMA",
@@ -73,7 +72,6 @@ __all__: list[str] = [
     "Hyperbolic",
     "FitTimeoutError",
     "MultivariateScenarioResult",
-    # "get_routine",
     "Normal",
     "NormalInverseGaussian",
     "Role",

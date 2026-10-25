@@ -40,7 +40,7 @@ def _install_dummy_garch_normal(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_fit(spec, y, **_kw):
         return DummyBatchResult(len(y))
 
-    monkeypatch.setattr("scivol._scivolapi_fit.fit_spec", fake_fit)
+    monkeypatch.setattr("scivol._fit.fit_spec", fake_fit)
 
 
 @pytest.fixture

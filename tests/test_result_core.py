@@ -147,88 +147,25 @@ def test_fit_info_is_exposed_in_result_and_dict():
         opt,
         data,
         fit_info={
-            "solver": "slsqp",
-            "log_mode": True,
-            "optimization_space": "z-space",
-            "optimizer_controller": "joint-two-route",
-            "route_iteration_budgets": [300, 300],
-            "used_default_solver": False,
-            "used_default_log_mode": True,
+            "solver": "z:slsqp+theta:newton",
+            "optimization_space": "z+theta",
+            "optimizer_phases": ("z:slsqp", "theta:newton"),
             "warnings": ["small sample"],
         },
     )
 
-    assert res.fit_info.solver == "slsqp"
-    assert res.fit_info.log_mode is True
-    assert res.fit_info.optimization_space == "z-space"
-    assert res.fit_info.optimizer_controller == "joint-two-route"
-    assert res.fit_info.route_iteration_budgets == [300, 300]
+    assert res.fit_info.solver == "z:slsqp+theta:newton"
+    assert res.fit_info.optimization_space == "z+theta"
     assert res.fit_info.warnings == ("small sample",)
     assert res.warnings == ("small sample",)
 
     d = res.to_dict()
-    assert d["fit_info"]["solver"] == "slsqp"
-    assert d["fit_info"]["optimization_space"] == "z-space"
-    assert d["fit_info"]["optimizer_controller"] == "joint-two-route"
-    assert d["fit_info"]["route_iteration_budgets"] == [300, 300]
-    d["fit_info"]["route_iteration_budgets"].append(1)
-    assert res.fit_info.route_iteration_budgets == [300, 300]
-    assert d["fit_info"]["used_default_log_mode"] is True
+    assert d["fit_info"]["solver"] == "z:slsqp+theta:newton"
+    assert d["fit_info"]["optimizer_phases"] == ["z:slsqp", "theta:newton"]
     assert d["fit_info"]["warnings"] == ["small sample"]
     assert d["warnings"] == ["small sample"]
 
 
-def test_summary_prints_recorded_fit_warnings(capsys):
-    data = np.ones(50)
-    spec = _build_fitted_spec()
-    opt = DummyOpt(x=np.arange(spec.total_params), fun=10.0)
-    res = EstimationResult(spec, opt, data, fit_info={"warnings": ["small sample"]})
-
-    res.summary()
-
-    out = capsys.readouterr().out
-    assert "Warnings" in out
-    assert "small sample" in out
-
-
-def test_component_params_are_snapshotted():
-    data = np.ones(50)
-    spec = _build_fitted_spec()
-    opt = DummyOpt(x=np.arange(spec.total_params), fun=10.0)
-    res = EstimationResult(spec, opt, data)
-
-    gp_before = res.garch_params
-    ap_before = res.arma_params
-    dp_before = res.dist_params
-    assert gp_before is not None
-    assert ap_before is not None
-
-    # Simulate later routine reuse mutating the original component instances.
-    assert res.vol is not None
-    assert res.mean is not None
-    assert res.density is not None
-    res.vol.unpack(np.array([0.02, 0.15, 0.70]))
-    res.mean.unpack(np.array([0.10, -0.30, 0.40]))
-    res.density.unpack(np.array([12.0]))
-
-    gp_after = res.garch_params
-    ap_after = res.arma_params
-    dp_after = res.dist_params
-    assert gp_after is not None
-    assert ap_after is not None
-
-    np.testing.assert_allclose(gp_after.to_array(), gp_before.to_array())
-    np.testing.assert_allclose(ap_after.to_array(), ap_before.to_array())
-    assert dp_after.nu == dp_before.nu
-
-    d = res.to_dict()
-    assert d["parameters"]["ARMA(1,1)"]["const"] == pytest.approx(0.05)
-    assert d["parameters"]["GARCH(1,1)"]["omega"] == pytest.approx(0.01)
-    assert d["dist_params"]["nu"] == pytest.approx(8.0)
-
-
-# ------------------------------------------------------------------ #
-# 3. summary() produces human-readable text
 # ------------------------------------------------------------------ #
 def test_summary_prints(capsys):
     data = np.zeros(30)
@@ -239,11 +176,8 @@ def test_summary_prints(capsys):
         opt,
         data,
         fit_info={
-            "solver": "slsqp",
-            "log_mode": False,
-            "optimization_space": "theta-space",
-            "used_default_solver": False,
-            "used_default_log_mode": True,
+            "solver": "theta:slsqp+theta:newton",
+            "optimization_space": "theta+theta",
             "requested_hold_back": 5,
             "effective_hold_back": 7,
             "scale": 100.0,

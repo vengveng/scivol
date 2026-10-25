@@ -206,7 +206,7 @@ def test_series_start_at_the_stationary_values():
 
 # The Python layer: results and fixed-parameter evaluation.
 
-from scivol import _scivolapi_eval as native_eval  # noqa: E402
+from scivol import _evaluation as native_eval  # noqa: E402
 
 
 def test_a_fitted_result_filters_and_forecasts_natively(data):
@@ -281,7 +281,7 @@ def test_drawn_innovations_follow_the_likelihoods_density(data, volatility, dens
     model = model_for(mean_spec(constant=False), volatility, density)
     theta = np.array(volatility_point(volatility, 1, 1, "normal") + shape)
     paths, horizon = 100_000, 4
-    z = native_eval._innovations(native_eval.innovation_density(spec, theta), paths, horizon, 11)
+    z = native_eval.innovations(native_eval.innovation_density(spec, theta), paths, horizon, 11)
     assert abs(z.mean()) < 5 / np.sqrt(z.size) and z.var() == pytest.approx(1.0, abs=0.02)
     f = api.forecast(model, theta, y, horizon)
     s = api.simulate(model, theta, y, z)

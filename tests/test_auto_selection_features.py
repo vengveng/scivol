@@ -109,21 +109,18 @@ def test_auto_grid_records_lattice_and_density_warm_starts(sample_data: np.ndarr
     assert by_key[(2, 1, "StudentT")].result.fit_info.warm_started is True
 
 
-def test_candidate_quality_flags_bounds_and_near_integration() -> None:
+def test_candidate_quality_flags_the_domain_boundary() -> None:
+    """White noise: alpha ends at its bound 0, so the fit is at the boundary."""
     spec = GARCH(1, 1) + Normal()
-    fake_result = SimpleNamespace(
-        spec=spec,
-        params=np.array([1e-8, 0.10, 0.899], dtype=np.float64),
-        garch_params=SimpleNamespace(persistence=0.999),
-        _get_param_names=lambda: ["omega", "alpha[1]", "beta[1]"],
-    )
-    candidate = ModelCandidate(spec=spec, result=fake_result)
+    result = spec.fit(np.random.default_rng(3).standard_normal(2000))
+    assert result.fit_info.inference_status == "at_boundary"
+    candidate = ModelCandidate(spec=spec, result=result)
 
-    _assess_candidate_quality(candidate, degeneracy_weight=40.0)
+    _assess_candidate_quality(candidate, degeneracy_weight=40.0, persistence_threshold=0.99)
 
     assert candidate.boundary_hugging is True
-    assert candidate.boundary_parameters == ("omega",)
-    assert candidate.near_integrated is True
+    assert candidate.boundary_parameters == ("alpha[1]",)
+    assert candidate.near_integrated is True  # persistence 0.994
     assert candidate.degeneracy_penalty == 80.0
 
 

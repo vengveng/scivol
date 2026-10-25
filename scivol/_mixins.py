@@ -23,11 +23,7 @@ if TYPE_CHECKING:
 
 
 class FitsMixin:
-    """
-    Adds a ``.fit(...)`` convenience wrapper that delegates to the MLE
-    kernel (default) or the QMLE path and returns an
-    :class:`EstimationResult`.
-    """
+    """Adds ``.fit(...)`` and the fixed-parameter methods to components and compositions."""
 
     # the concrete class will supply .spec
     @property
@@ -79,9 +75,9 @@ class FitsMixin:
 
             - ``'mle'``  -- Maximum Likelihood (default).
             - ``'qmle'`` -- Quasi-MLE with robust sandwich standard errors.
-              QMLE always fits with Normal likelihood for the volatility
-              parameters and, for non-Normal densities, runs a second step
-              to estimate shape parameters.
+              The mean and volatility parameters are fitted under the Normal
+              likelihood; with a non-Normal density the shape parameters follow
+              in a second stage, with the two-step sandwich covariance.
         n_jobs : int, optional
             Number of parallel workers for multi-series fitting or
             auto-selection.  Default (None) uses all available CPU cores.
@@ -104,9 +100,8 @@ class FitsMixin:
             Built-in auto-selection criterion. One of ``'aic+diag'``,
             ``'aic'``, ``'bic'``, ``'hqic'``, or ``'oos'``.
         **kwargs
-            Additional arguments passed to the kernel ``routine.fit()``
-            (e.g. ``solver``, ``log_mode``, ``verbose``).
-
+            Estimation options: ``coordinates`` ("automatic", "z" or "theta"),
+            ``maxiter``, ``accuracy`` and ``initial_params``.
         Returns
         -------
         EstimationResult or Dict[str, EstimationResult]
@@ -273,7 +268,7 @@ class FitsMixin:
         scale: Optional[float] = None,
     ) -> float:
         """Evaluate the log-likelihood at fixed parameters without fitting."""
-        from ._scivolapi_eval import loglikelihood
+        from ._evaluation import loglikelihood
 
         _, _, data_np, _ = self._extract_pandas_info(data)
         return loglikelihood(self.spec, data_np, params, x=x, hold_back=hold_back, scale=scale)
@@ -288,7 +283,7 @@ class FitsMixin:
         scale: Optional[float] = None,
     ) -> np.ndarray:
         """Evaluate the score (gradient of the log-likelihood)."""
-        from ._scivolapi_eval import score
+        from ._evaluation import score
 
         _, _, data_np, _ = self._extract_pandas_info(data)
         return score(self.spec, data_np, params, x=x, hold_back=hold_back, scale=scale)
@@ -303,7 +298,7 @@ class FitsMixin:
         scale: Optional[float] = None,
     ) -> np.ndarray:
         """Evaluate the Hessian of the log-likelihood."""
-        from ._scivolapi_eval import hessian
+        from ._evaluation import hessian
 
         _, _, data_np, _ = self._extract_pandas_info(data)
         return hessian(self.spec, data_np, params, x=x, hold_back=hold_back, scale=scale)
@@ -318,7 +313,7 @@ class FitsMixin:
         scale: Optional[float] = None,
     ) -> "FilteredState":
         """Run the model filter at fixed parameters and return the full state."""
-        from ._scivolapi_eval import filter_state
+        from ._evaluation import filter_state
 
         _, _, data_np, _ = self._extract_pandas_info(data)
         return filter_state(self.spec, data_np, params, x=x, hold_back=hold_back, scale=scale)
@@ -333,7 +328,7 @@ class FitsMixin:
         scale: Optional[float] = None,
     ) -> "FixedResult":
         """Create a result-like fixed-parameter workflow without optimization."""
-        from ._scivolapi_eval import fixed_result
+        from ._evaluation import fixed_result
 
         index, name, data_np, _ = self._extract_pandas_info(data)
         return fixed_result(self.spec, data_np, params, x=x, hold_back=hold_back, scale=scale, index=index,
@@ -349,7 +344,7 @@ class FitsMixin:
         x: Any = None,
     ) -> "SimulationResult":
         """Simulate from the specification at fixed parameters."""
-        from ._scivolapi_eval import simulate
+        from ._evaluation import simulate
 
         return simulate(self.spec, n_obs, params, burn=burn, seed=seed, x=x)
 
@@ -446,7 +441,7 @@ class FitsMixin:
             result._name = name
             return result
 
-        from ._scivolapi_fit import fit_spec
+        from ._fit import fit_spec
 
         result = fit_spec(spec, data, x=x, hold_back=hold_back, scale=scale, method=method, index=index, name=name,
                           **kwargs)

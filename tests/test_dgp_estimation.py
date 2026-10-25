@@ -34,10 +34,8 @@ from numpy.typing import NDArray
 from scipy.special import gammaln
 from scipy.stats import gennorm
 
-from scivol._gh import standardized_gh_rvs
-from scivol._vg import standardized_vg_rvs
+from tests._samplers import egarch_abs_moment, hansen_skewt_ppf, standardized_gh_rvs, standardized_vg_rvs
 
-from scivol._evaluation import _egarch_abs_moment, _hansen_skewt_ppf
 
 # -----------------------------------------------------------------------------
 # Data Generating Process (DGP) Functions
@@ -463,17 +461,17 @@ def simulate_arma_egarch_pq(
 
     if dist == "Normal":
         draws = rng.standard_normal(n)
-        abs_moment = _egarch_abs_moment("Normal", None, None)
+        abs_moment = egarch_abs_moment("Normal", None, None)
     elif dist == "StudentT":
         draws = rng.standard_t(nu, size=n) * np.sqrt((nu - 2.0) / nu)
-        abs_moment = _egarch_abs_moment("StudentT", nu, None)
+        abs_moment = egarch_abs_moment("StudentT", nu, None)
     elif dist == "SkewT":
-        draws = _hansen_skewt_ppf(rng.uniform(size=n), nu, lam)
-        abs_moment = _egarch_abs_moment("SkewT", nu, lam)
+        draws = hansen_skewt_ppf(rng.uniform(size=n), nu, lam)
+        abs_moment = egarch_abs_moment("SkewT", nu, lam)
     elif dist == "GED":
         scale = np.sqrt(np.exp(gammaln(1.0 / nu) - gammaln(3.0 / nu)))
         draws = np.asarray(gennorm.rvs(beta=nu, scale=scale, size=n, random_state=rng), dtype=np.float64)
-        abs_moment = _egarch_abs_moment("GED", nu, None)
+        abs_moment = egarch_abs_moment("GED", nu, None)
     else:
         raise ValueError(f"Unsupported dist '{dist}'")
 
@@ -755,8 +753,8 @@ def simulate_egarch_skewt(
     rng = np.random.default_rng(seed)
     y = np.zeros(n, dtype=np.float64)
     sigma2 = np.zeros(n, dtype=np.float64)
-    abs_moment = _egarch_abs_moment("SkewT", nu, lam)
-    draws = _hansen_skewt_ppf(rng.uniform(size=n), nu, lam)
+    abs_moment = egarch_abs_moment("SkewT", nu, lam)
+    draws = hansen_skewt_ppf(rng.uniform(size=n), nu, lam)
 
     sigma2[0] = np.exp(omega / (1.0 - beta))
     y[0] = np.sqrt(sigma2[0]) * draws[0]
@@ -785,7 +783,7 @@ def simulate_egarch_pq(
     max_lag = max(p, q)
     y = np.zeros(n, dtype=np.float64)
     sigma2 = np.zeros(n, dtype=np.float64)
-    abs_moment = _egarch_abs_moment(dist, nu, lam)
+    abs_moment = egarch_abs_moment(dist, nu, lam)
     if dist == "Normal":
         draws = rng.standard_normal(n)
     elif dist == "StudentT":
@@ -793,7 +791,7 @@ def simulate_egarch_pq(
         draws = rng.standard_t(nu, size=n) * np.sqrt((nu - 2.0) / nu)
     elif dist == "SkewT":
         assert nu is not None and lam is not None
-        draws = _hansen_skewt_ppf(rng.uniform(size=n), nu, lam)
+        draws = hansen_skewt_ppf(rng.uniform(size=n), nu, lam)
     elif dist == "GED":
         assert nu is not None
         scale = np.sqrt(np.exp(gammaln(1.0 / nu) - gammaln(3.0 / nu)))
@@ -2709,7 +2707,7 @@ class TestDCCStudentT:
             10_000, truth["a"], truth["b"], truth["nu"], truth["qbar"]
         )
         fitted = DCC(1, 1, "studentt").fit_from_residuals(
-            eps, compute_se=False, maxiter=300
+            eps, maxiter=300
         )
         return fitted, truth
 
@@ -2733,8 +2731,11 @@ class TestDCCStudentT:
 @pytest.mark.parametrize("density", range(8))
 @pytest.mark.parametrize("family", ("ARMA", "ARX", "HARX"))
 def test_standalone_mean_tensor_recovery(family, density):
-    from scivol import ARMA, ARX, HARX
-    from scivol._mean_fit import DENSITIES, MeanModel, fit_mean_spec
+    from scivol import (ARMA, ARX, GED, HARX, GeneralizedHyperbolic, Hyperbolic, Normal, NormalInverseGaussian,
+                        SkewT, StudentT, VarianceGamma)
+
+    densities = (Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, NormalInverseGaussian, Hyperbolic,
+                 VarianceGamma)
 
     rng = np.random.default_rng(8471)
     n = 2200
@@ -2746,7 +2747,7 @@ def test_standalone_mean_tensor_recovery(family, density):
         innovations = (
             rng.standard_t(7, n) * np.sqrt(5 / 7)
             if density == 1
-            else _hansen_skewt_ppf(rng.uniform(size=n), 7.0, 0.2)
+            else hansen_skewt_ppf(rng.uniform(size=n), 7.0, 0.2)
         )
     elif density == 3:
         shape = [1.7]
@@ -2778,13 +2779,13 @@ def test_standalone_mean_tensor_recovery(family, density):
         data[t] = np.dot(coefficients, state) + errors[t]
     data = data[200:]
     x = None if x is None else x[200:]
-    result = fit_mean_spec(mean + DENSITIES[density](), data, x=x)
+    spec = mean + densities[density]()
+    result = spec.fit(data, x=x)
     assert result.converged, result.convergence_message
     np.testing.assert_allclose(result.params[:4], coefficients, atol=0.12, rtol=0)
-    assert abs(result._sigma2[0] - 1.2) < 0.25
-    model = MeanModel(result.spec, data, x)
+    assert abs(result.params[4] - 1.2) < 0.25  # sigma2
     truth = np.r_[coefficients, 1.2, shape]
-    assert -result.log_likelihood <= model.evaluate(truth, 1)[0] + 1e-6
+    assert result.log_likelihood >= spec.loglikelihood(data, truth, x=x) - 1e-6
 
 
 # -----------------------------------------------------------------------------

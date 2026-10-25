@@ -14,8 +14,6 @@ import numpy as np
 import warnings
 from scipy.special import gammaln, ndtr
 
-from ._gh import standardized_gh_logpdf
-from ._vg import standardized_vg_logpdf
 
 if TYPE_CHECKING:
     from .spec import CompositeSpec
@@ -423,10 +421,6 @@ def _warm_start_params(
         return None, None
 
     target_mean = spec.get_component(Role.MEAN)
-    # Linked mean kernels do not yet share a uniform public initial-parameter
-    # contract, so provenance must remain honest until that contract is added.
-    if target_mean is not None:
-        return None, None
     target_mean_type = type(target_mean).__name__ if target_mean is not None else "Zero"
     target_mean_p = int(getattr(target_mean, "p", 0)) if target_mean is not None else 0
     target_mean_q = int(getattr(target_mean, "q", 0)) if target_mean is not None else 0
@@ -475,25 +469,27 @@ def _warm_start_params(
     if not ranked_sources:
         return None, None
     source = min(ranked_sources, key=lambda item: item[0])[1]
+    from . import _scivolapi as api
+    from ._evaluation import component_slices
+    from ._fit import native_spec
+
+    native = native_spec(spec, 0)
+    if native is None:
+        return None, None
+    model = api.Model(native)
+    start = np.array(model.start(np.ascontiguousarray(data, dtype=np.float64)))
     source_spec = source.result.spec
     source_params = np.asarray(source.result.params, dtype=np.float64)
-    pieces = []
-    for target_component in spec.components:
-        if hasattr(target_component, "set_n_exog") and x is not None:
-            x_array = np.asarray(x)
-            target_component.set_n_exog(1 if x_array.ndim == 1 else x_array.shape[1])
-        target_start = np.asarray(target_component.default_start(data), dtype=np.float64)
+    source_slices = dict(component_slices(source_spec))
+    for target_component, entries in component_slices(spec):
         source_component = source_spec.get_component(target_component.role)
-        if source_component is not None:
-            source_slice = source_spec.slice_map[source_component]
-            target_start = _mapped_component_start(
-                source_component,
-                source_params[source_slice],
-                target_component,
-                target_start,
+        if source_component is not None and source_component in source_slices:
+            start[entries] = _mapped_component_start(
+                source_component, source_params[source_slices[source_component]], target_component, start[entries]
             )
-        pieces.append(target_start)
-    return np.ascontiguousarray(np.concatenate(pieces), dtype=np.float64), str(source.spec)
+    if not model.feasible(start):  # e.g. GJR persistence under a different density's weight
+        return None, None
+    return np.ascontiguousarray(start), str(source.spec)
 
 
 def _assess_candidate_quality(
@@ -508,27 +504,20 @@ def _assess_candidate_quality(
     if result is None:
         return
 
-    bounds = [bound for component in result.spec.components for bound in component.bounds()]
     params = np.asarray(result.params, dtype=np.float64)
-    try:
-        names = result._get_param_names()
-    except Exception:
-        names = [f"parameter[{i}]" for i in range(params.size)]
+    model = result._native()[0]
+    lower, upper = (np.asarray(b) for b in model.bounds())
+    names = result._get_param_names()
     pinned = []
-    for index, (value, bound) in enumerate(zip(params, bounds)):
-        lower, upper = bound
-        finite_scale = max(
-            1.0,
-            abs(float(value)),
-            abs(float(lower)) if np.isfinite(lower) else 0.0,
-            abs(float(upper)) if np.isfinite(upper) else 0.0,
-        )
-        tolerance = boundary_tolerance * finite_scale
-        if (np.isfinite(lower) and value - lower <= tolerance) or (
-            np.isfinite(upper) and upper - value <= tolerance
-        ):
-            pinned.append(names[index] if index < len(names) else f"parameter[{index}]")
-
+    if result.fit_info.inference_status == "at_boundary":
+        for index, value in enumerate(params):
+            scale = max(1.0, abs(float(value)))
+            at_lower = np.isfinite(lower[index]) and value - lower[index] <= boundary_tolerance * scale
+            at_upper = np.isfinite(upper[index]) and upper[index] - value <= boundary_tolerance * scale
+            if at_lower or at_upper:
+                pinned.append(names[index])
+        if not pinned:
+            pinned.append("a domain constraint")
     candidate.boundary_parameters = tuple(pinned)
     candidate.boundary_hugging = bool(pinned)
     gp = result.garch_params
@@ -618,74 +607,6 @@ def _resolve_oos_split(
     return train_stop, train_stop, n_obs
 
 
-def _per_observation_loglik(
-    distribution: str,
-    resid: np.ndarray,
-    sigma2: np.ndarray,
-    *,
-    nu: Optional[float],
-    lam: Optional[float],
-    rho: Optional[float] = None,
-    zeta: Optional[float] = None,
-    shape_lambda: Optional[float] = None,
-) -> np.ndarray:
-    sigma2 = np.maximum(np.asarray(sigma2, dtype=np.float64), 1e-12)
-    resid = np.asarray(resid, dtype=np.float64)
-    z = resid / np.sqrt(sigma2)
-    if distribution == "Normal":
-        return -0.5 * (np.log(2.0 * np.pi) + np.log(sigma2) + z * z)
-    if distribution == "StudentT":
-        if nu is None:
-            raise ValueError("StudentT OOS log score requires `nu`.")
-        c_log = (
-            gammaln(0.5 * (nu + 1.0))
-            - gammaln(0.5 * nu)
-            - 0.5 * np.log(np.pi * (nu - 2.0))
-        )
-        return c_log - 0.5 * np.log(sigma2) - 0.5 * (nu + 1.0) * np.log1p((z * z) / (nu - 2.0))
-    if distribution == "GED":
-        if nu is None:
-            raise ValueError("GED OOS log score requires `nu`.")
-        log_scale = 0.5 * (gammaln(1.0 / nu) - gammaln(3.0 / nu))
-        log_const = np.log(nu) - np.log(2.0) - log_scale - gammaln(1.0 / nu)
-        z_std = np.abs(z) / np.exp(log_scale)
-        return log_const - 0.5 * np.log(sigma2) - np.power(z_std, nu)
-    if distribution == "SkewT":
-        if nu is None or lam is None:
-            raise ValueError("SkewT OOS log score requires `nu` and `lam`.")
-        c_log = (
-            gammaln(0.5 * (nu + 1.0))
-            - gammaln(0.5 * nu)
-            - 0.5 * np.log(np.pi * (nu - 2.0))
-        )
-        a = 4.0 * lam * np.exp(c_log) * (nu - 2.0) / (nu - 1.0)
-        b = np.sqrt(max(1.0 + 3.0 * lam * lam - a * a, 1e-12))
-        bz_plus_a = b * z + a
-        sign_term = np.where(bz_plus_a >= 0.0, 1.0, -1.0)
-        z_adj = bz_plus_a / (1.0 + lam * sign_term)
-        return (
-            c_log
-            + np.log(b)
-            - 0.5 * np.log(sigma2)
-            - 0.5 * (nu + 1.0) * np.log1p((z_adj * z_adj) / (nu - 2.0))
-        )
-    if distribution in {"GeneralizedHyperbolic", "Hyperbolic", "NormalInverseGaussian"}:
-        if rho is None or zeta is None or shape_lambda is None:
-            raise ValueError(f"{distribution} OOS log score requires GH shape parameters.")
-        return (
-            standardized_gh_logpdf(z, rho, zeta, shape_lambda)
-            - 0.5 * np.log(sigma2)
-        )
-    if distribution == "VarianceGamma":
-        if rho is None or shape_lambda is None:
-            raise ValueError("VarianceGamma OOS log score requires `rho` and `lambda`.")
-        return (
-            standardized_vg_logpdf(z, rho, shape_lambda)
-            - 0.5 * np.log(sigma2)
-        )
-    raise ValueError(f"Unsupported distribution '{distribution}'.")
-
-
 def _compute_oos_losses(
     result: EstimationResult,
     full_data: np.ndarray,
@@ -695,37 +616,9 @@ def _compute_oos_losses(
     stop: int,
     loss: str,
 ) -> np.ndarray:
-    from ._scivolapi_eval import NativeEstimationResult, oos_losses
+    from ._evaluation import oos_losses
 
-    if isinstance(result, NativeEstimationResult):
-        return oos_losses(result, full_data, full_x=full_x, start=start, stop=stop, loss=loss)
-    state = result.spec.filter(full_data, result.params, x=full_x)
-    hold_back = int(getattr(result.fit_info, "effective_hold_back", 0) or 0)
-    effective_start = max(start - hold_back, 0)
-    effective_stop = max(stop - hold_back, effective_start)
-    resid = np.asarray(state.residuals[effective_start:effective_stop], dtype=np.float64)
-    sigma2 = np.asarray(state.sigma2[effective_start:effective_stop], dtype=np.float64)
-    if resid.size == 0:
-        raise ValueError("OOS holdout slice is empty.")
-    key = loss.lower()
-    if key == "logscore":
-        ll = _per_observation_loglik(
-            state.distribution,
-            resid,
-            sigma2,
-            nu=state.nu,
-            lam=state.lam,
-            rho=state.rho,
-            zeta=state.zeta,
-            shape_lambda=state.shape_lambda,
-        )
-        return -ll
-    realized_var = resid * resid
-    if key == "qlike":
-        return np.log(sigma2) + realized_var / sigma2
-    if key == "mse":
-        return (realized_var - sigma2) ** 2
-    raise ValueError("oos_loss must be 'logscore', 'qlike', or 'mse'.")
+    return oos_losses(result, full_data, full_x=full_x, start=start, stop=stop, loss=loss)
 
 
 def _compute_rolling_oos_losses(

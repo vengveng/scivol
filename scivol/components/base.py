@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, List, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Union
 
 import numpy as np
 
@@ -28,12 +28,6 @@ class Component(FitsMixin, ABC):
     def n_params(self) -> int: ...
 
     @abstractmethod
-    def default_start(self, data: np.ndarray) -> np.ndarray: ...
-
-    @abstractmethod
-    def bounds(self) -> List[Tuple[float, float]]: ...
-
-    @abstractmethod
     def pack(self, params_dict: Dict[str, Any]) -> np.ndarray: ...
 
     @abstractmethod
@@ -43,10 +37,6 @@ class Component(FitsMixin, ABC):
         from ..spec.composite import CompositeSpec
         return CompositeSpec(self, *others)
     
-    # def fit(self, data: np.ndarray) -> EstimationResult:
-    #     return 
-
-
     # Component helpers for CompositeSpec view
     # -------------------------------------------------------
 
@@ -82,18 +72,6 @@ class Component(FitsMixin, ABC):
         if isinstance(other, CompositeSpec):
             return self.spec == other
         return NotImplemented
-    # -------------------------------------------------------
-
-    # Stub defaults
-    # -------------------------------------------------------
-    def persistence(self) -> Optional[float]:
-        return None      # volatility components override
-
-    def is_stationary(self) -> bool:
-        return True      # ditto
-
-    def unconditional_variance(self) -> Optional[float]:
-        return None
     # -------------------------------------------------------
 
     def __str__(self) -> str:

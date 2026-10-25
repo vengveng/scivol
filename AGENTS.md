@@ -1,6 +1,6 @@
 # scivol Guide for AI Agents
 
-**Last updated:** 2026-10-23
+**Last updated:** 2026-10-25
 
 scivol fits univariate and multivariate volatility models (ARMA/ARX mean, GARCH,
 GJR-GARCH, EGARCH, APARCH, DCC; Normal, Student-t, Skew-t, GED, GH, NIG,
@@ -15,19 +15,20 @@ evidence. Do not wrap builds or tests in tracking scripts.
 
 ---
 
-## 1. Current direction
+## 1. Layout
 
-The production engine lives in `scivol/_csrc` (legacy C) and `scivol/_native`
-(C++ function-jet engine and optimizer). A standalone C++20 library, `scivolapi`,
-is being rebuilt lean from the clean late-August engine (commit `0260a4a`), with
-genuine math fixes from later work carried forward. The Python package stays
-`scivol` with its current user API.
-
-The earlier standalone attempt in `core/`, `contracts/` and `localdev/TRANSITION/`
-is reference material only. Do not extend it. It became unusable: a three-tier
-`long double`/128-bit/256-bit precision ladder inside every derivative request, a
-template product over every density, layout, request mask and number type, and
-heavy bookkeeping. One translation unit took over 20 minutes and 1.5 GB to compile.
+- `scivolapi/` is the standalone C++20 library (CMake, usable without Python):
+  `Model` (layout, domain, charts, starts, sample plan), `Jet` (likelihood
+  value, gradient, Hessian, paths, per-row scores and terms), the optimizer and
+  the single finalizer (qualification, inference), forecasts and simulations,
+  densities' moments, exponential moments, distribution functions and
+  quantiles, and the DCC correlation model. Native tests live in
+  `scivolapi/tests` (`make native`).
+- `scivolapi/binding/module.cpp` is the one nanobind binding, `scivol._scivolapi`.
+- `scivol/` is the thin Python layer: components and compositions, `_fit.py`
+  (composition to native model, fit, result), `_evaluation.py` (fixed-parameter
+  evaluation, forecasts, simulations), `result.py`, `dcc.py`, and orchestration
+  (auto-selection, batches, rolling fits, parallel workers). No mathematics.
 
 ## 2. Mathematical rules (non-negotiable)
 
@@ -122,14 +123,9 @@ for standardized innovations `z`; the weight is 0.5 for symmetric densities.
 ## 4. Derivative validation
 
 Validate every analytical gradient and Hessian against an independent AD oracle.
-Use `scivol._devtools.ad_oracle` (scalar recursive models) or a JAX reference
-(matrix-heavy models such as DCC). Finite differences are a coarse smoke test only.
-
-```python
-_, grad_ref, hess_ref = ad_oracle_value_grad_hess(params, data)
-np.testing.assert_allclose(grad, grad_ref, rtol=1e-6, atol=1e-8)
-np.testing.assert_allclose(hess, hess_ref, rtol=1e-5, atol=1e-6)
-```
+The JAX references live in `tests/_oracle.py` and in the `oracle` functions of
+the `tests/test_scivolapi_*.py` files; native tests embed references computed
+offline with JAX or mpmath. Finite differences are a coarse smoke test only.
 
 Test value, gradient and Hessian; each sparse request (`F`, `G`, `H` and
 combinations) against the full request; fixed against runtime paths; zero and
@@ -155,25 +151,23 @@ result = spec.fit(data, method="qmle")        # robust (sandwich) SEs
 - Operators `+`, `<`, `<<`, `>>` all build a `CompositeSpec`.
 - Components implement `role`, `signature`, `n_params`, `default_start()`,
   `bounds()`, `pack()`, `unpack()`.
-- QMLE: sandwich covariance `H^-1 OPG H^-1`. For Student-t and Skew-t, fit GARCH
-  parameters with the Normal likelihood (robust SEs), then fix them and fit shape
-  parameters (MLE SEs).
-- `result.fit_info` must show the effective solver and coordinate path (theta or
-  z space), so defaults are never silent.
+- `fit()` estimation options: `method` (`"mle"`, `"qmle"`), `coordinates`
+  (`"automatic"`, `"z"`, `"theta"`), `maxiter`, `accuracy`, `initial_params`.
+  Unknown options raise.
+- QMLE: Gaussian quasi-likelihood for mean and volatility with sandwich
+  covariance `H^-1 OPG H^-1`; with a shaped density, a staged shape fit and the
+  two-step sandwich of the stacked scores.
+- `result.fit_info` shows the optimizer phases and coordinate path, so defaults
+  are never silent.
 - User-facing messages never mention migrations, legacy kernels or internal history.
 
 ## 6. Native interface rules
 
 Python owns memory; native code computes in place.
 
-- Arrays passed to C/C++ are C-contiguous `float64`, pre-allocated by the caller:
-  `np.ascontiguousarray(x, dtype=np.float64)`. Pass `arr.ctypes.data` pointers.
-- Legacy C functions: declare in `scivol/_csrc/scivol_core.h`, wrap in
-  `scivol/_core.c` (METH_FASTCALL), stub in `scivol/_core.pyi`. Naming:
-  `{model}_{operation}_{pq|11}_{distribution}`. GJR functions take raw residuals,
-  not squares.
-- Native jet and optimizer entries go through the single `scivol._native_core`
-  binding, stubbed in `scivol/_native_core.pyi`.
+- Arrays passed to the binding are C-contiguous `float64`
+  (`np.ascontiguousarray(x, dtype=np.float64)`); the binding checks shapes.
+- Every native entry goes through `scivol._scivolapi`.
 - Do not duplicate numerical logic in Python; computation lives in native code.
 - The C++ optimizer and jets build with C++20 and IEEE-safe floating point: no
   `-ffast-math` (the optimizer relies on NaN sentinels and non-finite checks).
@@ -182,28 +176,14 @@ Python owns memory; native code computes in place.
 
 ## 7. Model conventions
 
-ARMA-GARCH initialization:
-
-```text
-e_0 = 0                # conditioned on
-h_0 = mean(y^2)        # mean(eps^2) for volatility-only models
-likelihood starts at t = 1,  n_eff = n - 1
-```
-
-Sensitivity recursions for analytical gradients:
-
-```text
-de_t/dc     = -1      - theta * de_{t-1}/dc
-de_t/dphi   = -y_{t-1} - theta * de_{t-1}/dphi
-de_t/dtheta = -e_{t-1} - theta * de_{t-1}/dtheta
-dh_t/domega = 1        + alpha * d(e^2)_{t-1}/domega + beta * dh_{t-1}/domega
-dh_t/dalpha = e^2_{t-1} + alpha * d(e^2)_{t-1}/dalpha + beta * dh_{t-1}/dalpha
-dh_t/dbeta  = h_{t-1}   + alpha * d(e^2)_{t-1}/dbeta  + beta * dh_{t-1}/dbeta
-d(e^2)/dtheta = 2 e de/dtheta
-dl_t/dtheta = (e_t/h_t) de_t/dtheta + 0.5 (1/h_t - e_t^2/h_t^2) dh_t/dtheta
-```
-
-Hessians additionally track second-order sensitivities of `e_t` and `h_t`.
+- theta = [mean | volatility | density shapes]; a mean-only model has `sigma2`
+  in place of the volatility block.
+- The likelihood scores the rows from `max(hold_back, lags)` on; earlier rows
+  only supply the mean's lags. The first scored row has variance `mean(y^2)` over
+  the rows passed to the model; pre-sample residuals are zero.
+- DCC: `Q_0 = Qbar = eps'eps / T`; every row scored.
+- `MODELS.md` lists parameters, domains, conventions and which forecasts are
+  exact.
 
 ## 8. Development workflow
 
@@ -213,11 +193,10 @@ Hessians additionally track second-order sensitivities of `e_t` and `h_t`.
 - New model family: prototype in Python/Numba under `localdev/`, validate
   derivatives with the AD oracle, then port to native code and match the prototype
   closely. Add one family at a time.
-- When adding or changing a model, update `tests/test_dgp_estimation.py` (simulate,
-  true parameters, convergence and recovery tests), `MODELS.md` (generated from
-  `scivol/_devtools/surface_manifest.py`; `tests/test_surface_manifest_contract.py`
-  keeps them in sync), `benchmark_optimizers.py`, and `README.md` if user-facing
-  support changed.
+- When adding or changing a model, update its JAX oracle tests,
+  `tests/test_dgp_estimation.py` (simulate, true parameters, convergence and
+  recovery), `MODELS.md`, `benchmark.py` if it belongs in the panel, and
+  `README.md` if user-facing support changed.
 - Defaults (solver, coordinate path) change only on benchmark evidence on the same
   domain and real data.
 - `bugfix.md` (git-ignored) is an append-only log: when you fix a confirmed bug,
@@ -231,14 +210,16 @@ Hessians additionally track second-order sensitivities of `e_t` and `h_t`.
 ```bash
 make dev        # editable install; incremental rebuild (needs ninja, scikit-build-core, nanobind)
 make t          # core test subset
-make deriv      # derivative validation suite
+make deriv      # derivative validation against JAX references (needs jax)
+make native     # native library tests (C++)
+make bench      # fit-time benchmark (python benchmark.py)
 make dgp        # DGP estimation tests
 pytest tests/                 # fast tests; slow ones are skipped
 pytest tests/ --run-slow      # include @pytest.mark.slow
 ```
 
-Slow tests (`tests/test_parallel_auto.py`, `tests/test_multi_series.py`) take 4+
-minutes; run them only when changing parallel, auto-selection or multi-series code.
+Slow tests (`--run-slow`) are the full oracle matrices and the parallel and
+multi-series suites.
 
 Type style: `from __future__ import annotations`, annotate arrays as
 `NDArray[np.float64]`, Greek letters spelled out (`nu`, `lam`, `omega`), snake_case

@@ -7,14 +7,10 @@ import warnings
 import numpy as np
 from numpy.typing import NDArray
 from datetime import datetime
-from scipy.stats import chi2, gennorm, norm, t as t_dist
-from scipy.special import gammaln
+from scipy.stats import chi2, norm
 
 from .roles import Role
 from ._settings import settings
-from ._distribution_moments import negative_half_second_moment
-from ._gh import fixed_gh_lambda, standardized_gh_cdf
-from ._vg import standardized_vg_cdf
 
 # Lazy import for pandas to avoid hard dependency
 def _to_pandas_series(
@@ -28,47 +24,6 @@ def _to_pandas_series(
     series_name = f"{name}_{suffix}" if name else suffix
     return pd.Series(arr, index=index, name=series_name)
 
-
-# =============================================================================
-# PIT HELPER FUNCTIONS (Probability Integral Transform)
-# =============================================================================
-
-def _std_t_cdf(x: np.ndarray, nu: float) -> np.ndarray:
-    """
-    CDF of standardized Student-t distribution with variance = 1.
-    
-    If Y ~ t_nu (standard), Var(Y) = nu/(nu-2). 
-    For variance-1 version: X = Y * sqrt((nu-2)/nu)
-    So F_X(x) = F_Y(x * sqrt(nu/(nu-2))).
-    """
-    s = np.sqrt(nu / (nu - 2.0))
-    return t_dist.cdf(x * s, df=nu)
-
-
-def _hansen_skewt_cdf(z: np.ndarray, nu: float, lam: float) -> np.ndarray:
-    """
-    CDF of Hansen (1994) skewed-t distribution.
-    
-    This matches the parameterization used in scivol's skewt_loglik().
-    """
-    c = gammaln(0.5 * (nu + 1.0)) - gammaln(0.5 * nu) - 0.5 * np.log(np.pi * (nu - 2.0))
-    a = 4.0 * lam * np.exp(c) * (nu - 2.0) / (nu - 1.0)
-    b = np.sqrt(1.0 + 3.0 * lam * lam - a * a)
-
-    bz_a = b * z + a
-    left = bz_a < 0.0
-    scale = np.where(left, 1.0 - lam, 1.0 + lam)
-    base_cdf = _std_t_cdf(bz_a / scale, nu)
-    return np.where(
-        left,
-        (1.0 - lam) * base_cdf,
-        (1.0 + lam) * base_cdf - lam,
-    )
-
-
-def _std_ged_cdf(x: np.ndarray, nu: float) -> np.ndarray:
-    scale = np.sqrt(np.exp(gammaln(1.0 / nu) - gammaln(3.0 / nu)))
-    return gennorm.cdf(x, beta=nu, scale=scale)
 
 if TYPE_CHECKING:
     from .components import Component
@@ -285,14 +240,24 @@ class OptimizeResultLike(Protocol):
 
 @dataclass
 class FitMetadata:
-    """User-visible metadata about the optimization path used for a fit."""
-    solver: Optional[str] = None
-    log_mode: Optional[bool] = None
-    optimization_space: Optional[str] = None
-    requested_solver: Optional[str] = None
-    requested_log_mode: Optional[bool] = None
-    used_default_solver: Optional[bool] = None
-    used_default_log_mode: Optional[bool] = None
+    """What a fit did: the optimizer phases and coordinate path, the sample it
+    scored, how the estimate qualified, and auto-selection details."""
+    solver: Optional[str] = None                # optimizer phases joined, e.g. "z:slsqp+theta:newton"
+    optimization_space: Optional[str] = None    # coordinate path, e.g. "z+theta"
+    optimizer_phases: Optional[tuple[str, ...]] = None
+    optimizer_terminated: Optional[bool] = None
+    stationarity_status: Optional[str] = None
+    inference_status: Optional[str] = None
+    kkt_residual: Optional[float] = None
+    kkt_tolerance: Optional[float] = None
+    function_evaluations: Optional[int] = None
+    gradient_evaluations: Optional[int] = None
+    hessian_evaluations: Optional[int] = None
+    maxiter: Optional[int] = None
+    warm_started: Optional[bool] = None
+    timeout: Optional[float] = None
+    internal_data_scale: Optional[float] = None
+    likelihood_n_obs: Optional[int] = None
     requested_hold_back: Optional[int] = None
     effective_hold_back: Optional[int] = None
     original_n_obs: Optional[int] = None
@@ -306,48 +271,6 @@ class FitMetadata:
     oos_test_size: Optional[int] = None
     oos_loss: Optional[str] = None
     oos_refit: Optional[int] = None
-    warm_started: Optional[bool] = None
-    maxiter: Optional[int] = None
-    timeout: Optional[float] = None
-    engine: Optional[str] = None
-    scalar_precision: Optional[str] = None
-    optimizer_mode: Optional[int] = None
-    optimizer_status_kind: Optional[str] = None
-    optimizer_controller: Optional[str] = None
-    route_iteration_budgets: Optional[List[int]] = None
-    primary_route: Optional[Dict[str, Any]] = None
-    portfolio_agreement: Optional[Dict[str, Any]] = None
-    optimizer_terminated: Optional[bool] = None
-    stationarity_status: Optional[str] = None
-    inference_status: Optional[str] = None
-    jet_consistency: Optional[Dict[str, Any]] = None
-    nonsmooth_evidence: Optional[Dict[str, Any]] = None
-    optimizer_phases: Optional[tuple[str, ...]] = None
-    optimizer_phase_modes: Optional[tuple[int, ...]] = None
-    kkt_residual: Optional[float] = None
-    coordinate_kkt_residual: Optional[float] = None
-    kkt_tolerance: Optional[float] = None
-    maximum_constraint_violation: Optional[float] = None
-    function_evaluations: Optional[int] = None
-    gradient_evaluations: Optional[int] = None
-    hessian_evaluations: Optional[int] = None
-    jet_requests: Optional[Dict[str, Any]] = None
-    postfit_jet_requests: Optional[Dict[str, Any]] = None
-    request_count_scope: Optional[str] = None
-    refinement_restarts: Optional[int] = None
-    curvature_refinement_steps: Optional[int] = None
-    scientific_projection_steps: Optional[int] = None
-    theta_refinement_steps: Optional[int] = None
-    objective_parity_error: Optional[float] = None
-    jet_request_plan: Optional[str] = None
-    parameter_domain: Optional[Dict[str, Any]] = None
-    likelihood_n_obs: Optional[int] = None
-    profiled_parameters: int = 0
-    internal_data_scale: Optional[float] = None
-    evaluation_counts: Optional[Dict[str, int]] = None
-    phase_diagnostics: tuple[Dict[str, Any], ...] = ()
-    kernel_dispatch: Optional[int] = None
-    boundary_reached: Optional[bool] = None
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -360,82 +283,17 @@ class FitMetadata:
             self.warnings = (*self.warnings, message)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            "solver": self.solver,
-            "log_mode": self.log_mode,
-            "optimization_space": self.optimization_space,
-            "requested_solver": self.requested_solver,
-            "requested_log_mode": self.requested_log_mode,
-            "used_default_solver": self.used_default_solver,
-            "used_default_log_mode": self.used_default_log_mode,
-            "requested_hold_back": self.requested_hold_back,
-            "effective_hold_back": self.effective_hold_back,
-            "original_n_obs": self.original_n_obs,
-            "effective_n_obs": self.effective_n_obs,
-            "scale": self.scale,
-            "common_sample": self.common_sample,
-            "selected_by": self.selected_by,
-            "selection_search_space": self.selection_search_space,
-            "selection_refit_on_full": self.selection_refit_on_full,
-            "oos_train_size": self.oos_train_size,
-            "oos_test_size": self.oos_test_size,
-            "oos_loss": self.oos_loss,
-            "oos_refit": self.oos_refit,
-            "warm_started": self.warm_started,
-            "maxiter": self.maxiter,
-            "timeout": self.timeout,
-            "engine": self.engine,
-            "optimizer_mode": self.optimizer_mode,
-            "optimizer_status_kind": self.optimizer_status_kind,
-            "optimizer_controller": self.optimizer_controller,
-            "route_iteration_budgets": (
-                list(self.route_iteration_budgets)
-                if self.route_iteration_budgets is not None else None
-            ),
-            "optimizer_terminated": self.optimizer_terminated,
-            "primary_route": deepcopy(self.primary_route),
-            "portfolio_agreement": deepcopy(self.portfolio_agreement),
-            "stationarity_status": self.stationarity_status,
-            "inference_status": self.inference_status,
-            "jet_consistency": self.jet_consistency,
-            "nonsmooth_evidence": self.nonsmooth_evidence,
-            "scalar_precision": self.scalar_precision,
-            "optimizer_phases": (
-                list(self.optimizer_phases)
-                if self.optimizer_phases is not None
-                else None
-            ),
-            "optimizer_phase_modes": (
-                list(self.optimizer_phase_modes)
-                if self.optimizer_phase_modes is not None
-                else None
-            ),
-            "kkt_residual": self.kkt_residual,
-            "coordinate_kkt_residual": self.coordinate_kkt_residual,
-            "kkt_tolerance": self.kkt_tolerance,
-            "maximum_constraint_violation": self.maximum_constraint_violation,
-            "function_evaluations": self.function_evaluations,
-            "gradient_evaluations": self.gradient_evaluations,
-            "hessian_evaluations": self.hessian_evaluations,
-            "jet_requests": self.jet_requests,
-            "postfit_jet_requests": self.postfit_jet_requests,
-            "request_count_scope": self.request_count_scope,
-            "refinement_restarts": self.refinement_restarts,
-            "curvature_refinement_steps": self.curvature_refinement_steps,
-            "scientific_projection_steps": self.scientific_projection_steps,
-            "theta_refinement_steps": self.theta_refinement_steps,
-            "objective_parity_error": self.objective_parity_error,
-            "jet_request_plan": self.jet_request_plan,
-            "parameter_domain": self.parameter_domain,
-            "likelihood_n_obs": self.likelihood_n_obs,
-            "profiled_parameters": self.profiled_parameters,
-            "internal_data_scale": self.internal_data_scale,
-            "evaluation_counts": self.evaluation_counts,
-            "phase_diagnostics": list(self.phase_diagnostics),
-            "kernel_dispatch": self.kernel_dispatch,
-            "boundary_reached": self.boundary_reached,
-            "warnings": list(self.warnings),
-        }
+        """Plain values: tuples become lists, containers are copied."""
+        from dataclasses import fields
+
+        def plain(value: Any) -> Any:
+            if isinstance(value, (tuple, list)):
+                return [plain(v) for v in value]
+            if isinstance(value, dict):
+                return {k: plain(v) for k, v in value.items()}
+            return value
+
+        return {f.name: plain(getattr(self, f.name)) for f in fields(self)}
 
 
 # =============================================================================
@@ -502,7 +360,6 @@ class EstimationResult:
         self._index: Optional[Any] = index
         self._name: Optional[str] = name
         self._filtered_state_cache: Optional["FilteredState"] = None
-        self._resolved_spec_cache: Optional[CompositeSpec] = None
 
         # Components were mutated in-place during fitting
         self._component_map: Dict[Role, Component] = {c.role: c for c in spec.components}
@@ -588,18 +445,18 @@ class EstimationResult:
     # --------------------------------------------------------------------- #
     @property
     def aic(self) -> float:
-        k = len(self.params) + self.fit_info.profiled_parameters
+        k = len(self.params)
         return 2 * k - 2 * self.log_likelihood
 
     @property
     def bic(self) -> float:
-        k = len(self.params) + self.fit_info.profiled_parameters
+        k = len(self.params)
         n = self.fit_info.likelihood_n_obs or self.n_obs
         return k * np.log(n) - 2 * self.log_likelihood
 
     @property
     def hqic(self) -> float:
-        k = len(self.params) + self.fit_info.profiled_parameters
+        k = len(self.params)
         n = self.fit_info.likelihood_n_obs or self.n_obs
         return 2 * k * np.log(np.log(n)) - 2 * self.log_likelihood
 
@@ -673,16 +530,11 @@ class EstimationResult:
         gamma = np.array(gamma_raw, dtype=np.float64) if gamma_raw is not None else None
         negative_second_moment = 0.5
         if gamma is not None:
-            distribution = self.density.signature if self.density is not None else "Normal"
-            density_params = self.dist_params
-            negative_second_moment = negative_half_second_moment(
-                distribution,
-                density_params.nu,
-                density_params.lam,
-                density_params.rho,
-                density_params.zeta,
-                density_params.shape_lambda,
-            )
+            from . import _scivolapi as api
+            from ._evaluation import innovation_density
+
+            density = innovation_density(self.spec, np.asarray(self.params, dtype=np.float64))
+            negative_second_moment = api.negative_second_moment(density.density, density.shape)
 
         return GARCHParams(
             omega=omega,
@@ -719,7 +571,9 @@ class EstimationResult:
         zeta = fp.get('zeta')
         shape_lambda = fp.get('lambda')
         density_name = self.density.signature if self.density is not None else "Normal"
-        fixed_lambda = fixed_gh_lambda(density_name)
+        from ._evaluation import _FIXED_GH_LAMBDA
+
+        fixed_lambda = _FIXED_GH_LAMBDA.get(density_name)
         if fixed_lambda is not None:
             shape_lambda = fixed_lambda
 
@@ -806,81 +660,61 @@ class EstimationResult:
     
     # Forecasting
     # --------------------------------------------------------------------- #
-    def forecast(
-        self,
-        horizon: int = 10,
-        *,
-        x: Any = None,
-        return_variance: bool = True,
-        return_volatility: bool = True,
-    ) -> "ForecastResult":
-        """
-        Forecast future conditional variances and volatilities.
-        
-        For GARCH(p,q) with parameters (omega, alpha_1, ..., alpha_p, beta_1, ..., beta_q),
-        the h-step ahead forecast follows:
-        
-            σ²_{T+1} = ω + α*ε²_T + β*σ²_T  (1-step)
-            σ²_{T+h} = ω + (α + β)*σ²_{T+h-1}  for h > max(p,q)
-        
-        As h → ∞, σ²_{T+h} → ω / (1 - α - β) (unconditional variance).
-        
+    def attach_sample(self, model: Any, y: NDArray[np.float64], x: Optional[NDArray[np.float64]],
+                      skip: int) -> None:
+        """Keep the native model and the rows it was fitted on (after the hold-back
+        rows, including the rows that only supply the mean's lags)."""
+        self._native_model = model
+        self._native_y = y
+        self._native_x = x
+        self._native_skip = skip
+
+    def _native(self) -> tuple[Any, NDArray[np.float64], Optional[NDArray[np.float64]]]:
+        """The native model and the rows it sees; without an attached sample (a
+        result built directly), the model of the spec on the result's data."""
+        if getattr(self, "_native_model", None) is None:
+            from . import _scivolapi as api
+            from ._fit import native_spec
+
+            x = getattr(self, "_fit_x", None)
+            native = native_spec(self.spec, 0 if x is None else x.shape[1])
+            if native is None:
+                raise ValueError(f"{self.spec} has no native model")
+            self.attach_sample(api.Model(native), np.ascontiguousarray(self.data, dtype=np.float64), x, 0)
+        return self._native_model, self._native_y, self._native_x
+
+    def forecast(self, horizon: int = 10, *, x: Any = None, simulations: int = 10_000,
+                 seed: Any = 0) -> "ForecastResult":
+        """Forecast the mean, its variance and the residual variance h steps ahead.
+
+        Exact for the mean and for GARCH, GJR and EGARCH variances at every
+        horizon; APARCH variances and quantiles beyond one step average
+        `simulations` simulated paths (`seed`). EGARCH variance forecasts beyond
+        one step do not exist under densities with infinite exponential
+        moments (Student-t, skew-t); those raise.
+
         Parameters
         ----------
         horizon : int
-            Number of steps ahead to forecast (default: 10)
-        return_variance : bool
-            If True, include 'variance' in output (default: True)
-        return_volatility : bool
-            If True, include 'volatility' in output (default: True)
-        
-        Returns
-        -------
-        ForecastResult
-            Forecast object exposing mean, variance, residual_variance,
-            sigma2, volatility, quantile(), and var().
-        
-        Raises
-        ------
-        ValueError
-            If no GARCH component is present or sigma2 is not available
-        
-        Examples
-        --------
-        >>> result = spec.fit(data)
-        >>> fc = result.forecast(horizon=10)
-        >>> print(fc['volatility'])  # 10-step ahead volatility forecast
+            Number of steps ahead (default 10).
+        x : array, optional
+            Exogenous regressors of the horizon (horizon x k) for ARX/HARX means.
         """
-        if not return_variance or not return_volatility:
-            warnings.warn(
-                "`return_variance` and `return_volatility` are deprecated; "
-                "forecast() now returns a forecast object with both series.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        from ._evaluation import forecast_from_state
+        from ._evaluation import forecast
 
-        spec = self._get_resolved_spec()
-        return forecast_from_state(spec, self._get_filtered_state(), horizon, x=x)
+        model, y, rows = self._native()
+        return forecast(self.spec, model, np.ascontiguousarray(self.params), y, rows, horizon, x,
+                        simulations=simulations, seed=seed)
 
     def _get_filtered_state(self) -> "FilteredState":
         if self._filtered_state_cache is None:
-            from ._evaluation import filter_spec
+            from . import _scivolapi as api
+            from ._evaluation import state
 
-            self._filtered_state_cache = filter_spec(
-                self._get_resolved_spec(),
-                self.data,
-                self.params,
-                x=getattr(self, "_fit_x", None),
-            )
+            model, y, rows = self._native()
+            self._filtered_state_cache = state(self.spec, model, api.Jet(model, y, rows), y,
+                                               np.ascontiguousarray(self.params))
         return self._filtered_state_cache
-
-    def _get_resolved_spec(self) -> CompositeSpec:
-        if self._resolved_spec_cache is None:
-            from ._evaluation import _clone_spec_with_params
-
-            self._resolved_spec_cache = _clone_spec_with_params(self.spec, self.params)
-        return self._resolved_spec_cache
 
     def filter(self) -> "FilteredState":
         """Return the filtered model state at the stored parameter values."""
@@ -954,19 +788,9 @@ class EstimationResult:
         print(f"Method:      {self.method}")
         print(f"Parameters:  {self.parameter_source}")
         if self.fit_info.solver is not None:
-            solver_line = self.fit_info.solver
-            if self.fit_info.used_default_solver is True:
-                solver_line += " (default)"
-            elif self.fit_info.used_default_solver is False:
-                solver_line += " (explicit)"
-            print(f"Solver:      {solver_line}")
+            print(f"Solver:      {self.fit_info.solver}")
         if self.fit_info.optimization_space is not None:
-            space_line = self.fit_info.optimization_space
-            if self.fit_info.used_default_log_mode is True:
-                space_line += " (default)"
-            elif self.fit_info.used_default_log_mode is False:
-                space_line += " (explicit)"
-            print(f"Path:        {space_line}")
+            print(f"Path:        {self.fit_info.optimization_space}")
         print(f"Date:        {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("─" * WIDTH)
         
@@ -1037,80 +861,12 @@ class EstimationResult:
         print("═" * WIDTH)
     
     def _get_param_names(self) -> List[str]:
-        """Get parameter names from components, using display names from settings."""
-        _r = settings.names.resolve
-        names: List[str] = []
-        mean_snapshot = self._component_param_snapshots.get(Role.MEAN, {})
-        if mean_snapshot:
-            mean_sig = self._component_signatures.get(Role.MEAN, "")
-            if mean_sig.startswith("ARMA("):
-                names.append(_r("const"))
-                for i, _ in enumerate(mean_snapshot.get("ar", []), 1):
-                    names.append(_r(f"phi[{i}]"))
-                for i, _ in enumerate(mean_snapshot.get("ma", []), 1):
-                    names.append(_r(f"theta[{i}]"))
-            elif mean_sig.startswith("ARX("):
-                mean_comp = self.mean
-                if getattr(mean_comp, "constant", True):
-                    names.append(_r("const"))
-                for i, _ in enumerate(mean_snapshot.get("ar", []), 1):
-                    names.append(_r(f"phi[{i}]"))
-                for i, _ in enumerate(mean_snapshot.get("exog", []), 1):
-                    names.append(f"x[{i}]")
-            elif mean_sig.startswith("HARX("):
-                mean_comp = self.mean
-                if getattr(mean_comp, "constant", True):
-                    names.append(_r("const"))
-                mean_comp = self.mean
-                horizons = getattr(mean_comp, "horizons", [])
-                for horizon in horizons:
-                    names.append(f"har[{horizon}]")
-                for i, _ in enumerate(mean_snapshot.get("exog", []), 1):
-                    names.append(f"x[{i}]")
-
-        gp = self.garch_params
-        if gp is not None:
-            names.append(_r("omega"))
-            for i, _ in enumerate(gp.alpha, 1):
-                names.append(_r(f"alpha[{i}]"))
-            if gp.gamma is not None:
-                for i, _ in enumerate(gp.gamma, 1):
-                    names.append(_r(f"gamma[{i}]"))
-            for i, _ in enumerate(gp.beta, 1):
-                names.append(_r(f"beta[{i}]"))
-            if isinstance(gp, APARCHParams):
-                names.append("delta")
-
-        density_shapes = {
-            "StudentT": 1,
-            "SkewT": 2,
-            "GED": 1,
-            "GeneralizedHyperbolic": 3,
-            "Hyperbolic": 2,
-            "NormalInverseGaussian": 2,
-            "VarianceGamma": 2,
-        }
-        density_name = self.density.signature if self.density is not None else "Normal"
-        n_shapes = density_shapes.get(density_name)
-        if gp is None and n_shapes is not None and len(self.params) == len(names) + n_shapes + 1:
-            names.append(_r("sigma2"))
-
-        dp = self.dist_params
-        if dp.nu is not None:
-            names.append(_r("nu"))
-        if dp.lam is not None:
-            names.append(_r("lambda"))
-        if dp.rho is not None:
-            names.append("rho")
-        if dp.zeta is not None:
-            names.append("zeta")
-        if dp.shape_lambda is not None and density_name in {"GeneralizedHyperbolic", "VarianceGamma"}:
-            names.append(_r("lambda"))
-        
-        # Fill in remaining if needed
-        while len(names) < len(self.params):
-            names.append(f"param[{len(names)}]")
-        
+        """The model's parameter names in the display convention (settings.names)."""
+        renames = {"ar": "phi", "ma": "theta", "exog": "x", "lam": "lambda"}
+        names = []
+        for name in self._native()[0].parameter_names:
+            base, bracket, rest = name.partition("[")
+            names.append(settings.names.resolve(renames.get(base, base) + bracket + rest))
         return names
 
     def _format_hold_back_summary(self) -> Optional[str]:
@@ -1337,7 +1093,7 @@ class EstimationResult:
                 dist_params[_r('lambda')] = dp.shape_lambda
             result_dict['dist_params'] = dist_params
         
-        # Add component parameters (legacy)
+        # Parameters by component
         for role, fitted_params in self._component_param_snapshots.items():
             signature = self._component_signatures.get(role, role.name)
             result_dict['parameters'][signature] = deepcopy(fitted_params)
@@ -1429,61 +1185,16 @@ class EstimationResult:
         z = z[~np.isnan(z)]
         T = len(z)
         
-        # Determine distribution type and compute PIT
-        dens = self.density
-        dist_name = dens.signature if dens is not None else "Normal"
+        # PIT u = F(z) under the fitted innovation density (native distribution function)
+        from . import _scivolapi as api
+        from ._evaluation import innovation_density
+
+        density = innovation_density(self.spec, np.asarray(self.params, dtype=np.float64))
+        u, _ = api.distribution(density.density, density.shape, np.ascontiguousarray(z, dtype=np.float64))
         dp = self.dist_params
-        
-        # Compute PIT: u = F(z) using fitted distribution
-        if dist_name == "Normal":
-            u = norm.cdf(z)
-            dist_params_dict = {"nu": None, "lam": None}
-        elif dist_name == "StudentT":
-            if dp.nu is None:
-                raise ValueError("Student-t distribution requires nu parameter")
-            u = _std_t_cdf(z, dp.nu)
-            dist_params_dict = {"nu": dp.nu, "lam": None}
-        elif dist_name == "SkewT":
-            if dp.nu is None or dp.lam is None:
-                raise ValueError("Skew-t distribution requires nu and lam parameters")
-            u = _hansen_skewt_cdf(z, dp.nu, dp.lam)
-            dist_params_dict = {"nu": dp.nu, "lam": dp.lam}
-        elif dist_name == "GED":
-            if dp.nu is None:
-                raise ValueError("GED distribution requires nu parameter")
-            u = _std_ged_cdf(z, dp.nu)
-            dist_params_dict = {"nu": dp.nu, "lam": None}
-        elif dist_name in {"GeneralizedHyperbolic", "Hyperbolic", "NormalInverseGaussian"}:
-            if dp.rho is None or dp.zeta is None or dp.shape_lambda is None:
-                raise ValueError(f"{dist_name} requires GH shape parameters")
-            u = standardized_gh_cdf(z, dp.rho, dp.zeta, dp.shape_lambda)
-            dist_params_dict = {
-                "nu": None,
-                "lam": None,
-                "rho": dp.rho,
-                "zeta": dp.zeta,
-                "lambda": dp.shape_lambda,
-            }
-        elif dist_name == "VarianceGamma":
-            if dp.rho is None or dp.shape_lambda is None:
-                raise ValueError("VarianceGamma requires rho and lambda parameters")
-            u = standardized_vg_cdf(z, dp.rho, dp.shape_lambda)
-            dist_params_dict = {
-                "nu": None,
-                "lam": None,
-                "rho": dp.rho,
-                "zeta": None,
-                "lambda": dp.shape_lambda,
-            }
-        else:
-            # Default to Normal
-            u = norm.cdf(z)
-            dist_params_dict = {"nu": None, "lam": None}
-        
-        # Clip to (0, 1) for numerical stability
-        eps = 1e-12
-        u = np.clip(u, eps, 1.0 - eps)
-        
+        dist_params_dict = {"nu": dp.nu, "lam": dp.lam, "rho": dp.rho, "zeta": dp.zeta, "lambda": dp.shape_lambda}
+        dist_name = self.density.signature if self.density is not None else "Normal"
+
         # =====================================================================
         # DGT Test (Pearson chi-square for uniformity)
         # =====================================================================
@@ -1722,3 +1433,10 @@ class EstimationResult:
         return (f"{self.__class__.__name__}({self.spec}, "
                 f"LL={self.log_likelihood:.4f}, "
                 f"{status})")
+
+
+class FixedResult(EstimationResult):
+    """A result at supplied parameters (no optimization)."""
+
+    def __repr__(self) -> str:
+        return f"FixedResult({self.spec}, LL={self.log_likelihood:.4f})"

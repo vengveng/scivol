@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 api = pytest.importorskip("scivol._scivolapi")
-from scivol._devtools.ad_oracle import (  # noqa: E402
+from tests._oracle import (  # noqa: E402
     _egarch_skewt_quadrature_rule,
     _jax_aparch_power_moment,
     _jax_hansen_skewt_abs_moment,
@@ -14,7 +14,7 @@ from scivol._devtools.ad_oracle import (  # noqa: E402
     _jax_student_log_normalizer,
     _jax_vg_abs_moment,
 )
-from scivol._devtools.joint_mean_oracle import _density_nll  # noqa: E402
+from tests._oracle import _density_nll  # noqa: E402
 
 FAMILY = {"garch": 0, "gjr": 1, "egarch": 2, "aparch": 3, "constant": 4}
 DENSITY_INDEX = {

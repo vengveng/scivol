@@ -1,7 +1,7 @@
 # scivol/components/density.py
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -21,18 +21,6 @@ class ARMA(Component):
     
     @property
     def n_params(self): return 1 + self.p + self.q  # constant + AR + MA
-    
-    def default_start(self, data):
-        c  = np.mean(data)
-        ar = [0.1] * self.p
-        ma = [0.1] * self.q
-        return np.array([c] + ar + ma)
-    
-    def bounds(self):
-        c_bound   = [(-10.0, 10.0)]
-        ar_bounds = [(-0.99, 0.99)] * self.p
-        ma_bounds = [(-0.99, 0.99)] * self.q
-        return c_bound + ar_bounds + ma_bounds
     
     def pack(self, params_dict):
         return np.array([params_dict['const']] + 
@@ -80,18 +68,6 @@ class ARX(Component):
     @property
     def required_hold_back(self) -> int:
         return self.lags
-
-    def default_start(self, data):
-        const = [float(np.mean(data))] if self.constant else []
-        ar = [0.0] * self.lags
-        exog = [0.0] * self.n_exog
-        return np.array(const + ar + exog, dtype=np.float64)
-
-    def bounds(self):
-        const_bounds = [(-10.0, 10.0)] if self.constant else []
-        ar_bounds = [(-0.99, 0.99)] * self.lags
-        exog_bounds = [(-10.0, 10.0)] * self.n_exog
-        return const_bounds + ar_bounds + exog_bounds
 
     def pack(self, params_dict):
         const = [params_dict["const"]] if self.constant else []
@@ -156,18 +132,6 @@ class HARX(Component):
     @property
     def required_hold_back(self) -> int:
         return max(self.horizons)
-
-    def default_start(self, data):
-        const = [float(np.mean(data))] if self.constant else []
-        har = [0.0] * len(self.horizons)
-        exog = [0.0] * self.n_exog
-        return np.array(const + har + exog, dtype=np.float64)
-
-    def bounds(self):
-        const_bounds = [(-10.0, 10.0)] if self.constant else []
-        har_bounds = [(-0.99, 0.99)] * len(self.horizons)
-        exog_bounds = [(-10.0, 10.0)] * self.n_exog
-        return const_bounds + har_bounds + exog_bounds
 
     def pack(self, params_dict):
         const = [params_dict["const"]] if self.constant else []
@@ -245,12 +209,6 @@ class AutoMean(Component):
     @property
     def n_params(self) -> int:
         return 0
-
-    def default_start(self, data: np.ndarray) -> np.ndarray:
-        return np.array([], dtype=np.float64)
-
-    def bounds(self) -> List[Tuple[float, float]]:
-        return []
 
     def pack(self, params_dict: Dict[str, Any]) -> np.ndarray:
         return np.array([], dtype=np.float64)

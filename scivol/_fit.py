@@ -1,0 +1,263 @@
+"""Fitting: a composition becomes a native model specification, the native
+library estimates it, and the result is presented as an EstimationResult.
+
+No mathematics lives here: likelihoods, derivatives, paths, stationarity and
+inference all come from the native library.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import Any, Optional
+
+import numpy as np
+from numpy.typing import NDArray
+
+from . import _scivolapi as api
+from .result import EstimationResult, FitMetadata
+from .roles import Role
+
+_COORDINATES = {
+    None: api.Coordinates.automatic,
+    "automatic": api.Coordinates.automatic,
+    "z": api.Coordinates.z,
+    "theta": api.Coordinates.theta,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class NativeOptimizationResult:
+    x: NDArray[np.float64]
+    fun: float
+    success: bool
+    nit: int
+    message: str
+    nfev: int
+    njev: int
+
+
+# Native density kinds by component class name.
+DENSITIES = {
+    "Normal": api.DensityKind.normal,
+    "StudentT": api.DensityKind.student_t,
+    "SkewT": api.DensityKind.skew_t,
+    "GED": api.DensityKind.ged,
+    "GeneralizedHyperbolic": api.DensityKind.generalized_hyperbolic,
+    "NormalInverseGaussian": api.DensityKind.nig,
+    "Hyperbolic": api.DensityKind.hyperbolic,
+    "VarianceGamma": api.DensityKind.variance_gamma,
+}
+
+
+def native_mean(mean: Any, exog: int) -> Optional[api.MeanSpec]:
+    """The native mean for a mean component (None: residuals are the data)."""
+    from .components.mean import ARMA, ARX, HARX
+
+    native = api.MeanSpec()
+    if mean is None:
+        return native if exog == 0 else None
+    if isinstance(mean, ARMA):
+        if exog:
+            return None
+        native.constant, native.ar, native.ma = True, int(mean.p), int(mean.q)
+    elif isinstance(mean, ARX):
+        native.constant, native.ar, native.exog = bool(mean.constant), int(mean.lags), exog
+    elif isinstance(mean, HARX):
+        native.constant, native.har, native.exog = bool(mean.constant), [int(h) for h in mean.horizons], exog
+    else:
+        return None
+    return native
+
+
+def native_spec(spec: Any, exog: int = 0) -> Optional[api.ModelSpec]:
+    """The native specification for a composition, or None if not yet covered."""
+    from .components.vol import APARCH, EGARCH, GARCH, GJRGARCH
+
+    mean = native_mean(spec.get_component(Role.MEAN), exog)
+    if mean is None or getattr(spec.get_component(Role.MEAN), "_is_auto", False):
+        return None
+    volatility = spec.get_component(Role.VOLATILITY)
+    density = spec.get_component(Role.DENSITY)
+    volatility_kind = {
+        GARCH: api.VolatilityKind.garch, GJRGARCH: api.VolatilityKind.gjr, EGARCH: api.VolatilityKind.egarch,
+        APARCH: api.VolatilityKind.aparch, type(None): api.VolatilityKind.constant,
+    }.get(type(volatility))
+    if volatility_kind is None or getattr(volatility, "_is_auto", False):
+        return None
+    kind = DENSITIES.get("Normal" if density is None else type(density).__name__)
+    if kind is None:
+        return None
+    native = api.ModelSpec()
+    native.mean = mean
+    native.volatility = volatility_kind
+    native.p, native.q = (0, 0) if volatility is None else (int(volatility.p), int(volatility.q))
+    native.density = kind
+    return native
+
+
+@dataclass(frozen=True)
+class PreparedSample:
+    """The rows a model sees: y and x from row `skip` on (scaled), so that the
+    first scored row is max(hold_back, lags)."""
+
+    native: Any
+    y: NDArray[np.float64]
+    x: Optional[NDArray[np.float64]]
+    skip: int
+    hold_back: int
+    original_n_obs: int
+    scale: float
+
+
+def prepare_sample(spec: Any, data: Any, x: Any = None, hold_back: int = 0,
+                   scale: Optional[float] = None) -> PreparedSample:
+    from ._validation import validate_data, validate_hold_back, validate_regressors, validate_scale
+
+    y = validate_data(np.asarray(data, dtype=np.float64))
+    held = validate_hold_back(hold_back)
+    if held >= len(y):
+        raise ValueError("hold_back leaves no observations to estimate on")
+    scale_factor = validate_scale(scale)
+    x_all = None if x is None else validate_regressors(x, len(y))
+    mean = spec.get_component(Role.MEAN)
+    if x_all is not None and hasattr(mean, "set_n_exog"):
+        mean.set_n_exog(x_all.shape[1])
+    elif x_all is None and getattr(mean, "n_exog", 0):
+        raise ValueError(f"{mean.signature} requires exogenous regressors via `x=`.")
+    native = native_spec(spec, 0 if x_all is None else x_all.shape[1])
+    if native is None:
+        raise NotImplementedError(f"{spec} cannot be estimated: unsupported component combination")
+    skip = max(held - native.mean.conditioning, 0)  # rows before the lag rows of the first scored row
+    return PreparedSample(
+        native=native,
+        y=np.ascontiguousarray(y[skip:] * scale_factor, dtype=np.float64),
+        x=None if x_all is None else np.ascontiguousarray(x_all[skip:]),
+        skip=skip,
+        hold_back=held,
+        original_n_obs=len(y),
+        scale=scale_factor,
+    )
+
+
+def fit_spec(
+    spec: Any,
+    data: NDArray[np.float64],
+    *,
+    x: Any = None,
+    hold_back: int = 0,
+    scale: Optional[float] = None,
+    method: str = "mle",
+    coordinates: Optional[str] = None,
+    maxiter: int = 1000,
+    accuracy: float = 1e-10,
+    initial_params: Optional[NDArray[np.float64]] = None,
+    index: Any = None,
+    name: Optional[str] = None,
+    **unknown: Any,
+) -> EstimationResult:
+    """Fit a composition.
+
+    The likelihood scores the rows from max(hold_back, lags) on, where lags is
+    the mean's largest y lag: held-back rows are not scored but still supply the
+    mean's lags, so every model with the same hold_back scores the same rows.
+    Paths and the index cover the scored rows. `method="qmle"` fits the mean and variance
+    parameters by Gaussian quasi-maximum likelihood with sandwich covariance;
+    with a non-Normal density the shape parameters follow in a second stage.
+    """
+    if unknown:
+        raise TypeError(f"fit() got unexpected keyword argument(s) {', '.join(map(repr, unknown))}; its estimation "
+                        "options are method, coordinates, maxiter, accuracy and initial_params")
+    sample = prepare_sample(spec, data, x, hold_back, scale)
+    native, y, x_arr, skip, held = sample.native, sample.y, sample.x, sample.skip, sample.hold_back
+    original_n_obs, scale_factor = sample.original_n_obs, sample.scale
+    if coordinates not in _COORDINATES:
+        raise ValueError("coordinates must be 'automatic', 'z' or 'theta'")
+    estimator = {"mle": api.Estimator.mle, "qmle": api.Estimator.qmle}.get(str(method).lower())
+    if estimator is None:
+        raise ValueError("method must be 'mle' or 'qmle'")
+
+    model = api.Model(native)
+    options = api.FitOptions()
+    options.estimator = estimator
+    options.coordinates = _COORDINATES[coordinates]
+    options.maximum_iterations = int(maxiter)
+    options.accuracy = float(accuracy)
+    if initial_params is not None:  # parameters, or a previous result to warm start from
+        source = getattr(initial_params, "spec", None)
+        if source is not None and str(source) != str(spec):
+            raise ValueError(f"Warm-start result is for {source}; this fit is {spec}.")
+        start = np.asarray(getattr(initial_params, "params", initial_params), dtype=np.float64).ravel()
+        if start.size != model.dimension:
+            raise ValueError(f"initial_params needs {model.dimension} values ({', '.join(model.parameter_names)}), "
+                             f"received {start.size}.")
+        options.start = [float(v) for v in start]
+
+    started = time.perf_counter()
+    native_result = api.fit(model, y, options, x_arr)
+    elapsed = time.perf_counter() - started
+    if not native_result.estimate_available:
+        raise RuntimeError("Fit failed: " + "; ".join(native_result.warnings))
+
+    theta = np.array(native_result.theta)
+    phases = tuple(native_result.phases)
+    message = "; ".join(native_result.warnings) or "Converged and stationary."
+    optimization = NativeOptimizationResult(
+        x=theta,
+        fun=-native_result.log_likelihood,
+        success=native_result.success,
+        nit=sum(phase.iterations for phase in phases),
+        message=message,
+        nfev=sum(phase.value_requests + phase.gradient_requests for phase in phases),
+        njev=sum(phase.gradient_requests for phase in phases),
+    )
+    fit_info = FitMetadata(
+        solver="+".join(phase.name for phase in phases),
+        optimization_space="+".join(phase.name.split(":")[0] for phase in phases),
+        optimizer_phases=tuple(phase.name for phase in phases),
+        optimizer_terminated=native_result.termination == api.Termination.converged,
+        stationarity_status="stationary" if native_result.stationary else "not_stationary",
+        inference_status=native_result.inference.name,
+        kkt_residual=float(native_result.kkt_residual),
+        kkt_tolerance=float(native_result.kkt_tolerance),
+        function_evaluations=optimization.nfev,
+        gradient_evaluations=optimization.njev,
+        hessian_evaluations=sum(phase.hessian_requests for phase in phases),
+        maxiter=int(maxiter),
+        warm_started=initial_params is not None,
+        internal_data_scale=float(native_result.data_scale),
+        likelihood_n_obs=int(native_result.scored),
+        requested_hold_back=held,
+        effective_hold_back=skip + native.mean.conditioning,  # rows before the first scored row
+        original_n_obs=original_n_obs,
+        effective_n_obs=len(y),
+        scale=scale_factor,
+        warnings=tuple(native_result.warnings),
+    )
+    def matrix(values: Any) -> Optional[NDArray[np.float64]]:
+        return np.array(values) if values.size else None
+
+    qmle = native_result.estimator == api.Estimator.qmle
+    from ._evaluation import unpack_components
+
+    unpack_components(spec, theta)
+    first = skip + native.mean.conditioning
+    result = EstimationResult(
+        spec=spec,
+        optimization_result=optimization,
+        data=y[native.mean.conditioning:],
+        sigma2=np.array(native_result.variance),
+        time_elapsed=elapsed,
+        hessian=matrix(native_result.hessian),
+        cov_matrix=matrix(native_result.covariance),
+        opg=matrix(native_result.opg),
+        cov_robust=matrix(native_result.robust_covariance),
+        fit_info=fit_info,
+        method="QMLE" if qmle else "MLE",
+        index=None if index is None else index[first:],
+        name=name,
+    )
+    result._resid = np.array(native_result.residual)
+    result._fit_x = x_arr
+    result.attach_sample(model, y, x_arr, skip)
+    return result

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 api = pytest.importorskip("scivol._scivolapi")
-from scivol._devtools.ad_oracle import _jax_modules, _value_grad_hess, garch_value_grad_hess  # noqa: E402
+from tests._oracle import _jax_modules, _value_grad_hess, garch_value_grad_hess  # noqa: E402
 
 ORDERS = [(1, 1), (2, 1), (1, 2), (2, 3)]
 LOG_2PI = np.log(2.0 * np.pi)

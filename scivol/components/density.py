@@ -1,7 +1,7 @@
 # scivol/components/density.py
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 
@@ -20,8 +20,6 @@ class Normal(Component):
     @property  
     def n_params(self): return 0
     
-    def default_start(self, data): return np.array([])
-    def bounds(self): return []
     def pack(self, params_dict): return np.array([])
     def unpack(self, flat_params): 
         self.fitted_params = {}
@@ -39,8 +37,6 @@ class StudentT(Component):
     @property
     def n_params(self): return 1  # degrees of freedom
     
-    def default_start(self, data): return np.array([10.0])
-    def bounds(self): return [(2.01, 100.0)]
     def pack(self, params_dict): return np.array([params_dict['nu']])
     def unpack(self, flat_params):
         self.fitted_params = {'nu': flat_params[0]} if len(flat_params) > 0 else {}
@@ -68,12 +64,6 @@ class SkewT(Component):
     
     @property
     def n_params(self): return 2  # degrees of freedom + skewness
-    
-    def default_start(self, data): 
-        return np.array([10.0, 0.0])  # nu=10, lambda=0 (symmetric)
-    
-    def bounds(self): 
-        return [(2.01, 100.0), (-0.99, 0.99)]  # nu bounds, lambda bounds
     
     def pack(self, params_dict): 
         return np.array([params_dict['nu'], params_dict['lam']])
@@ -107,12 +97,6 @@ class GED(Component):
     def n_params(self):
         return 1
 
-    def default_start(self, data):
-        return np.array([1.5], dtype=np.float64)
-
-    def bounds(self):
-        return [(1.01, 100.0)]
-
     def pack(self, params_dict):
         return np.array([params_dict["nu"]], dtype=np.float64)
 
@@ -136,12 +120,6 @@ class GeneralizedHyperbolic(Component):
     @property
     def n_params(self):
         return 3
-
-    def default_start(self, data):
-        return np.array([0.0, 1.0, 1.0], dtype=np.float64)
-
-    def bounds(self):
-        return [(-0.995, 0.995), (0.1, 25.0), (-6.0, 6.0)]
 
     def pack(self, params_dict):
         return np.array(
@@ -177,12 +155,6 @@ class NormalInverseGaussian(Component):
     def n_params(self):
         return 2
 
-    def default_start(self, data):
-        return np.array([0.0, 1.0], dtype=np.float64)
-
-    def bounds(self):
-        return [(-0.995, 0.995), (0.1, 25.0)]
-
     def pack(self, params_dict):
         return np.array(
             [params_dict["rho"], params_dict["zeta"]], dtype=np.float64
@@ -214,12 +186,6 @@ class Hyperbolic(Component):
     @property
     def n_params(self):
         return 2
-
-    def default_start(self, data):
-        return np.array([0.0, 1.0], dtype=np.float64)
-
-    def bounds(self):
-        return [(-0.995, 0.995), (0.1, 25.0)]
 
     def pack(self, params_dict):
         return np.array(
@@ -256,12 +222,6 @@ class VarianceGamma(Component):
     @property
     def n_params(self):
         return 2
-
-    def default_start(self, data):
-        return np.array([0.0, 3.0], dtype=np.float64)
-
-    def bounds(self):
-        return [(-0.995, 0.995), (1.51, 50.0)]
 
     def pack(self, params_dict):
         return np.array(
@@ -322,12 +282,6 @@ class AutoDensity(Component):
     def n_params(self) -> int:
         # Placeholder - actual n_params depends on selected distribution
         return 0
-    
-    def default_start(self, data: np.ndarray) -> np.ndarray:
-        return np.array([])
-    
-    def bounds(self) -> List[Tuple[float, float]]:
-        return []
     
     def pack(self, params_dict: dict) -> np.ndarray:
         return np.array([])

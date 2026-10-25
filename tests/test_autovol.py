@@ -58,11 +58,9 @@ class TestAutoVolConstruction:
         assert av.max_q == 1
 
     def test_placeholder_methods(self):
-        """AutoVol is a placeholder — n_params, bounds, etc. are empty."""
+        """AutoVol is a placeholder: it has no parameters."""
         av = AutoVol()
         assert av.n_params == 0
-        assert av.bounds() == []
-        assert len(av.default_start(np.array([]))) == 0
         assert av.pack({}).shape == (0,)
         assert av.unpack(np.array([])) == {}
 
