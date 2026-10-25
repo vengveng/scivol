@@ -13,7 +13,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 from . import _scivolapi as api
-from ._evaluation import FilteredState, ForecastResult, SimulationResult, _coerce_params, _draw_standardized_innovations
+from dataclasses import dataclass
+
+from ._evaluation import FilteredState, ForecastResult, SimulationResult, _coerce_params
 from ._gh import fixed_gh_lambda
 from .result import EstimationResult
 from .roles import Role
@@ -60,12 +62,56 @@ def _shapes(model: "api.Model", theta: NDArray[np.float64], distribution: str) -
     }
 
 
-def _innovations(distribution: str, shapes: dict[str, Optional[float]], paths: int, horizon: int,
-                 seed: Any) -> NDArray[np.float64]:
+_SHAPE_COUNT = {"normal": 0, "student_t": 1, "skew_t": 2, "ged": 1, "generalized_hyperbolic": 3, "nig": 2,
+                "hyperbolic": 2, "variance_gamma": 2}
+
+
+def innovation_density(spec: Any, theta: NDArray[np.float64]) -> "api.MarginalDensity":
+    """The standardized innovation density of a spec at theta (its shapes are theta's trailing entries)."""
+    from ._scivolapi_fit import _DENSITIES
+
+    density = spec.get_component(Role.DENSITY)
+    kind = _DENSITIES["Normal" if density is None else type(density).__name__]
+    count = _SHAPE_COUNT[kind.name]
+    return api.MarginalDensity(kind, [float(v) for v in theta[len(theta) - count:]] if count else [])
+
+
+def uniforms(rng: np.random.Generator, size: Any) -> NDArray[np.float64]:
+    """Uniform draws on the midpoints of a 2^-53 grid: strictly inside (0, 1)."""
+    return (rng.integers(0, 2 ** 53, size=size) + 0.5) * 2.0 ** -53
+
+
+def _innovations(density: "api.MarginalDensity", paths: int, horizon: int, seed: Any) -> NDArray[np.float64]:
+    """paths x horizon standardized innovations by inversion of the native distribution function."""
     rng = np.random.default_rng(seed)
-    draws = _draw_standardized_innovations(rng, paths * horizon, distribution, shapes["nu"], shapes["lam"],
-                                           shapes["rho"], shapes["zeta"], shapes["shape_lambda"])
-    return np.ascontiguousarray(draws.reshape(paths, horizon))
+    u = uniforms(rng, paths * horizon)
+    return np.ascontiguousarray(api.quantiles(density.density, density.shape, u).reshape(paths, horizon))
+
+
+@dataclass(slots=True)
+class NativeForecastResult(ForecastResult):
+    """Forecasts whose quantiles come from the model itself.
+
+    One step ahead y_{T+1} = mean + sqrt(h_{T+1}) z exactly, so its quantiles are
+    the innovation density's. Beyond one step y_{T+k} mixes over the random
+    path of h and the mean's lags; its quantiles are those of `simulations`
+    simulated paths (`seed`).
+    """
+
+    native_density: Any = None
+    _paths: Any = None
+
+    def quantile(self, level: float | NDArray[np.float64]) -> NDArray[np.float64]:
+        levels = np.asarray(level, dtype=np.float64)
+        flat = np.atleast_1d(levels)
+        if np.any((flat <= 0.0) | (flat >= 1.0)):
+            raise ValueError("Quantile levels must lie strictly between 0 and 1.")
+        z = api.quantiles(self.native_density.density, self.native_density.shape, np.ascontiguousarray(flat))
+        out = np.empty((len(self.mean), flat.size))
+        out[0] = self.mean[0] + np.sqrt(self.residual_variance[0]) * z
+        if len(self.mean) > 1:
+            out[1:] = np.quantile(self._paths()[:, 1:], flat, axis=0).T
+        return out[:, 0] if levels.ndim == 0 else out
 
 
 class _Bound:
@@ -138,19 +184,29 @@ def forecast(spec: Any, model: "api.Model", theta: NDArray[np.float64], y: NDArr
     if columns and future is None:
         raise ValueError(f"Forecasts need the exogenous regressors of the horizon: x with shape ({horizon}, {columns}).")
     distribution = _density(spec)
-    shapes = _shapes(model, theta, distribution)
-    z = None
+    density = innovation_density(spec, theta)
     from .components.vol import APARCH
 
-    if horizon > 1 and isinstance(spec.get_component(Role.VOLATILITY), APARCH):
-        z = _innovations(distribution, shapes, simulations, horizon, seed)
-    out = api.forecast(model, theta, y, horizon, x, future, z)
-    return ForecastResult(
+    def draws() -> NDArray[np.float64]:
+        return _innovations(density, int(simulations), horizon, seed)
+
+    aparch = horizon > 1 and isinstance(spec.get_component(Role.VOLATILITY), APARCH)
+    out = api.forecast(model, theta, y, horizon, x, future, draws() if aparch else None)
+    cache: dict[str, NDArray[np.float64]] = {}
+
+    def paths() -> NDArray[np.float64]:  # simulated y paths, for quantiles beyond one step
+        if "y" not in cache:
+            cache["y"] = api.simulate(model, theta, y, draws(), x, future)["y"]
+        return cache["y"]
+
+    return NativeForecastResult(
         mean=np.asarray(out["mean"]),
         variance=np.asarray(out["variance"]),
         residual_variance=np.asarray(out["residual_variance"]),
         distribution=distribution,
-        **shapes,
+        **_shapes(model, theta, distribution),
+        native_density=density,
+        _paths=paths,
     )
 
 
@@ -164,8 +220,7 @@ def simulate(spec: Any, n_obs: int, params: Any, *, burn: int = 500, seed: Any =
     regressors = _regressors(x, total)
     model = _native_model(spec, regressors)
     theta = np.ascontiguousarray(_coerce_params(spec, params))
-    distribution = _density(spec)
-    z = _innovations(distribution, _shapes(model, theta, distribution), 1, total, seed)
+    z = _innovations(innovation_density(spec, theta), 1, total, seed)
     out = api.simulate_series(model, theta, z, regressors)
     keep = slice(burn, total)
     return SimulationResult(

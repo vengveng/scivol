@@ -6,6 +6,7 @@
 #include <stdexcept>
 
 #include "correlation/density.hpp"
+#include "correlation/recursion.hpp"
 #include "correlation/work.hpp"
 
 namespace scivolapi {
@@ -61,42 +62,35 @@ void recursion(const Layout& layout, const CorrelationSample& sample, const doub
     double* q = work.ring + slot * m;
     double* first = work.first + slot * k * m;
     double* second = work.second + slot * pairs * m;
-    double slack = 1.0;
-    for (std::size_t a = 0; a < k; ++a) slack -= theta[a];
-    for (std::size_t x = 0; x < m; ++x) q[x] = slack * sample.target[x];
-    if (order >= 1)
-        for (std::size_t a = 0; a < k; ++a)
-            for (std::size_t x = 0; x < m; ++x) first[a * m + x] = -sample.target[x];
+    q_step(layout, theta, sample.target.data(), n, std::min(layout.p, t), std::min(layout.q, t),
+           [&](std::size_t lag) { return sample.eps.data() + (t - lag) * n; },
+           [&](std::size_t lag) { return work.ring + ((t - lag) % slots) * m; }, q);
+    if (order < 1) return;
+    for (std::size_t a = 0; a < k; ++a)
+        for (std::size_t x = 0; x < m; ++x) first[a * m + x] = -sample.target[x];
     if (order >= 2) std::fill_n(second, pairs * m, 0.0);
 
     for (std::size_t lag = 1; lag <= std::min(layout.p, t); ++lag) {
         const double* eps = sample.eps.data() + (t - lag) * n;
         for (std::size_t i = 0; i < n; ++i)
-            for (std::size_t j = 0; j < n; ++j) {
-                const double shock = eps[i] * eps[j];
-                q[i * n + j] += theta[lag - 1] * shock;
-                if (order >= 1) first[(lag - 1) * m + i * n + j] += shock;
-            }
+            for (std::size_t j = 0; j < n; ++j) first[(lag - 1) * m + i * n + j] += eps[i] * eps[j];
     }
     for (std::size_t lag = 1; lag <= std::min(layout.q, t); ++lag) {
         const std::size_t previous = (t - lag) % slots, b = layout.p + lag - 1;
         const double* qlag = work.ring + previous * m;
-        for (std::size_t x = 0; x < m; ++x) q[x] += theta[b] * qlag[x];
-        if (order >= 1) {
-            const double* glag = work.first + previous * k * m;
+        const double* glag = work.first + previous * k * m;
+        for (std::size_t a = 0; a < k; ++a)
+            for (std::size_t x = 0; x < m; ++x)
+                first[a * m + x] += theta[b] * glag[a * m + x] + (a == b ? qlag[x] : 0.0);
+        if (order >= 2) {
+            const double* hlag = work.second + previous * pairs * m;
             for (std::size_t a = 0; a < k; ++a)
-                for (std::size_t x = 0; x < m; ++x)
-                    first[a * m + x] += theta[b] * glag[a * m + x] + (a == b ? qlag[x] : 0.0);
-            if (order >= 2) {
-                const double* hlag = work.second + previous * pairs * m;
-                for (std::size_t a = 0; a < k; ++a)
-                    for (std::size_t c = a; c < k; ++c) {
-                        const std::size_t pair = packed(k, a, c);
-                        for (std::size_t x = 0; x < m; ++x)
-                            second[pair * m + x] += theta[b] * hlag[pair * m + x]
-                                + (a == b ? glag[c * m + x] : 0.0) + (c == b ? glag[a * m + x] : 0.0);
-                    }
-            }
+                for (std::size_t c = a; c < k; ++c) {
+                    const std::size_t pair = packed(k, a, c);
+                    for (std::size_t x = 0; x < m; ++x)
+                        second[pair * m + x] += theta[b] * hlag[pair * m + x]
+                            + (a == b ? glag[c * m + x] : 0.0) + (c == b ? glag[a * m + x] : 0.0);
+                }
         }
     }
 }

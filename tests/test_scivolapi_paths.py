@@ -267,8 +267,9 @@ def test_simulated_series_are_reproducible_and_stationary():
     ("egarch", "variance_gamma", [-0.3, 2.5]),
     ("gjr", "skew_t", [6.0, -0.3]),
 ])
-def test_drawn_innovations_follow_the_native_density(data, volatility, density, shape):
-    """Exact forecasts (native density moments) against averages over Python-drawn paths."""
+def test_drawn_innovations_follow_the_likelihoods_density(data, volatility, density, shape):
+    """Exact forecasts (exponential and negative moments) against averages over paths drawn by
+    inverting the native distribution function: the two must describe the same density."""
     from scivol.components.density import GED, GeneralizedHyperbolic, Hyperbolic, NormalInverseGaussian, Normal, \
         SkewT, VarianceGamma
     from scivol.components.vol import EGARCH, GJRGARCH
@@ -279,10 +280,8 @@ def test_drawn_innovations_follow_the_native_density(data, volatility, density, 
     spec = (EGARCH if volatility == "egarch" else GJRGARCH)(1, 1) + names[density]()
     model = model_for(mean_spec(constant=False), volatility, density)
     theta = np.array(volatility_point(volatility, 1, 1, "normal") + shape)
-    distribution = native_eval._density(spec)
-    shapes = native_eval._shapes(model, theta, distribution)
     paths, horizon = 100_000, 4
-    z = native_eval._innovations(distribution, shapes, paths, horizon, 11)
+    z = native_eval._innovations(native_eval.innovation_density(spec, theta), paths, horizon, 11)
     assert abs(z.mean()) < 5 / np.sqrt(z.size) and z.var() == pytest.approx(1.0, abs=0.02)
     f = api.forecast(model, theta, y, horizon)
     s = api.simulate(model, theta, y, z)

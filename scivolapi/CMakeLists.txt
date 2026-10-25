@@ -19,6 +19,7 @@ add_library(scivolapi
     src/finalize.cpp
     src/simulate.cpp
     src/correlation.cpp
+    src/correlation_paths.cpp
     ${SCIVOLAPI_OPTIMIZE_SOURCES}
     ${SCIVOLAPI_MATH_SOURCES}
 )

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "jet.hpp"
+#include "model.hpp"
 
 namespace scivolapi {
 
@@ -71,5 +72,32 @@ private:
     const CorrelationSample& sample_;
     std::vector<double> work_;
 };
+
+// The innovation density of one marginal model: its density and shape values.
+struct MarginalDensity {
+    DensityKind density = DensityKind::normal;
+    std::vector<double> shape;
+};
+
+// Generated innovations and correlations: paths x horizon x series and
+// paths x horizon x series x series, row-major.
+struct CorrelationPaths {
+    std::size_t paths = 0, horizon = 0, series = 0;
+    std::vector<double> innovation, correlation;
+};
+
+// Continues the correlation model at theta past the sample eps (rows x series:
+// the marginal innovations it was fitted on) along `paths` paths. At each step:
+// R_t from the recursion; a copula draw e* = L g with L L' = R_t (Student-t:
+// e* = sqrt((nu - 2) / c) L g, c ~ chi2(nu)); and the marginal innovations
+// z_i = F_i^{-1}(G(e*_i)), G the copula's standardized marginal and F_i the
+// marginal densities, which drive the recursion. normals: paths x horizon x series
+// standard normal draws; chi2: paths x horizon draws (Student-t only). Each
+// marginal model then continues along its column of z.
+CorrelationPaths simulate_correlation(const CorrelationModel& model, std::span<const double> theta,
+                                      std::span<const double> eps, std::size_t series,
+                                      std::span<const double> target, std::span<const MarginalDensity> marginals,
+                                      std::span<const double> normals, std::span<const double> chi2,
+                                      std::size_t paths);
 
 }  // namespace scivolapi

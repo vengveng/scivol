@@ -6,11 +6,14 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
+#include <array>
 #include <memory>
 #include <optional>
 #include <vector>
 
 #include <scivolapi/scivolapi.hpp>
+
+#include "../src/density/distribution.hpp"
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -20,6 +23,7 @@ namespace {
 
 using Vector = nb::ndarray<const double, nb::ndim<1>, nb::c_contig, nb::device::cpu>;
 using Matrix = nb::ndarray<const double, nb::ndim<2>, nb::c_contig, nb::device::cpu>;
+using Tensor3 = nb::ndarray<const double, nb::ndim<3>, nb::c_contig, nb::device::cpu>;
 using NumpyVector = nb::ndarray<nb::numpy, double, nb::ndim<1>>;
 using NumpyMatrix = nb::ndarray<nb::numpy, double, nb::ndim<2>>;
 using ReadOnlyVector = nb::ndarray<nb::numpy, const double, nb::ndim<1>>;
@@ -129,6 +133,14 @@ nb::dict evaluate_correlation(BoundCorrelationJet& self, const Vector& point, un
         d_out["correlations"] = nb::cast(nb::ndarray<nb::numpy, double, nb::ndim<3>>(heap->data(), {n, k, k}, owner));
     }
     return d_out;
+}
+
+template<std::size_t D>
+nb::object owned_tensor(std::vector<double> values, std::array<std::size_t, D> shape)
+{
+    auto* heap = new std::vector<double>(std::move(values));
+    nb::capsule owner(heap, [](void* p) noexcept { delete static_cast<std::vector<double>*>(p); });
+    return nb::cast(nb::ndarray<nb::numpy, double>(heap->data(), D, shape.data(), owner));
 }
 
 nb::dict simulation_dict(Simulation s)
@@ -396,6 +408,56 @@ NB_MODULE(_scivolapi, m)
         .def("z", [](BoundCorrelationJet& j, const Vector& z, unsigned request) {
             return evaluate_correlation(j, z, request, true);
         }, "z"_a, "request"_a);
+    m.def("distribution",
+          [](DensityKind kind, const std::vector<double>& shape, const Vector& z) {
+              const std::size_t n = z.shape(0);
+              std::vector<double> lower(n), upper(n);
+              for (std::size_t i = 0; i < n; ++i)
+                  if (detail::distribution(kind, shape.empty() ? nullptr : shape.data(), z.data()[i], lower[i], upper[i])
+                      != detail::ExpectationStatus::ok)
+                      throw std::domain_error("the distribution function could not be computed accurately");
+              return nb::make_tuple(owned_vector(std::move(lower)), owned_vector(std::move(upper)));
+          },
+          "density"_a, "shape"_a, "z"_a, "Both tails P(Z <= z), P(Z > z) of the standardized density.");
+    m.def("quantiles",
+          [](DensityKind kind, const std::vector<double>& shape, const Vector& u, bool upper) {
+              const std::size_t n = u.shape(0);
+              std::vector<double> out(n);
+              const double* s = shape.empty() ? nullptr : shape.data();
+              bool ok = true;
+              if (upper) {
+                  for (std::size_t i = 0; i < n && ok; ++i)
+                      ok = detail::quantile_upper(kind, s, u.data()[i], out[i]) == detail::ExpectationStatus::ok;
+              } else {
+                  ok = detail::quantiles(kind, s, u.data(), n, out.data()) == detail::ExpectationStatus::ok;
+              }
+              if (!ok) throw std::domain_error("a quantile could not be computed accurately");
+              return owned_vector(std::move(out));
+          },
+          "density"_a, "shape"_a, "u"_a, "upper"_a = false,
+          "Quantiles of the standardized density at lower-tail (or, with upper, upper-tail) probabilities.");
+    nb::class_<MarginalDensity>(m, "MarginalDensity")
+        .def("__init__", [](MarginalDensity* self, DensityKind density, std::vector<double> shape) {
+            new (self) MarginalDensity{density, std::move(shape)};
+        }, "density"_a, "shape"_a = std::vector<double>{})
+        .def_rw("density", &MarginalDensity::density)
+        .def_rw("shape", &MarginalDensity::shape);
+    m.def("simulate_correlation",
+          [](const CorrelationModel& model, const Vector& theta, const Matrix& eps,
+             const std::vector<MarginalDensity>& marginals, const Tensor3& normals, const std::optional<Matrix>& chi2,
+             const std::optional<Matrix>& target) {
+              const std::vector<double> residuals(eps.data(), eps.data() + eps.shape(0) * eps.shape(1));
+              const std::vector<double> qbar = square(target), c = square(chi2);
+              const std::size_t paths = normals.shape(0), horizon = normals.shape(1), series = eps.shape(1);
+              CorrelationPaths r = simulate_correlation(
+                  model, view(theta), residuals, series, qbar, marginals,
+                  {normals.data(), paths * horizon * normals.shape(2)}, c, paths);
+              nb::dict out;
+              out["innovation"] = owned_tensor<3>(std::move(r.innovation), {paths, horizon, series});
+              out["correlation"] = owned_tensor<4>(std::move(r.correlation), {paths, horizon, series, series});
+              return out;
+          },
+          "model"_a, "theta"_a, "eps"_a, "marginals"_a, "normals"_a, "chi2"_a = nb::none(), "target"_a = nb::none());
     m.def("fit_correlation",
           [](const CorrelationModel& model, const Matrix& eps, const FitOptions& options,
              const std::optional<Matrix>& target) {

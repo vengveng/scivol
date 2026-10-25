@@ -159,3 +159,72 @@ def test_dcc_fit_with_native_marginals():
     assert all(isinstance(m, NativeEstimationResult) for m in r.univariate_results)
     assert r.corr("a", "b").index[0] == frame.index[0]
     assert r.forecast_correlation(4).shape == (4, 3, 3)
+
+
+# Native multivariate paths: correlations, copula innovations, marginals.
+
+@pytest.fixture(scope="module")
+def dcc_fit():
+    pd = pytest.importorskip("pandas")
+    from scivol import GARCH, GJRGARCH, Normal, SkewT
+    from scivol.dcc import DCC
+
+    eps = simulate(1200, 3, seed=11)
+    frame = pd.DataFrame(0.01 * eps, index=pd.date_range("2000", periods=1200), columns=["a", "b", "c"])
+    gaussian = DCC(1, 1).fit(frame, univariate_spec=GARCH(1, 1) + Normal(), engine="scivolapi", n_jobs=1)
+    skewed = DCC(1, 1, distribution="studentt").fit(frame, univariate_spec=GJRGARCH(1, 1) + SkewT(),
+                                                    engine="scivolapi", n_jobs=1)
+    return gaussian, skewed
+
+
+def test_one_step_correlation_is_the_recursion(dcc_fit):
+    gaussian, _ = dcc_fit
+    eps = np.asarray(gaussian._eps)
+    extended = np.vstack([eps, np.ones((1, gaussian.N))])  # R_{T+1} does not depend on row T+1
+    jet = api.CorrelationJet(gaussian._native_model, extended, gaussian.Qbar)
+    r_next = jet.theta(np.asarray(gaussian.theta), api.PATHS)["correlations"][-1]
+    np.testing.assert_allclose(gaussian.forecast_correlation(1)[0], r_next, rtol=1e-13)
+    s = gaussian.scenarios(4, seed=1)
+    np.testing.assert_allclose(s.correlation, r_next, rtol=1e-13)
+
+
+def test_gaussian_scenarios_have_the_forecast_correlation(dcc_fit):
+    gaussian, _ = dcc_fit
+    s = gaussian.scenarios(200_000, seed=2)
+    np.testing.assert_allclose(np.corrcoef(s.innovations.T), s.correlation, atol=0.01)
+    np.testing.assert_allclose(s.residuals, s.innovations * np.sqrt(s.residual_variance), rtol=1e-14)
+    np.testing.assert_allclose(s.data, s.mean + s.residuals, rtol=1e-14)
+
+
+def test_copula_innovations_follow_each_marginal_density(dcc_fit):
+    from scivol._scivolapi_eval import innovation_density
+
+    _, skewed = dcc_fit
+    s = skewed.scenarios(100_000, seed=3)
+    for i, marginal in enumerate(skewed.univariate_results):
+        density = innovation_density(marginal.spec, np.asarray(marginal.params))
+        z = np.sort(s.innovations[:, i])
+        lower, _ = api.distribution(density.density, density.shape, np.ascontiguousarray(z))
+        ks = np.max(np.abs(lower - (np.arange(1, z.size + 1) - 0.5) / z.size))
+        assert ks < 1.63 / np.sqrt(z.size) * 1.5  # well inside the 1% Kolmogorov bound
+
+
+def test_simulated_paths_continue_every_marginal(dcc_fit):
+    gaussian, skewed = dcc_fit
+    for result in (gaussian, skewed):
+        path = result.simulate(50, seed=4)
+        assert path.data.shape == (50, 3) and path.correlation.shape == (50, 3, 3)
+        np.testing.assert_allclose(path.residuals, np.sqrt(path.sigma2) * path.innovations, rtol=1e-14)
+        first = [m.forecast(1) for m in result.univariate_results]
+        np.testing.assert_allclose(path.sigma2[0], [f.residual_variance[0] for f in first], rtol=1e-13)
+        np.testing.assert_allclose(path.mean[0], [f.mean[0] for f in first], rtol=1e-12, atol=1e-15)
+        a = result.simulate(20, seed=9)
+        np.testing.assert_array_equal(a.data, result.simulate(20, seed=9).data)
+
+
+def test_forecast_covariance_is_the_average_outer_product(dcc_fit):
+    gaussian, _ = dcc_fit
+    f = gaussian.forecast(5, simulations=20_000, seed=5)
+    np.testing.assert_allclose(np.diagonal(f.residual_covariance, axis1=1, axis2=2), f.residual_variance, rtol=0.05)
+    assert np.all(np.linalg.eigvalsh(f.residual_covariance) > 0)
+    np.testing.assert_allclose(f.correlation[0], gaussian.forecast_correlation(1)[0], rtol=1e-11)  # a mean of equal matrices
