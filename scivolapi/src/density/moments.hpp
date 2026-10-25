@@ -357,10 +357,36 @@ bool log_absolute_power(const double* shape, const Dual2<N>& delta, int order, D
     if constexpr (std::is_same_v<Density, NormalDensity>) {
         out = 0.5 * log_two * delta + lgamma(0.5 * (delta + 1.0), order) + (-0.5 * log_pi);
     } else if constexpr (std::is_same_v<Density, StudentTDensity>) {
-        const auto nu = order ? Dual2<N>::variable(shape[0], 0) : Dual2<N>::constant(shape[0]);
-        if (!(delta.v < nu.v)) return false;
-        out = 0.5 * (delta * log(nu + (-2.0))) + lgamma(0.5 * (delta + 1.0), order)
-            - gamma_ratio(0.5 * (nu - delta), 0.5 * delta, order) + (-0.5 * log_pi);
+        using D = Dual2<N>;
+        const auto eta = order ? D::variable(shape[0], 0) : D::constant(shape[0]);
+        if (!domain_detail::student_t[0].contains(eta.v) || !(delta.v * eta.v < 1.0)) return false;
+        if (eta.v * std::max(1.0, delta.v) < 0.01) {
+            // Bernoulli-polynomial Gamma ratio in reciprocal degrees of freedom.
+            constexpr double bernoulli[] = {1.,-.5,1./6.,0.,-1./30.,0.,1./42.,0.,-1./30.,0.,5./66.,0.,-691./2730.,0.,7./6.,0.};
+            D correction = D::constant(0.0);
+            for (int k = 14; k >= 1; --k) {
+                D polynomial = D::constant(1.0);
+                double choose = 1.0;
+                for (int j = 1; j <= k + 1; ++j) {
+                    choose *= static_cast<double>(k + 2 - j) / j;
+                    polynomial = polynomial * (-0.5 * delta) + choose * bernoulli[j];
+                }
+                polynomial = polynomial + (-bernoulli[k + 1]);
+                const double factor = (k % 2 ? 1.0 : -1.0) / (k * (k + 1.0));
+                correction = (correction * (2.0 * eta)) + factor * polynomial;
+            }
+            out = 0.5 * log_two * delta + lgamma(0.5 * (delta + 1.0), order)
+                + (-0.5 * log_pi) + 0.5 * (delta * log(1.0 - 2.0 * eta)) + 2.0 * eta * correction;
+        } else {
+            out = 0.5*(delta*log((1.0-2.0*eta)/eta)) + lgamma(0.5*(delta+1.0),order)
+                - gamma_ratio((1.0-delta*eta)/(2.0*eta),0.5*delta,order) + (-0.5*log_pi);
+        }
+        // E[z^2]=1 identically; retain the power and mixed derivatives.
+        if (delta.v == 2.0) {
+            out.v = 0.0;
+            if (order >= 1) out.g[0] = 0.0;
+            if (order >= 2) out.h[0] = 0.0;
+        }
     } else if constexpr (std::is_same_v<Density, GedDensity>) {
         const auto nu = order ? Dual2<N>::variable(shape[0], 0) : Dual2<N>::constant(shape[0]);
         const auto r = Dual2<N>::constant(1.0) / nu;
@@ -575,10 +601,10 @@ template<class Density>
                                           Dual2<Density::shapes + 2>& out) noexcept
 {
     if (!(std::abs(gamma) < 1.0) || !(delta > 0.0) || !std::isfinite(delta)) return false;
-    if constexpr (requires (typename Density::Prepared p) { p.nu; p.lambda; p.a; }) {
-        if (!shape || !(delta < shape[0])) return false;  // Hansen skew-t
+    if constexpr (requires (typename Density::Prepared p) { p.eta; p.lambda; p.a; }) {
+        if (!shape || !(delta * shape[0] < 1.0)) return false;  // Hansen skew-t
     } else if constexpr (std::is_same_v<Density, StudentTDensity>) {
-        if (!shape || !(delta < shape[0])) return false;
+        if (!shape || !(delta * shape[0] < 1.0)) return false;
     }
     return logarithmic_expectation<Density, 2>(shape, order, [=](double x, int requested) {
         const double sign = x < 0.0 ? -1.0 : 1.0;

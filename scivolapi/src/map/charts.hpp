@@ -21,19 +21,26 @@ namespace scivolapi::detail {
 // of representable values strictly inside the open domain:
 //   lower:      (a, inf)   theta = a' + exp(z),       a' the least normal double > a
 //   symmetric:  (-c, c)    theta = c' tanh(z),        c' the greatest double < c
+//   interval:   (a, b)   theta = a' + (b'-a') logistic(z)
 //   free:       (-inf, inf) theta = z
 // The margins a', c' are floating-point margins, not model restrictions. The
 // exponential keeps scale-like parameters on a log scale at both ends, so a
-// parameter heading to infinity (nu on Gaussian data) moves like log nu.
+// parameter heading to infinity moves on its logarithmic scale.
 struct ScalarChart {
-    enum class Kind { lower, symmetric, free };
+    enum class Kind { lower, symmetric, interval, free };
     Kind kind = Kind::free;
     double bound = 0.0;  // a' or c'
 
-    static ScalarChart for_domain(double lower, double upper) noexcept
+    double left = 0.0, right = 0.0;
+    bool closed_lower = false;
+
+    static ScalarChart for_domain(double lower, double upper, bool closed = false) noexcept
     {
-        if (std::isfinite(lower) && std::isfinite(upper))  // symmetric intervals only
-            return {Kind::symmetric, std::nextafter(upper, 0.0)};
+        if (std::isfinite(lower) && std::isfinite(upper)) {
+            if (lower == -upper) return {Kind::symmetric, std::nextafter(upper, 0.0)};
+            const double a = std::nextafter(lower, upper), b = std::nextafter(upper, lower);
+            return {Kind::interval, lower, a, b, closed};
+        }
         if (std::isfinite(lower))
             return {Kind::lower, lower == 0.0 ? std::numeric_limits<double>::min()
                                               : std::nextafter(lower, std::numeric_limits<double>::infinity())};
@@ -43,11 +50,11 @@ struct ScalarChart {
     // Closed bounds for the optimizer (NaN = none).
     [[nodiscard]] double lower_bound() const noexcept
     {
-        return kind == Kind::lower ? bound : kind == Kind::symmetric ? -bound : std::numeric_limits<double>::quiet_NaN();
+        return kind == Kind::interval ? (closed_lower ? bound : left) : kind == Kind::lower ? bound : kind == Kind::symmetric ? -bound : std::numeric_limits<double>::quiet_NaN();
     }
     [[nodiscard]] double upper_bound() const noexcept
     {
-        return kind == Kind::symmetric ? bound : std::numeric_limits<double>::quiet_NaN();
+        return kind == Kind::interval ? right : kind == Kind::symmetric ? bound : std::numeric_limits<double>::quiet_NaN();
     }
 
     [[nodiscard]] double theta(double z) const noexcept
@@ -55,6 +62,10 @@ struct ScalarChart {
         switch (kind) {
         case Kind::lower: return bound + std::exp(z);
         case Kind::symmetric: return bound * std::tanh(z);
+        case Kind::interval: {
+            const double e = std::exp(-std::abs(z)), width = right - left;
+            return z < 0.0 ? left + width * (e / (1.0 + e)) : right - width * (e / (1.0 + e));
+        }
         default: return z;
         }
     }
@@ -66,6 +77,10 @@ struct ScalarChart {
         case Kind::lower:
             if (!(theta > bound)) return false;
             out = std::log(theta - bound);
+            break;
+        case Kind::interval:
+            if (!(theta > left && theta < right)) return false;
+            out = std::log(theta - left) - std::log(right - theta);
             break;
         case Kind::symmetric:
             if (!(std::abs(theta) < bound)) return false;
@@ -82,6 +97,10 @@ struct ScalarChart {
         switch (kind) {
         case Kind::lower: return std::exp(z);
         case Kind::symmetric: return bound * sech2(z);
+        case Kind::interval: {
+            const double e = std::exp(-std::abs(z));
+            return (right - left) * e / ((1.0 + e) * (1.0 + e));
+        }
         default: return 1.0;
         }
     }
@@ -90,6 +109,7 @@ struct ScalarChart {
         switch (kind) {
         case Kind::lower: return std::exp(z);
         case Kind::symmetric: return -2.0 * bound * std::tanh(z) * sech2(z);
+        case Kind::interval: return -std::tanh(0.5 * z) * first(z);
         default: return 0.0;
         }
     }

@@ -135,7 +135,8 @@ class APARCHParams:
 @dataclass
 class DistributionParams:
     """Container for distribution shape parameters."""
-    nu: Optional[float] = None       # Student-t degrees of freedom
+    eta: Optional[float] = None      # Reciprocal t tail
+    nu: Optional[float] = None       # GED shape or derived t degrees of freedom
     lam: Optional[float] = None      # Skew-t asymmetry (lambda)
     rho: Optional[float] = None      # GH asymmetry
     zeta: Optional[float] = None     # GH shape
@@ -145,7 +146,9 @@ class DistributionParams:
     def to_array(self) -> NDArray[np.float64]:
         """Flatten to 1D array."""
         parts: List[float] = []
-        if self.nu is not None:
+        if self.eta is not None:
+            parts.append(self.eta)
+        elif self.nu is not None:
             parts.append(self.nu)
         if self.lam is not None:
             parts.append(self.lam)
@@ -504,12 +507,15 @@ class EstimationResult:
         if not fp:
             return DistributionParams()
 
-        nu = fp.get('nu', fp.get('df'))  # Handle both 'nu' and 'df' keys
+        eta = fp.get('eta')
+        nu = fp.get('nu')
         lam = fp.get('lam')
         rho = fp.get('rho')
         zeta = fp.get('zeta')
         shape_lambda = fp.get('lambda')
         model = self._native()[0]
+        derived = model.innovation_density(np.ascontiguousarray(self.params, dtype=np.float64)).derived
+        nu = derived.get("nu", nu)
         fixed_lambda = None
         if "lambda" not in model.parameter_names:  # a GH member whose index the density fixes
             fixed_lambda = model.innovation_density(np.ascontiguousarray(self.params, dtype=np.float64)).named.get("lambda")
@@ -517,6 +523,7 @@ class EstimationResult:
             shape_lambda = fixed_lambda
 
         return DistributionParams(
+            eta=eta,
             nu=nu,
             lam=lam,
             rho=rho,
@@ -724,6 +731,11 @@ class EstimationResult:
         # Model info
         model_str = str(self.spec) if self.spec else "Unknown Model"
         print(f"Model:       {model_str}")
+        density = self._native()[0].innovation_density(np.ascontiguousarray(self.params, dtype=np.float64))
+        shapes = {**density.named, **density.derived}
+        if shapes:
+            description = ", ".join(f"{settings.names.resolve(name)}={value:.6g}" for name,value in shapes.items())
+            print(f"Density:     {self.density.signature} ({description})")
         print(f"Method:      {self.method}")
         print(f"Parameters:  {self.parameter_source}")
         if self.fit_info.solver is not None:
@@ -1012,9 +1024,11 @@ class EstimationResult:
         dp = self.dist_params
         if any(
             value is not None
-            for value in (dp.nu, dp.lam, dp.rho, dp.zeta, dp.shape_lambda)
+            for value in (dp.eta, dp.nu, dp.lam, dp.rho, dp.zeta, dp.shape_lambda)
         ):
             dist_params: Dict[str, float] = {}
+            if dp.eta is not None:
+                dist_params[_r('eta')] = dp.eta
             if dp.nu is not None:
                 dist_params[_r('nu')] = dp.nu
             if dp.lam is not None:
@@ -1125,7 +1139,7 @@ class EstimationResult:
         density = self._native()[0].innovation_density(np.ascontiguousarray(self.params, dtype=np.float64))
         u, _ = api.distribution(density.density, density.shape, np.ascontiguousarray(z, dtype=np.float64))
         dp = self.dist_params
-        dist_params_dict = {"nu": dp.nu, "lam": dp.lam, "rho": dp.rho, "zeta": dp.zeta, "lambda": dp.shape_lambda}
+        dist_params_dict = {"eta": dp.eta, "nu": dp.nu, "lam": dp.lam, "rho": dp.rho, "zeta": dp.zeta, "lambda": dp.shape_lambda}
         dist_name = self.density.signature if self.density is not None else "Normal"
 
         # =====================================================================
@@ -1213,6 +1227,9 @@ class EstimationResult:
             if dist_name in {"GeneralizedHyperbolic", "VarianceGamma"}:
                 dist_str += f", lambda={dp['lambda']:.4f}"
             dist_str += ")"
+        elif dp.get("eta") is not None:
+            shapes = ", ".join(f"{key}={dp[key]:.6g}" for key in ("eta", "nu", "lam") if dp.get(key) is not None)
+            dist_str = f"{dist_name} ({shapes})"
         elif dp.get("nu") is not None and dp.get("lam") is not None:
             dist_str = f"{dist_name} (nu={dp['nu']:.2f}, lam={dp['lam']:.4f})"
         elif dp.get("nu") is not None:

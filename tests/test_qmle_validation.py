@@ -160,9 +160,9 @@ class TestQMLEBasic:
         result = spec.fit(studentt_data, method='qmle')
         
         # Should have parameters
-        assert len(result.params) == 4  # omega, alpha, beta, nu
+        assert len(result.params) == 4  # omega, alpha, beta, eta
         
-        # Should have robust SEs (may be MLE for nu)
+        # Should have robust SEs (may be MLE for eta)
         if result.std_errors_robust is not None:
             assert len(result.std_errors_robust) == 4
     
@@ -267,24 +267,24 @@ class TestTwoStepStudentT:
         result = spec.fit(studentt_data, method='qmle')
         
         assert len(result.params) == 4
-        omega, alpha, beta, nu = result.params
+        omega, alpha, beta, eta = result.params
         
         assert omega > 0
         assert alpha > 0
         assert beta > 0
-        assert nu > 2
+        assert 0 <= eta < 0.5
         assert alpha + beta < 1
     
-    def test_studentt_nu_has_se(self, studentt_data):
-        """Student-t nu parameter should have standard error."""
+    def test_studentt_eta_has_se(self, studentt_data):
+        """Student-t eta has a standard error at an interior estimate."""
         spec = GARCH(1, 1) + StudentT()
         result = spec.fit(studentt_data, method='qmle')
         
         if result.std_errors is not None:
             assert len(result.std_errors) == 4
-            se_nu = result.std_errors[3]
-            assert np.isfinite(se_nu)
-            assert se_nu > 0
+            se_eta = result.std_errors[3]
+            assert np.isfinite(se_eta)
+            assert se_eta > 0
 
 
 # =============================================================================

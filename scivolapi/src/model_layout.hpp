@@ -120,8 +120,8 @@ struct Layout {
         dimension = shapes + shape_count;
         if (dimension > max_dimension) return;  // rejected by Model
 
-        auto set_scalar = [&](std::size_t index, double lower, double upper) {
-            chart[index] = ScalarChart::for_domain(lower, upper);
+        auto set_scalar = [&](std::size_t index, double lower, double upper, bool closed = false) {
+            chart[index] = ScalarChart::for_domain(lower, upper, closed);
             scalar_entry[index] = true;
         };
         auto add_simplex = [&](std::size_t from, std::size_t count) {
@@ -148,7 +148,7 @@ struct Layout {
             add_simplex(beta, q);
         }
         for (std::size_t i = 0; i < shape_count; ++i)
-            set_scalar(shapes + i, shape_domain[i].lower, shape_domain[i].upper);
+            set_scalar(shapes + i, shape_domain[i].lower, shape_domain[i].upper, shape_domain[i].closed_lower);
     }
 
     [[nodiscard]] bool egarch() const noexcept { return kind == VolatilityKind::egarch; }
@@ -397,7 +397,7 @@ struct Layout {
     {
         for (std::size_t i = 0; i < shape_count; ++i) {
             const double v = theta[shapes + i];
-            if (!(v > shape_domain[i].lower && v < shape_domain[i].upper) || std::isnan(v)) return false;
+            if (!shape_domain[i].contains(v)) return false;
         }
         return true;
     }

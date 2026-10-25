@@ -52,11 +52,12 @@ struct InnovationDensity {
 // Every shape of a density by name: the estimated ones in theta order, then the
 // constants its definition fixes (NIG: lambda = -1/2; Hyperbolic: lambda = 1).
 std::vector<std::pair<std::string, double>> named_shapes(const InnovationDensity& density);
+std::vector<std::pair<std::string, double>> derived_shapes(const InnovationDensity& density);
 
 // What the generic machinery (fitting, inference, forecasting, the Python layer)
 // may ask of a model. Consumers ask; they never inspect the specification.
 struct ModelCapabilities {
-    bool chart_covers_domain = true;     // the z coordinates represent the whole domain
+    bool chart_covers_domain = true;     // z covers the domain apart from closed boundary faces
     bool density_free_recursion = true;  // the variance recursion does not involve the density's shapes
     std::size_t exact_variance_horizon = static_cast<std::size_t>(-1);  // horizons with exact variance forecasts
 };

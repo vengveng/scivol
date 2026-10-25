@@ -33,45 +33,68 @@ def standardized_vg_rvs(rng: np.random.Generator, n: int, rho: float, shape_lamb
     return (theta * (mixing - shape_lambda) + np.sqrt(mixing) * rng.standard_normal(n)) / scale
 
 
-def _skewt_constants(nu: float, lam: float) -> tuple[float, float, float]:
+def _skewt_constants(eta: float, lam: float) -> tuple[float, float, float]:
     from scipy.special import gammaln
 
-    c = float(np.exp(gammaln(0.5 * (nu + 1.0)) - gammaln(0.5 * nu) - 0.5 * np.log(np.pi * (nu - 2.0))))
-    a = 4.0 * lam * c * (nu - 2.0) / (nu - 1.0)
+    if eta == 0.0:
+        c = float(1/np.sqrt(2*np.pi))
+        a = 4*lam*c
+        return c,a,float(np.sqrt(1+3*lam*lam-a*a))
+    if eta <= 1/128:
+        rho = eta*(-1/4 + eta**2*(1/24 + eta**2*(-1/20 + eta**2*(17/112 + eta**2*(-31/36 + eta**2*691/88)))))
+        log_c = -np.log(2*np.pi)/2-np.log1p(-2*eta)/2+rho
+    else:
+        nu = 1.0/eta
+        log_c = gammaln((nu+1)/2)-gammaln(nu/2)-(np.log(np.pi)+np.log1p(-2*eta)-np.log(eta))/2
+    c = float(np.exp(log_c))
+    a = 4*lam*c*(1-2*eta)/(1-eta)
     return c, a, float(np.sqrt(1.0 + 3.0 * lam * lam - a * a))
 
 
-def hansen_skewt_ppf(levels: NDArray[np.float64], nu: float, lam: float) -> NDArray[np.float64]:
+def hansen_skewt_ppf(levels: NDArray[np.float64], eta: float, lam: float) -> NDArray[np.float64]:
     """Quantiles of Hansen's (1994) skewed t, piecewise through the standardized t."""
-    from scipy.stats import t as t_dist
+    from scipy.stats import t as t_dist, norm
 
     levels = np.asarray(levels, dtype=np.float64)
     left = levels < 0.5 * (1.0 - lam)
     base = np.where(left, levels / (1.0 - lam), (levels + lam) / (1.0 + lam))
     scale = np.where(left, 1.0 - lam, 1.0 + lam)
-    _, a, b = _skewt_constants(nu, lam)
-    return (scale * t_dist.ppf(base, df=nu) * np.sqrt((nu - 2.0) / nu) - a) / b
+    if eta == 0.0:
+        _, a, b = _skewt_constants(eta,lam)
+        return (scale*norm.ppf(base)-a)/b
+    nu = 1.0 / eta
+    _, a, b = _skewt_constants(eta, lam)
+    return (scale * t_dist.ppf(base, df=nu) * np.sqrt(1-2*eta) - a) / b
 
 
-def egarch_abs_moment(distribution: str, nu: float | None, lam: float | None) -> float:
+def egarch_abs_moment(distribution: str, shape: float | None, lam: float | None) -> float:
     """E|z| of the standardized density (EGARCH's centring)."""
     from scipy.integrate import quad
     from scipy.special import gammaln
 
+    if shape == 0.0:
+        if distribution == "StudentT": return float(np.sqrt(2/np.pi))
+        if distribution == "SkewT":
+            from scipy.integrate import quad
+            return float(quad(lambda u: abs(hansen_skewt_ppf(np.array([u]),0.,lam)[0]),0.,1.,epsabs=1e-12)[0])
+    eta = shape
     if distribution == "Normal":
         return float(np.sqrt(2.0 / np.pi))
     if distribution == "StudentT":
-        return float(np.exp(np.log(2.0) + 0.5 * np.log(nu - 2.0) + gammaln(0.5 * (nu + 1.0)) - np.log(nu - 1.0)
-                            - 0.5 * np.log(np.pi) - gammaln(0.5 * nu)))
+        c, _, _ = _skewt_constants(eta,0.)
+        return 2*c*(1-2*eta)/(1-eta)
     if distribution == "GED":
+        nu = shape
         return float(np.exp(gammaln(2.0 / nu) - 0.5 * (gammaln(1.0 / nu) + gammaln(3.0 / nu))))
     if distribution == "SkewT":
-        c, a, b = _skewt_constants(nu, lam)
+        c, a, b = _skewt_constants(eta, lam)
 
         def density(z: float) -> float:
             u = b * z + a
             v = u / ((1.0 - lam) if u < 0.0 else (1.0 + lam))
-            return c * b * (1.0 + v * v / (nu - 2.0)) ** (-0.5 * (nu + 1.0))
+            q = eta*v*v/(1-2*eta)
+            phi = np.log1p(q)/q if q else 1.0
+            return c*b*np.exp(-.5*(1+eta)/(1-2*eta)*v*v*phi)
 
         join = -a / b
         pieces = [(-np.inf, min(join, 0.0)), (min(join, 0.0), max(join, 0.0)), (max(join, 0.0), np.inf)]

@@ -8,7 +8,7 @@ Usage::
     # Rename parameters for display
     scivol.settings.names.gamma = "zeta"
     scivol.settings.names.alpha = "a"
-    scivol.settings.names.nu = "df"
+    scivol.settings.names.eta = "tail"
 
     # Reset all overrides
     scivol.settings.names.reset()
@@ -39,6 +39,7 @@ class ParamNames:
         "alpha": "alpha",
         "gamma": "gamma",
         "beta": "beta",
+        "eta": "eta",
         "nu": "nu",
         "lambda": "lambda",
         "lam": "lam",

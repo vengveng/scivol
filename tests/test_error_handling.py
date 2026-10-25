@@ -169,14 +169,14 @@ class TestBoundaryParameters:
             # Persistence should be high (close to true value)
             assert gp.persistence > 0.8
     
-    def test_studentt_near_nu_boundary(self, sample_data):
-        """Test Student-t with nu close to 2 (heavy tails)."""
+    def test_studentt_tail_domain(self, sample_data):
+        """The reciprocal tail includes the Normal boundary."""
         spec = GARCH(1, 1) + StudentT()
         result = spec.fit(sample_data)
         
-        # nu should be > 2 (required for finite variance)
-        nu = result.params[-1]
-        assert nu > 2.0
+        # The reciprocal tail stays in its finite-variance domain.
+        eta = result.params[-1]
+        assert 0 <= eta < 0.5
     
     def test_skewt_lambda_bounded(self, sample_data):
         """Test Skew-t lambda stays in (-1, 1)."""

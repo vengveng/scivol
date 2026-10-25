@@ -209,6 +209,22 @@ def test_series_start_at_the_stationary_values():
 from scivol import _evaluation as native_eval  # noqa: E402
 
 
+@pytest.mark.parametrize("density", ["student_t", "skew_t", "ged"])
+def test_parameter_mapping_accepts_only_native_shape_names(data, density):
+    from scivol import GARCH, GED, SkewT, StudentT
+
+    component = {"student_t": StudentT, "skew_t": SkewT, "ged": GED}[density]()
+    spec = GARCH(1, 1)+component
+    params = {"omega": .05, "alpha": .1, "beta": .8}
+    params.update({"nu": 1.5} if density == "ged" else {"eta": .1})
+    if density == "skew_t":
+        params["lam"] = .2
+    assert np.isfinite(spec.filter(data[0], params=params).log_likelihood)
+    extra = "eta" if density == "ged" else "nu"
+    with pytest.raises(ValueError, match=f"Unknown parameters: {extra}"):
+        spec.filter(data[0], params={**params, extra: .1})
+
+
 def test_a_fitted_result_filters_and_forecasts_natively(data):
     from scivol import ARX, GJRGARCH, StudentT
 
@@ -225,7 +241,7 @@ def test_a_fitted_result_filters_and_forecasts_natively(data):
     out = api.forecast(model, np.array(result.params), y, 5, np.ascontiguousarray(x), future)
     np.testing.assert_array_equal(fc.mean, out["mean"])
     np.testing.assert_array_equal(fc.residual_variance, out["residual_variance"])
-    assert fc.distribution == "StudentT" and fc.nu == pytest.approx(result.params[-1])
+    assert fc.distribution == "StudentT" and fc.eta == pytest.approx(result.params[-1])
     assert fc.quantile(0.05).shape == (5,)
     with pytest.raises(ValueError, match="exogenous"):
         result.forecast(5)
@@ -265,7 +281,7 @@ def test_simulated_series_are_reproducible_and_stationary():
     ("egarch", "hyperbolic", [0.4, 0.8]),
     ("egarch", "generalized_hyperbolic", [-0.3, 1.4, -0.7]),
     ("egarch", "variance_gamma", [-0.3, 2.5]),
-    ("gjr", "skew_t", [6.0, -0.3]),
+    ("gjr", "skew_t", [1/6.0, -0.3]),
 ])
 def test_drawn_innovations_follow_the_likelihoods_density(data, volatility, density, shape):
     """Exact forecasts (exponential and negative moments) against averages over paths drawn by
@@ -287,3 +303,14 @@ def test_drawn_innovations_follow_the_likelihoods_density(data, volatility, dens
     s = api.simulate(model, theta, y, z)
     se = s["variance"].std(0) / np.sqrt(paths)
     assert np.all(np.abs(s["variance"].mean(0) - f["residual_variance"]) < 5 * se + 1e-11 * f["residual_variance"])
+
+
+@pytest.mark.parametrize("density,shape", [("student_t", [0.]), ("skew_t", [0.,0.])])
+def test_egarch_normal_tail_limit_has_exact_multistep_forecasts(data, density, shape):
+    model, theta, _, y, _ = setup(data, dict(ar=1), "egarch", density, 1, 1)
+    theta[-len(shape):] = shape
+    normal, normal_theta, _, _, _ = setup(data, dict(ar=1), "egarch", "normal", 1, 1)
+    first = api.forecast(model,theta,y,5)
+    second = api.forecast(normal,normal_theta,y,5)
+    assert not first["simulated"]
+    np.testing.assert_allclose(first["residual_variance"],second["residual_variance"],rtol=2e-14)

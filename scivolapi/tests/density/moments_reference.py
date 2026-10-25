@@ -19,18 +19,18 @@ import mpmath as mp
 
 DESTINATION = Path(__file__).with_suffix(".inc")
 POINTS = [
-    (0, ()), (1, (8.0,)), (2, (8.0, 0.3)), (3, (1.5,)),
+    (0, ()), (1, (1/8.0,)), (2, (1/8.0, 0.3)), (3, (1.5,)),
     (4, (0.2, 1.3, 0.8)), (5, (0.2, 1.3)), (6, (0.2, 1.3)), (7, (0.2, 2.3)),
-    (1, (2.00001,)), (2, (3.2, 0.999)), (3, (0.3,)),
+    (1, (1/2.00001,)), (2, (1/3.2, 0.999)), (3, (0.3,)),
     (4, (0.95, 0.1, -0.5)), (5, (0.95, 0.02)), (6, (0.95, 0.02)), (7, (0.9, 1.50001)),
-    (2, (2.00001, 0.999)), (3, (0.01,)), (6, (0.9999, 0.001)),
+    (2, (1/2.00001, 0.999)), (3, (0.01,)), (6, (0.9999, 0.001)),
 ]
 EXTRA_POWERS = [
     (0, (), 2, -0.95, 0.25),
-    (1, (8.0,), 2, -0.95, 0.25),
-    (2, (8.0, 0.3), 2, -0.95, 0.25),
+    (1, (1/8.0,), 2, -0.95, 0.25),
+    (2, (1/8.0, 0.3), 2, -0.95, 0.25),
     (3, (0.3,), 2, -0.95, 0.25),
-    (1, (3.01,), 2, 0.3, 3.0),
+    (1, (1/3.01,), 2, 0.3, 3.0),
 ]
 
 
@@ -38,7 +38,7 @@ def density(kind, shapes):
     if kind == 0:
         return lambda x: mp.exp(-x*x/2) / mp.sqrt(2*mp.pi), []
     if kind in (1, 2):
-        nu = shapes[0]
+        nu = 1/shapes[0]
         c = mp.gamma((nu+1)/2) / (mp.sqrt(mp.pi*(nu-2))*mp.gamma(nu/2))
         if kind == 1:
             return lambda x: c * (1+x*x/(nu-2))**(-(nu+1)/2), []
@@ -106,13 +106,13 @@ def moment(kind, which, shapes, gamma, delta):
         # Log-radius integration stretches algebraic tails to exponential tails.
         # This also resolves the nu -> 2+ mass without a finite tail cutoff.
         if kind in (1, 2):
-            rate = shapes[0]-exponent
+            rate = 1/shapes[0]-exponent
             total = mp.mpf(0)
             for sign in (-1, 1):
                 if which == 0 and sign == 1:
                     continue
                 logs = [mp.log(abs(b))*rate for b in breaks if sign*b > 0]
-                logs += [rate*(mp.log(shapes[0]-2)/2+offset) for offset in (-10,-2,0,2,10)]
+                logs += [rate*(mp.log(1/shapes[0]-2)/2+offset) for offset in (-10,-2,0,2,10)]
                 total += mp.quad(lambda u: integrand(sign*mp.exp(u/rate))*mp.exp(u/rate)/rate,
                                  sorted(set([-mp.inf, *logs, mp.mpf(0), mp.inf])))
             return total

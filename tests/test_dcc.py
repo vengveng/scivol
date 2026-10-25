@@ -384,7 +384,7 @@ class TestMultivariateForecastAndSimulation:
         original_state = result.univariate_results[0].filter()
 
         def fake_filter():
-            return replace(original_state, distribution="StudentT", nu=8.0)
+            return replace(original_state, distribution="StudentT", eta=1/8.0)
 
         monkeypatch.setattr(result.univariate_results[0], "filter", fake_filter)
         simulated = result.simulate(50, seed=7)
@@ -400,11 +400,11 @@ class TestMultivariateForecastAndSimulation:
         scenarios = result.scenarios(4000, seed=919)
         simulated = result.simulate(30, seed=919)
 
-        assert result.params.nu is not None
+        assert result.params.eta is not None
         assert scenarios.copula_distribution == "studentt"
-        assert scenarios.copula_nu == result.params.nu
+        assert scenarios.copula_eta == result.params.eta
         assert simulated.copula_distribution == "studentt"
-        assert simulated.copula_nu == result.params.nu
+        assert simulated.copula_eta == result.params.eta
         assert scenarios.data.shape == (4000, 3)
         assert simulated.data.shape == (30, 3)
         assert np.all(np.isfinite(scenarios.data))

@@ -140,16 +140,49 @@ bool take_step(const Problem& p, detail::SolverWorkspace& w, detail::Evaluation&
         double candidate;
         if (!evaluate.objective(w.trial, candidate, nullptr)) continue;
         points.retain(w.trial, candidate, nullptr, w.trial_values);
-        if (!(candidate < value) || candidate > value + 1e-4 * descent) continue;
+        // A real descent onto a face can have a sub-ULP objective gain.
+        if (candidate > value || candidate > value + 1e-4 * descent) continue;
         if (!evaluate.objective(w.trial, candidate, w.trial_gradient)) continue;
         points.retain(w.trial, candidate, w.trial_gradient, w.trial_values);
-        if (!(candidate < value) || candidate > value + 1e-4 * descent) continue;
+        if (candidate > value || candidate > value + 1e-4 * descent) continue;
         std::copy_n(w.trial, p.dimension, w.x);
         std::copy_n(w.trial_gradient, p.dimension, w.gradient);
         std::copy_n(w.trial_values, p.constraint_count, w.values);
         std::copy_n(w.trial_normals, p.constraint_count * p.dimension, w.normals);
         value = candidate;
         points.accept(w.x, value, w.gradient);
+        return true;
+    }
+    return false;
+}
+
+// Test actual box faces before accepting a small projected displacement as
+// convergence. Every trial uses the original constraints and likelihood.
+bool take_face_step(const Problem& p, detail::SolverWorkspace& w, detail::Evaluation& evaluate,
+                    detail::Points& points, double& value)
+{
+    for (std::size_t i=0;i<p.dimension;++i) {
+        const double bound=w.gradient[i]>0.0 ? w.lower[i] : w.gradient[i]<0.0 ? w.upper[i] : detail::unavailable;
+        if (!std::isfinite(bound) || w.x[i]==bound) continue;
+        const double descent=w.gradient[i]*(bound-w.x[i]);
+        if (!(descent<0.0) || !std::isfinite(descent)) continue;
+        std::copy_n(w.x,p.dimension,w.trial);
+        w.trial[i]=bound;
+        if (!evaluate.constraints(w.trial,w.trial_values,w.trial_normals)
+            || !detail::feasible(p,w.trial,w.trial_values)) continue;
+        double candidate;
+        if (!evaluate.objective(w.trial,candidate,nullptr)) continue;
+        points.retain(w.trial,candidate,nullptr,w.trial_values);
+        if (candidate>value || candidate>value+1e-4*descent) continue;
+        if (!evaluate.objective(w.trial,candidate,w.trial_gradient)) continue;
+        points.retain(w.trial,candidate,w.trial_gradient,w.trial_values);
+        if (candidate>value || candidate>value+1e-4*descent) continue;
+        std::copy_n(w.trial,p.dimension,w.x);
+        std::copy_n(w.trial_gradient,p.dimension,w.gradient);
+        std::copy_n(w.trial_values,p.constraint_count,w.values);
+        std::copy_n(w.trial_normals,p.constraint_count*p.dimension,w.normals);
+        value=candidate;
+        points.accept(w.x,value,w.gradient);
         return true;
     }
     return false;
@@ -198,8 +231,12 @@ Record refine_newton(const Problem& problem, std::span<const double> start, cons
             record.solver_mode = 5;
             break;
         }
-        residual = stationarity(problem, {w.x, problem.dimension}, {w.gradient, problem.dimension}, projection).residual;
+        residual = stationarity(problem,{w.x,problem.dimension},{w.gradient,problem.dimension},projection).residual;
         if (stationary_within(target)) {
+            if (record.work.iterations<options.maximum_iterations && take_face_step(problem,w,evaluate,points,value)) {
+                ++record.work.iterations;
+                continue;
+            }
             converge();
             break;
         }
@@ -227,8 +264,9 @@ Record refine_newton(const Problem& problem, std::span<const double> start, cons
         if (!(descent < 0) || !std::isfinite(descent))
             std::copy_n(w.projected, problem.dimension, w.direction);
         const double previous = value;
-        if (!take_step(problem, w, evaluate, points, value)) {
+        if (!take_step(problem,w,evaluate,points,value)) {
             if (stationary_within(tolerance)) {
+                if (take_face_step(problem,w,evaluate,points,value)) continue;
                 converge();
             } else {
                 record.termination = Termination::line_search_failed;
@@ -239,6 +277,7 @@ Record refine_newton(const Problem& problem, std::span<const double> start, cons
         // Stalled progress at a point that already meets the tolerance (for
         // example along a nearly flat ridge) ends the phase, as in SLSQP.
         if (stationary_within(tolerance) && previous - value <= options.accuracy * std::max(1.0, std::abs(value))) {
+            if (take_face_step(problem,w,evaluate,points,value)) continue;
             converge();
             break;
         }

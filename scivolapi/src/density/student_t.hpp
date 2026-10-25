@@ -4,125 +4,176 @@
 
 #include "../math/special.hpp"
 #include "density.hpp"
+#include "domain.hpp"
 
 namespace scivolapi::detail {
 
-// The Student-t kernel T(u; nu) = ((nu + 1) / 2) log(1 + u^2 / k), k = nu - 2,
-// with its derivatives in u and nu. With q = k + u^2 and v = u^2 / q:
-//   T_u  = (nu + 1) u / q            T_uu = (nu + 1)(k - u^2) / q^2
-//   T_nu = -log1pmx(-v) / 2 - 3v / (2k)
-//   T_unu = u (u^2 - 3) / q^2        T_nunu = -v^2 / (2k) + 3v (k + q) / (2 k^2 q)
-// The T_nu form has no cancellation as nu grows (log1p(w) - w/(1+w) = -log1pmx(-v)).
-struct TKernel {
-    double t = 0.0, u = 0.0, uu = 0.0, nu = 0.0, unu = 0.0, nunu = 0.0;
-};
-
-[[nodiscard]] inline TKernel t_kernel(double u, double nu, int order) noexcept
-{
-    TKernel r;
-    const double k = nu - 2.0, u2 = u * u, q = k + u2, v = u2 / q;
-    const double l = std::log1p(u2 / k);  // not -log1p(-v): v rounds to one in the far tail
-    r.t = 0.5 * (nu + 1.0) * l;
-    if (order >= 1) {
-        r.u = (nu + 1.0) * u / q;
-        // Both forms are T_nu; the first has no cancellation for small v, the
-        // second none once v >= 1/2.
-        r.nu = v < 0.5 ? -0.5 * log1pmx(-v) - 1.5 * v / k : 0.5 * l - 0.5 * (nu + 1.0) * v / k;
-    }
-    if (order >= 2) {
-        r.uu = (nu + 1.0) * (k - u2) / (q * q);
-        r.unu = u * (u2 - 3.0) / (q * q);
-        r.nunu = -0.5 * v * v / k + 1.5 * v * (k + q) / (k * k * q);
-    }
-    return r;
-}
-
-// Moment integration reaches tails where u^2/(nu-2+u^2) rounds to one.
-// Retain log(1+u^2/(nu-2)) rather than recovering it from that ratio.
-[[nodiscard]] inline TKernel t_moment_kernel(double u, double nu, int order) noexcept
-{
-    const double k = nu - 2.0, u2 = u * u, q = k + u2, v = u2 / q;
-    const double l = std::log1p(u2 / k);
-    TKernel r;
-    r.t = 0.5 * (nu + 1.0) * l;
-    if (order >= 1) {
-        r.u = (nu + 1.0) * (u / q);
-        r.nu = 0.5 * l - 0.5 * (nu + 1.0) * v / k;
-    }
-    if (order >= 2) {
-        r.uu = (nu + 1.0) * ((1.0 - 2.0 * v) / q);
-        r.unu = (u / q) * (1.0 - (nu + 1.0) / q);
-        r.nunu = (-v + 0.5 * (nu + 1.0) * v * (2.0 - v) / k) / k;
-    }
-    return r;
-}
-
-// log of the Student-t normalizer with unit variance,
-//   log c(nu) = lnG((nu + 1)/2) - lnG(nu/2) - log(pi (nu - 2)) / 2,
-// with its first two derivatives.
 struct LogNormalizer {
     double value = 0.0, d1 = 0.0, d2 = 0.0;
 };
 
-[[nodiscard]] inline LogNormalizer t_log_normalizer(double nu) noexcept
+// rho(eta) = log Gamma((1+eta)/(2eta)) - log Gamma(1/(2eta)) + log(2eta)/2.
+// Bernoulli expansion after shifting the Gamma arguments to at least 16.
+[[nodiscard]] inline LogNormalizer t_gamma_ratio(double eta, int order = 2) noexcept
 {
-    constexpr double log_pi = 1.1447298858494001741434273513531;
-    const double k = nu - 2.0;
-    const HalfStep h = half_step(0.5 * nu);
-    return {h.d0 - 0.5 * (log_pi + std::log(k)), 0.5 * h.d1 - 0.5 / k, 0.25 * h.d2 + 0.5 / (k * k)};
+    const int shifts = eta <= 1.0 / 32.0 ? 0 : static_cast<int>(std::ceil(16.0 - 0.5 / eta));
+    const double scale = 1.0 + 2.0 * shifts * eta, e = eta / scale;
+    constexpr double c[] = {0, -0.25, 0, 0.041666666666666664, 0, -0.050000000000000003, 0, 0.15178571428571427, 0, -0.86111111111111116, 0, 7.8522727272727275, 0, -105.01923076923077, 0, 1936.6020833333334, 0, -47092.51470588235, 0, 1460069.6118421052, 0, -56215672.869047619, 0, 2631477393.5516305, 0, -147176671141.51001, 0, 9692874440984.5879, 0, -742462694510355, 0, 65447663145719408};
+    LogNormalizer r;
+    for (int j = 31; j >= 0; --j) {
+        if (order >= 2) r.d2 = r.d2 * e + 2.0 * r.d1;
+        if (order >= 1) r.d1 = r.d1 * e + r.value;
+        r.value = r.value * e + c[j];
+    }
+    if (order >= 2) r.d2 = r.d2 / (scale * scale * scale * scale) - 4.0 * shifts * r.d1 / (scale * scale * scale);
+    if (order >= 1) r.d1 /= scale * scale;
+    if (shifts) {
+        r.value += 0.5 * std::log1p(2.0 * shifts * eta);
+        if (order >= 1) r.d1 += shifts / scale;
+        if (order >= 2) r.d2 -= 2.0 * shifts * shifts / (scale * scale);
+        for (int j = 0; j < shifts; ++j) {
+            const double a = 2.0 * j, b = a + 1.0, x = 1.0 + a * eta, y = 1.0 + b * eta;
+            r.value -= std::log1p(eta / x);
+            if (order >= 1) r.d1 -= 1.0 / (x * y);
+            if (order >= 2) r.d2 += (a / x + b / y) / (x * y);
+        }
+    }
+    return r;
 }
 
-// Standardized Student-t, nu > 2:  c = -log c(nu),  g = T(x; nu).
+[[nodiscard]] inline LogNormalizer t_log_normalizer(double eta, int order = 2) noexcept
+{
+    LogNormalizer r = t_gamma_ratio(eta, order);
+    const double scale = 1.0 - 2.0 * eta;
+    r.value -= 0.5 * (log_2pi + std::log1p(-2.0 * eta));
+    if (order >= 1) r.d1 += 1.0 / scale;
+    if (order >= 2) r.d2 += 2.0 / (scale * scale);
+    return r;
+}
+
+// phi(x) = log1p(x)/x, including its removable singularity and two derivatives.
+[[nodiscard]] inline LogNormalizer log1p_ratio(double x, int order) noexcept
+{
+    LogNormalizer p;
+    if (x == 0.0) return {1.0, order >= 1 ? -0.5 : 0.0, order >= 2 ? 2.0/3.0 : 0.0};
+    if (order == 0) return {std::log1p(x)/x, 0.0, 0.0};
+    if (x <= 0.125) {
+        const int degree = x < 0.001 ? 7 : x < 0.01 ? 11 : 22;
+        for (int j = degree; j >= 0; --j) {
+            if (order >= 2) p.d2 = p.d2 * x + 2.0 * p.d1;
+            if (order >= 1) p.d1 = p.d1 * x + p.value;
+            p.value = p.value * x + (j % 2 ? -1.0 : 1.0) / (j + 1.0);
+        }
+    } else {
+        const double inv = 1.0 / x, q = 1.0 / (1.0 + x);
+        p.value = std::log1p(x) * inv;
+        if (order >= 1) p.d1 = (q - p.value) * inv;
+        if (order >= 2) p.d2 = (-q * q - 2.0 * p.d1) * inv;
+    }
+    p.value = std::log1p(x)/x;
+    return p;
+}
+
+struct TKernel {
+    double t = 0.0, u = 0.0, uu = 0.0, eta = 0.0, ueta = 0.0, etaeta = 0.0;
+};
+
+// T = (1+s eta) u^2 phi(x)/(2r), r=1-2eta, x=eta u^2/r.
+// The same tail with s=N gives the multivariate t contribution.
+[[nodiscard]] inline TKernel t_square_kernel(double u2, double eta, int order, double s = 1.0) noexcept
+{
+    TKernel t;
+    const double r = 1.0 - 2.0 * eta, c = 1.0 + s * eta;
+    const double x = (eta * u2) / r;
+    if (x <= 0.125) {
+        const auto p = log1p_ratio(x,order);
+        const double a = 0.5*u2/r;
+        t.t = c*a*p.value;
+        if (order >= 1) {
+            const double dx = u2/(r*r);
+            t.eta = a*((s+2.0)/r*p.value+c*p.d1*dx);
+            if (order >= 2)
+                t.etaeta = a*(4.0*(s+2.0)/(r*r)*p.value
+                    +2.0*(s+2.0+2.0*c)/r*p.d1*dx+c*p.d2*dx*dx);
+        }
+    } else {
+        const double l = std::isfinite(x) ? std::log1p(x) : std::log(eta)+std::log(u2)-std::log(r);
+        t.t = (0.5*c*l)/eta;
+        if (order >= 1) {
+            const double v = std::isfinite(x) ? x/(1.0+x) : 1.0;
+            t.eta = (c*v/r-l)/(2.0*eta*eta);
+            if (order >= 2)
+                t.etaeta = (l-v/r+0.5*c*v*(4.0*eta-v)/(r*r))/(eta*eta*eta);
+        }
+    }
+    return t;
+}
+
+[[nodiscard]] inline TKernel t_kernel(double u, double eta, int order, double s = 1.0) noexcept
+{
+    const double u2 = u*u;
+    TKernel t = t_square_kernel(u2,eta,order,s);
+    if (order >= 1) {
+        const double c = 1.0+s*eta, q = 1.0-2.0*eta+eta*u2;
+        t.u = c*(u/q);
+        if (order >= 2) {
+            t.uu = (c/q)*(std::fma(-eta,u2+2.0,1.0)/q);
+            t.ueta = (u/q)*((s+2.0-u2)/q);
+        }
+    }
+    return t;
+}
+
+[[nodiscard]] inline TKernel t_moment_kernel(double u, double eta, int order) noexcept
+{
+    return t_kernel(u, eta, order);
+}
+
 struct StudentTDensity {
     static constexpr std::size_t shapes = 1;
     static constexpr bool symmetric = true;
 
     struct Prepared {
         Constant<1> constant;
-        double nu = 0.0;
+        double eta = 0.0;
     };
 
     static std::array<double, 0> nonsmooth_points(const Prepared&) noexcept { return {}; }
 
     static Terms<1> observe_for_moments(const Prepared& p, double x, int order) noexcept
     {
-        const TKernel k = t_moment_kernel(x, p.nu, order);
-        Terms<1> t;
-        t.g = k.t;
-        if (order >= 1) t.s[0] = k.nu;
-        if (order >= 2) t.ss[0] = k.nunu;
-        return t;
+        return observe(p, x, order);
     }
 
-    [[nodiscard]] static bool prepare(const double* shape, int /*order*/, Prepared& out) noexcept
+    [[nodiscard]] static bool prepare(const double* shape, int order, Prepared& out) noexcept
     {
-        const double nu = shape[0];
-        if (!(nu > 2.0) || !std::isfinite(nu)) return false;
-        const LogNormalizer c = t_log_normalizer(nu);
-        out.nu = nu;
+        const double eta = shape[0];
+        if (!domain_detail::student_t[0].contains(eta)) return false;
+        const LogNormalizer c = t_log_normalizer(eta, order);
+        out.eta = eta;
         out.constant.value = -c.value;
-        out.constant.s[0] = -c.d1;
-        out.constant.ss[0] = -c.d2;
+        if (order >= 1) out.constant.s[0] = -c.d1;
+        if (order >= 2) out.constant.ss[0] = -c.d2;
         return true;
     }
 
     template<bool Raw = false>
     [[nodiscard]] static Terms<1> observe(const Prepared& p, double x, int order) noexcept
     {
-        const TKernel k = t_kernel(x, p.nu, order);
+        const TKernel k = t_kernel(x, p.eta, order);
         Terms<1> t;
         t.g = k.t;
         if (order >= 1) {
             t.gx = k.u;
             t.xg = x * k.u;
-            t.s[0] = k.nu;
+            t.s[0] = k.eta;
         }
         if (order >= 2) {
             t.gxx = k.uu;
-            t.gxs[0] = k.unu;
+            t.gxs[0] = k.ueta;
             t.xxg = x * x * k.uu;
-            t.xs[0] = x * k.unu;
-            t.ss[0] = k.nunu;
+            t.xs[0] = x * k.ueta;
+            t.ss[0] = k.etaeta;
         }
         return t;
     }

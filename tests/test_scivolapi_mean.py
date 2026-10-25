@@ -23,7 +23,7 @@ DENSITY_INDEX = {
 }
 ORACLE_NAMES = ("normal", "studentt", "skewt", "ged", "gh", "nig", "hyperbolic", "vg")
 SHAPES = {
-    "normal": [], "student_t": [6.0], "skew_t": [6.0, -0.25], "ged": [1.5],
+    "normal": [], "student_t": [1/6.0], "skew_t": [1/6.0, -0.25], "ged": [1.5],
     "generalized_hyperbolic": [-0.3, 1.4, -0.7], "nig": [-0.2, 1.1], "hyperbolic": [0.4, 0.6],
     "variance_gamma": [-0.3, 2.5],
 }
@@ -113,22 +113,23 @@ def row_terms(y, x, mean, volatility, p, q, density):
 
     def objective(par):
         b, ma = par[:k], par[k:m]
-        residuals = []
-        for s in range(n):
-            e = scored[s] - jnp.dot(jnp.asarray(rows[s]), b)
-            for j in range(min(mean.ma, s)):
-                e = e - ma[j] * residuals[s - 1 - j]
-            residuals.append(e)
-        residuals = jnp.stack(residuals)
+        def mean_step(history, inputs):
+            value, row = inputs
+            residual = value-jnp.dot(row,b)
+            for j in range(mean.ma):
+                residual = residual-ma[j]*history[j]
+            return jnp.concatenate([residual[None],history[:-1]]),residual
+
+        _,residuals = jax.lax.scan(mean_step,jnp.zeros(max(1,mean.ma)),(scored,jnp.asarray(rows)))
         alpha = par[m + 1: m + 1 + p]
         gamma = par[m + 1 + p: beta_start]
         beta, shape = par[beta_start: beta_start + q], par[end:]
         if family == 3:
             delta = par[end - 1]
-            history = [jnp.asarray(h0) ** (delta / 2)]
+            seed = jnp.asarray(h0) ** (delta / 2)
         elif family == 2:
             if d == 1:
-                moment = 2 * jnp.exp(_jax_student_log_normalizer(jnp, jsp, shape[0])) / (1 + 1 / (shape[0] - 2))
+                moment = 2 * jnp.exp(_jax_student_log_normalizer(jnp, jsp, shape[0])) * (1-2*shape[0])/(1-shape[0])
             elif d == 2:
                 nodes, weights = _egarch_skewt_quadrature_rule()
                 moment = _jax_hansen_skewt_abs_moment(jnp, jsp, *shape, jnp.asarray(nodes), jnp.asarray(weights))
@@ -136,35 +137,39 @@ def row_terms(y, x, mean, volatility, p, q, density):
                 moment = _jax_vg_abs_moment(jnp, jsp, *shape)
             else:
                 moment = _jax_aparch_power_moment(jnp, jsp, 0.0, 1.0, shape, name)
-            history = [jnp.log(h0)]
+            seed = jnp.log(h0)
         else:
-            history = [jnp.asarray(h0)]
-        variance = [jnp.asarray(h0)]
-        if family == 4:  # constant variance
-            variance = [par[m]] * n
-        for t in range(1 if family != 4 else n, n):
-            state = par[m]
-            for lag in range(min(t, p)):
-                e = residuals[t - 1 - lag]
-                if family == 0:
-                    state += alpha[lag] * e * e
-                elif family == 1:
-                    state += (alpha[lag] + gamma[lag] * (e < 0)) * e * e
-                elif family == 2:
-                    z = e / jnp.sqrt(variance[t - 1 - lag])
-                    state += alpha[lag] * (jnp.abs(z) - moment) + gamma[lag] * z
-                else:
-                    shock = (jnp.where(e >= 0, 1.0, -1.0) - gamma[lag]) * e
-                    state += alpha[lag] * shock ** delta
-            for lag in range(min(t, q)):
-                state += beta[lag] * history[t - 1 - lag]
-            history.append(state)
-            variance.append(jnp.exp(state) if family == 2 else (state ** (2 / delta) if family == 3 else state))
-        variance = jnp.stack(variance)
+            seed = jnp.asarray(h0)
+        if family == 4:
+            variance = jnp.full(n,par[m])
+        else:
+            def variance_step(history,t):
+                state = par[m]
+                for lag in range(p):
+                    def shock_term():
+                        e = residuals[t-1-lag]
+                        if family == 0:
+                            return alpha[lag]*e*e
+                        if family == 1:
+                            return (alpha[lag]+gamma[lag]*(e<0))*e*e
+                        if family == 2:
+                            z = e/jnp.sqrt(jnp.exp(history[lag]))
+                            return alpha[lag]*(jnp.abs(z)-moment)+gamma[lag]*z
+                        shock = (jnp.where(e>=0,1.0,-1.0)-gamma[lag])*e
+                        return alpha[lag]*shock**delta
+                    state = state+jax.lax.cond(t>lag,shock_term,lambda:jnp.asarray(0.0))
+                for lag in range(q):
+                    state = state+jax.lax.cond(t>lag,lambda:beta[lag]*history[lag],lambda:jnp.asarray(0.0))
+                variance = jnp.exp(state) if family == 2 else state**(2/delta) if family == 3 else state
+                return jnp.concatenate([state[None],history[:-1]]),variance
+
+            history = jnp.concatenate([seed[None],jnp.zeros(max(1,p,q)-1)])
+            _,tail = jax.lax.scan(variance_step,history,jnp.arange(1,n))
+            variance = jnp.concatenate([jnp.asarray(h0)[None],tail])
         z = residuals / jnp.sqrt(variance)
         one = np.zeros(1, dtype=bool)
-        return 0.5 * jnp.log(variance) + jnp.stack(
-            [_density_nll(jnp, jsp, z[t:t + 1], shape, d, one) for t in range(n)])
+        density_terms = jax.vmap(lambda value: _density_nll(jnp,jsp,value[None],shape,d,one))(z)
+        return 0.5*jnp.log(variance)+density_terms
 
     return objective
 
@@ -290,8 +295,8 @@ def test_z_jet_includes_the_reflection_charts(data):
         omega = np.finfo(float).tiny + jnp.exp(u[6])
         logits = jnp.r_[u[7:9], 0.0]
         persistence = (1 - 8 * 3 * np.finfo(float).eps) * jax.nn.softmax(logits)[:-1]
-        nu = np.nextafter(2.0, 3.0) + jnp.exp(u[9])
-        return jnp.concatenate([u[:1], ar, u[3:4], ma, omega[None], persistence, nu[None]])
+        eta = np.nextafter(.5,0.)*jax.nn.sigmoid(u[9])
+        return jnp.concatenate([u[:1], ar, u[3:4], ma, omega[None], persistence, eta[None]])
 
     assert np.allclose(np.asarray(chart(jnp.asarray(z))), theta, rtol=1e-12)
     full = jet.theta(theta, api.GRADIENT | api.HESSIAN)
@@ -461,10 +466,10 @@ def test_mean_only_fits_recover_the_simulation():
     assert normal._get_param_names() == ["const", "phi[1]", "theta[1]", "sigma2"]
     assert normal.params[3] == pytest.approx(np.mean(normal.resid ** 2), rel=1e-6)  # the sigma2 FOC
     t = (ARMA(1, 1) + StudentT()).fit(y)
-    truth = [0.2, 0.5, 0.3, 0.25 * 5 / 3, 5.0]  # sigma2 = Var(0.5 t_5)
+    truth = [0.2, 0.5, 0.3, 0.25 * 5 / 3, 0.2]  # sigma2 = Var(0.5 t_5)
     for i, value in enumerate(truth):
         assert abs(t.params[i] - value) < 4.0 * t.std_errors[i], (i, t.params[i])
-    assert t.dist_params.nu == pytest.approx(t.params[-1])
+    assert t.dist_params.eta == pytest.approx(t.params[-1])
     with pytest.raises(ValueError, match="p and q must be 0"):
         model_for(mean_spec(), "constant", "normal", 1, 1)
 

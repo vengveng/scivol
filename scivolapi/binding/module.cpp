@@ -424,6 +424,7 @@ NB_MODULE(_scivolapi, m)
         })
         .def_prop_ro("dimension", &CorrelationModel::dimension)
         .def_prop_ro("parameter_names", &CorrelationModel::parameter_names)
+        .def("innovation_density", [](const CorrelationModel& m, const Vector& theta) { return m.innovation_density(view(theta)); })
         .def("feasible", [](const CorrelationModel& m, const Vector& theta) { return m.feasible(view(theta)); })
         .def("start", [](const CorrelationModel& m) { return owned_vector(m.start()); })
         .def("to_theta", [](const CorrelationModel& m, const Vector& z) {
@@ -506,7 +507,12 @@ NB_MODULE(_scivolapi, m)
             nb::dict out;
             for (const auto& [name, value] : named_shapes(d)) out[name.c_str()] = value;
             return out;
-        }, "Every shape by name, estimated and fixed by the density's definition.");
+        }, "Every shape by name, estimated and fixed by the density's definition.")
+        .def_prop_ro("derived", [](const InnovationDensity& d) {
+            nb::dict out;
+            for (const auto& [name, value] : derived_shapes(d)) out[name.c_str()] = value;
+            return out;
+        }, "Derived shape quantities for reporting.");
     m.def("simulate_correlation",
           [](const CorrelationModel& model, const Vector& theta, const Matrix& eps,
              const std::vector<InnovationDensity>& marginals, const Tensor3& normals, const std::optional<Matrix>& chi2,

@@ -28,15 +28,15 @@ using namespace scivolapi;
 using namespace scivolapi::detail;
 using Status = ExpectationStatus;
 constexpr const char* names[] = {"Normal","Student-t","Skew-t","GED","GH","NIG","Hyperbolic","VG"};
-constexpr double shapes[8][3] = {{},{8},{8,.3},{1.5},{.2,1.3,.8},{.2,1.3},{.2,1.3},{.2,2.3}};
+constexpr double shapes[8][3] = {{},{.125},{.125,.3},{1.5},{.2,1.3,.8},{.2,1.3},{.2,1.3},{.2,2.3}};
 int failures = 0;
 void check(bool ok, const char* message) {
     if (!ok) { ++failures; std::printf("FAIL %s\n",message); }
 }
 struct ShapePoint { int kind; double shape[3]; };
 constexpr ShapePoint points[] = {
-    {0,{}}, {1,{2.0001}}, {1,{2.05}}, {1,{8}}, {1,{50}}, {1,{500}}, {1,{1000}}, {1,{10000}}, {1,{1e8}},
-    {2,{2.05,-.7}}, {2,{2.05,.7}}, {2,{8,-.7}}, {2,{8,.7}}, {2,{1e8,.7}},
+    {0,{}}, {1,{0.49997500124993743}}, {1,{0.48780487804878053}}, {1,{0.125}}, {1,{0.02}}, {1,{0.002}}, {1,{0.001}}, {1,{0.0001}}, {1,{1e-08}},
+    {2,{0.48780487804878053,-.7}}, {2,{0.48780487804878053,.7}}, {2,{0.125,-.7}}, {2,{0.125,.7}}, {2,{1e-08,.7}},
     {3,{.7}}, {3,{1}}, {3,{1.5}}, {3,{2}}, {3,{4}},
     {4,{.2,1.3,.8}}, {4,{.9,.03,-.5}}, {4,{-.9,.05,-2}},
     {4,{.9,40,2}}, {4,{-.9,60,.25}}, {4,{0,1,-1}},
@@ -224,7 +224,7 @@ void domains() {
         }
         for (std::size_t j = 0; j < shape_domains(kind).size(); ++j) {
             const auto d = shape_domains(kind)[j];
-            for (double invalid : {d.lower,d.upper,nan,infinity,-infinity}) {
+            for (double invalid : {d.closed_lower ? std::nextafter(d.lower,-infinity) : d.lower,d.upper,nan,infinity,-infinity}) {
                 double s[3]; std::copy_n(shapes[k],3,s); s[j] = invalid;
                 double l = 12345, r = 6789, x = 4321;
                 check(distribution(kind,s,0,l,r) == Status::numerical_failure,"invalid shape CDF");

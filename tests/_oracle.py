@@ -52,17 +52,17 @@ def _jax_aparch_power_moment(jnp, jsp, gamma, delta, shape, density: str, quadra
         )
         return asymmetry * absolute
     if density == "studentt":
-        nu = shape[0]
+        eta = shape[0]
         jax, _, _ = _jax_modules()
         absolute = jax.lax.cond(
-            (nu >= 128) & (delta < nu / 2),
-            lambda: _jax_student_power_integral(jnp, jsp, nu, delta),
+            (eta <= 1/128) & (delta * eta < 0.5),
+            lambda: _jax_student_power_integral(jnp, jsp, eta, delta),
             lambda: jnp.exp(
-                0.5 * delta * jnp.log(nu - 2.0)
+                0.5 * delta * jnp.log(1/eta - 2.0)
                 + jsp.special.gammaln(0.5 * (delta + 1.0))
-                + jsp.special.gammaln(0.5 * (nu - delta))
+                + jsp.special.gammaln(0.5 * (1/eta - delta))
                 - 0.5 * jnp.log(jnp.pi)
-                - jsp.special.gammaln(0.5 * nu)
+                - jsp.special.gammaln(0.5 / eta)
             ),
         )
         return asymmetry * absolute
@@ -96,16 +96,16 @@ def _jax_aparch_power_moment(jnp, jsp, gamma, delta, shape, density: str, quadra
         / jnp.cos(angle) ** 2
     )
     if density == "skewt":
-        nu, skew = shape
-        c_log = _jax_student_log_normalizer(jnp, jsp, nu)
-        a = 4.0 * skew * jnp.exp(c_log) / (1.0 + 1.0 / (nu - 2.0))
+        eta, skew = shape
+        c_log = _jax_student_log_normalizer(jnp, jsp, eta)
+        a = 4.0 * skew * jnp.exp(c_log) * (1-2*eta) / (1-eta)
         b = jnp.sqrt(1.0 + 3.0 * skew * skew - a * a)
 
         def logpdf(values):
             branch = b * values + a
             scale = 1.0 + skew * jnp.where(branch >= 0.0, 1.0, -1.0)
             adjusted = branch / scale
-            return jnp.log(b) + c_log - _jax_student_log_power(jnp, nu, adjusted * adjusted)
+            return jnp.log(b) + c_log - _jax_student_log_power(jnp, eta, adjusted * adjusted)
 
         full_nodes, full_weights = _egarch_skewt_quadrature_rule()
         local_nodes = jnp.asarray(full_nodes, dtype=shape.dtype)
@@ -176,30 +176,33 @@ def _egarch_skewt_quadrature_rule() -> tuple[NDArray[np.float64], NDArray[np.flo
     return nodes.astype(np.float64), weights.astype(np.float64)
 
 
-def _jax_student_log_normalizer(jnp, jsp, nu):
-    """Scalar gamma-ratio expansion; AD differentiates the value expression."""
-    t = 1.0 / nu
+def _jax_student_log_normalizer(jnp, jsp, eta):
+    """Bernoulli gamma-ratio expansion, with safe inactive branches for AD."""
+    t = jnp.where(eta <= 1/128, eta, 0.0)
     series = t * (-0.25 + t*t*(1/24 + t*t*(-1/20 + t*t*(17/112
                        + t*t*(-31/36 + t*t*691/88)))))
     asymptotic = -jnp.log(2*jnp.pi)/2 - jnp.log1p(-2*t)/2 + series
-    direct = (jsp.special.gammaln((nu+1)/2) - jsp.special.gammaln(nu/2)
-              - jnp.log(jnp.pi*(nu-2))/2)
-    return jnp.where(nu >= 128, asymptotic, direct)
+    safe = jnp.where(eta <= 1/128, 0.1, eta)
+    shifted = safe/(1+128*safe)
+    rho = shifted*(-1/4 + shifted**2*(1/24 + shifted**2*(-1/20 + shifted**2*(17/112 + shifted**2*(-31/36+shifted**2*691/88)))))
+    rho += jnp.log1p(128*safe)/2 - jnp.sum(jnp.log1p(safe/(1+2*jnp.arange(64)*safe)))
+    direct = -jnp.log(2*jnp.pi)/2 - jnp.log1p(-2*safe)/2 + rho
+    return jnp.where(eta <= 1/128, asymptotic, direct)
 
 
-def _jax_student_log_power(jnp, nu, square, shift=3):
-    """Remove log1p(t)/t's singularity before AD near the Gaussian limit."""
-    inverse = 1.0 / (nu-2)
-    ratio = square * inverse
+def _jax_student_log_power(jnp, eta, square, shift=3):
+    """Removable singularity of log1p(x)/x, differentiated by float64 AD."""
+    scale = 1-2*eta
+    ratio = square * eta / scale
     small = ratio < 0.125
     argument = jnp.where(small, ratio, 0.0)
     polynomial = sum((-argument)**k/(k+1) for k in range(24))
     quotient = jnp.where(small, polynomial,
                          jnp.log1p(ratio)/jnp.where(small, 1.0, ratio))
-    return 0.5*(1+shift*inverse)*square*quotient
+    return 0.5*(1+(shift-2)*eta)/scale*square*quotient
 
 
-def _jax_student_power_integral(jnp, jsp, nu, power):
+def _jax_student_power_integral(jnp, jsp, eta, power):
     """Independent infinite-support integral, away from the moment's tail pole."""
     nodes, weights = _egarch_skewt_quadrature_rule()
     unit, weight = jnp.asarray((nodes+1)/2), jnp.asarray(weights/2)
@@ -208,15 +211,15 @@ def _jax_student_power_integral(jnp, jsp, nu, power):
     scale = jnp.sqrt(power+1)
     magnitude = scale*jnp.tan(angle)
     jacobian = scale*2*jnp.pi*unit**3/jnp.cos(angle)**2
-    logpdf = (_jax_student_log_normalizer(jnp, jsp, nu)
-              - _jax_student_log_power(jnp, nu, magnitude*magnitude))
+    logpdf = (_jax_student_log_normalizer(jnp, jsp, eta)
+              - _jax_student_log_power(jnp, eta, magnitude*magnitude))
     return 2*jnp.sum(weight*jacobian*jnp.exp(power*jnp.log(magnitude)+logpdf))
 
 
-def _jax_hansen_skewt_abs_moment(jnp, jsp, nu, lam, nodes, weights):
+def _jax_hansen_skewt_abs_moment(jnp, jsp, eta, lam, nodes, weights):
     """Smooth JAX reference for E|z| under scivol's Hansen skew-t convention."""
-    c_log = _jax_student_log_normalizer(jnp, jsp, nu)
-    first_half_moment = jnp.exp(c_log) / (1+1/(nu-2))
+    c_log = _jax_student_log_normalizer(jnp, jsp, eta)
+    first_half_moment = jnp.exp(c_log) * (1-2*eta) / (1-eta)
     a = 4.0 * lam * first_half_moment
     b = jnp.sqrt(1.0 + 3.0 * lam * lam - a * a)
     left_scale = 1.0 - lam
@@ -225,11 +228,11 @@ def _jax_hansen_skewt_abs_moment(jnp, jsp, nu, lam, nodes, weights):
 
     half_width = 0.5 * jnp.abs(threshold)
     x = half_width * (nodes + 1.0)
-    kernel = jnp.exp(c_log - _jax_student_log_power(jnp, nu, x*x))
+    kernel = jnp.exp(c_log - _jax_student_log_power(jnp, eta, x*x))
     integral = half_width * jnp.sum(weights * kernel)
     cdf = 0.5 + jnp.where(threshold >= 0.0, integral, -integral)
     partial_first = -first_half_moment * jnp.exp(
-        -_jax_student_log_power(jnp, nu, threshold*threshold, shift=1))
+        -_jax_student_log_power(jnp, eta, threshold*threshold, shift=1))
     positive_a = (
         0.5 * a * left_scale
         + left_scale * left_scale * first_half_moment
@@ -473,13 +476,11 @@ def _jax_negative_second_moment(jnp, jsp, shape, density: str):
     u = 0.5 * (jnp.asarray(nodes, dtype=shape.dtype) + 1.0)
     w = 0.5 * jnp.asarray(weights, dtype=shape.dtype)
     if density == "skewt":
-        nu, lam = shape
+        eta, lam = shape
         c_log = (
-            jsp.special.gammaln(0.5 * (nu + 1.0))
-            - jsp.special.gammaln(0.5 * nu)
-            - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
+            _jax_student_log_normalizer(jnp, jsp, eta)
         )
-        a = 4.0 * lam * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
+        a = 4.0 * lam * jnp.exp(c_log) * (1-2*eta) / (1-eta)
         b = jnp.sqrt(1.0 + 3.0 * lam * lam - a * a)
         # Integrate each smooth branch; AD also differentiates the moving split.
         distance = a / b
@@ -508,8 +509,7 @@ def _jax_negative_second_moment(jnp, jsp, shape, density: str):
         logpdf = (
             jnp.log(b)
             + c_log
-            - 0.5 * (nu + 1.0)
-            * jnp.log1p(adjusted * adjusted / (nu - 2.0))
+            - _jax_student_log_power(jnp, eta, adjusted*adjusted)
         )
     elif density == "vg":
         logpdf = _jax_vg_logpdf(jnp, jsp, z, shape[0], shape[1])
@@ -731,15 +731,12 @@ def garch_value_grad_hess(
             return 0.5 * jnp.sum(jnp.log(sigma2) + resid2_j / sigma2)
 
         if dist == "studentt":
-            nu = theta_j[1 + p + q]
-            inv_nu_m2 = 1.0 / (nu - 2.0)
+            eta = theta_j[1 + p + q]
             constant = n * (
-                jsp.special.gammaln(0.5 * (nu + 1.0))
-                - jsp.special.gammaln(0.5 * nu)
-                - 0.5 * jnp.log(jnp.pi / inv_nu_m2)
+                _jax_student_log_normalizer(jnp, jsp, eta)
             )
-            tail = jnp.log1p(resid2_j / sigma2 * inv_nu_m2)
-            return 0.5 * (jnp.sum(jnp.log(sigma2)) + (nu + 1.0) * jnp.sum(tail)) - constant
+            tail = _jax_student_log_power(jnp, eta, resid2_j / sigma2)
+            return 0.5 * (jnp.sum(jnp.log(sigma2)) + 2 * jnp.sum(tail)) - constant
 
         if dist == "ged":
             nu = theta_j[1 + p + q]
@@ -755,14 +752,12 @@ def garch_value_grad_hess(
         if dist == "skewt":
             if resid_j is None:
                 raise ValueError("Raw residuals are required for GARCH+SkewT AD validation.")
-            nu = theta_j[1 + p + q]
+            eta = theta_j[1 + p + q]
             lam = theta_j[2 + p + q]
             c_log = (
-                jsp.special.gammaln(0.5 * (nu + 1.0))
-                - jsp.special.gammaln(0.5 * nu)
-                - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
+                _jax_student_log_normalizer(jnp, jsp, eta)
             )
-            a = 4.0 * lam * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
+            a = 4.0 * lam * jnp.exp(c_log) * (1-2*eta) / (1-eta)
             b = jnp.sqrt(1.0 + 3.0 * lam * lam - a * a)
             z = resid_j / jnp.sqrt(sigma2)
             bz_plus_a = b * z + a
@@ -772,7 +767,7 @@ def garch_value_grad_hess(
                 n * c_log
                 - 0.5 * jnp.sum(jnp.log(sigma2))
                 + n * jnp.log(b)
-                - 0.5 * (nu + 1.0) * jnp.sum(jnp.log1p(z_adj * z_adj / (nu - 2.0)))
+                - jnp.sum(_jax_student_log_power(jnp, eta, z_adj*z_adj))
             )
             return -ll
 
@@ -830,17 +825,14 @@ def aparch_value_grad_hess(
                 jnp.log(2.0 * jnp.pi) + jnp.log(sigma2) + residual2 / sigma2
             )
         if dist == "studentt":
-            nu = theta_j[n_vol]
+            eta = theta_j[n_vol]
             constant = (
-                jsp.special.gammaln(0.5 * (nu + 1.0))
-                - jsp.special.gammaln(0.5 * nu)
-                - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
+                _jax_student_log_normalizer(jnp, jsp, eta)
             )
             return jnp.sum(
                 -constant
                 + 0.5 * jnp.log(sigma2)
-                + 0.5 * (nu + 1.0)
-                * jnp.log1p(residual2 / (sigma2 * (nu - 2.0)))
+                + _jax_student_log_power(jnp, eta, residual2/sigma2)
             )
         if dist == "ged":
             nu = theta_j[n_vol]
@@ -860,22 +852,19 @@ def aparch_value_grad_hess(
                 -log_constant + 0.5 * jnp.log(sigma2) + standardized ** nu
             )
         if dist == "skewt":
-            nu = theta_j[n_vol]
+            eta = theta_j[n_vol]
             lam = theta_j[n_vol + 1]
             c_log = (
-                jsp.special.gammaln(0.5 * (nu + 1.0))
-                - jsp.special.gammaln(0.5 * nu)
-                - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
+                _jax_student_log_normalizer(jnp, jsp, eta)
             )
-            a = 4.0 * lam * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
+            a = 4.0 * lam * jnp.exp(c_log) * (1-2*eta) / (1-eta)
             b = jnp.sqrt(1.0 + 3.0 * lam * lam - a * a)
             z = residuals_j / jnp.sqrt(sigma2)
             u = b * z + a
             adjusted = u / (1.0 + lam * jnp.where(u >= 0.0, 1.0, -1.0))
             return jnp.sum(
                 -c_log - jnp.log(b) + 0.5 * jnp.log(sigma2)
-                + 0.5 * (nu + 1.0)
-                * jnp.log1p(adjusted * adjusted / (nu - 2.0))
+                + _jax_student_log_power(jnp, eta, adjusted*adjusted)
             )
         raise ValueError(f"Unsupported APARCH distribution: {dist}")
 
@@ -926,25 +915,20 @@ def gjr_garch_value_grad_hess(
             return 0.5 * jnp.sum(jnp.log(sigma2) + resid2_j / sigma2)
 
         if dist == "studentt":
-            nu = theta_j[1 + 2 * p + q]
-            inv_nu_m2 = 1.0 / (nu - 2.0)
+            eta = theta_j[1 + 2 * p + q]
             constant = n * (
-                jsp.special.gammaln(0.5 * (nu + 1.0))
-                - jsp.special.gammaln(0.5 * nu)
-                - 0.5 * jnp.log(jnp.pi / inv_nu_m2)
+                _jax_student_log_normalizer(jnp, jsp, eta)
             )
-            tail = jnp.log1p(resid2_j / sigma2 * inv_nu_m2)
-            return 0.5 * (jnp.sum(jnp.log(sigma2)) + (nu + 1.0) * jnp.sum(tail)) - constant
+            tail = _jax_student_log_power(jnp, eta, resid2_j / sigma2)
+            return 0.5 * (jnp.sum(jnp.log(sigma2)) + 2 * jnp.sum(tail)) - constant
 
         if dist == "skewt":
-            nu = theta_j[1 + 2 * p + q]
+            eta = theta_j[1 + 2 * p + q]
             lam = theta_j[2 + 2 * p + q]
             c_log = (
-                jsp.special.gammaln(0.5 * (nu + 1.0))
-                - jsp.special.gammaln(0.5 * nu)
-                - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
+                _jax_student_log_normalizer(jnp, jsp, eta)
             )
-            a = 4.0 * lam * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
+            a = 4.0 * lam * jnp.exp(c_log) * (1-2*eta) / (1-eta)
             b = jnp.sqrt(1.0 + 3.0 * lam * lam - a * a)
             z = resid_j / jnp.sqrt(sigma2)
             bz_plus_a = b * z + a
@@ -954,7 +938,7 @@ def gjr_garch_value_grad_hess(
                 n * c_log
                 - 0.5 * jnp.sum(jnp.log(sigma2))
                 + n * jnp.log(b)
-                - 0.5 * (nu + 1.0) * jnp.sum(jnp.log1p(z_adj * z_adj / (nu - 2.0)))
+                - jnp.sum(_jax_student_log_power(jnp, eta, z_adj*z_adj))
             )
             return -ll
 
@@ -987,20 +971,18 @@ def egarch_value_grad_hess(
     quad_nodes = jnp.asarray(quad_nodes_np, dtype=jnp.float64)
     quad_weights = jnp.asarray(quad_weights_np, dtype=jnp.float64)
 
-    def studentt_abs_moment(nu):
+    def studentt_abs_moment(eta):
         c_log = (
-            jsp.special.gammaln(0.5 * (nu + 1.0))
-            - jsp.special.gammaln(0.5 * nu)
-            - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
+            _jax_student_log_normalizer(jnp, jsp, eta)
         )
-        return 2.0 * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
+        return 2.0 * jnp.exp(c_log) * (1-2*eta) / (1-eta)
 
     def ged_abs_moment(nu):
         log_scale = 0.5 * (jsp.special.gammaln(1.0 / nu) - jsp.special.gammaln(3.0 / nu))
         return jnp.exp(log_scale + jsp.special.gammaln(2.0 / nu) - jsp.special.gammaln(1.0 / nu))
 
-    def skewt_abs_moment(nu, lam):
-        return _jax_hansen_skewt_abs_moment(jnp, jsp, nu, lam, quad_nodes, quad_weights)
+    def skewt_abs_moment(eta, lam):
+        return _jax_hansen_skewt_abs_moment(jnp, jsp, eta, lam, quad_nodes, quad_weights)
 
     def objective(theta_j):
         k_vol = 1 + 2 * p + q
@@ -1014,15 +996,15 @@ def egarch_value_grad_hess(
         if dist == "normal":
             abs_moment = jnp.sqrt(2.0 / jnp.pi)
         elif dist == "studentt":
-            nu = theta_j[k_vol]
-            abs_moment = studentt_abs_moment(nu)
+            eta = theta_j[k_vol]
+            abs_moment = studentt_abs_moment(eta)
         elif dist == "ged":
             nu = theta_j[k_vol]
             abs_moment = ged_abs_moment(nu)
         elif dist == "skewt":
-            nu = theta_j[k_vol]
+            eta = theta_j[k_vol]
             lam = theta_j[k_vol + 1]
-            abs_moment = skewt_abs_moment(nu, lam)
+            abs_moment = skewt_abs_moment(eta, lam)
         else:
             raise ValueError(f"Unsupported EGARCH distribution: {dist}")
 
@@ -1057,15 +1039,12 @@ def egarch_value_grad_hess(
             return 0.5 * jnp.sum(jnp.log(sigma2) + resid2_j / sigma2)
 
         if dist == "studentt":
-            nu = theta_j[k_vol]
-            inv_nu_m2 = 1.0 / (nu - 2.0)
+            eta = theta_j[k_vol]
             constant = n * (
-                jsp.special.gammaln(0.5 * (nu + 1.0))
-                - jsp.special.gammaln(0.5 * nu)
-                - 0.5 * jnp.log(jnp.pi / inv_nu_m2)
+                _jax_student_log_normalizer(jnp, jsp, eta)
             )
-            tail = jnp.log1p(resid2_j / sigma2 * inv_nu_m2)
-            return 0.5 * (jnp.sum(jnp.log(sigma2)) + (nu + 1.0) * jnp.sum(tail)) - constant
+            tail = _jax_student_log_power(jnp, eta, resid2_j / sigma2)
+            return 0.5 * (jnp.sum(jnp.log(sigma2)) + 2 * jnp.sum(tail)) - constant
 
         if dist == "ged":
             nu = theta_j[k_vol]
@@ -1075,14 +1054,12 @@ def egarch_value_grad_hess(
             z_std = jnp.abs(resid_j[nonzero]) / (jnp.sqrt(sigma2[nonzero]) * jnp.exp(log_scale))
             return -n * log_const + 0.5 * jnp.sum(jnp.log(sigma2)) + jnp.sum(jnp.power(z_std, nu))
 
-        nu = theta_j[k_vol]
+        eta = theta_j[k_vol]
         lam = theta_j[k_vol + 1]
         c_log = (
-            jsp.special.gammaln(0.5 * (nu + 1.0))
-            - jsp.special.gammaln(0.5 * nu)
-            - 0.5 * jnp.log(jnp.pi * (nu - 2.0))
+            _jax_student_log_normalizer(jnp, jsp, eta)
         )
-        a = 4.0 * lam * jnp.exp(c_log) * (nu - 2.0) / (nu - 1.0)
+        a = 4.0 * lam * jnp.exp(c_log) * (1-2*eta) / (1-eta)
         b = jnp.sqrt(1.0 + 3.0 * lam * lam - a * a)
         z = resid_j / jnp.sqrt(sigma2)
         bz_plus_a = b * z + a
@@ -1092,7 +1069,7 @@ def egarch_value_grad_hess(
             n * c_log
             - 0.5 * jnp.sum(jnp.log(sigma2))
             + n * jnp.log(b)
-            - 0.5 * (nu + 1.0) * jnp.sum(jnp.log1p(z_adj * z_adj / (nu - 2.0)))
+            - jnp.sum(_jax_student_log_power(jnp, eta, z_adj*z_adj))
         )
         return -ll
 
@@ -1103,16 +1080,16 @@ def _density_nll(jnp, jsp, z, shape, density, fixed_zero):
     if density == 0:
         return 0.5 * jnp.sum(jnp.log(2 * jnp.pi) + z * z)
     if density in (1, 2):
-        nu = shape[0]
-        c = _jax_student_log_normalizer(jnp, jsp, nu)
+        eta = shape[0]
+        c = _jax_student_log_normalizer(jnp, jsp, eta)
         if density == 2:
             lam = shape[1]
-            a = 4 * lam * jnp.exp(c) / (1+1/(nu-2))
+            a = 4 * lam * jnp.exp(c) * (1-2*eta) / (1-eta)
             b = jnp.sqrt(1 + 3 * lam * lam - a * a)
             u = b * z + a
             z = u / (1 + lam * jnp.where(u >= 0, 1.0, -1.0))
             c += jnp.log(b)
-        return -len(z) * c + jnp.sum(_jax_student_log_power(jnp, nu, z*z))
+        return -len(z) * c + jnp.sum(_jax_student_log_power(jnp, eta, z*z))
     if density == 3:
         nu = shape[0]
         log_scale = 0.5 * (jsp.special.gammaln(1 / nu) - jsp.special.gammaln(3 / nu))

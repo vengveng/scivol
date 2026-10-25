@@ -36,6 +36,7 @@ class FilteredState:
     score: Optional[NDArray[np.float64]]
     hessian: Optional[NDArray[np.float64]]
     distribution: str
+    eta: Optional[float] = None
     nu: Optional[float] = None
     lam: Optional[float] = None
     rho: Optional[float] = None
@@ -58,6 +59,7 @@ class FilteredState:
             "sigma2": self.sigma2.copy(),
             "std_resid": self.std_resid.copy(),
             "distribution": self.distribution,
+            "eta": self.eta,
             "nu": self.nu,
             "lam": self.lam,
             "rho": self.rho,
@@ -81,6 +83,7 @@ class ForecastResult(Mapping[str, NDArray[np.float64]]):
     variance: NDArray[np.float64]
     residual_variance: NDArray[np.float64]
     distribution: str
+    eta: Optional[float] = None
     nu: Optional[float] = None
     lam: Optional[float] = None
     rho: Optional[float] = None
@@ -135,6 +138,7 @@ class ForecastResult(Mapping[str, NDArray[np.float64]]):
             "sigma2": self.sigma2.copy(),
             "volatility": self.volatility.copy(),
             "distribution": self.distribution,
+            "eta": self.eta,
             "nu": self.nu,
             "lam": self.lam,
             "rho": self.rho,
@@ -228,6 +232,9 @@ def parameters(spec: Any, model: "api.Model", params: Any) -> NDArray[np.float64
         missing = [name for name in names if name not in flat]
         if missing:
             raise ValueError(f"Parameters missing: {', '.join(missing)}.")
+        unknown = [name for name in flat if name not in names]
+        if unknown:
+            raise ValueError(f"Unknown parameters: {', '.join(unknown)}.")
         theta = np.array([flat[name] for name in names])
     else:
         theta = np.asarray(params, dtype=np.float64).ravel()
@@ -249,6 +256,7 @@ def _shapes(model: "api.Model", theta: NDArray[np.float64]) -> dict[str, Optiona
     """Density shapes by name, as the result containers report them (fixed ones included)."""
     named = model.innovation_density(theta).named
     return {
+        "eta": named.get("eta"),
         "nu": named.get("nu"),
         "lam": named.get("lam"),
         "rho": named.get("rho"),

@@ -51,7 +51,7 @@ def _build_fitted_spec() -> CompositeSpec:
     # inject mock parameter estimates
     arma.unpack(np.array([0.05, 0.20, -0.10]))          # const, ar1, ma1
     garch.unpack(np.array([0.01, 0.08, 0.90]))          # ω, α1, β1
-    t_dist.unpack(np.array([8.0]))                      # df
+    t_dist.unpack(np.array([0.125]))                      # eta
 
     return arma + garch + t_dist
 
@@ -112,7 +112,9 @@ def test_scalar_properties():
 def test_to_dict_structure():
     data = np.ones(50)
     spec = _build_fitted_spec()
-    opt = DummyOpt(x=np.arange(spec.total_params), fun=10.0)
+    theta = np.arange(spec.total_params, dtype=np.float64)
+    theta[-1] = 1.0/theta[-1]
+    opt = DummyOpt(x=theta, fun=10.0)
     res = EstimationResult(spec, opt, data)
 
     d = res.to_dict()
@@ -141,7 +143,7 @@ def test_to_dict_structure():
 def test_fit_info_is_exposed_in_result_and_dict():
     data = np.ones(50)
     spec = _build_fitted_spec()
-    opt = DummyOpt(x=np.array([0.05, 0.20, -0.10, 0.01, 0.08, 0.90, 8.0]), fun=10.0)  # the components' values
+    opt = DummyOpt(x=np.array([0.05, 0.20, -0.10, 0.01, 0.08, 0.90, 0.125]), fun=10.0)  # the components' values
     res = EstimationResult(
         spec,
         opt,
@@ -223,8 +225,8 @@ def test_forecast_returns_object():
     data = rng.standard_normal(100) * 0.01
     spec = _build_fitted_spec()
     # ARMA(1,1) + GARCH(1,1) + Student-t parameter order:
-    # [const, ar1, ma1, omega, alpha1, beta1, nu]
-    params = np.array([0.05, 0.20, -0.10, 1e-6, 0.10, 0.85, 8.0])
+    # [const, ar1, ma1, omega, alpha1, beta1, eta]
+    params = np.array([0.05, 0.20, -0.10, 1e-6, 0.10, 0.85, 0.125])
     opt = DummyOpt(x=params, fun=10.0)
     res = EstimationResult(spec, opt, data)
 

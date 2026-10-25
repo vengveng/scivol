@@ -112,11 +112,11 @@ void inverse_products(const double* inverse, const double* first, std::size_t n,
 // d_a = 2 u_a'w - w'Q_a w, d_ab = 2 u_ab'w - w'Q_ab w + 2 v_a'Q^{-1}v_b.
 // log|R|_ab = tr(Q^{-1}Q_ab - A_a A_b) - sum_i (Q_ab,ii/Q_ii - Q_a,ii Q_b,ii/Q_ii^2).
 void derivatives(const Layout& layout, const double* q, const double* first, const double* second,
-                 const double* eps, double distance, double nu, std::size_t n, int order, Work& work)
+                 const double* eps, double distance, double eta, std::size_t n, int order, Work& work)
 {
     const std::size_t k = layout.coefficients, d = layout.dimension, m = n * n;
-    const double reciprocal = layout.student ? 1.0 / (nu - 2.0 + distance) : 0.0;
-    const double ld = layout.student ? (0.5 * nu + 0.5 * n) * reciprocal : 0.5;
+    const double reciprocal = layout.student ? eta / (1.0 - 2.0 * eta + eta * distance) : 0.0;
+    const double ld = layout.student ? (0.5 + 0.5 * n * eta) / (1.0 - 2.0 * eta + eta * distance) : 0.5;
     const double ldd = layout.student ? -ld * reciprocal : 0.0;
     dc::inverse(work.chol, n, work.inverse, work.scratch);
     if (order >= 2) inverse_products(work.inverse, first, n, k, work.products);
@@ -143,11 +143,11 @@ void derivatives(const Layout& layout, const double* q, const double* first, con
         }
     }
     if (layout.student) {
-        const dc::Constant joint = dc::student_tail(distance, nu, static_cast<double>(n) + 2.0, order);
+        const dc::Constant joint = dc::student_tail(distance, eta, static_cast<double>(n) + 2.0, order);
         work.row[k] = joint.first;
         double shape_second = joint.second;
         for (std::size_t i = 0; i < n; ++i) {
-            const dc::Constant marginal = dc::student_tail(eps[i] * eps[i], nu, 3.0, order);
+            const dc::Constant marginal = dc::student_tail(eps[i] * eps[i], eta, 3.0, order);
             work.row[k] -= marginal.first;
             if (order >= 2) shape_second -= marginal.second;
         }
@@ -175,8 +175,8 @@ void derivatives(const Layout& layout, const double* q, const double* first, con
             }
             work.h[a * d + b] += 0.5 * logdet + ld * dab + ldd * work.tmp[a] * work.tmp[b];
         }
-        if (layout.student) work.h[a * d + k] += 0.5 * ((distance - static_cast<double>(n) - 2.0) * reciprocal)
-            * reciprocal * work.tmp[a];
+        if (layout.student) work.h[a * d + k] += 0.5 * (static_cast<double>(n) + 2.0 - distance)
+            / std::pow(1.0 - 2.0 * eta + eta * distance, 2) * work.tmp[a];
     }
 }
 
@@ -186,8 +186,8 @@ JetResult evaluate(const Layout& layout, const CorrelationSample& sample, const 
     const std::size_t n = sample.series, rows = sample.rows(), m = n * n;
     const std::size_t k = layout.coefficients, d = layout.dimension, slots = layout.q + 1;
     const int order = (request & hessian) ? 2 : (request & (gradient | scores)) ? 1 : 0;
-    const double nu = layout.student ? theta[k] : 0.0;
-    const dc::Constant constant = layout.student ? dc::student_constant(nu, n, order) : dc::Constant{};
+    const double eta = layout.student ? theta[k] : 0.0;
+    const dc::Constant constant = layout.student ? dc::student_constant(eta, n, order) : dc::Constant{};
     std::copy_n(sample.target.data(), m, work.ring);
     if (order >= 1) {
         std::fill_n(work.first, slots * k * m, 0.0);
@@ -217,8 +217,8 @@ JetResult evaluate(const Layout& layout, const CorrelationSample& sample, const 
         for (std::size_t i = 0; i < n; ++i) distance += work.scratch[i] * work.scratch[i];
         double term = 0.5 * (logdet + distance - squares);
         if (layout.student) {
-            term = 0.5 * logdet + dc::student_tail(distance, nu, static_cast<double>(n) + 2.0, 0).value;
-            for (std::size_t i = 0; i < n; ++i) term -= dc::student_tail(eps[i] * eps[i], nu, 3.0, 0).value;
+            term = 0.5 * logdet + dc::student_tail(distance, eta, static_cast<double>(n) + 2.0, 0).value;
+            for (std::size_t i = 0; i < n; ++i) term -= dc::student_tail(eps[i] * eps[i], eta, 3.0, 0).value;
         }
         if (!std::isfinite(term) || !std::isfinite(distance)) return {Status::numerical_range, 0};
         total.add(term);
@@ -230,7 +230,7 @@ JetResult evaluate(const Layout& layout, const CorrelationSample& sample, const 
         if (order >= 1) {
             dc::backward(work.chol, work.scratch, n, work.w);
             derivatives(layout, q, work.first + slot * k * m, work.second + slot * packed_size(k) * m,
-                        eps, distance, nu, n, order, work);
+                        eps, distance, eta, n, order, work);
             if (request & scores) {
                 std::copy_n(work.row, d, out.scores.data() + t * d);
                 if (layout.student) out.scores[t * d + k] += constant.first;
@@ -271,7 +271,7 @@ CorrelationModel::CorrelationModel(const CorrelationSpec& spec) : spec_(spec)
             "unknown correlation density");
     for (std::size_t i = 1; i <= spec.p; ++i) names_.push_back("a[" + std::to_string(i) + "]");
     for (std::size_t j = 1; j <= spec.q; ++j) names_.push_back("b[" + std::to_string(j) + "]");
-    if (spec.density == CorrelationDensity::student_t) names_.push_back("nu");
+    if (spec.density == CorrelationDensity::student_t) names_.push_back("eta");
 }
 
 CorrelationSample CorrelationModel::prepare(std::span<const double> eps, std::size_t series,
@@ -297,13 +297,21 @@ CorrelationSample CorrelationModel::prepare(std::span<const double> eps, std::si
     return sample;
 }
 
+InnovationDensity CorrelationModel::innovation_density(std::span<const double> theta) const
+{
+    require(theta.size() == dimension(), "theta has the wrong length");
+    const Layout layout(spec_);
+    return layout.student ? InnovationDensity{DensityKind::student_t, {theta[layout.coefficients]}}
+                          : InnovationDensity{DensityKind::normal, {}};
+}
+
 bool CorrelationModel::evaluable(std::span<const double> theta) const
 {
     if (theta.size() != dimension() || !dc::finite(theta.data(), theta.size())) return false;
     const Layout layout(spec_);
     for (std::size_t a = 0; a < layout.coefficients; ++a)
         if (theta[a] < 0.0) return false;
-    return !layout.student || theta[layout.coefficients] > 2.0;
+    return !layout.student || layout.tail.contains(theta[layout.coefficients]);
 }
 
 bool CorrelationModel::feasible(std::span<const double> theta) const
@@ -320,7 +328,10 @@ void CorrelationModel::bounds(std::span<double> lower, std::span<double> upper) 
     const Layout layout(spec_);
     std::fill(lower.begin(), lower.end(), 0.0);
     std::fill(upper.begin(), upper.end(), std::numeric_limits<double>::quiet_NaN());
-    if (layout.student) lower[layout.coefficients] = layout.nu.lower_bound();
+    if (layout.student) {
+        lower[layout.coefficients] = layout.eta.lower_bound();
+        upper[layout.coefficients] = layout.eta.upper_bound();
+    }
 }
 
 std::size_t CorrelationModel::constraint_count() const noexcept { return 1; }
@@ -343,7 +354,7 @@ std::vector<double> CorrelationModel::start() const
     std::vector<double> theta(dimension());
     for (std::size_t i = 0; i < spec_.p; ++i) theta[i] = 0.05 / static_cast<double>(spec_.p);
     for (std::size_t j = 0; j < spec_.q; ++j) theta[spec_.p + j] = 0.90 / static_cast<double>(spec_.q);
-    if (spec_.density == CorrelationDensity::student_t) theta.back() = 10.0;
+    if (spec_.density == CorrelationDensity::student_t) theta.back() = Layout(spec_).tail.start;
     return theta;
 }
 

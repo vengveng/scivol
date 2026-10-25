@@ -49,14 +49,18 @@ CorrelationPaths simulate_correlation(const CorrelationModel& model, std::span<c
                 "each marginal needs its density's shape parameters");
     require(paths > 0 && normals.size() % (paths * n) == 0, "normals must hold paths x horizon x series draws");
     const std::size_t horizon = normals.size() / (paths * n);
-    require(!student || chi2.size() == paths * horizon, "the Student-t copula needs paths x horizon chi-square draws");
 
     const dc::Layout layout(spec);
-    const double nu = student ? theta[layout.coefficients] : 0.0;
+    const double eta = student ? theta[layout.coefficients] : 0.0;
+    require(!student || eta == 0.0 || chi2.size() == paths * horizon,
+            "the Student-t copula needs paths x horizon draws of chi-square divided by degrees of freedom");
+    if (student && eta > 0.0)
+        for (double draw : chi2) require(draw > 0.0 && std::isfinite(draw),
+                                         "scaled chi-square draws must be positive and finite");
     const DensityKind copula = student ? DensityKind::student_t : DensityKind::normal;
-    const double* copula_shape = student ? &nu : nullptr;
+    const double* copula_shape = student ? &eta : nullptr;
     auto identity = [&](const InnovationDensity& marginal) {  // F = G: z = e exactly
-        return marginal.density == copula && (!student || marginal.shape[0] == nu);
+        return marginal.density == copula && (!student || marginal.shape[0] == eta);
     };
 
     // Filter the observed rows: Q of the last q + 1 rows, slot r % (q + 1).
@@ -99,7 +103,7 @@ CorrelationPaths simulate_correlation(const CorrelationModel& model, std::span<c
             if (dc::cholesky(r, n, chol.data()) != Status::ok)
                 throw std::domain_error("a simulated correlation matrix is not positive definite in double precision");
             const double* g = normals.data() + (path * horizon + f) * n;
-            const double factor = student ? std::sqrt((nu - 2.0) / chi2[path * horizon + f]) : 1.0;
+            const double factor = student && eta > 0.0 ? std::sqrt((1.0 - 2.0 * eta) / chi2[path * horizon + f]) : 1.0;
             for (std::size_t i = 0; i < n; ++i) {
                 double e = 0.0;
                 for (std::size_t j = 0; j <= i; ++j) e += chol[i * n + j] * g[j];

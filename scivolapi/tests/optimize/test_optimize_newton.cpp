@@ -43,6 +43,28 @@ int main()
     assert(r.termination == Termination::converged && r.work.hessian_requests == 1);
     close(r.accepted.x[0], 1e-3, 1e-18);
 
+    // A descending move onto a closed face may have a sub-ULP objective gain.
+    p = {}; p.dimension = 1; p.lower = {0}; p.upper = {.5};
+    p.objective = [](const double* x,double& f,double* g) {
+        f=1000+x[0]+x[0]*x[0]/2; if(g) g[0]=1+x[0]; return true;
+    };
+    p.hessian = [](const double*,double* h) { h[0]=1; return true; };
+    r=refine_newton(p,std::array{1e-20},{});
+    assert(r.termination==Termination::converged && r.accepted.x[0]==0.0);
+
+    // A coupled constraint blocks one face while another closed face is reachable.
+    p = {}; p.dimension = 3; p.lower = {0,std::numeric_limits<double>::quiet_NaN(),0};
+    p.objective = [](const double* x,double& f,double* g) {
+        f=1000+2*x[0]+x[1]+x[2]+.5*(x[0]*x[0]+x[1]*x[1]+x[2]*x[2]);
+        if(g) { g[0]=2+x[0]; g[1]=1+x[1]; g[2]=1+x[2]; } return true;
+    };
+    p.hessian = [](const double*,double* h) { std::fill_n(h,9,0.0); h[0]=h[4]=h[8]=1; return true; };
+    p.constraint_count=1;
+    p.constraints = [](const double* x,double* c,double* j) { c[0]=x[0]+x[1]; j[0]=j[1]=1; j[2]=0; return true; };
+    r=refine_newton(p,std::array{1e-12,-1e-12,1e-20},{});
+    assert(r.termination==Termination::converged && r.accepted.x[2]==0.0);
+    assert(r.accepted.x[0]+r.accepted.x[1]>=0.0);
+
     p = quadratic(); p.constraint_count = 2;
     p.constraints = [](const double* x, double* c, double* j) {
         c[0] = -x[0] - x[1]; c[1] = x[0] + 2;

@@ -9,35 +9,54 @@ bool elementary(const double* shape, int order, bool negative, Dual2<2>& out) no
     if (!shape || order < 0 || order > 2 || !SkewTDensity::prepare(shape,order,p)) return false;
     using D = Dual2<2>;
     const double sign = p.lambda >= 0.0 ? 1.0 : -1.0;
-    const D nu = order ? D::variable(p.nu,0) : D::constant(p.nu);
+    const D eta = order ? D::variable(p.eta,0) : D::constant(p.eta);
     const D lambda = order ? D::variable(p.lambda,1) : D::constant(p.lambda);
-    const D l = sign * lambda, k = nu + (-2.0);
-    constexpr double log_pi = 1.1447298858494001741434273513531;
-    // q = (E|U|)^2/(nu-2), smooth even as nu -> 2. Form a^2 and
-    // b^2 from k*q, avoiding the cancellation in differentiating sqrt(k)^2.
-    const D q = exp(-2.0 * gamma_ratio(0.5*(nu+(-1.0)),D::constant(0.5),order) + (-log_pi));
-    const D m2 = k*q, t = 2.0 * (l*sqrt(q));
-    const D b2 = (l*l) * (3.0-4.0*m2) + 1.0;
-    const D ratio = t/(l+1.0);
-    const auto hs = half_step(0.5*p.nu);
-    const D log_c = lift(nu,hs.d0-0.5*log_pi,order >= 1 ? 0.5*hs.d1 : 0.0,
-                         order >= 2 ? 0.25*hs.d2 : 0.0);
-    const double exponent = negative ? 2.0 : 1.0;
-    auto weighted = [&](double r,double log_weight,D& value) {
-        const D v = r*ratio;
-        value = exp(exponent*std::log1p(-r) - 0.5*((nu+1.0)*log(v*v+1.0)) + log_weight);
-        return finite(value,order);
-    };
-    D integral;
-    if (!integrate_piece<2>(weighted,0.0,1.0,order,integral)) return false;
-    D result;
-    if (negative) {
-        const D small = 1.0-l;
-        const D half = (small/b2) * (0.5*(small*small)+2.0*(l*m2));
-        const D finite_part = k * ((t*t*t)*exp(log_c)*integral/b2);
-        result = p.lambda >= 0.0 ? half+finite_part : 1.0-(half+finite_part);
+    const D l = sign * lambda;
+    const auto norm = t_log_normalizer(p.eta, order);
+    const D log_c = lift(eta,norm.value,norm.d1,norm.d2);
+    D m2, t, b2, integral, result;
+    if (p.eta > 0.25) {
+        const auto rho = t_gamma_ratio(p.eta,order);
+        const D R = lift(eta,rho.value,rho.d1,rho.d2);
+        const D q = (2.0/3.14159265358979323846)*exp(2.0*R)*eta/((1.0-eta)*(1.0-eta));
+        const D k = (1.0-2.0*eta)/eta;
+        m2 = k*q; t = 2.0*(l*sqrt(q)); b2 = (l*l)*(3.0-4.0*m2)+1.0;
+        const D ratio = t/(l+1.0);
+        const D log_scaled_c = R - 0.5*log(6.28318530717958647693*eta);
+        const double exponent = negative ? 2.0 : 1.0;
+        auto weighted = [&](double r,double log_weight,D& value) {
+            const D v = r*ratio;
+            value = exp(exponent*std::log1p(-r)-0.5*((D::constant(1.0)/eta+1.0)*log(v*v+1.0))+log_weight);
+            return finite(value,order);
+        };
+        if (!integrate_piece<2>(weighted,0.0,1.0,order,integral)) return false;
+        if (negative) {
+            const D small=1.0-l;
+            const D half=(small/b2)*(0.5*(small*small)+2.0*(l*m2));
+            const D part=k*((t*t*t)*exp(log_scaled_c)*integral/b2);
+            result=p.lambda>=0.0 ? half+part : 1.0-(half+part);
+        } else {
+            result=(sqrt(k)/sqrt(b2))*(sqrt(q)*(1.0-l*l)+2.0*((t*t)*exp(log_scaled_c)*integral));
+        }
     } else {
-        result = (sqrt(k)/sqrt(b2)) * (sqrt(q)*(1.0-l*l)+2.0*((t*t)*exp(log_c)*integral));
+        const D c = exp(log_c), m = 2.0*c*((1.0-2.0*eta)/(1.0-eta));
+        m2=m*m; t=2.0*(l*m); b2=(l*l)*(3.0-4.0*m2)+1.0;
+        const D ratio=t/(l+1.0);
+        const double exponent=negative ? 2.0 : 1.0;
+        auto weighted = [&](double r,double log_weight,D& value) {
+            const D v=r*ratio;
+            const auto k=t_kernel(v.v,p.eta,order);
+            const D kernel=lift2(v,eta,k.t,k.u,k.eta,k.uu,k.ueta,k.etaeta);
+            value=exp(exponent*std::log1p(-r)-kernel+log_weight);
+            return finite(value,order);
+        };
+        if (!integrate_piece<2>(weighted,0.0,1.0,order,integral)) return false;
+        if (negative) {
+            const D small=1.0-l;
+            const D half=(small/b2)*(0.5*(small*small)+2.0*(l*m2));
+            const D part=(t*t*t)*c*integral/b2;
+            result=p.lambda>=0.0 ? half+part : 1.0-(half+part);
+        } else result=(m*(1.0-l*l)+2.0*((t*t)*c*integral))/sqrt(b2);
     }
     if (!finite(result,order) || !(result.v > 0.0)) return false;
     return assign(result,order,out);
@@ -52,7 +71,7 @@ bool skew_integral(const double* shape, double gamma, double delta, int order, b
 {
     SkewTDensity::Prepared p;
     if (!shape || order < 0 || order > 2 || !SkewTDensity::prepare(shape, order, p)
-        || !(delta < shape[0]) || !(delta > 0.0) || !(std::abs(gamma) < 1.0)) return false;
+        || !(delta * shape[0] < 1.0) || !(delta > 0.0) || !(std::abs(gamma) < 1.0)) return false;
     if (p.lambda == 0.0) {
         if constexpr (N == 4) return quadrature_power_moment<SkewTDensity>(shape, gamma, delta, order, out);
         else return negative ? quadrature_negative_second_moment<SkewTDensity>(shape, order, out)
@@ -67,14 +86,26 @@ bool skew_integral(const double* shape, double gamma, double delta, int order, b
         return q;
     };
     const double sign = p.lambda > 0.0 ? 1.0 : -1.0;
-    const D abs_a = sign * point_quantity(p.a, p.a1, p.a2);
-    const D b = point_quantity(p.b, p.b1, p.b2);
-    const D nu = order ? D::variable(p.nu,0) : D::constant(p.nu);
+    D abs_a = sign * point_quantity(p.a, p.a1, p.a2);
+    D b = point_quantity(p.b, p.b1, p.b2);
+    const D eta = order ? D::variable(p.eta,0) : D::constant(p.eta);
     const D lambda = order ? D::variable(p.lambda,1) : D::constant(p.lambda);
     D g = D::constant(gamma), d = D::constant(delta);
     if constexpr (N == 4) if (order) { g = D::variable(gamma,2); d = D::variable(delta,3); }
-    const auto norm = t_log_normalizer(p.nu);
-    const D log_c = lift(nu,norm.value,order >= 1 ? norm.d1 : 0.0,order >= 2 ? norm.d2 : 0.0);
+    const auto norm = t_log_normalizer(p.eta,order);
+    D log_c = lift(eta,norm.value,order >= 1 ? norm.d1 : 0.0,order >= 2 ? norm.d2 : 0.0);
+    D log_scale = D::constant(0.0);
+    const bool scaled = p.eta > 0.25;
+    if (scaled) {
+        const auto rho = t_gamma_ratio(p.eta,order);
+        const D R = lift(eta,rho.value,rho.d1,rho.d2);
+        const D q = (2.0/3.14159265358979323846)*exp(2.0*R)*eta/((1.0-eta)*(1.0-eta));
+        const D k = (1.0-2.0*eta)/eta;
+        abs_a = 2.0*sign*lambda*sqrt(q);
+        b = sqrt(3.0*(lambda*lambda)-k*(abs_a*abs_a)+1.0);
+        log_scale = 0.5*log(k);
+        log_c = R-0.5*log(6.28318530717958647693*eta);
+    }
     const D log_b = log(b), log_a = log(abs_a);
     std::array<CompensatedSum,1+N+packed_size(N)> sum{};
     for (int piece = 0; piece < 3; ++piece) {
@@ -98,9 +129,13 @@ bool skew_integral(const double* shape, double gamma, double delta, int order, b
                 log_z = log_a + std::log1p(-r) - log_b;
                 log_mass = log_a;
             }
-            const auto t = t_moment_kernel(u.v, p.nu, order);
-            const D kernel = lift2(u,nu,t.t,t.u,t.nu,t.uu,t.unu,t.nunu);
-            value = exp(log_c - kernel + log_mass + d * (log_z + log_asymmetry) + log_weight);
+            D kernel;
+            if (scaled) kernel=0.5*(D::constant(1.0)/eta+1.0)*log(u*u+1.0);
+            else {
+                const auto t=t_moment_kernel(u.v,p.eta,order);
+                kernel=lift2(u,eta,t.t,t.u,t.eta,t.uu,t.ueta,t.etaeta);
+            }
+            value = exp(log_c - kernel + log_mass + d * (log_scale + log_z + log_asymmetry) + log_weight);
             return finite(value,order);
         };
         D part;

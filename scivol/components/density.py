@@ -35,11 +35,11 @@ class StudentT(Component):
     def signature(self): return "StudentT"
     
     @property
-    def n_params(self): return 1  # degrees of freedom
+    def n_params(self): return 1  # reciprocal tail
     
-    def pack(self, params_dict): return np.array([params_dict['nu']])
+    def pack(self, params_dict): return np.array([params_dict['eta']])
     def unpack(self, flat_params):
-        self.fitted_params = {'nu': flat_params[0]} if len(flat_params) > 0 else {}
+        self.fitted_params = {'eta': flat_params[0]} if len(flat_params) > 0 else {}
         return self.fitted_params
 
 
@@ -49,8 +49,8 @@ class SkewT(Component):
     
     Parameters
     ----------
-    nu : float
-        Degrees of freedom (must be > 2 for finite variance)
+    eta : float
+        Reciprocal degrees of freedom in [0, 1/2), with the Normal limit at zero
     lam : float
         Skewness parameter (-1, 1), where lam=0 gives symmetric Student-t
     """
@@ -63,14 +63,14 @@ class SkewT(Component):
     def signature(self): return "SkewT"
     
     @property
-    def n_params(self): return 2  # degrees of freedom + skewness
+    def n_params(self): return 2  # reciprocal tail + skewness
     
     def pack(self, params_dict): 
-        return np.array([params_dict['nu'], params_dict['lam']])
+        return np.array([params_dict['eta'], params_dict['lam']])
     
     def unpack(self, flat_params):
         if len(flat_params) >= 2:
-            self.fitted_params = {'nu': flat_params[0], 'lam': flat_params[1]}
+            self.fitted_params = {'eta': flat_params[0], 'lam': flat_params[1]}
         else:
             self.fitted_params = {}
         return self.fitted_params

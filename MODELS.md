@@ -22,8 +22,8 @@ the bounds and constraints (theta coordinates) and by the coordinate charts
 | `EGARCH(p, q)` | `omega, alpha, gamma, beta` | `1 - sum beta_j L^j` stable |
 | `APARCH(p, q)` | `omega, alpha, gamma, beta, delta` | `omega > 0`, `alpha, beta >= 0`, `abs(gamma) < 1`, `delta > 0`, `sum alpha_i E[(abs(z) - gamma_i z)^delta] + sum beta < 1` |
 | `Normal()` | none | |
-| `StudentT()` | `nu` | `nu > 2` |
-| `SkewT()` (Hansen 1994) | `nu, lam` | `nu > 2`, `abs(lam) < 1` |
+| `StudentT()` | `eta` | `0 <= eta < 1/2` |
+| `SkewT()` (Hansen 1994) | `eta, lam` | `0 <= eta < 1/2`, `abs(lam) < 1` |
 | `GED()` | `nu` | `nu > 0` |
 | `GeneralizedHyperbolic()` | `rho, zeta, lambda` | `abs(rho) < 1`, `zeta > 0` |
 | `NormalInverseGaussian()` | `rho, zeta` | `abs(rho) < 1`, `zeta > 0` |
@@ -32,6 +32,8 @@ the bounds and constraints (theta coordinates) and by the coordinate charts
 
 All densities are standardized to zero mean and unit variance. Orders are at
 most 8 for `p`, `q` and the AR and MA parts; HAR windows at most 256.
+For APARCH with StudentT or SkewT, the power moment also requires
+`delta * eta < 1`; this constraint is inactive at `eta = 0`.
 
 ## Sample conventions
 
@@ -59,7 +61,7 @@ most 8 for `p`, `q` and the AR and MA parts; HAR windows at most 256.
 |---|---|---|
 | Mean and its variance (psi weights) | every horizon | |
 | GARCH, GJR variance | every horizon | |
-| EGARCH variance | every horizon, through E exp(a abs(z) + b z); does not exist beyond one step under Student-t and skew-t | |
+| EGARCH variance | every horizon, through E exp(a abs(z) + b z); Student-t and skew-t permit positive tail exponential moments only at `eta = 0` | |
 | APARCH variance | one step | beyond one step |
 | Quantiles | one step | beyond one step |
 
@@ -67,7 +69,13 @@ most 8 for `p`, `q` and the AR and MA parts; HAR windows at most 256.
 
 `DCC(p, q)` with Gaussian or Student-t copula correlation likelihood on the
 marginals' standardized residuals, correlation targeting `Qbar = eps'eps / T`,
-`Q_0 = Qbar`. Domain: `a, b >= 0`, `sum a + sum b < 1`, `nu > 2`. The
+`Q_0 = Qbar`. Domain: `a, b >= 0`, `sum a + sum b < 1`, `0 <= eta < 1/2`. The
 correlation stage is the second stage of a staged estimator; its standard errors
 treat the marginal estimates and `Qbar` as given. `CCC` is the constant
 correlation `R = Qbar` normalized.
+
+For StudentT, SkewT and the Student-t copula, `eta = 1/nu`. The closed
+face `eta = 0` is the exact Normal limit, or Hansen's two-piece Normal limit
+for SkewT. Summaries report derived `nu`, infinite at zero. The scalar eta
+chart covers the interior; as with the simplex, excluded closed boundary faces
+do not change `chart_covers_domain`.

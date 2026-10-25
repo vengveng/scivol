@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 api = pytest.importorskip("scivol._scivolapi")
-from tests._oracle import _jax_modules  # noqa: E402
+from tests._oracle import _jax_modules, _jax_student_log_normalizer, _jax_student_log_power  # noqa: E402
 
 
 def correlation_model(p=1, q=1, density="normal"):
@@ -16,7 +16,7 @@ def correlation_model(p=1, q=1, density="normal"):
     return api.CorrelationModel(spec)
 
 
-def simulate(T, N, a=0.04, b=0.93, seed=0, nu=None):
+def simulate(T, N, a=0.04, b=0.93, seed=0, eta=0.0):
     rng = np.random.default_rng(seed)
     root = np.linalg.cholesky(0.4 * np.ones((N, N)) + 0.6 * np.eye(N))
     target = root @ root.T
@@ -27,8 +27,8 @@ def simulate(T, N, a=0.04, b=0.93, seed=0, nu=None):
             q = (1 - a - b) * target + a * np.outer(previous, previous) + b * q
         d = 1 / np.sqrt(np.diag(q))
         z = rng.standard_normal(N)
-        if nu is not None:
-            z *= np.sqrt((nu - 2) / rng.chisquare(nu))
+        if eta > 0.0:
+            z *= np.sqrt((1-2*eta) / rng.gamma(0.5/eta, 2*eta))
         previous = np.linalg.cholesky(q * np.outer(d, d)) @ z
         eps[t] = previous
     return eps
@@ -59,11 +59,11 @@ def oracle(theta, eps, target, p, q, density):
             if density == "normal":
                 total = total + 0.5 * (logdet + quad - e[t] @ e[t])
             else:
-                nu = par[-1]
-                c = -jsp.special.gammaln((nu + N) / 2) + (1 - N) * jsp.special.gammaln(nu / 2) \
-                    + N * jsp.special.gammaln((nu + 1) / 2)
-                total = total + c + 0.5 * logdet + (nu + N) / 2 * jnp.log1p(quad / (nu - 2)) \
-                    - (nu + 1) / 2 * jnp.sum(jnp.log1p(e[t] ** 2 / (nu - 2)))
+                eta = par[-1]
+                rho = _jax_student_log_normalizer(jnp,jsp,eta) + jnp.log(2*jnp.pi)/2 + jnp.log1p(-2*eta)/2
+                c = (N-N%2)*rho - sum(jnp.log1p((2*j+N%2)*eta) for j in range(N//2))
+                total = total + c + 0.5*logdet + _jax_student_log_power(jnp,eta,quad,shift=N+2) - jnp.sum(_jax_student_log_power(jnp,eta,e[t]**2))
+
         return total
 
     point = jnp.asarray(theta)
@@ -72,7 +72,7 @@ def oracle(theta, eps, target, p, q, density):
 
 @pytest.mark.parametrize("p,q,density,theta", [
     (1, 1, "normal", [0.05, 0.9]),
-    (2, 1, "student_t", [0.03, 0.02, 0.9, 7.0]),
+    (2, 1, "student_t", [0.03, 0.02, 0.9, 1/7.0]),
     (1, 2, "normal", [0.05, 0.5, 0.4]),
 ])
 def test_correlation_jet_matches_the_oracle(p, q, density, theta):
@@ -107,14 +107,14 @@ def test_correlation_paths_are_correlation_matrices():
 
 def test_domain_and_starts():
     model = correlation_model(1, 1, "student_t")
-    assert model.parameter_names == ["a[1]", "b[1]", "nu"]
-    assert model.feasible(np.array([0.05, 0.9, 5.0]))
-    assert not model.feasible(np.array([0.1, 0.9, 5.0]))  # persistence 1
-    assert not model.feasible(np.array([-0.01, 0.9, 5.0]))
-    assert not model.feasible(np.array([0.05, 0.9, 2.0]))
+    assert model.parameter_names == ["a[1]", "b[1]", "eta"]
+    assert model.feasible(np.array([0.05, 0.9, 0.2]))
+    assert not model.feasible(np.array([0.1, 0.9, 0.2]))  # persistence 1
+    assert not model.feasible(np.array([-0.01, 0.9, 0.2]))
+    assert not model.feasible(np.array([0.05, 0.9, 0.5]))
     eps = simulate(300, 3)
     options = api.FitOptions()
-    options.start = [0.2, 0.9, 5.0]
+    options.start = [0.2, 0.9, 0.2]
     with pytest.raises(ValueError, match="domain"):
         api.fit_correlation(model, eps, options)
 
@@ -138,10 +138,10 @@ def test_fit_recovers_the_simulation_and_is_certified():
 def test_student_t_fit_recovers_the_tail():
     from scivol.dcc import DCC
 
-    eps = simulate(3000, 4, seed=5, nu=6.0)
+    eps = simulate(3000, 4, seed=5, eta=1/6.0)
     eps /= eps.std(0)
     r = DCC(1, 1, distribution="studentt").fit_from_residuals(eps)
-    assert r.success and 4.0 < r.params.nu < 9.0
+    assert r.success and 1/9.0 < r.params.eta < 1/4.0
     assert r.params.persistence == pytest.approx(0.97, abs=0.03)
 
 
@@ -225,3 +225,46 @@ def test_forecast_covariance_is_the_average_outer_product(dcc_fit):
     np.testing.assert_allclose(np.diagonal(f.residual_covariance, axis1=1, axis2=2), f.residual_variance, rtol=0.05)
     assert np.all(np.linalg.eigvalsh(f.residual_covariance) > 0)
     np.testing.assert_allclose(f.correlation[0], gaussian.forecast_correlation(1)[0], rtol=1e-11)  # a mean of equal matrices
+
+
+@pytest.mark.parametrize("coordinates", ["automatic", "theta"])
+def test_gaussian_copula_tail_optimum_is_eta_zero(coordinates):
+    from scivol.dcc import DCC
+
+    eps = simulate(2500, 3, seed=0)
+    options = api.FitOptions()
+    options.coordinates = getattr(api.Coordinates, coordinates)
+    model = correlation_model(density="student_t")
+    student = api.fit_correlation(model, eps, options)
+    normal = api.fit_correlation(correlation_model(), eps, options)
+    assert student.success and normal.success
+    assert student.theta[-1] == 0.0
+    assert student.phases[-1].name == "theta:newton"
+    assert student.log_likelihood == pytest.approx(normal.log_likelihood, rel=0.0, abs=2e-10)
+    assert model.innovation_density(np.asarray(student.theta)).derived == {"nu": np.inf}
+
+
+
+@pytest.mark.parametrize("eta", [0., 1e-300, 1e-16, 1e-10, 1e-6, .1, .49])
+def test_copula_eta_limit_matches_ad(eta):
+    eps = simulate(10, 3, seed=8)
+    model = correlation_model(density="student_t")
+    jet = api.CorrelationJet(model, eps)
+    theta = np.array([.05, .9, eta])
+    out = jet.theta(theta, 7)
+    value, gradient, hessian = oracle(theta, eps, np.asarray(jet.target), 1, 1, "student_t")
+    assert out["value"] == pytest.approx(value, abs=1e-12)
+    np.testing.assert_allclose(out["gradient"], gradient, rtol=1e-11, atol=1e-11)
+    np.testing.assert_allclose(out["hessian"], hessian, rtol=1e-11, atol=1e-10)
+
+
+def test_copula_normal_limit_simulation_uses_no_chi_square_draws():
+    eps = simulate(20, 2, seed=4)
+    normals = np.random.default_rng(5).normal(size=(4, 3, 2))
+    marginals = [api.InnovationDensity(api.DensityKind.student_t, [0.])] * 2
+    model = correlation_model(density="student_t")
+    normal = correlation_model()
+    first = api.simulate_correlation(model, np.array([.05,.9,0.]), eps, marginals, normals, None, None)
+    second = api.simulate_correlation(normal, np.array([.05,.9]), eps,
+                                     [api.InnovationDensity(api.DensityKind.normal, [])]*2, normals, None, None)
+    np.testing.assert_array_equal(first["innovation"], second["innovation"])

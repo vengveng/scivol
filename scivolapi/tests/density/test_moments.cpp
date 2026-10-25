@@ -131,7 +131,7 @@ void closed_against_quadrature(const double* shape) {
 }
 
 void identities_and_domains() {
-    const double shapes[8][3]={{},{8},{8,.3},{1.5},{.2,1.3,.8},{.2,1.3},{.2,1.3},{.2,2.3}};
+    const double shapes[8][3]={{},{.125},{.125,.3},{1.5},{.2,1.3,.8},{.2,1.3},{.2,1.3},{.2,2.3}};
     closed_against_quadrature<NormalDensity>(shapes[0]);
     closed_against_quadrature<StudentTDensity>(shapes[1]);
     closed_against_quadrature<GedDensity>(shapes[3]);
@@ -158,7 +158,7 @@ void identities_and_domains() {
         if(k) check(!absolute_moment(kind,nullptr,2,a),"null shape");
     }
     MomentResult d;
-    const double boundary[]={2.00001};
+    const double boundary[]={1/2.00001};
     check(power_moment(DensityKind::student_t,boundary,0,2,2,d),"near-boundary second moment");
     check(std::abs(d.value-1)<1e-14 && std::abs(d.gradient[0])<1e-12 && std::abs(d.hessian[0])<1e-12,"near-boundary exact second moment");
     for(auto kind:{DensityKind::student_t,DensityKind::skew_t}) {
@@ -167,7 +167,7 @@ void identities_and_domains() {
     }
     for(int k:{2,4,5,6,7}) {
         double symmetric[3]={0,1.3,.8};
-        if(k==2) {symmetric[0]=8;symmetric[1]=0;}
+        if(k==2) {symmetric[0]=.125;symmetric[1]=0;}
         if(k==7) symmetric[1]=2.3;
         check(negative_second_moment(static_cast<DensityKind>(k),symmetric,2,d),"zero-skew convergence");
         check(std::abs(d.value-.5)<1e-14,"zero-skew kappa");
@@ -206,8 +206,8 @@ void identities_and_domains() {
 }
 
 void boundary_stress() {
-    const double points[8][3]={{},{std::nextafter(2.0,3.0)},
-        {std::nextafter(2.0,3.0),.999999},{.01},{.9999,.001,-.5},{.9999,.001},{.9999,.001},{.9999,1.50000001}};
+    const double points[8][3]={{},{std::nextafter(0.5,0.0)},
+        {std::nextafter(0.5,0.0),.999999},{.01},{.9999,.001,-.5},{.9999,.001},{.9999,.001},{.9999,1.50000001}};
     for(int k=0;k<8;++k) {
         int status[3]{};
         for(int m=0;m<3;++m) {
@@ -225,7 +225,7 @@ void boundary_stress() {
 }
 
 void smoke() {
-    const double shapes[8][3] = {{}, {8}, {8,.3}, {1.5}, {.2,1.3,.8}, {.2,1.3}, {.2,1.3}, {.2,2.3}};
+    const double shapes[8][3] = {{}, {.125}, {.125,.3}, {1.5}, {.2,1.3,.8}, {.2,1.3}, {.2,1.3}, {.2,2.3}};
     for (int k=0; k<8; ++k) {
         for (int m=0; m<3; ++m) {
             MomentResult d;

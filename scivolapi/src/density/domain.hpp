@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cmath>
 #include <limits>
 #include <span>
 
@@ -9,7 +10,7 @@
 
 namespace scivolapi::detail {
 
-// One shape parameter: its name, open domain (lower, upper) and default start.
+// One shape parameter: its name, interval and default start. The upper end is open.
 // The single declaration of each density's parameter domain; bounds, charts,
 // feasibility and starts are all derived from it.
 struct ShapeDomain {
@@ -17,16 +18,22 @@ struct ShapeDomain {
     double lower;
     double upper;
     double start;
+    bool closed_lower = false;
+
+    [[nodiscard]] bool contains(double x) const noexcept
+    {
+        return (closed_lower ? x >= lower : x > lower) && x < upper && std::isfinite(x);
+    }
 };
 
 inline constexpr std::size_t max_shapes = 3;
 
 namespace domain_detail {
 inline constexpr double inf = std::numeric_limits<double>::infinity();
-// Student-t family: finite variance requires nu > 2.
-inline constexpr std::array<ShapeDomain, 1> student_t{{{"nu", 2.0, inf, 10.0}}};
+// Reciprocal tail: eta = 0 is Normal; finite variance requires eta < 1/2.
+inline constexpr std::array<ShapeDomain, 1> student_t{{{"eta", 0.0, 0.5, 0.1, true}}};
 // Hansen (1994) skewed t: lambda in (-1, 1).
-inline constexpr std::array<ShapeDomain, 2> skew_t{{{"nu", 2.0, inf, 10.0}, {"lam", -1.0, 1.0, 0.0}}};
+inline constexpr std::array<ShapeDomain, 2> skew_t{{{"eta", 0.0, 0.5, 0.1, true}, {"lam", -1.0, 1.0, 0.0}}};
 // Generalized error distribution: any positive shape.
 inline constexpr std::array<ShapeDomain, 1> ged{{{"nu", 0.0, inf, 1.5}}};
 // Standardized GH: skewness rho in (-1, 1), concentration zeta > 0, index lambda real.

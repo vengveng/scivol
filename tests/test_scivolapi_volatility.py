@@ -17,7 +17,7 @@ from tests._oracle import (  # noqa: E402
 
 ORDERS = [(1, 1), (2, 1), (1, 2)]
 GJR_DENSITIES = {
-    "normal": ([], "normal"), "student_t": ([6.0], "studentt"), "ged": ([1.3], "ged"), "skew_t": ([6.0, -0.3], "skewt"),
+    "normal": ([], "normal"), "student_t": ([1/6.0], "studentt"), "ged": ([1.3], "ged"), "skew_t": ([1/6.0, -0.3], "skewt"),
 }
 
 
@@ -60,7 +60,7 @@ def test_gjr_jet_matches_ad_oracle(series, density, p, q):
 
 def test_gjr_every_sparse_request_equals_the_full_request(series):
     jet = api.Jet(gjr_model("student_t", 2, 1), series)
-    theta = gjr_point(2, 1, [6.0])
+    theta = gjr_point(2, 1, [1/6.0])
     full = jet.theta(theta, 15)
     for mask in range(1, 16):
         part = jet.theta(theta, mask)
@@ -109,19 +109,19 @@ def test_gjr_chart_differentiates_the_skewed_persistence_weight(series):
     jax, jnp, jsp = _jax_modules()
     model = gjr_model("skew_t", 1, 1)
     jet = api.Jet(model, series)
-    theta = np.array([0.08, 0.05, 0.08, 0.85, 6.0, -0.3])
+    theta = np.array([0.08, 0.05, 0.08, 0.85, 1/6.0, -0.3])
     z = model.to_z(theta)
     assert np.allclose(model.to_theta(z), theta, rtol=1e-12, atol=1e-15)
     limit = 1.0 - 8.0 * 4 * np.finfo(float).eps
-    tiny, two, bound = np.finfo(float).tiny, np.nextafter(2.0, 3.0), np.nextafter(1.0, 0.0)
+    tiny, bound = np.finfo(float).tiny, np.nextafter(1.0, 0.0)
 
     def chart(u):
-        nu, lam = two + jnp.exp(u[4]), bound * jnp.tanh(u[5])
-        kappa = _jax_negative_second_moment(jnp, jsp, jnp.stack([nu, lam]), "skewt")
+        eta, lam = np.nextafter(.5,0.)*jax.nn.sigmoid(u[4]), bound * jnp.tanh(u[5])
+        kappa = _jax_negative_second_moment(jnp, jsp, jnp.stack([eta, lam]), "skewt")
         e = jnp.exp(u[1:4])
         v = limit * e / (1.0 + jnp.sum(e))
         alpha = v[0] / (1.0 - kappa)
-        return jnp.stack([tiny + jnp.exp(u[0]), alpha, v[1] / kappa - alpha, v[2], nu, lam])
+        return jnp.stack([tiny + jnp.exp(u[0]), alpha, v[1] / kappa - alpha, v[2], eta, lam])
 
     full = jet.theta(theta, api.GRADIENT | api.HESSIAN)
     jac = np.asarray(jax.jacfwd(chart)(jnp.asarray(z)))
@@ -148,7 +148,7 @@ def test_gjr_domain_admits_negative_leverage_down_to_minus_alpha(series):
 # --------------------------------------------------------------------------- #
 
 EGARCH_DENSITIES = {
-    "normal": ([], "normal"), "student_t": ([6.0], "studentt"), "ged": ([1.3], "ged"), "skew_t": ([6.0, -0.2], "skewt"),
+    "normal": ([], "normal"), "student_t": ([1/6.0], "studentt"), "ged": ([1.3], "ged"), "skew_t": ([1/6.0, -0.2], "skewt"),
 }
 
 
@@ -183,7 +183,7 @@ def test_egarch_jet_matches_ad_oracle(series, density, p, q):
 
 def test_egarch_every_sparse_request_equals_the_full_request(series):
     jet = api.Jet(egarch_model("skew_t", 2, 2), series)
-    theta = egarch_point(2, 2, [6.0, -0.2])
+    theta = egarch_point(2, 2, [1/6.0, -0.2])
     full = jet.theta(theta, 15)
     for mask in range(1, 16):
         part = jet.theta(theta, mask)
@@ -203,7 +203,7 @@ def test_egarch_z_jet_includes_reflection_chart_curvature(series):
     jax, jnp, _ = _jax_modules()
     model = egarch_model("student_t", 1, 2)
     jet = api.Jet(model, series)
-    theta = egarch_point(1, 2, [6.0])
+    theta = egarch_point(1, 2, [1/6.0])
     z = model.to_z(theta)
     assert np.allclose(model.to_theta(z), theta, rtol=1e-13, atol=1e-15)
     bound = np.nextafter(1.0, 0.0)
@@ -211,8 +211,8 @@ def test_egarch_z_jet_includes_reflection_chart_curvature(series):
     def chart(u):
         k1, k2 = bound * jnp.tanh(u[3]), bound * jnp.tanh(u[4])
         beta = jnp.stack([k1 - k2 * k1, k2])  # Levinson for q = 2
-        nu = np.nextafter(2.0, 3.0) + jnp.exp(u[5])
-        return jnp.concatenate([u[:3], beta, nu[None]])
+        eta = np.nextafter(.5,0.)*jax.nn.sigmoid(u[5])
+        return jnp.concatenate([u[:3], beta, eta[None]])
 
     full = jet.theta(theta, api.GRADIENT | api.HESSIAN)
     jac = np.asarray(jax.jacfwd(chart)(jnp.asarray(z)))
@@ -274,7 +274,7 @@ def test_aparch_derivatives_are_continuous_at_exact_zero_returns(series, delta):
     exact, near = series.copy(), series.copy()
     exact[::9] = 0.0
     near[::9] = 1e-300
-    theta = aparch_point(1, 1, delta, [6.0])
+    theta = aparch_point(1, 1, delta, [1/6.0])
     at = api.Jet(aparch_model("student_t"), exact).theta(theta, 7)
     beside = api.Jet(aparch_model("student_t"), near).theta(theta, 7)
     assert at["status"] == beside["status"] == "ok"
@@ -285,7 +285,7 @@ def test_aparch_derivatives_are_continuous_at_exact_zero_returns(series, delta):
 
 def test_aparch_every_sparse_request_equals_the_full_request(series):
     jet = api.Jet(aparch_model("skew_t", 2, 1), series)
-    theta = aparch_point(2, 1, 1.4, [6.0, -0.2])
+    theta = aparch_point(2, 1, 1.4, [1/6.0, -0.2])
     full = jet.theta(theta, 15)
     for mask in range(1, 16):
         part = jet.theta(theta, mask)
@@ -300,21 +300,21 @@ def test_aparch_chart_differentiates_the_power_moment_weights(series):
     jax, jnp, jsp = _jax_modules()
     model = aparch_model("student_t", 2, 1)
     jet = api.Jet(model, series)
-    theta = np.array([0.05, 0.05, 0.03, 0.3, -0.2, 0.8, 1.4, 7.0])
+    theta = np.array([0.05, 0.05, 0.03, 0.3, -0.2, 0.8, 1.4, 1/7.0])
     z = model.to_z(theta)
     assert np.allclose(model.to_theta(z), theta, rtol=1e-12, atol=1e-15)
     limit = 1.0 - 8.0 * 4 * np.finfo(float).eps
-    tiny, two, bound = np.finfo(float).tiny, np.nextafter(2.0, 3.0), np.nextafter(1.0, 0.0)
+    tiny, bound = np.finfo(float).tiny, np.nextafter(1.0, 0.0)
 
     def chart(u):
         g1, g2 = bound * jnp.tanh(u[3]), bound * jnp.tanh(u[4])
-        delta, nu = tiny + jnp.exp(u[6]), two + jnp.exp(u[7])
-        shape = jnp.stack([nu])
+        delta, eta = tiny + jnp.exp(u[6]), np.nextafter(0.5,0.0) * jax.nn.sigmoid(u[7])
+        shape = jnp.stack([eta])
         m1 = _jax_aparch_power_moment(jnp, jsp, g1, delta, shape, "studentt")
         m2 = _jax_aparch_power_moment(jnp, jsp, g2, delta, shape, "studentt")
         e = jnp.exp(jnp.stack([u[1], u[2], u[5]]))
         v = limit * e / (1.0 + jnp.sum(e))
-        return jnp.stack([tiny + jnp.exp(u[0]), v[0] / m1, v[1] / m2, g1, g2, v[2], delta, nu])
+        return jnp.stack([tiny + jnp.exp(u[0]), v[0] / m1, v[1] / m2, g1, g2, v[2], delta, eta])
 
     full = jet.theta(theta, api.GRADIENT | api.HESSIAN)
     jac = np.asarray(jax.jacfwd(chart)(jnp.asarray(z)))
@@ -327,9 +327,9 @@ def test_aparch_chart_differentiates_the_power_moment_weights(series):
 
 def test_aparch_domain_needs_the_power_moment():
     model = aparch_model("student_t")
-    assert model.feasible(np.array([0.05, 0.08, 0.3, 0.85, 1.4, 6.0]))
-    assert not model.feasible(np.array([0.05, 0.08, 0.3, 0.85, 6.5, 6.0]))  # delta >= nu: no moment
-    assert not model.feasible(np.array([0.05, 0.08, 0.3, 0.95, 1.4, 6.0]))  # persistence >= 1
+    assert model.feasible(np.array([0.05, 0.08, 0.3, 0.85, 1.4, 1/6.0]))
+    assert not model.feasible(np.array([0.05, 0.08, 0.3, 0.85, 6.5, 1/6.0]))  # delta * eta >= 1: no moment
+    assert not model.feasible(np.array([0.05, 0.08, 0.3, 0.95, 1.4, 1/6.0]))  # persistence >= 1
 
 
 # --------------------------------------------------------------------------- #
@@ -466,8 +466,8 @@ def test_innovation_density_names_estimated_and_fixed_shapes():
 
 
 @pytest.mark.parametrize("volatility,density,theta", [
-    ("gjr", "skew_t", [0.05, 0.04, 0.1, 0.8, 6.0, -0.3]),
-    ("aparch", "student_t", [0.05, 0.08, 0.3, 0.85, 1.6, 6.0]),
+    ("gjr", "skew_t", [0.05, 0.04, 0.1, 0.8, 1/6.0, -0.3]),
+    ("aparch", "student_t", [0.05, 0.08, 0.3, 0.85, 1.6, 1/6.0]),
     ("garch", "normal", [0.05, 0.1, 0.8]),
 ])
 def test_persistence_is_what_the_stationarity_constraint_bounds(volatility, density, theta):
@@ -477,3 +477,26 @@ def test_persistence_is_what_the_stationarity_constraint_bounds(volatility, dens
     persistence = model.persistence(theta)
     assert values[0] == pytest.approx(1.0 - persistence, abs=1e-14)  # the chart's margin is ~1e-15
     assert _model("egarch", "normal").persistence(np.array([0.0, 0.1, -0.05, 0.9])) == pytest.approx(0.9)
+
+
+@pytest.mark.parametrize("eta", [0., 1e-300, 1e-10, 1e-3])
+@pytest.mark.parametrize("density", ["student_t", "skew_t"])
+@pytest.mark.parametrize("family", ["gjr", "egarch", "aparch"])
+def test_tail_limit_differentiates_the_recursion_moments(eta, density, family):
+    shape = [eta] if density == "student_t" else [eta,.2]
+    data = np.random.default_rng(73).normal(size=12)
+    name = "studentt" if density == "student_t" else "skewt"
+    if family == "gjr":
+        model, theta = gjr_model(density), gjr_point(1,1,shape)
+        expected = gjr_garch_value_grad_hess(theta,data,1,1,name)
+    elif family == "egarch":
+        model, theta = egarch_model(density), egarch_point(1,1,shape)
+        expected = egarch_value_grad_hess(theta,data,name,1,1)
+    else:
+        model, theta = aparch_model(density), aparch_point(1,1,1.4,shape)
+        expected = aparch_value_grad_hess(theta,data,1,1,name,initial_variance=float(np.mean(data*data)))
+    out = api.Jet(model,data).theta(theta,7)
+    assert out["status"] == "ok"
+    assert out["value"] == pytest.approx(expected[0],rel=2e-12)
+    assert_close(out["gradient"],expected[1],2e-11)
+    assert_close(out["hessian"],expected[2],2e-10)

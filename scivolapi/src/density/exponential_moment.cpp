@@ -207,7 +207,7 @@ template<class Density>
 Status polynomial_moment(const double* shape, double a, double b, double& value) noexcept
 {
     const double right = a + b, left = a - b;
-    if (right > 0.0 || left > 0.0) return Status::infinite;
+    if (shape[0] > 0.0 && (right > 0.0 || left > 0.0)) return Status::infinite;
     if (!std::isfinite(right) || !std::isfinite(left)) return Status::numerical_failure;
     typename Density::Prepared p;
     if (!Density::prepare(shape, 0, p) || !std::isfinite(p.constant.value)) return Status::numerical_failure;
@@ -289,12 +289,12 @@ ExpectationStatus exponential_moment(DensityKind kind, const double* shape,
     const auto domains = shape_domains(kind);
     if (!domains.empty() && !shape) return Status::numerical_failure;
     for (std::size_t i = 0; i < domains.size(); ++i)
-        if (!std::isfinite(shape[i]) || !(shape[i] > domains[i].lower && shape[i] < domains[i].upper))
+        if (!domains[i].contains(shape[i]))
             return Status::numerical_failure;
     if (a == 0.0 && b == 0.0) { value = 1.0; return Status::ok; }
     switch (kind) {
     case DensityKind::normal: return normal_moment(a, b, value);
-    case DensityKind::student_t: return polynomial_moment<StudentTDensity>(shape, a, b, value);
+    case DensityKind::student_t: return shape[0] == 0.0 ? normal_moment(a, b, value) : polynomial_moment<StudentTDensity>(shape, a, b, value);
     case DensityKind::skew_t: return polynomial_moment<SkewTDensity>(shape, a, b, value);
     case DensityKind::ged: return ged_moment(shape, a, b, value);
     case DensityKind::generalized_hyperbolic: return gh_moment<GeneralizedHyperbolic>(shape, shape[2], a, b, value);

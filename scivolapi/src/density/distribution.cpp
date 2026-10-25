@@ -19,7 +19,7 @@ constexpr double eps = std::numeric_limits<double>::epsilon();
 
 struct Point {
     DensityKind kind{};
-    double nu{}, constant{}, a{}, b{1.0}, lam{}, kappa{}, log_beta{}, log_gamma_one{};
+    double eta{}, nu{}, tail_scale{}, constant{}, a{}, b{1.0}, lam{}, kappa{}, log_beta{}, log_gamma_one{};
     double alpha{}, minus{}, plus{}, delta{}, d2{}, mu{}, index{};
     double concentration{}, root_rate{}, exponent_offset{};
 };
@@ -81,16 +81,20 @@ bool prepare(DensityKind kind, const double* shape, Point& p) noexcept
     const auto domains = shape_domains(kind);
     if (!domains.empty() && !shape) return false;
     for (std::size_t i = 0; i < domains.size(); ++i)
-        if (!std::isfinite(shape[i]) || !(shape[i] > domains[i].lower && shape[i] < domains[i].upper))
+        if (!domains[i].contains(shape[i]))
             return false;
     p.kind = kind;
     switch (kind) {
     case DensityKind::normal: return true;
     case DensityKind::student_t:
     case DensityKind::skew_t: {
-        p.nu = shape[0];
-        p.constant = t_log_normalizer(p.nu).value;
-        p.log_beta = 0.5 * 1.1447298858494001741434273513531 - half_step(0.5*p.nu).d0;
+        p.eta = shape[0];
+        p.constant = t_log_normalizer(p.eta, 0).value;
+        if (p.eta >= 1.0/512.0) {
+            p.nu = 1.0/p.eta;
+            p.tail_scale = (1.0-2.0*p.eta)/p.eta;
+            p.log_beta = 0.5 * 1.1447298858494001741434273513531 - half_step(0.5*p.nu).d0;
+        }
         if (kind == DensityKind::skew_t) {
             SkewTDensity::Prepared s;
             if (!SkewTDensity::prepare(shape, 0, s)) return false;
@@ -281,10 +285,7 @@ double log_pdf(const Point& p, double x) noexcept
     if (p.kind == DensityKind::student_t || p.kind == DensityKind::skew_t) {
         const double n = std::fma(p.b,x,p.a), scale = n < 0.0 ? 1.0-p.lam : 1.0+p.lam;
         const double q = n/scale;
-        const double l = 2.0*std::log(std::abs(q))-std::log(p.nu-2.0);
-        const double power = std::abs(q) < 1e150 ? std::log1p(q*q/(p.nu-2.0))
-            : l > 0.0 ? l+std::log1p(std::exp(-l)) : std::log1p(std::exp(l));
-        return p.constant+std::log(p.b)-0.5*(p.nu+1.0)*power;
+        return p.constant+std::log(p.b)-t_kernel(q,p.eta,0).t;
     }
     if (p.kind == DensityKind::ged)
         return -p.constant-std::pow(std::abs(x)/std::exp(p.kappa),p.nu);
@@ -338,8 +339,10 @@ bool integrated_tail(const Point& p, double z, bool upper, double& logarithm) no
     const auto integrand = [&](double t) {
         const double distance = scale*(t/(1.0-t));
         const double x = std::fma(direction,distance,z);
+        const double ratio = p.kind == DensityKind::student_t
+            ? distance*((2.0*z+distance)/(1.0-2.0*p.eta+p.eta*z*z)) : 0.0;
         const double difference = p.kind == DensityKind::student_t
-            ? -0.5*(p.nu+1.0)*std::log1p(distance*((2.0*z+distance)/(p.nu-2.0+z*z)))
+            ? -0.5*(1.0+p.eta)*ratio*log1p_ratio(p.eta*ratio,0).value
             : log_pdf(p,x)-reference;
         return std::exp(difference+std::log(scale)-2.0*std::log1p(-t));
     };
@@ -361,7 +364,12 @@ bool integrated_tail(const Point& p, double z, bool upper, double& logarithm) no
 bool student_log_tail(const Point& p, double x, double& result, double* area = nullptr) noexcept
 {
     if (x == 0.0) { result = -log_two; if (area) *area = 0.0; return true; }
-    if (p.nu >= 512.0) {
+    if (p.eta == 0.0) {
+        result = log_normal_tail(x);
+        if (area) *area = 0.5*std::erf(x*inv_sqrt_two);
+        return true;
+    }
+    if (p.eta < 1.0/512.0) {
         Point t = p; t.kind = DensityKind::student_t; t.a = 0.0; t.b = 1.0; t.lam = 0.0;
         if (!integrated_tail(t,x,true,result)) return false;
         if (area) {
@@ -373,7 +381,7 @@ bool student_log_tail(const Point& p, double x, double& result, double* area = n
         }
         return true;
     }
-    const double l = 2.0*std::log(x)-std::log(p.nu-2.0);
+    const double l = 2.0*std::log(x)-std::log(p.tail_scale);
     const double lx = l > 0.0 ? -l-std::log1p(std::exp(-l)) : -std::log1p(std::exp(l));
     const double ly = l+lx;
     const double a = 0.5*p.nu, b = 0.5;
@@ -394,7 +402,7 @@ bool student_log_tail(const Point& p, double x, double& result, double* area = n
 
 bool tails(const Point& p, double x, double& lower, double& upper) noexcept
 {
-    if (p.kind == DensityKind::normal) {
+    if (p.kind == DensityKind::normal || ((p.kind == DensityKind::student_t || p.kind == DensityKind::skew_t) && p.eta == 0.0 && p.lam == 0.0)) {
         lower = 0.5*std::erfc(-x*inv_sqrt_two); upper = 0.5*std::erfc(x*inv_sqrt_two);
         return true;
     }
@@ -445,12 +453,14 @@ bool inverse_student(const Point& p, double probability, double& x) noexcept
     if (probability == 0.5) { x = 0.0; return true; }
     const double target = std::log(probability);
     const double normal = normal_inverse(probability);
+    if (p.eta == 0.0) { x = normal; return true; }
     double y;
-    if (-target > p.nu) {
-        y = (p.constant+0.5*(p.nu+1.0)*std::log(p.nu-2.0)-std::log(p.nu)-target)/p.nu;
+    if (p.eta < 1.0/512.0) { y = std::log(normal); }
+    else if (-target > p.nu) {
+        y = (p.constant+0.5*(p.nu+1.0)*std::log(p.tail_scale)-std::log(p.nu)-target)/p.nu;
     } else {
         const double w = normal*normal/p.nu;
-        y = 0.5*(std::log(p.nu-2.0)+std::log(std::expm1(w)));
+        y = 0.5*(std::log(p.tail_scale)+std::log(std::expm1(w)));
     }
     double left = -745.0, right = 709.0;
     y = std::clamp(y,left+1.0,right-1.0);
@@ -461,9 +471,7 @@ bool inverse_student(const Point& p, double probability, double& x) noexcept
         const double residual = l-target;
         if (std::abs(residual) < 3e-13) { x = candidate; return true; }
         if (residual > 0.0) left = y; else right = y;
-        const double w = 2.0*y-std::log(p.nu-2.0);
-        const double power = w > 0.0 ? w+std::log1p(std::exp(-w)) : std::log1p(std::exp(w));
-        const double slope = std::exp(y+p.constant-0.5*(p.nu+1.0)*power-l);
+        const double slope = std::exp(y+p.constant-t_kernel(candidate,p.eta,0).t-l);
         const double next = y+residual/slope;
         if (next == y && std::abs(residual) < 8e-13) { x = candidate; return true; }
         y = std::isfinite(next) && next > left && next < right ? next : left+0.5*(right-left);
@@ -480,7 +488,7 @@ bool inverse_student_area(const Point& p, double target, double& value) noexcept
         if (!student_log_tail(p,x,l,&area)) return false;
         const double residual = area-target;
         if (std::abs(residual) < 2e-14*target) { value = x; return true; }
-        const double density = std::exp(p.constant-0.5*(p.nu+1.0)*std::log1p(x*x/(p.nu-2.0)));
+        const double density = std::exp(p.constant-t_kernel(x,p.eta,0).t);
         x -= residual/density;
         if (!(x > 0.0) || !std::isfinite(x)) return false;
     }

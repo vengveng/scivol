@@ -36,6 +36,7 @@ public:
 
     [[nodiscard]] CorrelationSample prepare(std::span<const double> eps, std::size_t series,
                                             std::span<const double> target = {}) const;
+    [[nodiscard]] InnovationDensity innovation_density(std::span<const double> theta) const;
     [[nodiscard]] bool feasible(std::span<const double> theta) const;
     // Parameter-only checks; the jet also checks positive definiteness of every Q_t.
     [[nodiscard]] bool evaluable(std::span<const double> theta) const;
@@ -47,7 +48,7 @@ public:
     void to_theta(std::span<const double> z, std::span<double> theta) const;
     [[nodiscard]] bool to_z(std::span<const double> theta, std::span<double> z) const;
 
-    // The simplex and nu charts cover the whole domain.
+    // The simplex and eta charts cover the interior, excluding closed faces.
     [[nodiscard]] ModelCapabilities capabilities() const noexcept { return {}; }
 
 private:
@@ -86,10 +87,11 @@ struct CorrelationPaths {
 // Continues the correlation model at theta past the sample eps (rows x series:
 // the marginal innovations it was fitted on) along `paths` paths. At each step:
 // R_t from the recursion; a copula draw e* = L g with L L' = R_t (Student-t:
-// e* = sqrt((nu - 2) / c) L g, c ~ chi2(nu)); and the marginal innovations
+// e* = sqrt((1 - 2 eta) / c) L g, c ~ eta chi2(1/eta));
+// at eta = 0 the factor is one and no chi-square draws are needed. The marginal innovations
 // z_i = F_i^{-1}(G(e*_i)), G the copula's standardized marginal and F_i the
 // marginal densities, which drive the recursion. normals: paths x horizon x series
-// standard normal draws; chi2: paths x horizon draws (Student-t only). Each
+// standard normal draws; chi2: paths x horizon scaled chi-square draws (eta > 0). Each
 // marginal model then continues along its column of z.
 CorrelationPaths simulate_correlation(const CorrelationModel& model, std::span<const double> theta,
                                       std::span<const double> eps, std::size_t series,

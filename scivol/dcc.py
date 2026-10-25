@@ -243,7 +243,7 @@ class MultivariateSimulationResult:
     correlation: NDArray[np.float64]
     residual_covariance: NDArray[np.float64]
     copula_distribution: str = "gaussian"
-    copula_nu: Optional[float] = None
+    copula_eta: Optional[float] = None
     columns: Optional[List[Any]] = None
 
     @property
@@ -260,7 +260,7 @@ class MultivariateSimulationResult:
             "correlation": self.correlation.copy(),
             "residual_covariance": self.residual_covariance.copy(),
             "copula_distribution": self.copula_distribution,
-            "copula_nu": self.copula_nu,
+            "copula_eta": self.copula_eta,
         }
 
 
@@ -275,7 +275,7 @@ class MultivariateScenarioResult:
     residual_covariance: NDArray[np.float64]
     innovation_method: str
     copula_distribution: str = "gaussian"
-    copula_nu: Optional[float] = None
+    copula_eta: Optional[float] = None
     columns: Optional[List[Any]] = None
 
     @property
@@ -294,7 +294,7 @@ class MultivariateScenarioResult:
             "residual_covariance": self.residual_covariance.copy(),
             "innovation_method": self.innovation_method,
             "copula_distribution": self.copula_distribution,
-            "copula_nu": self.copula_nu,
+            "copula_eta": self.copula_eta,
         }
 
 
@@ -323,7 +323,7 @@ class DCCParams:
 
     a: NDArray[np.float64]
     b: NDArray[np.float64]
-    nu: Optional[float] = None
+    eta: Optional[float] = None
 
     @property
     def persistence(self) -> float:
@@ -332,10 +332,10 @@ class DCCParams:
     def __repr__(self) -> str:
         a_str = ", ".join(f"{x:.6f}" for x in self.a)
         b_str = ", ".join(f"{x:.6f}" for x in self.b)
-        nu_str = "" if self.nu is None else f", nu={self.nu:.6f}"
+        eta_str = "" if self.eta is None else f", eta={self.eta:.6f}"
         return (
             f"DCCParams(a=[{a_str}], b=[{b_str}]"
-            f"{nu_str}, persistence={self.persistence:.6f})"
+            f"{eta_str}, persistence={self.persistence:.6f})"
         )
 
 
@@ -434,7 +434,7 @@ class _CorrelationResultMixin:
     def _correlation(self) -> tuple["api.CorrelationModel", NDArray[np.float64]]:
         raise NotImplementedError
 
-    def _copula_nu(self) -> Optional[float]:
+    def _copula_eta(self) -> Optional[float]:
         return None
 
     @property
@@ -452,8 +452,8 @@ class _CorrelationResultMixin:
         marginals = self._require_univariate_results(method)
         rng = np.random.default_rng(seed)
         normals = rng.standard_normal((paths, horizon, self.N))
-        nu = self._copula_nu()
-        chi2 = None if nu is None else rng.chisquare(nu, (paths, horizon))
+        eta = self._copula_eta()
+        chi2 = None if eta is None or eta == 0.0 else rng.gamma(0.5 / eta, 2.0 * eta, (paths, horizon))
         model, theta = self._correlation()
         correlation = api.simulate_correlation(model, theta, self._eps, [_marginal_density(m) for m in marginals],
                                                normals, chi2, self.Qbar)
@@ -506,7 +506,7 @@ class _CorrelationResultMixin:
             data=paths["y"][0], mean=paths["mean"][0], residuals=paths["residual"][0], sigma2=paths["variance"][0],
             innovations=paths["innovation"][0], correlation=paths["correlation"][0],
             residual_covariance=paths["correlation"][0] * sigma[:, :, None] * sigma[:, None, :],
-            copula_distribution=self.distribution, copula_nu=self._copula_nu(), columns=self._columns,
+            copula_distribution=self.distribution, copula_eta=self._copula_eta(), columns=self._columns,
         )
 
     def scenarios(self, n_draws: int, *, seed: Optional[int] = None, x: Any = None,
@@ -531,7 +531,7 @@ class _CorrelationResultMixin:
         return MultivariateScenarioResult(
             data=mean + residuals, mean=mean, residuals=residuals, residual_variance=variance, innovations=z,
             correlation=correlation, residual_covariance=correlation * np.outer(sigma, sigma),
-            innovation_method=innovations, copula_distribution=self.distribution, copula_nu=self._copula_nu(),
+            innovation_method=innovations, copula_distribution=self.distribution, copula_eta=self._copula_eta(),
             columns=self._columns,
         )
 
@@ -689,13 +689,12 @@ class DCCResult(_CorrelationResultMixin):
     def _correlation(self) -> tuple["api.CorrelationModel", NDArray[np.float64]]:
         return correlation_model(self.p, self.q, self.distribution), np.ascontiguousarray(self.theta)
 
-    def _copula_nu(self) -> Optional[float]:
-        return self.params.nu
+    def _copula_eta(self) -> Optional[float]:
+        return self.params.eta
 
     def summary(self) -> str:
-        names = [f"a[{i + 1}]" for i in range(self.p)] + [f"b[{j + 1}]" for j in range(self.q)]
-        if self.distribution == "studentt":
-            names.append("nu")
+        model, theta = self._correlation()
+        names = model.parameter_names
         se = self.std_errors
         se_r = self.std_errors_robust
 
@@ -725,6 +724,8 @@ class DCCResult(_CorrelationResultMixin):
                 f"{name:<8} {self.theta[i]:>10.6f} {se[i]:>10.6f} "
                 f"{se_r[i]:>10.6f} {t_stat:>10.2f}"
             )
+        for name, value in model.innovation_density(theta).derived.items():
+            lines.append(f"  {name}: {value:.6g}")
         lines.append(f"\n  Persistence: {self.params.persistence:.6f}  Inference: {self.inference}")
         lines.append("=" * 72)
         return "\n".join(lines)
@@ -884,7 +885,7 @@ class DCC:
         theta = np.array(r.theta)
         return DCCResult(
             params=DCCParams(a=theta[:p].copy(), b=theta[p:p + q].copy(),
-                             nu=float(theta[-1]) if self.distribution == "studentt" else None),
+                             eta=model.innovation_density(theta).named.get("eta")),
             theta=theta,
             nll=-r.log_likelihood / t_count,
             p=p,

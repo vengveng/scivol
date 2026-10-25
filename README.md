@@ -237,7 +237,7 @@ spec = ARMA(1, 1) + APARCH(2, 1) + StudentT()
 joint ARMA estimation. It is MLE-only. Parameters are `omega`, `alpha[1:p]`,
 `gamma[1:p]`, `beta[1:q]`, and `delta`. Stationarity uses the exact fitted-density
 moment of each asymmetric power term; Student-t and Skew-t also require
-`delta < nu`.
+`delta * eta < 1`.
 
 ### DCC(p, q)
 
@@ -260,7 +260,7 @@ result = dcc.fit(returns_df, univariate_spec=GARCH(1, 1) + StudentT())
 
 t_dcc = DCC(1, 1, distribution="studentt")
 t_result = t_dcc.fit(returns_df, univariate_spec=GARCH(1, 1) + StudentT())
-t_result.params.nu
+t_result.params.eta
 ```
 
 Result access focuses on the economically useful correlation objects:
@@ -344,12 +344,12 @@ Gaussian density. No extra parameters. Default when none is specified.
 
 ### StudentT()
 
-Heavier tails than Normal. One extra parameter: `nu` ($\nu > 2$). Lower $\nu$ means fatter tails; as $\nu$ grows, the distribution approaches Normal.
+Heavier tails than Normal. One extra parameter: `eta` with `0 <= eta < 1/2`. Larger eta means heavier tails; eta = 0 is exactly Normal. Summaries also show `nu = 1/eta`, infinite at zero.
 
 ### SkewT()
 
 [Hansen's (1994)](<https://doi.org/10.2307/2527081>) zero-mean, unit-variance
-skewed Student-t. Two extra parameters: `nu` ($\nu > 2$) and `lambda`
+skewed Student-t. Two extra parameters: `eta` with `0 <= eta < 1/2`, and `lambda`
 ($-1 < \lambda < 1$). $\lambda = 0$ gives a symmetric Student-t; $\lambda < 0$
 shifts weight to the left tail.
 
@@ -625,7 +625,7 @@ The `diagnostics` dict matches what `result.diagnostic_tests()` returns:
 ```python
 {
     'distribution': 'StudentT',
-    'dist_params': {'nu': 7.42, 'lam': None},
+    'dist_params': {'eta': 0.1348, 'nu': 7.42, 'lam': None},
     'n_obs': 1000,
     'alpha': 0.05,
     'dgt': {
@@ -739,7 +739,7 @@ QMLE with AutoDensity is redundant (QMLE always uses Normal likelihood). scivol 
 ### Parameters
 
 ```python
-result.params            # flat array: [omega, alpha_1, ..., beta_q, nu?, lambda?]
+result.params            # flat array: [omega, alpha_1, ..., beta_q, eta?, lambda?]
 
 gp = result.garch_params
 gp.omega                 # constant
@@ -749,7 +749,8 @@ gp.beta                  # GARCH coefficients (array)
 gp.persistence           # alpha+beta (GARCH) or alpha+0.5*gamma+beta (GJR-GARCH)
 
 dp = result.dist_params
-dp.nu                    # degrees of freedom (StudentT, SkewT)
+dp.eta                   # estimated reciprocal tail (StudentT, SkewT)
+dp.nu                    # derived degrees of freedom, or GED shape
 dp.lam                   # skewness (SkewT)
 ```
 
@@ -800,7 +801,7 @@ Override how parameter names appear in summaries, print output, and `to_dict()` 
 import scivol
 
 scivol.settings.names.gamma = "leverage"
-scivol.settings.names.nu = "df"
+scivol.settings.names.eta = "tail"
 scivol.settings.names.alpha = "a"
 
 # Now result.summary() shows "leverage[1]" instead of "gamma[1]"
@@ -815,7 +816,7 @@ Reset with:
 scivol.settings.names.reset()
 ```
 
-Available names: `omega`, `alpha`, `gamma`, `beta`, `nu`, `lambda`, `const`, `ar`, `ma`.
+Available names: `omega`, `alpha`, `gamma`, `beta`, `eta`, `nu`, `lambda`, `const`, `ar`, `ma`.
 
 Internal attribute names (`gp.omega`, `dp.nu`, etc.) never change.
 
@@ -837,7 +838,7 @@ result.diagnostic_tests()
 ======================================================================
                      Model Diagnostic Tests
 ======================================================================
-Distribution:  StudentT (nu=7.42)
+Distribution:  StudentT (eta=0.1348, nu=7.42)
 Observations:  1000
 Alpha:         0.05
 
@@ -1057,7 +1058,7 @@ result.selection.confidence_set(alpha=0.10)
 
 ```python
 result.params, result.log_likelihood, result.aic, result.bic
-result.params.nu              # Student-t DCC
+result.params.eta             # Student-t DCC
 result.Rt
 result.corr(0, 1)
 result.unconditional_corr

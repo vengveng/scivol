@@ -29,8 +29,8 @@ void check_size(std::span<const double> values, std::size_t expected)
     require(values.size() == expected, "parameter vector has the wrong length");
 }
 
-// Student-t and Skew-t need nu > delta for APARCH's power moment to exist.
-bool power_moment_bounded_by_nu(const ModelSpec& spec)
+// Student-t and Skew-t need delta * eta < 1 for APARCH's power moment to exist.
+bool power_moment_has_tail_bound(const ModelSpec& spec)
 {
     return spec.volatility == VolatilityKind::aparch
         && (spec.density == DensityKind::student_t || spec.density == DensityKind::skew_t);
@@ -205,7 +205,7 @@ bool Model::feasible(std::span<const double> theta) const
     }
     if (!har_stationary(spec_.mean, theta.data() + layout.har)) return false;
     if (layout.egarch()) return true;
-    if (power_moment_bounded_by_nu(spec_) && !(theta[layout.delta] < theta[layout.shapes])) return false;
+    if (power_moment_has_tail_bound(spec_) && !(theta[layout.delta] * theta[layout.shapes] < 1.0)) return false;
     double persistence = 0.0;
     return layout.persistence(theta.data(), 0, persistence, nullptr) && persistence < 1.0;
 }
@@ -244,7 +244,7 @@ std::size_t Model::constraint_count() const noexcept
     if (layout.egarch()) return count;
     count += 1;  // persistence
     if (spec_.volatility == VolatilityKind::gjr) count += spec_.p;
-    if (power_moment_bounded_by_nu(spec_)) count += 1;
+    if (power_moment_has_tail_bound(spec_)) count += 1;
     return count;
 }
 
@@ -254,7 +254,7 @@ std::size_t Model::constraint_count() const noexcept
 //   HAR                           1 - kappa_k^2 >= 0 for the implied AR polynomial;
 //   GARCH, GJR, APARCH            L - persistence >= 0, L the simplex chart's floating-point margin;
 //   GJR                           alpha_i + gamma_i >= 0;
-//   APARCH, t family              nu - delta >= 0.
+//   APARCH, t family              1 - delta * eta >= 0.
 void Model::constraints(std::span<const double> theta, std::span<double> values,
                         std::span<double> jacobian) const
 {
@@ -306,10 +306,10 @@ void Model::constraints(std::span<const double> theta, std::span<double> values,
             jacobian[row * d + layout.alpha + i] = 1.0;
             jacobian[row * d + layout.gamma + i] = 1.0;
         }
-    if (power_moment_bounded_by_nu(spec_)) {
-        values[row] = theta[layout.shapes] - theta[layout.delta];
-        jacobian[row * d + layout.shapes] = 1.0;
-        jacobian[row * d + layout.delta] = -1.0;
+    if (power_moment_has_tail_bound(spec_)) {
+        values[row] = 1.0 - theta[layout.shapes] * theta[layout.delta];
+        jacobian[row * d + layout.shapes] = -theta[layout.delta];
+        jacobian[row * d + layout.delta] = -theta[layout.shapes];
     }
 }
 
@@ -414,6 +414,14 @@ InnovationDensity Model::innovation_density(std::span<const double> theta) const
     check_size(theta, dimension());
     const Layout layout(spec_);
     return {spec_.density, std::vector<double>(theta.begin() + static_cast<std::ptrdiff_t>(layout.shapes), theta.end())};
+}
+
+std::vector<std::pair<std::string, double>> derived_shapes(const InnovationDensity& density)
+{
+    if (density.density != DensityKind::student_t && density.density != DensityKind::skew_t) return {};
+    if (density.shape.empty() || !detail::domain_detail::student_t[0].contains(density.shape[0]))
+        throw std::invalid_argument("density shape is outside its domain");
+    return {{"nu", density.shape[0] == 0.0 ? std::numeric_limits<double>::infinity() : 1.0 / density.shape[0]}};
 }
 
 std::vector<std::pair<std::string, double>> named_shapes(const InnovationDensity& density)

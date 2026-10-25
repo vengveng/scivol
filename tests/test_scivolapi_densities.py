@@ -20,8 +20,8 @@ GH_ORACLE = {  # the GH oracle evaluates log K by quadrature, accurate to ~1e-13
     "variance_gamma": {"variance_gamma": True},
 }
 SHAPES = {  # shape points per density, including near-limit values
-    "student_t": [[8.0], [2.3], [150.0]],
-    "skew_t": [[7.0, -0.3], [3.1, 0.6], [60.0, 0.05]],
+    "student_t": [[1/8.0], [1/2.3], [1/150.0]],
+    "skew_t": [[1/7.0, -0.3], [1/3.1, 0.6], [1/60.0, 0.05]],
     "ged": [[1.4], [0.7], [3.5]],
     "generalized_hyperbolic": [[-0.3, 1.4, -0.7], [0.5, 3.0, 2.5], [0.2, 0.4, 0.3]],
     "nig": [[-0.2, 1.1], [0.6, 4.0]],
@@ -123,7 +123,7 @@ def jax_theta(jnp, jax, model, z):
         if i in coefficients:
             out.append(simplex[i - coefficients[0]])
         elif np.isfinite(upper[i]):
-            out.append(upper[i] * jnp.tanh(z[i]))
+            out.append((np.nextafter(lower[i], upper[i]) + (upper[i]-np.nextafter(lower[i], upper[i])) * jax.nn.sigmoid(z[i])) if lower[i] != -upper[i] else upper[i] * jnp.tanh(z[i]))
         elif np.isfinite(lower[i]):
             out.append(lower[i] + jnp.exp(z[i]))
         else:
@@ -155,8 +155,8 @@ def test_z_jet_includes_chart_curvature(series, density):
 
 def test_skew_t_at_zero_skew_is_student_t(series):
     skew, student = api.Jet(model_for("skew_t"), series), api.Jet(model_for("student_t"), series)
-    a = skew.theta(point(1, 1, [6.5, 0.0]), 7)
-    b = student.theta(point(1, 1, [6.5]), 7)
+    a = skew.theta(point(1, 1, [1/6.5, 0.0]), 7)
+    b = student.theta(point(1, 1, [1/6.5]), 7)
     assert a["value"] == pytest.approx(b["value"], rel=1e-14)
     assert_close(a["gradient"][:4], b["gradient"], 1e-12)
     assert_close(a["hessian"][:4, :4], b["hessian"], 1e-11)
@@ -243,7 +243,7 @@ def test_gh_family_is_accurate_at_extreme_skew_and_concentration(member, lam, rh
 
 
 @pytest.mark.parametrize("density,bad", [
-    ("student_t", [2.0]), ("skew_t", [5.0, 1.0]), ("ged", [0.0]),
+    ("student_t", [0.5]), ("skew_t", [0.2, 1.0]), ("ged", [0.0]),
     ("generalized_hyperbolic", [1.0, 1.0, 0.5]), ("nig", [0.2, 0.0]), ("variance_gamma", [0.1, 1.5]),
 ])
 def test_shapes_outside_the_domain_are_not_evaluable(series, density, bad):
@@ -289,8 +289,7 @@ def hyperbolic_data() -> np.ndarray:
     return simulate(4000, z)
 
 
-# Maximized log-likelihoods from the previous production engine on the same
-# data and likelihood: the fit must reach at least these values.
+# Frozen maxima on the same data and likelihood.
 PRODUCTION_LOG_LIKELIHOOD = {
     "density_student_t": -7068.881540527609,
     "density_skew_t": -7068.871131226216,
@@ -313,5 +312,81 @@ def test_fit_reaches_the_production_optimum(t_data, hyperbolic_data, density):
 
 def test_student_t_fit_recovers_the_tail_index(t_data):
     result = (GARCH(1, 1) + StudentT()).fit(t_data)
-    assert abs(result.params[3] - 5.0) < 4.0 * result.std_errors[3]
+    assert abs(result.params[3] - 0.2) < 4.0 * result.std_errors[3]
     assert abs(result.params[1] - 0.08) < 4.0 * result.std_errors[1]
+
+
+@pytest.mark.parametrize("coordinates", ["automatic", "theta"])
+@pytest.mark.parametrize("iid", [False, True], ids=["gjr", "iid"])
+def test_gaussian_tail_optimum_is_the_closed_eta_face(coordinates, iid, capsys):
+    from scivol import GJRGARCH, Normal
+
+    z = np.random.default_rng(31).normal(size=3000)
+    y, variance = np.empty(len(z)), 1.0
+    for t in range(len(z)):
+        y[t] = z[t] * np.sqrt(variance)
+        variance = 0.05 + 0.08*y[t]**2 + 0.82*variance + 0.10*y[t]**2*(y[t] < 0)
+    if iid:
+        y = np.random.default_rng(2).normal(size=2500)
+    normal = (GJRGARCH(1, 1) + Normal()).fit(y, coordinates=coordinates)
+    student = (GJRGARCH(1, 1) + StudentT()).fit(y, coordinates=coordinates)
+    assert normal.converged and student.converged
+    assert student.params[-1] == 0.0
+    assert student.fit_info.optimizer_phases[-1] == "theta:newton"
+    assert student.log_likelihood == pytest.approx(normal.log_likelihood, rel=0.0, abs=2e-10)
+    assert student.dist_params.nu == np.inf
+    student.summary()
+    summary = capsys.readouterr().out
+    assert "eta=" in summary and "nu=inf" in summary
+
+    skew = (GJRGARCH(1, 1) + SkewT()).fit(y, coordinates=coordinates)
+    assert skew.converged and skew.params[-2] == 0.0
+    # Hansen's Normal limit retains lambda. Check its two-piece Normal density.
+    spec = api.ModelSpec()
+    spec.volatility, spec.density = api.VolatilityKind.gjr, api.DensityKind.skew_t
+    model = api.Model(spec)
+    out = api.Jet(model, y).theta(np.ascontiguousarray(skew.params), api.VALUE | api.PATHS)
+    lam = skew.params[-1]
+    a = 4*lam/np.sqrt(2*np.pi)
+    b = np.sqrt(1+3*lam*lam-a*a)
+    standardized = y/np.sqrt(out["variance"])
+    shifted = b*standardized+a
+    u = shifted/(1+lam*np.where(shifted >= 0, 1., -1.))
+    expected = np.sum(np.log(b)-np.log(2*np.pi)/2-u*u/2-np.log(out["variance"])/2)
+    assert skew.log_likelihood == pytest.approx(expected, rel=0.0, abs=2e-10)
+
+
+@pytest.mark.parametrize("density", ["student_t", "skew_t"])
+@pytest.mark.parametrize("eta", [0., 1e-300, 1e-16, 1e-10, 1e-6, 1e-3, .1, .3, .49])
+def test_eta_limit_jet_matches_float64_ad(density, eta):
+    data = np.array([0., -10., -3., -.1, 1e-6, .2, 1., 4., 20.])
+    shape = [eta] if density == "student_t" else [eta, .2]
+    check_against_oracle(data, density, 1, 1, [shape])
+
+
+@pytest.mark.parametrize("density", ["student_t", "skew_t"])
+def test_closed_tail_domain_and_saturated_interval_chart(density):
+    model = model_for(density)
+    data = np.array([-.2,.1,2.,-.7])
+    theta = np.asarray(model.start(data))
+    tail = model.parameter_names.index("eta")
+    lower, upper = model.bounds()
+    assert lower[tail] == 0.0 and upper[tail] == np.nextafter(.5,0.)
+    assert model.capabilities.chart_covers_domain
+    theta[tail] = 0.0
+    assert model.feasible(theta) and model.to_z(theta) is None
+    innovation = model.innovation_density(theta)
+    assert innovation.named["eta"] == 0.0 and "nu" not in innovation.named
+    assert innovation.derived == {"nu": np.inf}
+    for value in [-1e-300,.5,np.inf,np.nan]:
+        theta[tail] = value
+        assert not model.feasible(theta)
+    z = model.to_z(np.asarray(model.start(data)))
+    jet = api.Jet(model,data)
+    for value in [-1e308,-1000.,-100.,0.,100.,1000.,1e308]:
+        z[tail] = value
+        point = model.to_theta(z)
+        assert 0.0 < point[tail] < .5 and model.feasible(point)
+        result = jet.z(z,7)
+        assert result["status"] == "ok"
+        assert np.all(np.isfinite(result["gradient"])) and np.all(np.isfinite(result["hessian"]))
