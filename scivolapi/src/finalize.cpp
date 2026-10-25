@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <type_traits>
 
 #include "fit_problem.hpp"
 #include "optimize/projection.hpp"
@@ -100,15 +101,17 @@ std::vector<double> standard_errors(const std::vector<double>& covariance, std::
     return se;
 }
 
-FitResult finalize(const Model& model, Jet& unit_jet, Jet& data_jet, double data_scale,
+template<class ModelT, class JetT>
+FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double data_scale,
                    const Candidate& selected, std::vector<FitPhase> phases, double accuracy)
 {
+    constexpr bool univariate = std::is_same_v<ModelT, Model>;
     const std::size_t d = model.dimension();
-    const std::size_t n = data_jet.sample().scored();  // paths cover the scored rows
+    const std::size_t n = scored_rows(data_jet.sample());  // paths cover the scored rows
     FitResult r;
     r.names = model.parameter_names();
-    r.observations = data_jet.sample().size();
-    r.scored = data_jet.sample().scored();
+    r.observations = observed_rows(data_jet.sample());
+    r.scored = n;
     r.data_scale = data_scale;
     r.phases = std::move(phases);
     r.kkt_tolerance = std::max(std::sqrt(accuracy), std::sqrt(eps));
@@ -140,20 +143,26 @@ FitResult finalize(const Model& model, Jet& unit_jet, Jet& data_jet, double data
 
     // Reported quantities, evaluated directly on the original data.
     r.theta.resize(d);
-    model.rescale(unit_theta, data_scale, r.theta);
     r.gradient.assign(d, 0.0);
     r.hessian.assign(d * d, 0.0);
-    r.residual.assign(n, 0.0);
-    r.variance.assign(n, 0.0);
-    r.innovation.assign(n, 0.0);
     std::vector<double> row_scores(n * d);
     JetOutput out;
     out.gradient = r.gradient;
     out.hessian = r.hessian;
-    out.paths = {r.residual, r.variance, r.innovation};
     out.scores = row_scores;
-    const JetResult reported = data_jet.theta(r.theta, value | gradient | hessian | paths | scores, out);
-    if (!(reported.valid & value) || !(reported.valid & paths)) {
+    unsigned request = value | gradient | hessian | scores;
+    if constexpr (univariate) {
+        model.rescale(unit_theta, data_scale, r.theta);
+        r.residual.assign(n, 0.0);
+        r.variance.assign(n, 0.0);
+        r.innovation.assign(n, 0.0);
+        out.paths = {r.residual, r.variance, r.innovation};
+        request |= paths;
+    } else {
+        r.theta = unit_theta;  // standardized residuals: no data scaling
+    }
+    const JetResult reported = data_jet.theta(r.theta, request, out);
+    if (!(reported.valid & value) || ((request & paths) && !(reported.valid & paths))) {
         r.warnings.push_back("the likelihood is not finite at the estimate in the data's units");
         return r;
     }
@@ -194,5 +203,11 @@ FitResult finalize(const Model& model, Jet& unit_jet, Jet& data_jet, double data
     r.success = r.estimate_available && r.feasible && r.termination == Termination::converged && r.stationary;
     return r;
 }
+
+template FitResult finalize<Model, Jet>(const Model&, Jet&, Jet&, double, const Candidate&, std::vector<FitPhase>,
+                                        double);
+template FitResult finalize<CorrelationModel, CorrelationJet>(const CorrelationModel&, CorrelationJet&,
+                                                              CorrelationJet&, double, const Candidate&,
+                                                              std::vector<FitPhase>, double);
 
 }  // namespace scivolapi::detail

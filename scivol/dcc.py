@@ -1341,6 +1341,8 @@ class DCC:
         **kwargs: Any,
     ) -> DCCResult:
         returns_np, index, columns = _extract_multivariate_input(returns)
+        if kwargs.get("engine") == "scivolapi":
+            univariate_fit_kwargs = {"engine": "scivolapi", **(univariate_fit_kwargs or {})}
         std_resid, uni_res = _prepare_univariate_results(
             returns_np,
             univariate_spec,
@@ -1366,6 +1368,7 @@ class DCC:
         initial_result: Optional[DCCResult] = None,
         maxiter: Optional[int] = None,
         compute_se: bool = True,
+        engine: Optional[str] = None,
     ) -> DCCResult:
         eps = np.ascontiguousarray(eps, dtype=np.float64)
         if eps.ndim != 2:
@@ -1394,6 +1397,11 @@ class DCC:
                     f"expected {self.distribution}."
                 )
             theta0 = initial_result.theta
+        if engine == "scivolapi":
+            from ._scivolapi_dcc import fit_from_residuals as fit_native
+
+            return fit_native(p, q, self.distribution, eps, Qbar=Qbar, theta0=theta0,
+                              maxiter=500 if maxiter is None else int(maxiter), warm_started=warm_started)
         if theta0 is None:
             theta0 = np.full(k, 0.05, dtype=np.float64)
             if self.distribution == "studentt":

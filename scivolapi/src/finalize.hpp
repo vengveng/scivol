@@ -4,6 +4,7 @@
 #include <vector>
 
 #include <scivolapi/fit.hpp>
+#include <scivolapi/correlation.hpp>
 #include <scivolapi/jet.hpp>
 
 namespace scivolapi::detail {
@@ -16,11 +17,13 @@ struct Candidate {
     bool accepted = false;        // the phase's accepted iterate (vs. its best feasible trial)
 };
 
-// The single finalizer for every model. Qualification (feasibility, KKT,
-// boundary activity) uses the unit-scaled problem the optimizer solved; the
-// reported likelihood, derivatives, paths and covariance come from the jet on
-// the original data, so no derivative transformation rules are needed.
-FitResult finalize(const Model& model, Jet& unit_jet, Jet& data_jet, double data_scale,
+// The single finalizer for every model (instantiated for Model/Jet and
+// CorrelationModel/CorrelationJet). Qualification (feasibility, KKT, boundary
+// activity) uses the unit-scaled problem the optimizer solved; the reported
+// likelihood, derivatives, paths and covariance come from the jet on the
+// original data, so no derivative transformation rules are needed.
+template<class ModelT, class JetT>
+FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double data_scale,
                    const Candidate& selected, std::vector<FitPhase> phases, double accuracy);
 
 // Covariance as the inverse of a symmetric information matrix (d x d), or why

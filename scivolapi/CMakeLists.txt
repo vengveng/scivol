@@ -18,6 +18,7 @@ add_library(scivolapi
     src/fit.cpp
     src/finalize.cpp
     src/simulate.cpp
+    src/correlation.cpp
     ${SCIVOLAPI_OPTIMIZE_SOURCES}
     ${SCIVOLAPI_MATH_SOURCES}
 )

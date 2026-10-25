@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "correlation.hpp"
 #include "model.hpp"
 
 namespace scivolapi {
@@ -93,5 +94,12 @@ inline FitResult fit(const Model& model, std::span<const double> y, const FitOpt
 {
     return fit(model, y, {}, options);
 }
+
+// A correlation model on standardized residuals eps (rows x series, row-major)
+// with target matrix `target` (series x series; empty: eps'eps / rows). The
+// marginal fits that produced eps are a first stage: this is the second stage of
+// a staged estimator, and its covariance treats eps and the target as given.
+FitResult fit(const CorrelationModel& model, std::span<const double> eps, std::size_t series,
+              std::span<const double> target, const FitOptions& options = {});
 
 }  // namespace scivolapi

@@ -8,6 +8,7 @@
 #include <scivolapi/jet.hpp>
 
 #include "finalize.hpp"
+#include "fit_phases.hpp"
 #include "fit_problem.hpp"
 #include "optimize/optimizer.hpp"
 #include "optimize/projection.hpp"
@@ -17,6 +18,11 @@ namespace scivolapi {
 namespace {
 
 using detail::Candidate;
+using detail::iterations;
+using detail::offer;
+using detail::run_phase;
+using detail::select;
+using detail::solved;
 using detail::invert_information;
 using detail::make_problem;
 using detail::make_tail_problem;
@@ -24,117 +30,25 @@ using detail::outer_products;
 using detail::sandwich;
 using detail::standard_errors;
 
-Termination termination_of(optimize::Termination t)
-{
-    switch (t) {
-    case optimize::Termination::converged: return Termination::converged;
-    case optimize::Termination::iteration_limit: return Termination::iteration_limit;
-    case optimize::Termination::line_search_failed: return Termination::line_search_failed;
-    default: return Termination::failed;
-    }
-}
-
-// Runs one phase of `problem` and records it.
-optimize::Record run_phase(const char* name, const optimize::Problem& problem, bool newton,
-                           std::span<const double> start, int budget, double accuracy, std::vector<FitPhase>& phases)
-{
-    // SLSQP stops on the change in the objective, which only bounds the
-    // gradient by about 2 sqrt(accuracy); asking for 1e-4 x accuracy places its
-    // gradient well inside the certification tolerance sqrt(accuracy) at the
-    // cost of a step or two. Newton stops on the stationarity residual itself.
-    const double solver_accuracy = newton ? accuracy : std::max(accuracy * 1e-4, 1e-30);
-    const optimize::Options options{solver_accuracy, budget};
-    optimize::Record record =
-        newton ? optimize::refine_newton(problem, start, options) : optimize::minimize_slsqp(problem, start, options);
-
-    FitPhase phase;
-    phase.name = name;
-    phase.termination = termination_of(record.termination);
-    phase.iterations = record.work.iterations;
-    phase.value_requests = record.work.value_requests;
-    phase.gradient_requests = record.work.gradient_requests;
-    phase.hessian_requests = record.work.hessian_requests;
-    phase.value = record.accepted.value;
-    phases.push_back(phase);
-    return record;
-}
-
-// Offers a phase's accepted iterate and best feasible trial as candidates,
-// mapped by `to_theta` (identity when empty).
-template<class Map>
-void offer(const optimize::Record& record, std::size_t dimension, std::size_t phase, const Map& to_theta,
-           std::vector<Candidate>& candidates)
-{
-    auto one = [&](const optimize::Point& point, bool accepted) {
-        if (point.x.size() != dimension || !std::isfinite(point.value)) return;
-        candidates.push_back({to_theta(point.x), point.value, phase, accepted});
-    };
-    one(record.accepted, true);
-    one(record.best_feasible, false);
-}
-
-// Where the next phase starts.
-std::vector<double> solved(const optimize::Record& record, std::span<const double> start)
-{
-    return record.accepted.x.empty() ? std::vector<double>(start.begin(), start.end()) : record.accepted.x;
-}
-
-int iterations(const std::vector<FitPhase>& phases)
-{
-    int total = 0;
-    for (const FitPhase& phase : phases) total += phase.iterations;
-    return total;
-}
-
-// Lowest objective value wins; on ties the later phase's accepted iterate.
-const Candidate& select(const std::vector<Candidate>& candidates)
-{
-    const Candidate* best = &candidates.front();
-    for (const Candidate& c : candidates) {
-        const bool better = c.value < best->value
-            || (c.value == best->value && (c.phase > best->phase || (c.phase == best->phase && c.accepted)));
-        if (better) best = &c;
-    }
-    return *best;
-}
-
-FitResult failure(const Model& model, const Sample& sample, double scale, std::vector<FitPhase> phases,
+template<class ModelT, class SampleT>
+FitResult failure(const ModelT& model, const SampleT& sample, double scale, std::vector<FitPhase> phases,
                   std::string warning)
 {
     FitResult failed;
     failed.names = model.parameter_names();
-    failed.observations = sample.size();
-    failed.scored = sample.scored();
+    failed.observations = detail::observed_rows(sample);
+    failed.scored = detail::scored_rows(sample);
     failed.data_scale = scale;
     failed.phases = std::move(phases);
     failed.warnings.push_back(std::move(warning));
     return failed;
 }
 
-FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const double> x,
-                  const FitOptions& options)
+// The coordinate paths (see Coordinates) from a theta start, on one jet.
+template<class ModelT, class JetT>
+void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, const FitOptions& options,
+           std::vector<FitPhase>& phases, std::vector<Candidate>& candidates)
 {
-    // Exact internal scaling of y (not x) to unit second moment; the finalizer
-    // reports in data units.
-    const Sample data_sample = model.prepare(y, x);
-    const double scale = std::sqrt(data_sample.variance_seed);
-    std::vector<double> unit_y(y.begin(), y.end());
-    for (double& v : unit_y) v /= scale;
-    const Sample unit_sample = model.prepare(unit_y, x);
-    Jet unit_jet(model, unit_sample);
-    Jet data_jet(model, data_sample);
-
-    std::vector<double> start(model.dimension());
-    if (options.start.empty()) {
-        start = model.start(unit_sample);
-    } else {
-        if (options.start.size() != model.dimension() || !model.feasible(options.start))
-            throw std::invalid_argument("the starting point must have the model's dimension and lie in its domain");
-        model.rescale(options.start, 1.0 / scale, start);
-    }
-
-    std::vector<FitPhase> phases;
-    std::vector<Candidate> candidates;
     const std::size_t d = model.dimension();
     const int budget = options.maximum_iterations;
     const auto same = [](const std::vector<double>& theta) { return theta; };
@@ -171,6 +85,34 @@ FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const
             offer(newton, d, 1, same, candidates);
         }
     }
+
+}
+
+FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const double> x,
+                  const FitOptions& options)
+{
+    // Exact internal scaling of y (not x) to unit second moment; the finalizer
+    // reports in data units.
+    const Sample data_sample = model.prepare(y, x);
+    const double scale = std::sqrt(data_sample.variance_seed);
+    std::vector<double> unit_y(y.begin(), y.end());
+    for (double& v : unit_y) v /= scale;
+    const Sample unit_sample = model.prepare(unit_y, x);
+    Jet unit_jet(model, unit_sample);
+    Jet data_jet(model, data_sample);
+
+    std::vector<double> start(model.dimension());
+    if (options.start.empty()) {
+        start = model.start(unit_sample);
+    } else {
+        if (options.start.size() != model.dimension() || !model.feasible(options.start))
+            throw std::invalid_argument("the starting point must have the model's dimension and lie in its domain");
+        model.rescale(options.start, 1.0 / scale, start);
+    }
+
+    std::vector<FitPhase> phases;
+    std::vector<Candidate> candidates;
+    solve(model, unit_jet, start, options, phases, candidates);
 
     if (candidates.empty())
         return failure(model, data_sample, scale, std::move(phases), "no phase produced a finite, feasible estimate");
@@ -351,6 +293,29 @@ FitResult fit(const Model& model, std::span<const double> y, std::span<const dou
     if (!(options.accuracy > 0.0) || options.maximum_iterations < 1)
         throw std::invalid_argument("accuracy must be positive and maximum_iterations at least 1");
     return options.estimator == Estimator::qmle ? fit_qmle(model, y, x, options) : fit_mle(model, y, x, options);
+}
+
+FitResult fit(const CorrelationModel& model, std::span<const double> eps, std::size_t series,
+              std::span<const double> target, const FitOptions& options)
+{
+    if (!(options.accuracy > 0.0) || options.maximum_iterations < 1)
+        throw std::invalid_argument("accuracy must be positive and maximum_iterations at least 1");
+    if (options.estimator != Estimator::mle)
+        throw std::invalid_argument("correlation models are fitted by maximum likelihood");
+    const CorrelationSample sample = model.prepare(eps, series, target);
+    CorrelationJet jet(model, sample);
+    const std::vector<double> start = options.start.empty() ? model.start() : options.start;
+    if (start.size() != model.dimension() || !model.feasible(start))
+        throw std::invalid_argument("the starting point must have the model's dimension and lie in its domain");
+
+    std::vector<FitPhase> phases;
+    std::vector<Candidate> candidates;
+    solve(model, jet, start, options, phases, candidates);
+    if (candidates.empty())
+        return failure(model, sample, 1.0, std::move(phases), "no phase produced a finite, feasible estimate");
+    // Standardized residuals need no internal scaling: the solved and the
+    // reported problem are the same.
+    return detail::finalize(model, jet, jet, 1.0, select(candidates), std::move(phases), options.accuracy);
 }
 
 }  // namespace scivolapi

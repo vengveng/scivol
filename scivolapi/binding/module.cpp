@@ -82,6 +82,55 @@ const char* status_name(Status s)
     return "unknown";
 }
 
+// Owns its residuals and sample; the jet borrows both.
+struct BoundCorrelationJet {
+    std::shared_ptr<const CorrelationModel> model;
+    std::vector<double> eps;
+    CorrelationSample sample;
+    CorrelationJet jet;
+
+    BoundCorrelationJet(std::shared_ptr<const CorrelationModel> m, const Matrix& residuals,
+                        std::vector<double> target)
+        : model(std::move(m)), eps(residuals.data(), residuals.data() + residuals.shape(0) * residuals.shape(1)),
+          sample(model->prepare(eps, residuals.shape(1), target)), jet(*model, sample)
+    {
+    }
+};
+
+std::vector<double> square(const std::optional<Matrix>& m)
+{
+    if (!m) return {};
+    return std::vector<double>(m->data(), m->data() + m->shape(0) * m->shape(1));
+}
+
+nb::dict evaluate_correlation(BoundCorrelationJet& self, const Vector& point, unsigned request, bool in_z)
+{
+    const std::size_t d = self.model->dimension(), n = self.sample.rows(), k = self.sample.series;
+    std::vector<double> g((request & gradient) ? d : 0), h((request & hessian) ? d * d : 0);
+    std::vector<double> s((request & scores) ? n * d : 0), terms_((request & terms) ? n : 0);
+    std::vector<double> r((request & paths) ? n * k * k : 0);
+    JetOutput out;
+    out.gradient = g;
+    out.hessian = h;
+    out.scores = s;
+    out.terms = terms_;
+    const JetResult result = in_z ? self.jet.z(view(point), request, out) : self.jet.theta(view(point), request, out, r);
+    nb::dict d_out;
+    d_out["status"] = status_name(result.status);
+    d_out["valid"] = result.valid;
+    if (result.valid & value) d_out["value"] = out.value;
+    if (result.valid & gradient) d_out["gradient"] = owned_vector(std::move(g));
+    if (result.valid & hessian) d_out["hessian"] = owned_matrix(std::move(h), d, d);
+    if (result.valid & scores) d_out["scores"] = owned_matrix(std::move(s), n, d);
+    if (result.valid & terms) d_out["terms"] = owned_vector(std::move(terms_));
+    if (result.valid & paths) {
+        auto* heap = new std::vector<double>(std::move(r));
+        nb::capsule owner(heap, [](void* p) noexcept { delete static_cast<std::vector<double>*>(p); });
+        d_out["correlations"] = nb::cast(nb::ndarray<nb::numpy, double, nb::ndim<3>>(heap->data(), {n, k, k}, owner));
+    }
+    return d_out;
+}
+
 nb::dict simulation_dict(Simulation s)
 {
     nb::dict out;
@@ -305,6 +354,58 @@ NB_MODULE(_scivolapi, m)
           },
           "model"_a, "theta"_a, "y"_a, "horizon"_a, "x"_a = nb::none(), "future_x"_a = nb::none(),
           "z"_a = nb::none());
+
+    nb::enum_<CorrelationDensity>(m, "CorrelationDensity")
+        .value("normal", CorrelationDensity::normal)
+        .value("student_t", CorrelationDensity::student_t);
+    nb::class_<CorrelationSpec>(m, "CorrelationSpec")
+        .def(nb::init<>())
+        .def_rw("p", &CorrelationSpec::p)
+        .def_rw("q", &CorrelationSpec::q)
+        .def_rw("density", &CorrelationSpec::density);
+    nb::class_<CorrelationModel>(m, "CorrelationModel")
+        .def("__init__", [](CorrelationModel* self, const CorrelationSpec& spec) { new (self) CorrelationModel(spec); },
+             "spec"_a)
+        .def_prop_ro("dimension", &CorrelationModel::dimension)
+        .def_prop_ro("parameter_names", &CorrelationModel::parameter_names)
+        .def("feasible", [](const CorrelationModel& m, const Vector& theta) { return m.feasible(view(theta)); })
+        .def("start", [](const CorrelationModel& m) { return owned_vector(m.start()); })
+        .def("to_theta", [](const CorrelationModel& m, const Vector& z) {
+            std::vector<double> theta(m.dimension());
+            m.to_theta(view(z), theta);
+            return owned_vector(std::move(theta));
+        })
+        .def("to_z", [](const CorrelationModel& m, const Vector& theta) -> nb::object {
+            std::vector<double> z(m.dimension());
+            if (!m.to_z(view(theta), z)) return nb::none();
+            return owned_vector(std::move(z));
+        });
+    nb::class_<BoundCorrelationJet>(m, "CorrelationJet")
+        .def("__init__",
+             [](BoundCorrelationJet* self, const CorrelationModel& model, const Matrix& eps,
+                const std::optional<Matrix>& target) {
+                 new (self) BoundCorrelationJet(std::make_shared<const CorrelationModel>(model), eps, square(target));
+             },
+             "model"_a, "eps"_a, "target"_a = nb::none())
+        .def_prop_ro("target", [](const BoundCorrelationJet& j) {
+            return owned_matrix(j.sample.target, j.sample.series, j.sample.series);
+        })
+        .def("theta", [](BoundCorrelationJet& j, const Vector& theta, unsigned request) {
+            return evaluate_correlation(j, theta, request, false);
+        }, "theta"_a, "request"_a)
+        .def("z", [](BoundCorrelationJet& j, const Vector& z, unsigned request) {
+            return evaluate_correlation(j, z, request, true);
+        }, "z"_a, "request"_a);
+    m.def("fit_correlation",
+          [](const CorrelationModel& model, const Matrix& eps, const FitOptions& options,
+             const std::optional<Matrix>& target) {
+              const std::vector<double> residuals(eps.data(), eps.data() + eps.shape(0) * eps.shape(1));
+              const std::vector<double> qbar = square(target);
+              const std::size_t series = eps.shape(1);
+              nb::gil_scoped_release release;
+              return fit(model, residuals, series, qbar, options);
+          },
+          "model"_a, "eps"_a, "options"_a = FitOptions(), "target"_a = nb::none());
 
     nb::class_<BoundJet>(m, "Jet")
         .def("__init__",

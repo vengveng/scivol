@@ -5,6 +5,7 @@
 #include <span>
 #include <vector>
 
+#include <scivolapi/correlation.hpp>
 #include <scivolapi/jet.hpp>
 #include <scivolapi/model.hpp>
 
@@ -12,12 +13,19 @@
 
 namespace scivolapi::detail {
 
+inline std::size_t scored_rows(const Sample& sample) noexcept { return sample.scored(); }
+inline std::size_t scored_rows(const CorrelationSample& sample) noexcept { return sample.rows(); }
+inline std::size_t observed_rows(const Sample& sample) noexcept { return sample.size(); }
+inline std::size_t observed_rows(const CorrelationSample& sample) noexcept { return sample.rows(); }
+
 // The objective the optimizer sees: F / n_scored on unit-scaled data, an exact
-// positive scaling of the likelihood, in z or theta coordinates.
-inline optimize::Problem make_problem(const Model& model, Jet& jet, bool in_z)
+// positive scaling of the likelihood, in z or theta coordinates. Any model with
+// the Model interface (dimension, bounds, constraints) and its jet.
+template<class ModelT, class JetT>
+optimize::Problem make_problem(const ModelT& model, JetT& jet, bool in_z)
 {
     const std::size_t d = model.dimension();
-    const double scale = 1.0 / static_cast<double>(jet.sample().scored());
+    const double scale = 1.0 / static_cast<double>(scored_rows(jet.sample()));
     optimize::Problem problem;
     problem.dimension = d;
     problem.objective = [&jet, d, scale, in_z](const double* x, double& f, double* g) {
