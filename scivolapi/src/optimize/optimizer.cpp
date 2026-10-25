@@ -60,6 +60,8 @@ Record minimize_slsqp(const Problem& problem, std::span<const double> start, con
             trial_pending = true;
             trial_gradient = Gradient::none;
             bool objective_ok = evaluate.constraints(w.x, w.values, w.normals);
+            if (objective_ok && detail::feasible(problem, w.x, w.values))
+                detail::retract_roundoff(problem, evaluate, w.x, w.values, w.normals);
             if (objective_ok && state.line == 1) {
                 trial_gradient = evaluate.objective(w.x, value, w.trial_gradient) ? Gradient::available
                                                                                    : Gradient::failed;

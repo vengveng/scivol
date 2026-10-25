@@ -106,7 +106,8 @@ bool feasible_trial(const Problem& p, detail::SolverWorkspace& w, detail::Evalua
     detail::project_bounds(p, w.trial);
     for (int correction = 0; correction < 8; ++correction) {
         if (!evaluate.constraints(w.trial, w.trial_values, w.trial_normals)) return false;
-        if (detail::feasible(p, w.trial, w.trial_values)) return true;
+        if (detail::feasible(p, w.trial, w.trial_values))
+            return detail::retract_roundoff(p, evaluate, w.trial, w.trial_values, w.trial_normals);
         // Retract a nonlinear tangent step using minimum-norm feasibility
         // corrections. Acceptance still uses the original, actual displacement.
         identity_factor(w, p.dimension);
@@ -186,7 +187,8 @@ bool take_face_step(const Problem& p, detail::SolverWorkspace& w, detail::Evalua
         std::copy_n(w.x, p.dimension, w.trial);
         w.trial[i] = bound;
         if (!evaluate.constraints(w.trial, w.trial_values, w.trial_normals)
-            || !detail::feasible(p, w.trial, w.trial_values)) continue;
+            || !detail::feasible(p, w.trial, w.trial_values)
+            || !detail::retract_roundoff(p, evaluate, w.trial, w.trial_values, w.trial_normals)) continue;
         if (accept_trial(p, w, evaluate, points, value, descent, false)) return true;
     }
     return false;

@@ -110,6 +110,35 @@ struct Evaluation {
     }
 };
 
+// The objective rejects any point outside the model's domain, so trials must
+// satisfy c(x) >= 0 exactly, not merely within the feasibility tolerance. A
+// step along a constraint face lands within roundoff of it, on either side;
+// each row violated by at most the tolerance is moved along its normal onto
+// c = tolerance (a floating-point margin, as in the charts), then the bounds are
+// re-imposed. Larger violations are left to the caller. Normals are stored
+// column-major (row + col * count), as the solvers keep them.
+inline bool retract_roundoff(const Problem& p, Evaluation& evaluate, double* x, double* values, double* normals)
+{
+    const std::size_t n = p.dimension, m = p.constraint_count;
+    for (int pass = 0; pass < 4; ++pass) {
+        bool inside = true;
+        for (std::size_t row = 0; row < m; ++row) {
+            if (values[row] >= 0) continue;
+            if (!(values[row] >= -feasibility_tolerance)) return false;
+            inside = false;
+            double norm = 0;
+            for (std::size_t col = 0; col < n; ++col) norm += normals[row + col * m] * normals[row + col * m];
+            if (!(norm > 0) || !std::isfinite(norm)) return false;
+            const double step = (feasibility_tolerance - values[row]) / norm;
+            for (std::size_t col = 0; col < n; ++col) x[col] += step * normals[row + col * m];
+        }
+        if (inside) return true;
+        project_bounds(p, x);
+        if (!evaluate.constraints(x, values, normals)) return false;
+    }
+    return std::all_of(values, values + m, [](double v) { return v >= 0; });
+}
+
 struct Points {
     Record& record;
     const Problem& problem;
