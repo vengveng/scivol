@@ -52,25 +52,26 @@ struct LogNormalizer {
 }
 
 // phi(x) = log1p(x)/x, including its removable singularity and two derivatives.
+// The value is the same expression at every order, so F and G requests agree
+// bitwise; the derivatives use the Taylor series where the closed forms cancel.
 [[nodiscard]] inline LogNormalizer log1p_ratio(double x, int order) noexcept
 {
+    if (x == 0.0) return {1.0, order >= 1 ? -0.5 : 0.0, order >= 2 ? 2.0 / 3.0 : 0.0};
+    const double value = std::log1p(x) / x;
     LogNormalizer p;
-    if (x == 0.0) return {1.0, order >= 1 ? -0.5 : 0.0, order >= 2 ? 2.0/3.0 : 0.0};
-    if (order == 0) return {std::log1p(x)/x, 0.0, 0.0};
-    if (x <= 0.125) {
+    if (order >= 1 && x <= 0.125) {
         const int degree = x < 0.001 ? 7 : x < 0.01 ? 11 : 22;
         for (int j = degree; j >= 0; --j) {
             if (order >= 2) p.d2 = p.d2 * x + 2.0 * p.d1;
-            if (order >= 1) p.d1 = p.d1 * x + p.value;
+            p.d1 = p.d1 * x + p.value;
             p.value = p.value * x + (j % 2 ? -1.0 : 1.0) / (j + 1.0);
         }
-    } else {
+    } else if (order >= 1) {
         const double inv = 1.0 / x, q = 1.0 / (1.0 + x);
-        p.value = std::log1p(x) * inv;
-        if (order >= 1) p.d1 = (q - p.value) * inv;
+        p.d1 = (q - value) * inv;
         if (order >= 2) p.d2 = (-q * q - 2.0 * p.d1) * inv;
     }
-    p.value = std::log1p(x)/x;
+    p.value = value;
     return p;
 }
 
