@@ -410,7 +410,7 @@ disagreement between them is a useful signal of a fragile estimate.
 
 | `coordinates` | Phases |
 |---------------|--------|
-| `"automatic"` | SLSQP in unconstrained coordinates `z`, then exact-Hessian Newton refinement in `theta` |
+| `"automatic"` | SLSQP in unconstrained coordinates `z`, then exact-Hessian Newton refinement in `theta`; for HAR means, the `theta` path |
 | `"z"` | SLSQP in `z` only |
 | `"theta"` | SLSQP in `theta` under the model's bounds and constraints, then Newton in `theta` |
 
@@ -418,7 +418,9 @@ The `z` coordinates cover the model's domain exactly: `omega` and other scale
 parameters on a log scale, the persistence coefficients on a softmax simplex
 weighted by the density's moments (GJR, APARCH), EGARCH's `beta` and the ARMA
 polynomials through reflection coefficients (stationary AR, invertible MA), and
-bounded shapes through `tanh`. The domain is never narrowed and the likelihood
+bounded shapes through `tanh`. A HAR mean's stationary region has no such chart;
+in `theta` it is enforced through the reflection coefficients of the implied AR
+polynomial. The domain is never narrowed and the likelihood
 is never smoothed or floored.
 
 Every fit reports what happened:

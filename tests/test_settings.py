@@ -288,7 +288,6 @@ class TestGARCHParamsGamma:
         from scivol.result import GARCHParams
         gp = GARCHParams(omega=1e-5, alpha=np.array([0.05]), beta=np.array([0.90]))
         assert gp.gamma is None
-        assert gp.persistence == pytest.approx(0.95)
         arr = gp.to_array()
         np.testing.assert_array_equal(arr, [1e-5, 0.05, 0.90])
 
@@ -301,8 +300,6 @@ class TestGARCHParamsGamma:
             gamma=np.array([0.10]),
         )
         assert gp.gamma is not None
-        # persistence = alpha + 0.5*gamma + beta = 0.05 + 0.05 + 0.85
-        assert gp.persistence == pytest.approx(0.95)
         arr = gp.to_array()
         np.testing.assert_array_equal(arr, [1e-5, 0.05, 0.10, 0.85])
 

@@ -7,6 +7,7 @@
 #include "../math/dual2.hpp"
 #include "../math/special.hpp"
 #include "density.hpp"
+#include "domain.hpp"
 
 // The standardized Generalized Hyperbolic family. With E(nu, z) = log(z^nu e^z K_nu(z)),
 // every member has the observation term
@@ -105,6 +106,8 @@ struct FixedIndexGh {
 };
 using NormalInverseGaussian = FixedIndexGh<-1>;
 using Hyperbolic = FixedIndexGh<2>;
+static_assert(domain_detail::nig_fixed[0].value == -0.5 && domain_detail::hyperbolic_fixed[0].value == 1.0,
+              "the fixed GH indices are declared once, in domain.hpp");
 
 // Variance-Gamma with skew theta = sqrt(2) rho / sqrt(1 - rho^2), scale
 // s = sqrt(lambda (1 + theta^2)) and a = sqrt(theta^2 + 2):

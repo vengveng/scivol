@@ -84,6 +84,48 @@ bool har_stationary(const MeanSpec& mean, const double* a)
     return stationary(implied, order);
 }
 
+// Reflection coefficients kappa_k (k < W, W the largest window) of the HAR
+// model's implied AR polynomial and their gradients d kappa_k / d a (W x K,
+// K windows), by the step-down recursion run forward-mode. False when some
+// |kappa_k| >= 1 is met before the recursion ends. Buffers are kept per thread
+// and grow once.
+bool har_reflections(const MeanSpec& mean, const double* a, std::vector<double>& kappa, std::vector<double>& gradient)
+{
+    const std::size_t order = mean.har.back(), windows = mean.har.size();
+    thread_local std::vector<double> phi, dphi, next, dnext;
+    phi.assign(order, 0.0);
+    dphi.assign(order * windows, 0.0);
+    next.resize(order);
+    dnext.resize(order * windows);
+    kappa.assign(order, 0.0);
+    gradient.assign(order * windows, 0.0);
+    for (std::size_t k = 0; k < windows; ++k)
+        for (std::size_t i = 0; i < mean.har[k]; ++i) {
+            const double w = 1.0 / static_cast<double>(mean.har[k]);
+            phi[i] += a[k] * w;
+            dphi[i * windows + k] += w;
+        }
+    for (std::size_t k = order; k-- > 0;) {
+        const double c = phi[k];
+        kappa[k] = c;
+        std::copy_n(dphi.data() + k * windows, windows, gradient.data() + k * windows);
+        if (!(std::abs(c) < 1.0) || !std::isfinite(c)) return false;
+        const double scale = 1.0 - c * c;
+        const double* dc = dphi.data() + k * windows;
+        for (std::size_t j = 0; j < k; ++j) {  // phi_j <- (phi_j + c phi_{k-1-j}) / (1 - c^2)
+            const double top = phi[j] + c * phi[k - 1 - j];
+            next[j] = top / scale;
+            for (std::size_t v = 0; v < windows; ++v) {
+                const double dtop = dphi[j * windows + v] + dc[v] * phi[k - 1 - j] + c * dphi[(k - 1 - j) * windows + v];
+                dnext[j * windows + v] = (dtop + next[j] * 2.0 * c * dc[v]) / scale;
+            }
+        }
+        std::copy_n(next.data(), k, phi.data());
+        std::copy_n(dnext.data(), k * windows, dphi.data());
+    }
+    return true;
+}
+
 std::string indexed(const char* name, std::size_t i) { return std::string(name) + "[" + std::to_string(i) + "]"; }
 
 }  // namespace
@@ -198,6 +240,7 @@ std::size_t Model::constraint_count() const noexcept
     std::size_t count = 0;
     for (std::size_t b = 0; b < layout.stable_blocks; ++b)
         if (layout.stable[b].count >= 2) count += layout.stable[b].count;
+    if (!spec_.mean.har.empty()) count += spec_.mean.har.back();
     if (layout.egarch()) return count;
     count += 1;  // persistence
     if (spec_.volatility == VolatilityKind::gjr) count += spec_.p;
@@ -208,10 +251,10 @@ std::size_t Model::constraint_count() const noexcept
 // c(theta) >= 0 beyond the bounds:
 //   stable blocks of order >= 2   1 - kappa_k^2 >= 0, kappa the reflection coefficients
 //                                 (AR, MA, EGARCH's beta);
+//   HAR                           1 - kappa_k^2 >= 0 for the implied AR polynomial;
 //   GARCH, GJR, APARCH            L - persistence >= 0, L the simplex chart's floating-point margin;
 //   GJR                           alpha_i + gamma_i >= 0;
 //   APARCH, t family              nu - delta >= 0.
-// HAR stationarity is checked by feasible() but has no constraint yet.
 void Model::constraints(std::span<const double> theta, std::span<double> values,
                         std::span<double> jacobian) const
 {
@@ -233,6 +276,16 @@ void Model::constraints(std::span<const double> theta, std::span<double> values,
             values[row] = inside ? 1.0 - kappa[k].v * kappa[k].v : -1.0;  // outside: report violation
             for (std::size_t j = 0; inside && j < s.count; ++j)
                 jacobian[row * d + s.at + j] = -2.0 * kappa[k].v * kappa[k].g[j] * s.sign;
+        }
+    }
+    if (!spec_.mean.har.empty()) {
+        thread_local std::vector<double> kappa, gradient;
+        const std::size_t order = spec_.mean.har.back(), windows = spec_.mean.har.size();
+        const bool inside = har_reflections(spec_.mean, theta.data() + layout.har, kappa, gradient);
+        for (std::size_t k = 0; k < order; ++k, ++row) {
+            values[row] = inside ? 1.0 - kappa[k] * kappa[k] : -1.0;  // outside: report violation
+            for (std::size_t v = 0; inside && v < windows; ++v)
+                jacobian[row * d + layout.har + v] = -2.0 * kappa[k] * gradient[k * windows + v];
         }
     }
     if (layout.egarch()) return;
@@ -328,6 +381,50 @@ void Model::rescale(std::span<const double> theta, double factor, std::span<doub
         break;
     default: scaled[layout.omega] = theta[layout.omega] * factor * factor;
     }
+}
+
+// The z charts cover the domain except a HAR mean's stationary region (enforced
+// in theta by constraints); EGARCH centres its recursion with the density's
+// E|z|; APARCH variances beyond one step have no closed form (sigma^delta is
+// linear in expectation, sigma^2 is not).
+ModelCapabilities Model::capabilities() const noexcept
+{
+    ModelCapabilities c;
+    c.chart_covers_domain = spec_.mean.har.empty();
+    c.density_free_recursion = spec_.volatility != VolatilityKind::egarch;
+    if (spec_.volatility == VolatilityKind::aparch) c.exact_variance_horizon = 1;
+    return c;
+}
+
+double Model::persistence(std::span<const double> theta) const
+{
+    check_size(theta, dimension());
+    const Layout layout(spec_);
+    if (layout.egarch()) {
+        double beta = 0.0;
+        for (std::size_t j = 0; j < spec_.q; ++j) beta += theta[layout.beta + j];
+        return beta;
+    }
+    double value = 0.0;
+    return layout.persistence(theta.data(), 0, value, nullptr) ? value : std::numeric_limits<double>::quiet_NaN();
+}
+
+InnovationDensity Model::innovation_density(std::span<const double> theta) const
+{
+    check_size(theta, dimension());
+    const Layout layout(spec_);
+    return {spec_.density, std::vector<double>(theta.begin() + static_cast<std::ptrdiff_t>(layout.shapes), theta.end())};
+}
+
+std::vector<std::pair<std::string, double>> named_shapes(const InnovationDensity& density)
+{
+    const auto domains = detail::shape_domains(density.density);
+    if (density.shape.size() != domains.size())
+        throw std::invalid_argument("the density needs its shape parameters");
+    std::vector<std::pair<std::string, double>> out;
+    for (std::size_t i = 0; i < domains.size(); ++i) out.emplace_back(domains[i].name, density.shape[i]);
+    for (const detail::FixedShape& f : detail::fixed_shapes(density.density)) out.emplace_back(f.name, f.value);
+    return out;
 }
 
 void Model::to_theta(std::span<const double> z, std::span<double> theta) const

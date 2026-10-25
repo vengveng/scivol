@@ -3,6 +3,7 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
 #include <nanobind/stl/optional.h>
+#include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/tuple.h>
 #include <nanobind/stl/vector.h>
@@ -265,6 +266,16 @@ NB_MODULE(_scivolapi, m)
             m.bounds(lower, upper);
             return nb::make_tuple(owned_vector(std::move(lower)), owned_vector(std::move(upper)));
         })
+        .def_prop_ro("capabilities", &Model::capabilities)
+        .def("persistence", [](const Model& m, const Vector& theta) { return m.persistence(view(theta)); }, "theta"_a)
+        .def("innovation_density", [](const Model& m, const Vector& theta) { return m.innovation_density(view(theta)); },
+             "theta"_a)
+        .def("constraints", [](const Model& m, const Vector& theta) {
+            const std::size_t c = m.constraint_count(), d = m.dimension();
+            std::vector<double> values(c), jacobian(c * d);
+            m.constraints(view(theta), values, jacobian);
+            return nb::make_tuple(owned_vector(std::move(values)), owned_matrix(std::move(jacobian), c, d));
+        }, "theta"_a, "Constraint values c(theta) >= 0 beyond the bounds, and their Jacobian.")
         .def("rescale", [](const Model& m, const Vector& theta, double factor) {
             std::vector<double> scaled(m.dimension());
             m.rescale(view(theta), factor, scaled);
@@ -477,19 +488,28 @@ NB_MODULE(_scivolapi, m)
           },
           "density"_a, "shape"_a, "u"_a, "upper"_a = false,
           "Quantiles of the standardized density at lower-tail (or, with upper, upper-tail) probabilities.");
-    nb::class_<MarginalDensity>(m, "MarginalDensity")
-        .def("__getstate__", [](const MarginalDensity& d) { return std::make_tuple(static_cast<int>(d.density), d.shape); })
-        .def("__setstate__", [](MarginalDensity& self, const std::tuple<int, std::vector<double>>& state) {
-            new (&self) MarginalDensity{static_cast<DensityKind>(std::get<0>(state)), std::get<1>(state)};
+    nb::class_<ModelCapabilities>(m, "ModelCapabilities")
+        .def_ro("chart_covers_domain", &ModelCapabilities::chart_covers_domain)
+        .def_ro("density_free_recursion", &ModelCapabilities::density_free_recursion)
+        .def_ro("exact_variance_horizon", &ModelCapabilities::exact_variance_horizon);
+    nb::class_<InnovationDensity>(m, "InnovationDensity")
+        .def("__getstate__", [](const InnovationDensity& d) { return std::make_tuple(static_cast<int>(d.density), d.shape); })
+        .def("__setstate__", [](InnovationDensity& self, const std::tuple<int, std::vector<double>>& state) {
+            new (&self) InnovationDensity{static_cast<DensityKind>(std::get<0>(state)), std::get<1>(state)};
         })
-        .def("__init__", [](MarginalDensity* self, DensityKind density, std::vector<double> shape) {
-            new (self) MarginalDensity{density, std::move(shape)};
+        .def("__init__", [](InnovationDensity* self, DensityKind density, std::vector<double> shape) {
+            new (self) InnovationDensity{density, std::move(shape)};
         }, "density"_a, "shape"_a = std::vector<double>{})
-        .def_rw("density", &MarginalDensity::density)
-        .def_rw("shape", &MarginalDensity::shape);
+        .def_rw("density", &InnovationDensity::density)
+        .def_rw("shape", &InnovationDensity::shape)
+        .def_prop_ro("named", [](const InnovationDensity& d) {
+            nb::dict out;
+            for (const auto& [name, value] : named_shapes(d)) out[name.c_str()] = value;
+            return out;
+        }, "Every shape by name, estimated and fixed by the density's definition.");
     m.def("simulate_correlation",
           [](const CorrelationModel& model, const Vector& theta, const Matrix& eps,
-             const std::vector<MarginalDensity>& marginals, const Tensor3& normals, const std::optional<Matrix>& chi2,
+             const std::vector<InnovationDensity>& marginals, const Tensor3& normals, const std::optional<Matrix>& chi2,
              const std::optional<Matrix>& target) {
               const std::vector<double> residuals(eps.data(), eps.data() + eps.shape(0) * eps.shape(1));
               const std::vector<double> qbar = square(target), c = square(chi2);

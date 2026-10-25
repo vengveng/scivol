@@ -26,9 +26,6 @@ if TYPE_CHECKING:
 # Results
 # --------------------------------------------------------------------------- #
 
-_FIXED_GH_LAMBDA = {"NormalInverseGaussian": -0.5, "Hyperbolic": 1.0}
-
-
 @dataclass(slots=True)
 class FilteredState:
     data: NDArray[np.float64]
@@ -89,7 +86,7 @@ class ForecastResult(Mapping[str, NDArray[np.float64]]):
     rho: Optional[float] = None
     zeta: Optional[float] = None
     shape_lambda: Optional[float] = None
-    density: Any = None  # api.MarginalDensity
+    density: Any = None  # api.InnovationDensity
     simulated_paths: Optional[Callable[[], NDArray[np.float64]]] = None
 
     def __getitem__(self, key: str) -> NDArray[np.float64]:
@@ -169,20 +166,25 @@ class SimulationResult:
 # --------------------------------------------------------------------------- #
 
 def component_slices(spec: Any) -> list[tuple[Any, slice]]:
-    """Each component's entries of theta. A mean-only model has its variance
-    sigma2 between the mean and the density (no component owns it)."""
-    slices, at = [], 0
-    mean = spec.get_component(Role.MEAN)
-    volatility = spec.get_component(Role.VOLATILITY)
-    density = spec.get_component(Role.DENSITY)
-    for component in (mean, volatility):
-        if component is not None:
-            slices.append((component, slice(at, at + component.n_params)))
-            at += component.n_params
-    if volatility is None:
-        at += 1  # sigma2
+    """Each component's entries of theta in the native layout [mean | volatility | shapes]:
+    the mean's block first, the density's last, the volatility's in between (a
+    mean-only model's sigma2 lies in between and belongs to no component)."""
+    from ._fit import native_spec
+
+    mean, volatility, density = (spec.get_component(role) for role in (Role.MEAN, Role.VOLATILITY, Role.DENSITY))
+    native = native_spec(spec, int(getattr(mean, "n_exog", 0) or 0))
+    if native is None:
+        raise NotImplementedError(f"{spec} has no native model")
+    dimension = api.Model(native).dimension
+    first = 0 if mean is None else mean.n_params
+    last = dimension - (0 if density is None else density.n_params)
+    slices = []
+    if mean is not None:
+        slices.append((mean, slice(0, first)))
+    if volatility is not None:
+        slices.append((volatility, slice(first, last)))
     if density is not None:
-        slices.append((density, slice(at, at + density.n_params)))
+        slices.append((density, slice(last, dimension)))
     return slices
 
 
@@ -243,31 +245,16 @@ def density_name(spec: Any) -> str:
     return "Normal" if density is None else density.signature
 
 
-def _shapes(model: "api.Model", theta: NDArray[np.float64], distribution: str) -> dict[str, Optional[float]]:
-    """Density shapes by name, as the result containers report them."""
-    values = dict(zip(model.parameter_names, theta))
-    fixed = _FIXED_GH_LAMBDA.get(distribution)
+def _shapes(model: "api.Model", theta: NDArray[np.float64]) -> dict[str, Optional[float]]:
+    """Density shapes by name, as the result containers report them (fixed ones included)."""
+    named = model.innovation_density(theta).named
     return {
-        "nu": values.get("nu"),
-        "lam": values.get("lam"),
-        "rho": values.get("rho"),
-        "zeta": values.get("zeta"),
-        "shape_lambda": fixed if fixed is not None else values.get("lambda"),
+        "nu": named.get("nu"),
+        "lam": named.get("lam"),
+        "rho": named.get("rho"),
+        "zeta": named.get("zeta"),
+        "shape_lambda": named.get("lambda"),
     }
-
-
-_SHAPE_COUNT = {"normal": 0, "student_t": 1, "skew_t": 2, "ged": 1, "generalized_hyperbolic": 3, "nig": 2,
-                "hyperbolic": 2, "variance_gamma": 2}
-
-
-def innovation_density(spec: Any, theta: NDArray[np.float64]) -> "api.MarginalDensity":
-    """The standardized innovation density of a spec at theta (its shapes are theta's trailing entries)."""
-    from ._fit import DENSITIES
-
-    density = spec.get_component(Role.DENSITY)
-    kind = DENSITIES["Normal" if density is None else type(density).__name__]
-    count = _SHAPE_COUNT[kind.name]
-    return api.MarginalDensity(kind, [float(v) for v in theta[len(theta) - count:]] if count else [])
 
 
 def uniforms(rng: np.random.Generator, size: Any) -> NDArray[np.float64]:
@@ -275,7 +262,7 @@ def uniforms(rng: np.random.Generator, size: Any) -> NDArray[np.float64]:
     return (rng.integers(0, 2 ** 53, size=size) + 0.5) * 2.0 ** -53
 
 
-def innovations(density: "api.MarginalDensity", paths: int, horizon: int, seed: Any) -> NDArray[np.float64]:
+def innovations(density: "api.InnovationDensity", paths: int, horizon: int, seed: Any) -> NDArray[np.float64]:
     """paths x horizon standardized innovations by inversion of the native distribution function."""
     u = uniforms(np.random.default_rng(seed), paths * horizon)
     return np.ascontiguousarray(api.quantiles(density.density, density.shape, u).reshape(paths, horizon))
@@ -388,7 +375,7 @@ def state(spec: Any, model: "api.Model", jet: "api.Jet", y: NDArray[np.float64],
         score=-np.asarray(out["gradient"]) if "gradient" in out else None,
         hessian=-np.asarray(out["hessian"]) if "hessian" in out else None,
         distribution=distribution,
-        **_shapes(model, theta, distribution),
+        **_shapes(model, theta),
     )
 
 
@@ -402,9 +389,8 @@ def forecast(spec: Any, model: "api.Model", theta: NDArray[np.float64], y: NDArr
     """Forecasts after the sample (y, x).
 
     Exact for the mean, its variance given the residual variances, and the
-    residual variances of GARCH, GJR and EGARCH at every horizon and APARCH one
-    step ahead; APARCH beyond one step and quantiles beyond one step average
-    `simulations` paths drawn with `seed`.
+    residual variances up to the model's exact variance horizon; variances beyond
+    it and quantiles beyond one step average `simulations` paths drawn with `seed`.
     """
     if horizon <= 0:
         raise ValueError("horizon must be positive")
@@ -413,14 +399,12 @@ def forecast(spec: Any, model: "api.Model", theta: NDArray[np.float64], y: NDArr
     if columns and future is None:
         raise ValueError(f"Forecasts need the exogenous regressors of the horizon: x with shape ({horizon}, {columns}).")
     distribution = density_name(spec)
-    density = innovation_density(spec, theta)
-    from .components.vol import APARCH
-
+    density = model.innovation_density(theta)
     def draws() -> NDArray[np.float64]:
         return innovations(density, int(simulations), horizon, seed)
 
-    aparch = horizon > 1 and isinstance(spec.get_component(Role.VOLATILITY), APARCH)
-    out = api.forecast(model, theta, y, horizon, x, future, draws() if aparch else None)
+    simulated = horizon > model.capabilities.exact_variance_horizon
+    out = api.forecast(model, theta, y, horizon, x, future, draws() if simulated else None)
     cache: dict[str, NDArray[np.float64]] = {}
 
     def paths() -> NDArray[np.float64]:
@@ -433,7 +417,7 @@ def forecast(spec: Any, model: "api.Model", theta: NDArray[np.float64], y: NDArr
         variance=np.asarray(out["variance"]),
         residual_variance=np.asarray(out["residual_variance"]),
         distribution=distribution,
-        **_shapes(model, theta, distribution),
+        **_shapes(model, theta),
         density=density,
         simulated_paths=paths,
     )
@@ -457,7 +441,7 @@ def simulate(spec: Any, n_obs: int, params: Any, *, burn: int = 500, seed: Any =
         raise NotImplementedError(f"{spec} cannot be simulated: unsupported component combination")
     model = api.Model(native)
     theta = parameters(spec, model, params)
-    z = innovations(innovation_density(spec, theta), 1, total, seed)
+    z = innovations(model.innovation_density(theta), 1, total, seed)
     out = api.simulate_series(model, theta, z, rows)
     keep = slice(burn, total)
     return SimulationResult(

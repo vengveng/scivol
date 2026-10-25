@@ -84,7 +84,11 @@ void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, s
     };
     const optimize::Problem in_theta = make_problem(model, unit_jet, false);
 
-    if (options.coordinates == Coordinates::theta) {
+    // Where the z charts do not cover the model's domain, the automatic path is
+    // the theta path (the domain's constraints are enforced there).
+    const bool theta_path = options.coordinates == Coordinates::theta
+        || (options.coordinates == Coordinates::automatic && !model.capabilities().chart_covers_domain);
+    if (theta_path) {
         const optimize::Record slsqp = run_phase("theta:slsqp", in_theta, false, start, budget, options.accuracy, phases);
         offer(slsqp, d, 0, same, candidates);
         if (iterations(phases) < budget) {
@@ -297,9 +301,10 @@ FitResult fit_qmle(const Model& model, std::span<const double> y, std::span<cons
                    const FitOptions& options)
 {
     const ModelSpec& spec = model.spec();
-    if (spec.density != DensityKind::normal && spec.volatility == VolatilityKind::egarch)
+    if (spec.density != DensityKind::normal && !model.capabilities().density_free_recursion)
         throw std::invalid_argument(
-            "qmle with a non-Normal density is not available for EGARCH, whose variance recursion depends on the density");
+            "qmle with a non-Normal density needs a variance recursion free of the density's shapes "
+            "(EGARCH centres its recursion with E|z|)");
     ModelSpec gaussian_spec = spec;
     gaussian_spec.density = DensityKind::normal;
     const Model gaussian(gaussian_spec);

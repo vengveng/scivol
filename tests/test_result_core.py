@@ -141,7 +141,7 @@ def test_to_dict_structure():
 def test_fit_info_is_exposed_in_result_and_dict():
     data = np.ones(50)
     spec = _build_fitted_spec()
-    opt = DummyOpt(x=np.arange(spec.total_params), fun=10.0)
+    opt = DummyOpt(x=np.array([0.05, 0.20, -0.10, 0.01, 0.08, 0.90, 8.0]), fun=10.0)  # the components' values
     res = EstimationResult(
         spec,
         opt,

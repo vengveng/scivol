@@ -195,12 +195,11 @@ def test_gaussian_scenarios_have_the_forecast_correlation(dcc_fit):
 
 
 def test_copula_innovations_follow_each_marginal_density(dcc_fit):
-    from scivol._evaluation import innovation_density
 
     _, skewed = dcc_fit
     s = skewed.scenarios(100_000, seed=3)
     for i, marginal in enumerate(skewed.univariate_results):
-        density = innovation_density(marginal.spec, np.asarray(marginal.params))
+        density = marginal._native()[0].innovation_density(np.asarray(marginal.params))
         z = np.sort(s.innovations[:, i])
         lower, _ = api.distribution(density.density, density.shape, np.ascontiguousarray(z))
         ks = np.max(np.abs(lower - (np.arange(1, z.size + 1) - 0.5) / z.size))

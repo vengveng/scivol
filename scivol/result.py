@@ -46,15 +46,7 @@ class GARCHParams:
     alpha: NDArray[np.float64]  # length p
     beta: NDArray[np.float64]   # length q
     gamma: Optional[NDArray[np.float64]] = None  # length p (GJR-GARCH only)
-    negative_second_moment: float = 0.5
-    
-    @property
-    def persistence(self) -> float:
-        """Return the density-aware GARCH or GJR-GARCH persistence."""
-        p = float(np.sum(self.alpha) + np.sum(self.beta))
-        if self.gamma is not None:
-            p += self.negative_second_moment * float(np.sum(self.gamma))
-        return p
+    persistence: float = float("nan")  # the model's: GJR weights gamma by E[z^2 1(z<0)] of the fitted density
     
     @property
     def is_stationary(self) -> bool:
@@ -98,10 +90,7 @@ class EGARCHParams:
     alpha: NDArray[np.float64]
     beta: NDArray[np.float64]
     gamma: NDArray[np.float64]
-
-    @property
-    def persistence(self) -> float:
-        return float(np.sum(self.beta))
+    persistence: float = float("nan")  # sum beta
 
     @property
     def is_stationary(self) -> bool:
@@ -131,22 +120,10 @@ class APARCHParams:
     beta: NDArray[np.float64]
     gamma: NDArray[np.float64]
     delta: float
-    density_adjusted_persistence: Optional[float] = None
-    stationarity_slack: Optional[float] = None
-
-    @property
-    def persistence(self) -> float:
-        """Return the fitted density-dependent APARCH persistence."""
-        if self.density_adjusted_persistence is None:
-            raise RuntimeError(
-                "Exact APARCH persistence requires the fitted conditional density."
-            )
-        return float(self.density_adjusted_persistence)
+    persistence: float = float("nan")  # sum alpha_i E[(|z| - gamma_i z)^delta] + sum beta under the fitted density
 
     @property
     def is_stationary(self) -> bool:
-        if self.stationarity_slack is not None:
-            return self.stationarity_slack > 0.0
         return self.persistence < 1.0
 
     def to_array(self) -> NDArray[np.float64]:
@@ -489,61 +466,23 @@ class EstimationResult:
     # --------------------------------------------------------------------- #
     @property
     def garch_params(self) -> Optional[Union[GARCHParams, EGARCHParams, APARCHParams]]:
-        """Get volatility parameters as a structured object."""
+        """Volatility parameters as a structured object, with the model's persistence."""
         fp = self._component_param_snapshots.get(Role.VOLATILITY)
         if not fp:
             return None
-
         from .components.vol import APARCH, EGARCH
 
+        persistence = float(self._native()[0].persistence(np.ascontiguousarray(self.params, dtype=np.float64)))
+        arrays = {key: np.array(fp.get(key, []), dtype=np.float64) for key in ("alpha", "gamma", "beta")}
+        omega = float(fp.get("omega", 0.0))
         if isinstance(self.volatility, EGARCH):
-            return EGARCHParams(
-                omega=float(fp.get("omega", 0.0)),
-                alpha=np.array(fp.get("alpha", []), dtype=np.float64),
-                gamma=np.array(fp.get("gamma", []), dtype=np.float64),
-                beta=np.array(fp.get("beta", []), dtype=np.float64),
-            )
-
+            return EGARCHParams(omega=omega, persistence=persistence, **arrays)
         if isinstance(self.volatility, APARCH):
-            return APARCHParams(
-                omega=float(fp.get("omega", 0.0)),
-                alpha=np.array(fp.get("alpha", []), dtype=np.float64),
-                gamma=np.array(fp.get("gamma", []), dtype=np.float64),
-                beta=np.array(fp.get("beta", []), dtype=np.float64),
-                delta=float(fp.get("delta", 2.0)),
-                density_adjusted_persistence=(
-                    float(fp["persistence"])
-                    if "persistence" in fp else None
-                ),
-                stationarity_slack=(
-                    float(fp["stationarity_slack"])
-                    if "stationarity_slack" in fp else None
-                ),
-            )
+            return APARCHParams(omega=omega, delta=float(fp["delta"]), persistence=persistence, **arrays)
+        if fp.get("gamma") is None:
+            arrays["gamma"] = None
+        return GARCHParams(omega=omega, persistence=persistence, **arrays)
 
-        omega = fp.get('omega', 0.0)
-        alpha = np.array(fp.get('alpha', []), dtype=np.float64)
-        beta = np.array(fp.get('beta', []), dtype=np.float64)
-        
-        # GJR-GARCH has gamma (leverage) coefficients
-        gamma_raw = fp.get('gamma')
-        gamma = np.array(gamma_raw, dtype=np.float64) if gamma_raw is not None else None
-        negative_second_moment = 0.5
-        if gamma is not None:
-            from . import _scivolapi as api
-            from ._evaluation import innovation_density
-
-            density = innovation_density(self.spec, np.asarray(self.params, dtype=np.float64))
-            negative_second_moment = api.negative_second_moment(density.density, density.shape)
-
-        return GARCHParams(
-            omega=omega,
-            alpha=alpha,
-            beta=beta,
-            gamma=gamma,
-            negative_second_moment=negative_second_moment,
-        )
-    
     @property
     def arma_params(self) -> Optional[ARMAParams]:
         """Get ARMA parameters as structured object."""
@@ -570,10 +509,10 @@ class EstimationResult:
         rho = fp.get('rho')
         zeta = fp.get('zeta')
         shape_lambda = fp.get('lambda')
-        density_name = self.density.signature if self.density is not None else "Normal"
-        from ._evaluation import _FIXED_GH_LAMBDA
-
-        fixed_lambda = _FIXED_GH_LAMBDA.get(density_name)
+        model = self._native()[0]
+        fixed_lambda = None
+        if "lambda" not in model.parameter_names:  # a GH member whose index the density fixes
+            fixed_lambda = model.innovation_density(np.ascontiguousarray(self.params, dtype=np.float64)).named.get("lambda")
         if fixed_lambda is not None:
             shape_lambda = fixed_lambda
 
@@ -954,10 +893,7 @@ class EstimationResult:
             b_name = _r("beta")
             if gp.gamma is not None:
                 g_name = _r("gamma")
-                moment = gp.negative_second_moment
-                persist_label = (
-                    f"Persistence ({a_name} + {moment:.4g}{g_name} + {b_name}):"
-                )
+                persist_label = f"Persistence ({a_name} + E[z²·1(z<0)]{g_name} + {b_name}):"
             else:
                 persist_label = f"Persistence ({a_name} + {b_name}):"
             print(f"{persist_label:<35} {persistence:.6f}")
@@ -994,11 +930,10 @@ class EstimationResult:
                 elif abs(gp.persistence) > 0.99:
                     add("Near-unit-root EGARCH persistence very close to 1")
             elif isinstance(gp, APARCHParams):
-                if gp.density_adjusted_persistence is not None:
-                    if not gp.is_stationary:
-                        add("Non-stationary APARCH persistence detected")
-                    elif gp.persistence > 0.99:
-                        add("APARCH persistence is very close to 1")
+                if not gp.is_stationary:
+                    add("Non-stationary APARCH persistence detected")
+                elif gp.persistence > 0.99:
+                    add("APARCH persistence is very close to 1")
             else:
                 if gp.persistence >= 1.0:
                     add("IGARCH or explosive process detected")
@@ -1071,7 +1006,6 @@ class EstimationResult:
                 gp_dict[_r('gamma')] = gp.gamma.tolist()
             if isinstance(gp, APARCHParams):
                 gp_dict['delta'] = gp.delta
-                gp_dict['stationarity_slack'] = gp.stationarity_slack
             result_dict['garch_params'] = gp_dict
         
         # Add distribution parameters (keys use display names)
@@ -1187,9 +1121,8 @@ class EstimationResult:
         
         # PIT u = F(z) under the fitted innovation density (native distribution function)
         from . import _scivolapi as api
-        from ._evaluation import innovation_density
 
-        density = innovation_density(self.spec, np.asarray(self.params, dtype=np.float64))
+        density = self._native()[0].innovation_density(np.ascontiguousarray(self.params, dtype=np.float64))
         u, _ = api.distribution(density.density, density.shape, np.ascontiguousarray(z, dtype=np.float64))
         dp = self.dist_params
         dist_params_dict = {"nu": dp.nu, "lam": dp.lam, "rho": dp.rho, "zeta": dp.zeta, "lambda": dp.shape_lambda}

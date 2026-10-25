@@ -103,7 +103,7 @@ std::vector<double> psi_weights(const ModelSpec& spec, const Layout& layout, con
 // GARCH and GJR: E[h] follows the recursion with E[e^2] = E[h] and, for GJR,
 // E[e^2 1(e < 0)] = kappa E[h], kappa = E[z^2 1(z < 0)].
 void linear_variance(const ModelSpec& spec, const Layout& layout, const double* theta, const Run& r,
-                     std::vector<double>& out)
+                     std::span<double> out)
 {
     const bool gjr = spec.volatility == VolatilityKind::gjr;
     double kappa = 0.0;
@@ -134,7 +134,7 @@ void linear_variance(const ModelSpec& spec, const Layout& layout, const double* 
 // (the past is deterministic), so with independent z_u
 //   E[h_s] = exp(d_s) prod_u M(A_su, B_su),  M(a, b) = E exp(a |z| + b z).
 void egarch_variance(const ModelSpec& spec, const Layout& layout, const double* theta, const Run& r,
-                     std::vector<double>& out)
+                     std::span<double> out)
 {
     const double* shape = layout.shape_count ? theta + layout.shapes : nullptr;
     detail::MomentResult moment;
@@ -259,27 +259,29 @@ Forecast forecast(const Model& model, std::span<const double> theta, std::span<c
     Forecast f;
     f.mean = filtered.paths.mean;
     f.residual_variance.assign(horizon, 0.0);
+    // Exact horizons from the model's closed form (one step ahead it is the
+    // filter's next variance); beyond them, averages over the supplied paths.
+    const std::size_t exact = std::min(horizon, model.capabilities().exact_variance_horizon);
+    std::span<double> closed(f.residual_variance.data(), exact);
     switch (spec.volatility) {
     case VolatilityKind::garch:
     case VolatilityKind::gjr:
-    case VolatilityKind::constant: linear_variance(spec, layout, theta.data(), filtered, f.residual_variance); break;
-    case VolatilityKind::egarch: egarch_variance(spec, layout, theta.data(), filtered, f.residual_variance); break;
-    case VolatilityKind::aparch:
-        f.residual_variance[0] = filtered.paths.variance[0];
-        if (horizon > 1) {
-            require(paths > 0 && z.size() == paths * horizon,
-                    "APARCH variance forecasts beyond one step need paths x horizon innovations");
-            const Simulation s = run(model, theta, {y.begin(), y.end()}, rows, sample.variance_seed,
-                                     sample.first_scored, horizon, z, paths)
-                                     .paths;
-            for (std::size_t k = 1; k < horizon; ++k) {
-                double total = 0.0;
-                for (std::size_t p = 0; p < paths; ++p) total += s.variance[p * horizon + k];
-                f.residual_variance[k] = total / static_cast<double>(paths);
-            }
-            f.simulated = true;
+    case VolatilityKind::constant: linear_variance(spec, layout, theta.data(), filtered, closed); break;
+    case VolatilityKind::egarch: egarch_variance(spec, layout, theta.data(), filtered, closed); break;
+    case VolatilityKind::aparch: closed[0] = filtered.paths.variance[0]; break;
+    }
+    if (horizon > exact) {
+        require(paths > 0 && z.size() == paths * horizon,
+                "variance forecasts beyond the exact horizons need paths x horizon innovations");
+        const Simulation s = run(model, theta, {y.begin(), y.end()}, rows, sample.variance_seed, sample.first_scored,
+                                 horizon, z, paths)
+                                 .paths;
+        for (std::size_t k = exact; k < horizon; ++k) {
+            double total = 0.0;
+            for (std::size_t p = 0; p < paths; ++p) total += s.variance[p * horizon + k];
+            f.residual_variance[k] = total / static_cast<double>(paths);
         }
-        break;
+        f.simulated = true;
     }
 
     const std::vector<double> psi = psi_weights(spec, layout, theta.data(), horizon);

@@ -13,7 +13,9 @@ namespace scivolapi {
 
 // Which formulation the optimizer solves. `theta` and `z` are independent
 // paths; `automatic` is the named hybrid: a z-space solve, then exact-Newton
-// refinement in theta. Every phase a fit ran is listed in FitResult::phases.
+// refinement in theta, except where the z charts do not cover the model's domain
+// (ModelCapabilities::chart_covers_domain): there it is the theta path. Every
+// phase a fit ran is listed in FitResult::phases.
 enum class Coordinates { automatic, z, theta };
 
 // How theta is estimated and how its covariance is formed.

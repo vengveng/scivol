@@ -47,6 +47,9 @@ public:
     void to_theta(std::span<const double> z, std::span<double> theta) const;
     [[nodiscard]] bool to_z(std::span<const double> theta, std::span<double> z) const;
 
+    // The simplex and nu charts cover the whole domain.
+    [[nodiscard]] ModelCapabilities capabilities() const noexcept { return {}; }
+
 private:
     CorrelationSpec spec_;
     std::vector<std::string> names_;
@@ -73,12 +76,6 @@ private:
     std::vector<double> work_;
 };
 
-// The innovation density of one marginal model: its density and shape values.
-struct MarginalDensity {
-    DensityKind density = DensityKind::normal;
-    std::vector<double> shape;
-};
-
 // Generated innovations and correlations: paths x horizon x series and
 // paths x horizon x series x series, row-major.
 struct CorrelationPaths {
@@ -96,7 +93,7 @@ struct CorrelationPaths {
 // marginal model then continues along its column of z.
 CorrelationPaths simulate_correlation(const CorrelationModel& model, std::span<const double> theta,
                                       std::span<const double> eps, std::size_t series,
-                                      std::span<const double> target, std::span<const MarginalDensity> marginals,
+                                      std::span<const double> target, std::span<const InnovationDensity> marginals,
                                       std::span<const double> normals, std::span<const double> chi2,
                                       std::size_t paths);
 

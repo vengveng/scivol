@@ -467,3 +467,62 @@ def test_mean_only_fits_recover_the_simulation():
     assert t.dist_params.nu == pytest.approx(t.params[-1])
     with pytest.raises(ValueError, match="p and q must be 0"):
         model_for(mean_spec(), "constant", "normal", 1, 1)
+
+
+def har_reflections_jax(a, windows):
+    """Reflection coefficients of the HAR model's implied AR polynomial, by JAX (step-down)."""
+    jax, jnp, _ = _jax_modules()
+    order = windows[-1]
+    phi = sum(jnp.concatenate([jnp.full(w, a[k] / w), jnp.zeros(order - w)]) for k, w in enumerate(windows))
+    kappa = [None] * order
+    for k in range(order - 1, -1, -1):
+        c = phi[k]
+        kappa[k] = c
+        phi = jnp.array([(phi[j] + c * phi[k - 1 - j]) / (1 - c * c) for j in range(k)])
+    return jnp.stack(kappa)
+
+
+@pytest.mark.parametrize("windows,a", [((1, 5, 22), [0.3, 0.4, 0.2]), ((2, 3), [-0.5, 0.9])])
+def test_har_stationarity_constraints_are_the_reflection_coefficients(windows, a):
+    jax, jnp, _ = _jax_modules()
+    mean = mean_spec(constant=True, har=windows)
+    model = model_for(mean)
+    theta = np.array([0.1] + a + [0.05, 0.1, 0.8])
+    values, jacobian = model.constraints(theta)
+    order = windows[-1]
+    kappa = np.asarray(har_reflections_jax(jnp.asarray(a), windows))
+    np.testing.assert_allclose(values[:order], 1 - kappa ** 2, rtol=1e-12, atol=1e-14)
+    reference = np.asarray(jax.jacfwd(lambda v: 1 - har_reflections_jax(v, windows) ** 2)(jnp.asarray(a)))
+    np.testing.assert_allclose(jacobian[:order, 1:1 + len(windows)], reference, rtol=1e-10, atol=1e-12)
+    assert model.feasible(theta) == bool(np.all(np.abs(kappa) < 1))
+
+
+def test_har_fits_stay_stationary_on_a_near_unit_root():
+    from scivol import GARCH, HARX, Normal
+
+    rng = np.random.default_rng(4)
+    n = 1500
+    y = np.cumsum(0.1 * rng.standard_normal(n)) * 0.2 + rng.standard_normal(n)
+    y = y - y.mean()
+    x = rng.standard_normal((n, 1))
+    spec = HARX([1, 5, 22]) + GARCH(1, 1) + Normal()
+    for coordinates in ("theta", "automatic"):
+        result = spec.fit(y, x=x, coordinates=coordinates)
+        assert result.converged, (coordinates, result.fit_info.warnings)
+        assert result._native()[0].feasible(np.asarray(result.params))
+
+
+def test_har_fits_hold_the_stationarity_boundary_on_explosive_data():
+    from scivol import GARCH, HARX, Normal
+
+    rng = np.random.default_rng(1)
+    n = 600
+    y = np.zeros(n)
+    for t in range(1, n):
+        y[t] = 1.004 * y[t - 1] + rng.standard_normal()
+    x = rng.standard_normal((n, 1))
+    for coordinates in ("theta", "automatic"):  # automatic is the theta path for HAR means
+        result = (HARX([1, 5, 22]) + GARCH(1, 1) + Normal()).fit(y, x=x, coordinates=coordinates)
+        assert result.fit_info.optimizer_phases == ("theta:slsqp", "theta:newton")
+        assert result._native()[0].feasible(np.asarray(result.params))
+        assert sum(result.params[1:4]) == pytest.approx(1.0, abs=1e-6)  # at the unit-root boundary

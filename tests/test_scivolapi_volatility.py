@@ -430,3 +430,50 @@ def test_aparch_fit_is_exactly_equivariant_to_data_scale(aparch_data):
     assert scaled.params[0] == pytest.approx(base.params[0] * 10.0 ** delta, rel=1e-6)
     assert scaled.params[1:] == pytest.approx(base.params[1:], rel=1e-6)
     assert scaled.log_likelihood == pytest.approx(base.log_likelihood - aparch_data.size * np.log(10.0), abs=1e-6)
+
+
+# The capability interface the generic machinery asks of every model.
+
+def _model(volatility, density, mean=None, p=1, q=1):
+    spec = api.ModelSpec()
+    if mean is not None:
+        spec.mean = mean
+    spec.volatility = getattr(api.VolatilityKind, volatility)
+    spec.p, spec.q = p, q
+    spec.density = getattr(api.DensityKind, density)
+    return api.Model(spec)
+
+
+def test_capabilities_describe_what_generic_code_may_rely_on():
+    garch = _model("gjr", "skew_t").capabilities
+    assert garch.chart_covers_domain and garch.density_free_recursion
+    assert garch.exact_variance_horizon > 10 ** 9
+    egarch = _model("egarch", "student_t").capabilities
+    assert not egarch.density_free_recursion and egarch.exact_variance_horizon > 10 ** 9
+    assert _model("aparch", "normal").capabilities.exact_variance_horizon == 1
+    har = api.MeanSpec()
+    har.constant, har.har = True, [1, 5, 22]
+    assert not _model("garch", "normal", har).capabilities.chart_covers_domain
+
+
+def test_innovation_density_names_estimated_and_fixed_shapes():
+    model = _model("garch", "nig")
+    theta = np.array([0.05, 0.1, 0.8, -0.2, 1.3])
+    density = model.innovation_density(theta)
+    assert density.density == api.DensityKind.nig and list(density.shape) == [-0.2, 1.3]
+    assert density.named == {"rho": -0.2, "zeta": 1.3, "lambda": -0.5}
+    assert _model("garch", "hyperbolic").innovation_density(theta).named["lambda"] == 1.0
+
+
+@pytest.mark.parametrize("volatility,density,theta", [
+    ("gjr", "skew_t", [0.05, 0.04, 0.1, 0.8, 6.0, -0.3]),
+    ("aparch", "student_t", [0.05, 0.08, 0.3, 0.85, 1.6, 6.0]),
+    ("garch", "normal", [0.05, 0.1, 0.8]),
+])
+def test_persistence_is_what_the_stationarity_constraint_bounds(volatility, density, theta):
+    model = _model(volatility, density)
+    theta = np.array(theta)
+    values, _ = model.constraints(theta)
+    persistence = model.persistence(theta)
+    assert values[0] == pytest.approx(1.0 - persistence, abs=1e-14)  # the chart's margin is ~1e-15
+    assert _model("egarch", "normal").persistence(np.array([0.0, 0.1, -0.05, 0.9])) == pytest.approx(0.9)

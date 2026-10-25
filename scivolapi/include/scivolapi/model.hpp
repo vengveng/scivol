@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace scivolapi {
@@ -39,6 +40,25 @@ struct MeanSpec {
     {
         return har.empty() ? ar : (ar > har.back() ? ar : har.back());
     }
+};
+
+// A standardized (zero mean, unit variance) innovation density and its
+// estimated shape values, in theta order.
+struct InnovationDensity {
+    DensityKind density = DensityKind::normal;
+    std::vector<double> shape;
+};
+
+// Every shape of a density by name: the estimated ones in theta order, then the
+// constants its definition fixes (NIG: lambda = -1/2; Hyperbolic: lambda = 1).
+std::vector<std::pair<std::string, double>> named_shapes(const InnovationDensity& density);
+
+// What the generic machinery (fitting, inference, forecasting, the Python layer)
+// may ask of a model. Consumers ask; they never inspect the specification.
+struct ModelCapabilities {
+    bool chart_covers_domain = true;     // the z coordinates represent the whole domain
+    bool density_free_recursion = true;  // the variance recursion does not involve the density's shapes
+    std::size_t exact_variance_horizon = static_cast<std::size_t>(-1);  // horizons with exact variance forecasts
 };
 
 // What the user asked for. Compiled once into a Model.
@@ -102,6 +122,15 @@ public:
     // Coordinate map theta = theta(z), always differentiated at the given z.
     void to_theta(std::span<const double> z, std::span<double> theta) const;
     [[nodiscard]] bool to_z(std::span<const double> theta, std::span<double> z) const;
+
+    [[nodiscard]] ModelCapabilities capabilities() const noexcept;
+    // The persistence of the variance recursion at theta, the quantity the
+    // stationarity condition bounds by one: sum of the persistence coefficients
+    // weighted by the density's moments (GJR, APARCH), sum beta for EGARCH, zero
+    // for constant variance. NaN where a moment it needs does not exist.
+    [[nodiscard]] double persistence(std::span<const double> theta) const;
+    // The innovation density at theta.
+    [[nodiscard]] InnovationDensity innovation_density(std::span<const double> theta) const;
 
 private:
     ModelSpec spec_;

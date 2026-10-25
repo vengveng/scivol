@@ -25,6 +25,14 @@ evidence. Do not wrap builds or tests in tracking scripts.
   quantiles, and the DCC correlation model. Native tests live in
   `scivolapi/tests` (`make native`).
 - `scivolapi/binding/module.cpp` is the one nanobind binding, `scivol._scivolapi`.
+- **One interface, no per-model workflows.** Generic code (fitting, inference,
+  forecasting, simulation, the Python layer) asks the model through its
+  interface: `bounds()`, `constraints()`, the charts, `capabilities()`
+  (`chart_covers_domain`, `density_free_recursion`, `exact_variance_horizon`),
+  `innovation_density()`, `persistence()`. It never branches on the model's
+  specification. Models may differ in settings and behavior, but the difference
+  lives in the model's answers to that interface; a new difference means a new,
+  documented question on the interface, not an `if` in a consumer.
 - `scivol/` is the thin Python layer: components and compositions, `_fit.py`
   (composition to native model, fit, result), `_evaluation.py` (fixed-parameter
   evaluation, forecasts, simulations), `result.py`, `dcc.py`, and orchestration

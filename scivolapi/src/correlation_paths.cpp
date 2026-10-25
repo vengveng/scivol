@@ -33,7 +33,7 @@ constexpr double far_upper = 1e-6;
 
 CorrelationPaths simulate_correlation(const CorrelationModel& model, std::span<const double> theta,
                                       std::span<const double> eps, std::size_t series,
-                                      std::span<const double> target, std::span<const MarginalDensity> marginals,
+                                      std::span<const double> target, std::span<const InnovationDensity> marginals,
                                       std::span<const double> normals, std::span<const double> chi2,
                                       std::size_t paths)
 {
@@ -44,7 +44,7 @@ CorrelationPaths simulate_correlation(const CorrelationModel& model, std::span<c
     require(theta.size() == model.dimension() && model.evaluable(theta),
             "theta must have the model's dimension and lie where the model is defined");
     require(marginals.size() == n, "one marginal density per series is required");
-    for (const MarginalDensity& marginal : marginals)
+    for (const InnovationDensity& marginal : marginals)
         require(marginal.shape.size() == detail::shape_domains(marginal.density).size(),
                 "each marginal needs its density's shape parameters");
     require(paths > 0 && normals.size() % (paths * n) == 0, "normals must hold paths x horizon x series draws");
@@ -55,7 +55,7 @@ CorrelationPaths simulate_correlation(const CorrelationModel& model, std::span<c
     const double nu = student ? theta[layout.coefficients] : 0.0;
     const DensityKind copula = student ? DensityKind::student_t : DensityKind::normal;
     const double* copula_shape = student ? &nu : nullptr;
-    auto identity = [&](const MarginalDensity& marginal) {  // F = G: z = e exactly
+    auto identity = [&](const InnovationDensity& marginal) {  // F = G: z = e exactly
         return marginal.density == copula && (!student || marginal.shape[0] == nu);
     };
 
@@ -107,7 +107,7 @@ CorrelationPaths simulate_correlation(const CorrelationModel& model, std::span<c
             }
         }
         for (std::size_t i = 0; i < n; ++i) {  // z_i = F_i^{-1}(G(e*_i))
-            const MarginalDensity& marginal = marginals[i];
+            const InnovationDensity& marginal = marginals[i];
             const double* shape = marginal.shape.empty() ? nullptr : marginal.shape.data();
             std::size_t count = 0;
             for (std::size_t path = 0; path < paths; ++path) {

@@ -364,10 +364,8 @@ def correlation_model(p: int, q: int, distribution: str) -> "api.CorrelationMode
     return api.CorrelationModel(spec)
 
 
-def _marginal_density(result: "EstimationResult") -> "api.MarginalDensity":
-    from ._evaluation import innovation_density
-
-    return innovation_density(result.spec, np.asarray(result.params, dtype=np.float64))
+def _marginal_density(result: "EstimationResult") -> "api.InnovationDensity":
+    return result._native()[0].innovation_density(np.ascontiguousarray(result.params, dtype=np.float64))
 
 
 class _CorrelationResultMixin:
