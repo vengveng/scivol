@@ -51,27 +51,38 @@ struct LogNormalizer {
     return r;
 }
 
+// Taylor coefficients (-1)^j / (j + 1) of phi(x) = log1p(x)/x.
+inline constexpr auto log1p_ratio_series = [] {
+    std::array<double, 23> c{};
+    for (std::size_t j = 0; j < c.size(); ++j) c[j] = (j % 2 ? -1.0 : 1.0) / static_cast<double>(j + 1);
+    return c;
+}();
+
+// phi'(x) and phi''(x) given phi(x): the Taylor series where the closed forms
+// cancel (x <= 1/8), the closed forms beyond.
+inline void log1p_ratio_derivatives(double x, double phi, int order, double& d1, double& d2) noexcept
+{
+    d1 = d2 = 0.0;
+    if (x <= 0.125) {
+        double value = 0.0;
+        for (int j = x < 0.001 ? 7 : x < 0.01 ? 11 : 22; j >= 0; --j) {
+            if (order >= 2) d2 = d2 * x + 2.0 * d1;
+            d1 = d1 * x + value;
+            value = value * x + log1p_ratio_series[static_cast<std::size_t>(j)];
+        }
+        return;
+    }
+    const double inv = 1.0 / x, q = 1.0 / (1.0 + x);
+    d1 = (q - phi) * inv;
+    if (order >= 2) d2 = (-q * q - 2.0 * d1) * inv;
+}
+
 // phi(x) = log1p(x)/x, including its removable singularity and two derivatives.
-// The value is the same expression at every order, so F and G requests agree
-// bitwise; the derivatives use the Taylor series where the closed forms cancel.
 [[nodiscard]] inline LogNormalizer log1p_ratio(double x, int order) noexcept
 {
-    if (x == 0.0) return {1.0, order >= 1 ? -0.5 : 0.0, order >= 2 ? 2.0 / 3.0 : 0.0};
-    const double value = std::log1p(x) / x;
     LogNormalizer p;
-    if (order >= 1 && x <= 0.125) {
-        const int degree = x < 0.001 ? 7 : x < 0.01 ? 11 : 22;
-        for (int j = degree; j >= 0; --j) {
-            if (order >= 2) p.d2 = p.d2 * x + 2.0 * p.d1;
-            p.d1 = p.d1 * x + p.value;
-            p.value = p.value * x + (j % 2 ? -1.0 : 1.0) / (j + 1.0);
-        }
-    } else if (order >= 1) {
-        const double inv = 1.0 / x, q = 1.0 / (1.0 + x);
-        p.d1 = (q - value) * inv;
-        if (order >= 2) p.d2 = (-q * q - 2.0 * p.d1) * inv;
-    }
-    p.value = value;
+    p.value = x == 0.0 ? 1.0 : std::log1p(x) / x;
+    if (order >= 1) log1p_ratio_derivatives(x, p.value, order, p.d1, p.d2);
     return p;
 }
 
@@ -79,47 +90,46 @@ struct TKernel {
     double t = 0.0, u = 0.0, uu = 0.0, eta = 0.0, ueta = 0.0, etaeta = 0.0;
 };
 
-// T = (1+s eta) u^2 phi(x)/(2r), r=1-2eta, x=eta u^2/r.
-// The same tail with s=N gives the multivariate t contribution.
+// T = c log1p(x) / (2 eta) = c u^2 phi(x) / (2r),  c = 1 + s eta, r = 1 - 2eta, x = eta u^2 / r.
+// The same tail with s = N gives the multivariate t contribution. The value is
+// one log1p times a point constant; below eta = 2^-300, where c / (2 eta)
+// overflows, the phi form (exactly u^2 / 2 at eta = 0). The value expression is
+// the same at every order, so sparse and full requests agree bitwise.
 [[nodiscard]] inline TKernel t_square_kernel(double u2, double eta, int order, double s = 1.0) noexcept
 {
     TKernel t;
     const double r = 1.0 - 2.0 * eta, c = 1.0 + s * eta;
-    const double x = (eta * u2) / r;
+    const double x = (eta / r) * u2;
+    const double l = std::isfinite(x) ? std::log1p(x) : std::log(eta) + std::log(u2) - std::log(r);
+    const double phi = x == 0.0 ? 1.0 : x < 0x1p-60 ? 1.0 - 0.5 * x : l / x;
+    t.t = eta >= 0x1p-300 ? l * (0.5 * c / eta) : (0.5 * c / r) * u2 * phi;
+    if (order < 1) return t;
     if (x <= 0.125) {
-        const auto p = log1p_ratio(x,order);
-        const double a = 0.5*u2/r;
-        t.t = c*a*p.value;
-        if (order >= 1) {
-            const double dx = u2/(r*r);
-            t.eta = a*((s+2.0)/r*p.value+c*p.d1*dx);
-            if (order >= 2)
-                t.etaeta = a*(4.0*(s+2.0)/(r*r)*p.value
-                    +2.0*(s+2.0+2.0*c)/r*p.d1*dx+c*p.d2*dx*dx);
-        }
+        double d1, d2;
+        log1p_ratio_derivatives(x, phi, order, d1, d2);
+        const double a = 0.5 * u2 / r, dx = u2 / (r * r);
+        t.eta = a * ((s + 2.0) / r * phi + c * d1 * dx);
+        if (order >= 2)
+            t.etaeta = a * (4.0 * (s + 2.0) / (r * r) * phi + 2.0 * (s + 2.0 + 2.0 * c) / r * d1 * dx
+                            + c * d2 * dx * dx);
     } else {
-        const double l = std::isfinite(x) ? std::log1p(x) : std::log(eta)+std::log(u2)-std::log(r);
-        t.t = (0.5*c*l)/eta;
-        if (order >= 1) {
-            const double v = std::isfinite(x) ? x/(1.0+x) : 1.0;
-            t.eta = (c*v/r-l)/(2.0*eta*eta);
-            if (order >= 2)
-                t.etaeta = (l-v/r+0.5*c*v*(4.0*eta-v)/(r*r))/(eta*eta*eta);
-        }
+        const double v = std::isfinite(x) ? x / (1.0 + x) : 1.0;
+        t.eta = (c * v / r - l) / (2.0 * eta * eta);
+        if (order >= 2) t.etaeta = (l - v / r + 0.5 * c * v * (4.0 * eta - v) / (r * r)) / (eta * eta * eta);
     }
     return t;
 }
 
 [[nodiscard]] inline TKernel t_kernel(double u, double eta, int order, double s = 1.0) noexcept
 {
-    const double u2 = u*u;
-    TKernel t = t_square_kernel(u2,eta,order,s);
+    const double u2 = u * u;
+    TKernel t = t_square_kernel(u2, eta, order, s);
     if (order >= 1) {
-        const double c = 1.0+s*eta, q = 1.0-2.0*eta+eta*u2;
-        t.u = c*(u/q);
+        const double c = 1.0 + s * eta, iq = 1.0 / (1.0 - 2.0 * eta + eta * u2);
+        t.u = c * u * iq;
         if (order >= 2) {
-            t.uu = (c/q)*(std::fma(-eta,u2+2.0,1.0)/q);
-            t.ueta = (u/q)*((s+2.0-u2)/q);
+            t.uu = c * iq * iq * std::fma(-eta, u2 + 2.0, 1.0);
+            t.ueta = u * iq * iq * (s + 2.0 - u2);
         }
     }
     return t;

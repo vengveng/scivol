@@ -464,16 +464,18 @@ bool inverse_student(const Point& p, double probability, double& x) noexcept
     }
     double left = -745.0, right = 709.0;
     y = std::clamp(y,left+1.0,right-1.0);
+    // The log tail carries a few ulps of |target|; the tolerance includes them.
+    const double resolution = 4.0*std::numeric_limits<double>::epsilon()*std::abs(target);
     for (int k = 0; k < 100; ++k) {
         const double candidate = std::exp(y);
         double l;
         if (!student_log_tail(p,candidate,l)) return false;
         const double residual = l-target;
-        if (std::abs(residual) < 3e-13) { x = candidate; return true; }
+        if (std::abs(residual) < 3e-13+resolution) { x = candidate; return true; }
         if (residual > 0.0) left = y; else right = y;
         const double slope = std::exp(y+p.constant-t_kernel(candidate,p.eta,0).t-l);
         const double next = y+residual/slope;
-        if (next == y && std::abs(residual) < 8e-13) { x = candidate; return true; }
+        if (next == y && std::abs(residual) < 8e-13+resolution) { x = candidate; return true; }
         y = std::isfinite(next) && next > left && next < right ? next : left+0.5*(right-left);
     }
     return false;
