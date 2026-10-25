@@ -92,8 +92,8 @@ def design(y, x, mean):
     return lags, np.array(rows).reshape(len(y) - lags, -1)
 
 
-def oracle(theta, y, x, mean, volatility, p, q, density):
-    """Joint negative log-likelihood, gradient and Hessian by JAX.
+def row_terms(y, x, mean, volatility, p, q, density):
+    """Each scored row's negative log-likelihood as a JAX function of theta.
 
     Scored rows start after the mean's largest y lag; the variance of the first
     scored row is mean(y^2) over all rows; pre-sample residuals are zero.
@@ -158,10 +158,29 @@ def oracle(theta, y, x, mean, volatility, p, q, density):
             variance.append(jnp.exp(state) if family == 2 else (state ** (2 / delta) if family == 3 else state))
         variance = jnp.stack(variance)
         z = residuals / jnp.sqrt(variance)
-        return 0.5 * jnp.sum(jnp.log(variance)) + _density_nll(jnp, jsp, z, shape, d, np.zeros(n, dtype=bool))
+        one = np.zeros(1, dtype=bool)
+        return 0.5 * jnp.log(variance) + jnp.stack(
+            [_density_nll(jnp, jsp, z[t:t + 1], shape, d, one) for t in range(n)])
+
+    return objective
+
+
+def oracle(theta, y, x, mean, volatility, p, q, density):
+    """Joint negative log-likelihood, gradient and Hessian by JAX."""
+    jax, jnp, _ = _jax_modules()
+    rows = row_terms(y, x, mean, volatility, p, q, density)
+
+    def objective(par):
+        return jnp.sum(rows(par))
 
     point = jnp.asarray(theta)
     return float(objective(point)), np.asarray(jax.grad(objective)(point)), np.asarray(jax.hessian(objective)(point))
+
+
+def oracle_scores(theta, y, x, mean, volatility, p, q, density):
+    """Each scored row's gradient (rows x dimension) by JAX."""
+    jax, jnp, _ = _jax_modules()
+    return np.asarray(jax.jacfwd(row_terms(y, x, mean, volatility, p, q, density))(jnp.asarray(theta)))
 
 
 def assert_close(actual, expected, rtol):

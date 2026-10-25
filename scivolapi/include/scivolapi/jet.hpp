@@ -15,6 +15,7 @@ enum Request : unsigned {
     gradient = 2u,  // G
     hessian = 4u,   // H (dense, row-major, symmetric)
     paths = 8u,     // residuals, variances, standardized innovations
+    scores = 16u,   // each scored row's contribution to G (theta coordinates only)
 };
 
 enum class Status {
@@ -36,6 +37,7 @@ struct JetOutput {
     std::span<double> gradient;  // dimension
     std::span<double> hessian;   // dimension * dimension
     Paths paths;                 // sample size each
+    std::span<double> scores;    // scored rows * dimension, row-major
 };
 
 struct JetResult {
@@ -56,6 +58,7 @@ public:
     // Derivatives with respect to theta.
     JetResult theta(std::span<const double> theta, unsigned request, JetOutput& out);
     // Derivatives of L(theta(z)) with respect to z, including map curvature.
+    // Scores are not available in z.
     JetResult z(std::span<const double> z, unsigned request, JetOutput& out);
 
 private:

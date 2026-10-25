@@ -15,7 +15,17 @@ namespace scivolapi {
 // refinement in theta. Every phase a fit ran is listed in FitResult::phases.
 enum class Coordinates { automatic, z, theta };
 
+// How theta is estimated and how its covariance is formed.
+//   mle:  maximum likelihood; covariance = inverse observed information.
+//   qmle: Gaussian quasi-maximum likelihood for the mean and variance parameters,
+//         with the sandwich covariance H^-1 OPG H^-1. With a non-Normal density
+//         the fit is staged: the shape parameters are then fitted by maximum
+//         likelihood with the others held at their Gaussian estimates, and the
+//         covariance is the two-step sandwich of the stacked score equations.
+enum class Estimator { mle, qmle };
+
 struct FitOptions {
+    Estimator estimator = Estimator::mle;
     Coordinates coordinates = Coordinates::automatic;
     double accuracy = 1e-10;        // solver stopping accuracy
     int maximum_iterations = 1000;  // total budget across phases
@@ -50,8 +60,16 @@ struct FitResult {
     double log_likelihood = std::numeric_limits<double>::quiet_NaN();  // -F
     std::vector<double> gradient;    // dF/dtheta
     std::vector<double> hessian;     // d2F/dtheta2 (dense, row-major)
-    std::vector<double> covariance;  // empty unless inference == available
-    std::vector<double> std_errors;  // empty unless inference == available
+    Estimator estimator = Estimator::mle;
+    // Covariance of the estimator: inverse information (mle) or the sandwich
+    // (qmle). Empty unless inference == available.
+    std::vector<double> covariance;
+    std::vector<double> std_errors;
+    // Sum over scored rows of s_t s_t', s_t the row's score (stacked over both
+    // stages for a staged qmle fit), and the sandwich covariance built from it.
+    std::vector<double> opg;
+    std::vector<double> robust_covariance;  // empty unless inference == available
+    std::vector<double> robust_std_errors;
     std::vector<double> residual, variance, innovation;
     std::size_t observations = 0, scored = 0;
     double data_scale = 1.0;  // internal unit scaling used during the solve

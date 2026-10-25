@@ -112,7 +112,8 @@ struct AssembleInput {
     const Layout& layout;
     const Sample& sample;
     const double* theta;
-    int order;  // 0 value, 1 + gradient, 2 + Hessian
+    int order;       // 0 value, 1 + gradient, 2 + Hessian
+    double* scores;  // per-row gradients (rows x dimension, theta order), or null; needs order >= 1
 };
 
 struct ThetaResult {
@@ -174,6 +175,13 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
     if (order >= 2) std::fill_n(hp, packed_size(dim), 0.0);
     if constexpr (coupled) work.vol.dde = mean.linear() ? nullptr : work.mean.dde;
 
+    // Local order -> theta order.
+    auto index = [&](std::size_t a) -> std::size_t {
+        if constexpr (coupled) return a < own ? m + a : a < own + m ? a - own : a;
+        else return a;
+    };
+    const Constant<shapes>& c = density.constant;
+
     int defined = 2;
     CompensatedSum total;
     VolatilityStep step;
@@ -210,6 +218,14 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
                 for (std::size_t a = 0; a < m; ++a) g[own + a] += l.e * de[a];
             for (std::size_t i = 0; i < shapes; ++i) g[sh + i] += l.s[i];
         }
+        if (in.scores != nullptr) {  // this row's terms of g, plus its share of the constant
+            double* row = in.scores + t * dim;
+            std::fill_n(row, dim, 0.0);
+            for (std::size_t a = 0; a < w; ++a) row[index(a)] += l.lam * l1[a];
+            if constexpr (coupled)
+                for (std::size_t a = 0; a < m; ++a) row[index(own + a)] += l.e * de[a];
+            for (std::size_t i = 0; i < shapes; ++i) row[index(sh + i)] += l.s[i] + c.s[i];
+        }
         if (order >= 2) {
             for (std::size_t a = 0; a < w; ++a) {
                 for (std::size_t b = a; b < w; ++b)
@@ -235,7 +251,6 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
     }
 
     const double scored = static_cast<double>(n);
-    const Constant<shapes>& c = density.constant;
     value = total.total() + scored * c.value;
     if (order >= 1)
         for (std::size_t i = 0; i < shapes; ++i) g[sh + i] += scored * c.s[i];
@@ -243,8 +258,7 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
         for (std::size_t i = 0; i < shapes; ++i)
             for (std::size_t j = i; j < shapes; ++j) hp[packed(dim, sh + i, sh + j)] += scored * c.ss[packed(shapes, i, j)];
 
-    if constexpr (coupled) {  // local order -> theta order
-        auto index = [&](std::size_t a) { return a < own ? m + a : a < own + m ? a - own : a; };
+    if constexpr (coupled) {
         if (order >= 1)
             for (std::size_t a = 0; a < dim; ++a) work.g[index(a)] = g[a];
         if (order >= 2)

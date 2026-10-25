@@ -1,5 +1,6 @@
 #pragma once
 
+#include <span>
 #include <vector>
 
 #include <scivolapi/fit.hpp>
@@ -21,5 +22,16 @@ struct Candidate {
 // the original data, so no derivative transformation rules are needed.
 FitResult finalize(const Model& model, Jet& unit_jet, Jet& data_jet, double data_scale,
                    const Candidate& selected, std::vector<FitPhase> phases, double accuracy);
+
+// Covariance as the inverse of a symmetric information matrix (d x d), or why
+// it is not available (not positive definite, ill conditioned).
+Inference invert_information(const std::vector<double>& information, std::size_t d,
+                             std::vector<double>& covariance);
+// sum_t s_t s_t' over the rows of `scores` (rows x d, row-major).
+std::vector<double> outer_products(std::span<const double> scores, std::size_t rows, std::size_t d);
+// M B M' for d x d matrices.
+std::vector<double> sandwich(const std::vector<double>& m, const std::vector<double>& b, std::size_t d);
+// Square roots of the diagonal.
+std::vector<double> standard_errors(const std::vector<double>& covariance, std::size_t d);
 
 }  // namespace scivolapi::detail

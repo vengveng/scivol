@@ -16,7 +16,7 @@ using detail::packed_size;
 using detail::ThetaResult;
 using detail::Work;
 
-constexpr unsigned all_requests = value | gradient | hessian | paths;
+constexpr unsigned all_requests = value | gradient | hessian | paths | scores;
 
 void expand(const double* packed_matrix, std::size_t n, double* dense) noexcept
 {
@@ -34,6 +34,7 @@ bool outputs_fit(unsigned request, const JetOutput& out, std::size_t dim, std::s
     if ((request & paths)
         && !(sized(out.paths.residual, n) && sized(out.paths.variance, n) && sized(out.paths.innovation, n)))
         return false;
+    if ((request & scores) && !sized(out.scores, n * dim)) return false;
     return true;
 }
 
@@ -55,13 +56,14 @@ JetResult finish(unsigned request, const ThetaResult& r, bool paths_ok)
     }
     if ((request & value) && r.value_ok) out.valid |= value;
     if ((request & gradient) && r.gradient_ok) out.valid |= gradient;
+    if ((request & scores) && r.gradient_ok) out.valid |= scores;
     if ((request & hessian) && r.hessian_ok) out.valid |= hessian;
     if ((request & paths) && paths_ok) out.valid |= paths;
     out.status = out.valid == request ? Status::ok : Status::numerical_range;
     return out;
 }
 
-int order_for(unsigned request) { return (request & hessian) ? 2 : (request & gradient) ? 1 : 0; }
+int order_for(unsigned request) { return (request & hessian) ? 2 : (request & (gradient | scores)) ? 1 : 0; }
 
 }  // namespace
 
@@ -93,7 +95,9 @@ JetResult Jet::theta(std::span<const double> theta, unsigned request, JetOutput&
 
     double v = 0.0;
     const ThetaResult r = detail::assembler_for(model_.spec())(
-        {model_.spec(), layout, sample_, theta.data(), order_for(request)}, work, v);
+        {model_.spec(), layout, sample_, theta.data(), order_for(request),
+         (request & scores) ? out.scores.data() : nullptr},
+        work, v);
     if (r.status == Status::ok) {
         if (request & value) out.value = v;
         if (request & gradient) std::copy_n(work.g, dim, out.gradient.data());
@@ -108,8 +112,8 @@ JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
 {
     const detail::Layout layout(model_.spec());
     const std::size_t dim = layout.dimension, n = sample_.scored();
-    if (request == 0u || (request & ~all_requests) || z.size() != dim || !outputs_fit(request, out, dim, n)
-        || !detail::all_finite(z.data(), dim))
+    if (request == 0u || (request & ~all_requests) || (request & scores) || z.size() != dim
+        || !outputs_fit(request, out, dim, n) || !detail::all_finite(z.data(), dim))
         return {};
     Work work = detail::carve(work_.data(), layout, detail::volatility_shape(model_.spec()), n);
 
@@ -120,7 +124,7 @@ JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
     }
     double v = 0.0;
     const ThetaResult r = detail::assembler_for(model_.spec())(
-        {model_.spec(), layout, sample_, work.theta, order_for(request)}, work, v);
+        {model_.spec(), layout, sample_, work.theta, order_for(request), nullptr}, work, v);
     if (r.status != Status::ok) return finish(request, r, false);
 
     const bool chart_ok = !(request & (gradient | hessian)) || layout.jacobian(z.data(), work.jac);

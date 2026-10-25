@@ -86,11 +86,12 @@ nb::dict evaluate(BoundJet& self, const Vector& point, unsigned request, bool in
 {
     const std::size_t d = self.model->dimension(), n = self.sample.scored();
     std::vector<double> g((request & gradient) ? d : 0), h((request & hessian) ? d * d : 0);
-    std::vector<double> e((request & paths) ? n : 0), v(e.size()), z(e.size());
+    std::vector<double> e((request & paths) ? n : 0), v(e.size()), z(e.size()), s((request & scores) ? n * d : 0);
     JetOutput out;
     out.gradient = g;
     out.hessian = h;
     out.paths = {e, v, z};
+    out.scores = s;
     const JetResult r = in_z ? self.jet.z(view(point), request, out) : self.jet.theta(view(point), request, out);
 
     nb::dict result;
@@ -104,6 +105,7 @@ nb::dict evaluate(BoundJet& self, const Vector& point, unsigned request, bool in
         result["variance"] = owned_vector(std::move(v));
         result["innovation"] = owned_vector(std::move(z));
     }
+    if (r.valid & scores) result["scores"] = owned_matrix(std::move(s), n, d);
     return result;
 }
 
@@ -132,6 +134,7 @@ NB_MODULE(_scivolapi, m)
     m.attr("GRADIENT") = static_cast<unsigned>(gradient);
     m.attr("HESSIAN") = static_cast<unsigned>(hessian);
     m.attr("PATHS") = static_cast<unsigned>(paths);
+    m.attr("SCORES") = static_cast<unsigned>(scores);
 
     nb::class_<MeanSpec>(m, "MeanSpec")
         .def(nb::init<>())
@@ -197,8 +200,13 @@ NB_MODULE(_scivolapi, m)
         .value("not_positive_definite", Inference::not_positive_definite)
         .value("ill_conditioned", Inference::ill_conditioned);
 
+    nb::enum_<Estimator>(m, "Estimator")
+        .value("mle", Estimator::mle)
+        .value("qmle", Estimator::qmle);
+
     nb::class_<FitOptions>(m, "FitOptions")
         .def(nb::init<>())
+        .def_rw("estimator", &FitOptions::estimator)
         .def_rw("coordinates", &FitOptions::coordinates)
         .def_rw("accuracy", &FitOptions::accuracy)
         .def_rw("maximum_iterations", &FitOptions::maximum_iterations)
@@ -223,6 +231,12 @@ NB_MODULE(_scivolapi, m)
         .def_prop_ro("hessian", [](const FitResult& r) { return matrix_view(r.hessian, r.theta.size()); }, internal)
         .def_prop_ro("covariance", [](const FitResult& r) { return matrix_view(r.covariance, r.theta.size()); }, internal)
         .def_prop_ro("std_errors", [](const FitResult& r) { return vector_view(r.std_errors); }, internal)
+        .def_ro("estimator", &FitResult::estimator)
+        .def_prop_ro("opg", [](const FitResult& r) { return matrix_view(r.opg, r.theta.size()); }, internal)
+        .def_prop_ro("robust_covariance",
+                     [](const FitResult& r) { return matrix_view(r.robust_covariance, r.theta.size()); }, internal)
+        .def_prop_ro("robust_std_errors", [](const FitResult& r) { return vector_view(r.robust_std_errors); },
+                     internal)
         .def_prop_ro("residual", [](const FitResult& r) { return vector_view(r.residual); }, internal)
         .def_prop_ro("variance", [](const FitResult& r) { return vector_view(r.variance); }, internal)
         .def_prop_ro("innovation", [](const FitResult& r) { return vector_view(r.innovation); }, internal)

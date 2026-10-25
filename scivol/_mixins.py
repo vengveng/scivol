@@ -433,7 +433,9 @@ class FitsMixin:
             kwargs.pop("engine")
             from ._scivolapi_fit import fit_spec
 
-            return fit_spec(spec, data, x=x, hold_back=hold_back, scale=scale, index=index, name=name, **kwargs)
+            return fit_spec(
+                spec, data, x=x, hold_back=hold_back, scale=scale, method=method, index=index, name=name, **kwargs
+            )
         from .components.mean import ARMA
         from .components.vol import APARCH, EGARCH
         from .roles import Role

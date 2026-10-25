@@ -104,6 +104,7 @@ def fit_spec(
     x: Any = None,
     hold_back: int = 0,
     scale: Optional[float] = None,
+    method: str = "mle",
     coordinates: Optional[str] = None,
     maxiter: int = 1000,
     accuracy: float = 1e-10,
@@ -115,7 +116,9 @@ def fit_spec(
 
     `hold_back` rows are dropped; the mean's lags then come from the rows that
     remain, and the likelihood scores every row after the largest lag. Paths and
-    the index cover the scored rows.
+    the index cover the scored rows. `method="qmle"` fits the mean and variance
+    parameters by Gaussian quasi-maximum likelihood with sandwich covariance;
+    with a non-Normal density the shape parameters follow in a second stage.
     """
     from ._validation import validate_data, validate_hold_back, validate_regressors, validate_scale
 
@@ -133,9 +136,13 @@ def fit_spec(
         raise NotImplementedError(f"scivolapi does not cover {spec.uid} yet")
     if coordinates not in _COORDINATES:
         raise ValueError("coordinates must be 'automatic', 'z' or 'theta'")
+    estimator = {"mle": api.Estimator.mle, "qmle": api.Estimator.qmle}.get(str(method).lower())
+    if estimator is None:
+        raise ValueError("method must be 'mle' or 'qmle'")
 
     model = api.Model(native)
     options = api.FitOptions()
+    options.estimator = estimator
     options.coordinates = _COORDINATES[coordinates]
     options.maximum_iterations = int(maxiter)
     options.accuracy = float(accuracy)
@@ -178,8 +185,10 @@ def fit_spec(
         likelihood_n_obs=int(native_result.scored),
         warnings=tuple(native_result.warnings),
     )
-    covariance = np.array(native_result.covariance) if native_result.covariance.size else None
-    hessian = np.array(native_result.hessian) if native_result.hessian.size else None
+    def matrix(values: Any) -> Optional[NDArray[np.float64]]:
+        return np.array(values) if values.size else None
+
+    qmle = native_result.estimator == api.Estimator.qmle
     first = skip + native.mean.conditioning
     result = EstimationResult(
         spec=spec,
@@ -187,9 +196,12 @@ def fit_spec(
         data=y[native.mean.conditioning:],
         sigma2=np.array(native_result.variance),
         time_elapsed=elapsed,
-        hessian=hessian,
-        cov_matrix=covariance,
+        hessian=matrix(native_result.hessian),
+        cov_matrix=matrix(native_result.covariance),
+        opg=matrix(native_result.opg),
+        cov_robust=matrix(native_result.robust_covariance),
         fit_info=fit_info,
+        method="QMLE" if qmle else "MLE",
         index=None if index is None else index[first:],
         name=name,
     )

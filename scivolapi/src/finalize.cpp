@@ -13,9 +13,10 @@ namespace {
 
 constexpr double eps = std::numeric_limits<double>::epsilon();
 
-// Covariance as the inverse observed information, by Cholesky on the
-// diagonally equilibrated Hessian (parameters can differ in scale by orders of
-// magnitude). Fails when not positive definite or too poorly conditioned.
+}  // namespace
+
+// By Cholesky on the diagonally equilibrated matrix (parameters can differ in
+// scale by orders of magnitude).
 Inference invert_information(const std::vector<double>& hessian, std::size_t d, std::vector<double>& covariance)
 {
     std::vector<double> e(d), l(d * d, 0.0);
@@ -62,7 +63,42 @@ Inference invert_information(const std::vector<double>& hessian, std::size_t d, 
     return Inference::available;
 }
 
-}  // namespace
+std::vector<double> outer_products(std::span<const double> scores, std::size_t rows, std::size_t d)
+{
+    std::vector<double> b(d * d, 0.0);
+    for (std::size_t t = 0; t < rows; ++t) {
+        const double* s = scores.data() + t * d;
+        for (std::size_t i = 0; i < d; ++i)
+            for (std::size_t j = i; j < d; ++j) b[i * d + j] += s[i] * s[j];
+    }
+    for (std::size_t i = 0; i < d; ++i)
+        for (std::size_t j = 0; j < i; ++j) b[i * d + j] = b[j * d + i];
+    return b;
+}
+
+std::vector<double> sandwich(const std::vector<double>& m, const std::vector<double>& b, std::size_t d)
+{
+    std::vector<double> mb(d * d, 0.0), out(d * d, 0.0);
+    for (std::size_t i = 0; i < d; ++i)
+        for (std::size_t k = 0; k < d; ++k)
+            for (std::size_t j = 0; j < d; ++j) mb[i * d + j] += m[i * d + k] * b[k * d + j];
+    for (std::size_t i = 0; i < d; ++i)
+        for (std::size_t j = 0; j < d; ++j) {
+            double s = 0.0;
+            for (std::size_t k = 0; k < d; ++k) s += mb[i * d + k] * m[j * d + k];
+            out[i * d + j] = s;
+        }
+    for (std::size_t i = 0; i < d; ++i)  // exactly symmetric
+        for (std::size_t j = 0; j < i; ++j) out[i * d + j] = out[j * d + i] = 0.5 * (out[i * d + j] + out[j * d + i]);
+    return out;
+}
+
+std::vector<double> standard_errors(const std::vector<double>& covariance, std::size_t d)
+{
+    std::vector<double> se(d);
+    for (std::size_t i = 0; i < d; ++i) se[i] = std::sqrt(covariance[i * d + i]);
+    return se;
+}
 
 FitResult finalize(const Model& model, Jet& unit_jet, Jet& data_jet, double data_scale,
                    const Candidate& selected, std::vector<FitPhase> phases, double accuracy)
@@ -110,11 +146,13 @@ FitResult finalize(const Model& model, Jet& unit_jet, Jet& data_jet, double data
     r.residual.assign(n, 0.0);
     r.variance.assign(n, 0.0);
     r.innovation.assign(n, 0.0);
+    std::vector<double> row_scores(n * d);
     JetOutput out;
     out.gradient = r.gradient;
     out.hessian = r.hessian;
     out.paths = {r.residual, r.variance, r.innovation};
-    const JetResult reported = data_jet.theta(r.theta, value | gradient | hessian | paths, out);
+    out.scores = row_scores;
+    const JetResult reported = data_jet.theta(r.theta, value | gradient | hessian | paths | scores, out);
     if (!(reported.valid & value) || !(reported.valid & paths)) {
         r.warnings.push_back("the likelihood is not finite at the estimate in the data's units");
         return r;
@@ -123,6 +161,7 @@ FitResult finalize(const Model& model, Jet& unit_jet, Jet& data_jet, double data
     r.log_likelihood = -out.value;
     if (!(reported.valid & gradient)) r.gradient.clear();
     if (!(reported.valid & hessian)) r.hessian.clear();
+    if (reported.valid & scores) r.opg = outer_products(row_scores, n, d);
 
     const FitPhase& phase = r.phases.at(selected.phase);
     r.termination = phase.termination;
@@ -138,8 +177,11 @@ FitResult finalize(const Model& model, Jet& unit_jet, Jet& data_jet, double data
     else r.inference = invert_information(r.hessian, d, r.covariance);
 
     if (r.inference == Inference::available) {
-        r.std_errors.resize(d);
-        for (std::size_t i = 0; i < d; ++i) r.std_errors[i] = std::sqrt(r.covariance[i * d + i]);
+        r.std_errors = standard_errors(r.covariance, d);
+        if (!r.opg.empty()) {
+            r.robust_covariance = sandwich(r.covariance, r.opg, d);
+            r.robust_std_errors = standard_errors(r.robust_covariance, d);
+        }
     } else {
         r.covariance.clear();
         if (r.stationary) {
