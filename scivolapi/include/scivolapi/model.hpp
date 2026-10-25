@@ -7,7 +7,8 @@
 
 namespace scivolapi {
 
-enum class VolatilityKind { garch, gjr, egarch, aparch };
+// constant: h_t = sigma2, the mean model alone (p = q = 0).
+enum class VolatilityKind { garch, gjr, egarch, aparch, constant };
 enum class DensityKind {
     normal,
     student_t,
@@ -44,8 +45,8 @@ struct MeanSpec {
 struct ModelSpec {
     MeanSpec mean;
     VolatilityKind volatility = VolatilityKind::garch;
-    std::size_t p = 1;  // ARCH (squared-residual) lags
-    std::size_t q = 1;  // GARCH (variance) lags
+    std::size_t p = 1;  // ARCH (squared-residual) lags; 0 for constant variance
+    std::size_t q = 1;  // GARCH (variance) lags; 0 for constant variance
     DensityKind density = DensityKind::normal;
 };
 

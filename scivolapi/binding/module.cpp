@@ -82,16 +82,31 @@ const char* status_name(Status s)
     return "unknown";
 }
 
+nb::dict simulation_dict(Simulation s)
+{
+    nb::dict out;
+    const std::size_t paths = s.paths, horizon = s.horizon;
+    out["y"] = owned_matrix(std::move(s.y), paths, horizon);
+    out["mean"] = owned_matrix(std::move(s.mean), paths, horizon);
+    out["residual"] = owned_matrix(std::move(s.residual), paths, horizon);
+    out["variance"] = owned_matrix(std::move(s.variance), paths, horizon);
+    return out;
+}
+
+std::span<const double> view(const Matrix& m) { return {m.data(), m.shape(0) * m.shape(1)}; }
+
 nb::dict evaluate(BoundJet& self, const Vector& point, unsigned request, bool in_z)
 {
     const std::size_t d = self.model->dimension(), n = self.sample.scored();
     std::vector<double> g((request & gradient) ? d : 0), h((request & hessian) ? d * d : 0);
-    std::vector<double> e((request & paths) ? n : 0), v(e.size()), z(e.size()), s((request & scores) ? n * d : 0);
+    std::vector<double> e((request & paths) ? n : 0), v(e.size()), z(e.size()), s((request & scores) ? n * d : 0),
+        terms_((request & terms) ? n : 0);
     JetOutput out;
     out.gradient = g;
     out.hessian = h;
     out.paths = {e, v, z};
     out.scores = s;
+    out.terms = terms_;
     const JetResult r = in_z ? self.jet.z(view(point), request, out) : self.jet.theta(view(point), request, out);
 
     nb::dict result;
@@ -106,6 +121,7 @@ nb::dict evaluate(BoundJet& self, const Vector& point, unsigned request, bool in
         result["innovation"] = owned_vector(std::move(z));
     }
     if (r.valid & scores) result["scores"] = owned_matrix(std::move(s), n, d);
+    if (r.valid & terms) result["terms"] = owned_vector(std::move(terms_));
     return result;
 }
 
@@ -119,7 +135,8 @@ NB_MODULE(_scivolapi, m)
         .value("garch", VolatilityKind::garch)
         .value("gjr", VolatilityKind::gjr)
         .value("egarch", VolatilityKind::egarch)
-        .value("aparch", VolatilityKind::aparch);
+        .value("aparch", VolatilityKind::aparch)
+        .value("constant", VolatilityKind::constant);
     nb::enum_<DensityKind>(m, "DensityKind")
         .value("normal", DensityKind::normal)
         .value("student_t", DensityKind::student_t)
@@ -135,6 +152,7 @@ NB_MODULE(_scivolapi, m)
     m.attr("HESSIAN") = static_cast<unsigned>(hessian);
     m.attr("PATHS") = static_cast<unsigned>(paths);
     m.attr("SCORES") = static_cast<unsigned>(scores);
+    m.attr("TERMS") = static_cast<unsigned>(terms);
 
     nb::class_<MeanSpec>(m, "MeanSpec")
         .def(nb::init<>())
@@ -259,6 +277,34 @@ NB_MODULE(_scivolapi, m)
               return fit(model, view(y), regressors, options);
           },
           "model"_a, "y"_a, "options"_a = FitOptions(), "x"_a = nb::none());
+
+    m.def("simulate",
+          [](const Model& model, const Vector& theta, const Vector& y, const Matrix& z, const std::optional<Matrix>& x,
+             const std::optional<Matrix>& future_x) {
+              const std::vector<double> rows = exogenous(x), future = exogenous(future_x);
+              return simulation_dict(simulate(model, view(theta), view(y), rows, future, view(z), z.shape(0)));
+          },
+          "model"_a, "theta"_a, "y"_a, "z"_a, "x"_a = nb::none(), "future_x"_a = nb::none());
+    m.def("simulate_series",
+          [](const Model& model, const Vector& theta, const Matrix& z, const std::optional<Matrix>& x) {
+              const std::vector<double> rows = exogenous(x);
+              return simulation_dict(simulate_series(model, view(theta), rows, view(z), z.shape(0)));
+          },
+          "model"_a, "theta"_a, "z"_a, "x"_a = nb::none());
+    m.def("forecast",
+          [](const Model& model, const Vector& theta, const Vector& y, std::size_t horizon,
+             const std::optional<Matrix>& x, const std::optional<Matrix>& future_x, const std::optional<Matrix>& z) {
+              const std::vector<double> rows = exogenous(x), future = exogenous(future_x), draws = exogenous(z);
+              Forecast f = forecast(model, view(theta), view(y), rows, future, horizon, draws, z ? z->shape(0) : 0);
+              nb::dict out;
+              out["mean"] = owned_vector(std::move(f.mean));
+              out["residual_variance"] = owned_vector(std::move(f.residual_variance));
+              out["variance"] = owned_vector(std::move(f.variance));
+              out["simulated"] = f.simulated;
+              return out;
+          },
+          "model"_a, "theta"_a, "y"_a, "horizon"_a, "x"_a = nb::none(), "future_x"_a = nb::none(),
+          "z"_a = nb::none());
 
     nb::class_<BoundJet>(m, "Jet")
         .def("__init__",

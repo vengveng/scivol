@@ -12,6 +12,7 @@
 #include "mean/mean.hpp"
 #include "model_layout.hpp"
 #include "volatility/aparch.hpp"
+#include "volatility/constant.hpp"
 #include "volatility/egarch.hpp"
 #include "volatility/garch.hpp"
 #include "volatility/volatility.hpp"
@@ -114,6 +115,7 @@ struct AssembleInput {
     const double* theta;
     int order;       // 0 value, 1 + gradient, 2 + Hessian
     double* scores;  // per-row gradients (rows x dimension, theta order), or null; needs order >= 1
+    double* terms;   // per-row terms of F, or null
 };
 
 struct ThetaResult {
@@ -205,6 +207,7 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
                                                step.lambda, inv_sigma, order);
         defined = std::min({defined, l.defined, step.defined});
         total.add(l.value);
+        if (in.terms != nullptr) in.terms[t] = l.value + c.value;
         [[maybe_unused]] const double* de = nullptr;
         [[maybe_unused]] const double* dde = nullptr;
         if constexpr (coupled) {
@@ -288,6 +291,7 @@ Assembler assembler_coupled(VolatilityKind kind) noexcept
     case VolatilityKind::gjr: return assemble<Mean, GarchVolatility<true, Coupled>, Density>;
     case VolatilityKind::egarch: return assemble<Mean, EgarchVolatility<Density, Coupled>, Density>;
     case VolatilityKind::aparch: return assemble<Mean, AparchVolatility<Coupled>, Density>;
+    case VolatilityKind::constant: return assemble<Mean, ConstantVolatility<Coupled>, Density>;
     }
     return nullptr;
 }

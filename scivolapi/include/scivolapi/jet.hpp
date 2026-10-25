@@ -16,6 +16,7 @@ enum Request : unsigned {
     hessian = 4u,   // H (dense, row-major, symmetric)
     paths = 8u,     // residuals, variances, standardized innovations
     scores = 16u,   // each scored row's contribution to G (theta coordinates only)
+    terms = 32u,    // each scored row's term of F, its share of the constants included
 };
 
 enum class Status {
@@ -38,6 +39,7 @@ struct JetOutput {
     std::span<double> hessian;   // dimension * dimension
     Paths paths;                 // sample size each
     std::span<double> scores;    // scored rows * dimension, row-major
+    std::span<double> terms;     // scored rows
 };
 
 struct JetResult {

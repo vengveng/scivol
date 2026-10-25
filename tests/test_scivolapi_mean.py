@@ -16,7 +16,7 @@ from scivol._devtools.ad_oracle import (  # noqa: E402
 )
 from scivol._devtools.joint_mean_oracle import _density_nll  # noqa: E402
 
-FAMILY = {"garch": 0, "gjr": 1, "egarch": 2, "aparch": 3}
+FAMILY = {"garch": 0, "gjr": 1, "egarch": 2, "aparch": 3, "constant": 4}
 DENSITY_INDEX = {
     "normal": 0, "student_t": 1, "skew_t": 2, "ged": 3,
     "generalized_hyperbolic": 4, "nig": 5, "hyperbolic": 6, "variance_gamma": 7,
@@ -61,6 +61,8 @@ def volatility_point(volatility, p, q, density) -> list[float]:
         return [0.08] + [0.05 / p] * p + [0.10 / p] * p + [0.80 / q] * q + shape
     if volatility == "egarch":
         return [0.02] + [0.15 / p] * p + [-0.08 / p] * p + [0.90 / q] * q + shape
+    if volatility == "constant":
+        return [0.6] + shape
     return [0.05] + [0.08 / p] * p + [0.3 / p] * p + [0.85 / q] * q + [1.6] + shape
 
 
@@ -138,7 +140,9 @@ def row_terms(y, x, mean, volatility, p, q, density):
         else:
             history = [jnp.asarray(h0)]
         variance = [jnp.asarray(h0)]
-        for t in range(1, n):
+        if family == 4:  # constant variance
+            variance = [par[m]] * n
+        for t in range(1 if family != 4 else n, n):
             state = par[m]
             for lag in range(min(t, p)):
                 e = residuals[t - 1 - lag]
@@ -226,7 +230,8 @@ def test_joint_jet_matches_ad_oracle(data, mean, volatility, density, p, q):
 @pytest.mark.parametrize("volatility", list(FAMILY))
 def test_joint_jet_matches_ad_oracle_everywhere(data, volatility, density):
     tolerance = 1e-10 if DENSITY_INDEX[density] >= 4 else 1e-11  # the GH oracle's quadrature
-    check_against_oracle(data, mean_spec(ar=1, exog=1, ma=1), volatility, density, 1, 1, tolerance)
+    order = 0 if volatility == "constant" else 1
+    check_against_oracle(data, mean_spec(ar=1, exog=1, ma=1), volatility, density, order, order, tolerance)
 
 
 def test_every_sparse_request_equals_the_full_request(data):
@@ -315,8 +320,9 @@ def test_exact_data_scaling(data):
     y, x = data
     mean = mean_spec(ar=1, exog=2, ma=1)
     for volatility in FAMILY:
-        model = model_for(mean, volatility, "student_t")
-        theta = np.array(mean_point(mean) + volatility_point(volatility, 1, 1, "student_t"))
+        order = 0 if volatility == "constant" else 1
+        model = model_for(mean, volatility, "student_t", order, order)
+        theta = np.array(mean_point(mean) + volatility_point(volatility, order, order, "student_t"))
         factor = 3.7
         scaled = model.rescale(theta, factor)
         base = api.Jet(model, y, x).theta(theta, api.VALUE)["value"]
@@ -432,3 +438,30 @@ def test_public_fit_keeps_the_index_aligned_with_the_scored_rows():
     result = (ARX(3) + GARCH(1, 1)).fit(series, engine="scivolapi", hold_back=10)
     assert len(result.sigma2) == len(y) - 13
     assert result.sigma2.index[0] == series.index[13]
+
+
+@pytest.mark.parametrize("mean,density", [(dict(ar=1, ma=1), "normal"), (dict(har=(1, 5), exog=1), "skew_t"),
+                                          (dict(ma=2), "nig")])
+def test_constant_variance_matches_the_oracle(data, mean, density):
+    check_against_oracle(data, mean_spec(**mean), "constant", density, p=0, q=0)
+
+
+def test_mean_only_fits_match_production():
+    from scivol import ARMA, Normal, StudentT
+
+    rng = np.random.default_rng(0)
+    n = 2000
+    e = rng.standard_t(5, n) * 0.5
+    y = np.zeros(n)
+    for t in range(1, n):
+        y[t] = 0.2 + 0.5 * y[t - 1] + e[t] + 0.3 * e[t - 1]
+    normal = (ARMA(1, 1) + Normal()).fit(y, engine="scivolapi")
+    production = (ARMA(1, 1) + Normal()).fit(y)  # profiles sigma2
+    np.testing.assert_allclose(normal.params[:3], production.params, rtol=1e-5)
+    assert normal.log_likelihood == pytest.approx(production.log_likelihood, rel=1e-9)
+    assert normal._get_param_names() == ["const", "phi[1]", "theta[1]", "sigma2"]
+    t = (ARMA(1, 1) + StudentT()).fit(y, engine="scivolapi")
+    np.testing.assert_allclose(t.params, (ARMA(1, 1) + StudentT()).fit(y).params, rtol=1e-4)
+    assert t.dist_params.nu == pytest.approx(t.params[-1])
+    with pytest.raises(ValueError, match="p and q must be 0"):
+        model_for(mean_spec(), "constant", "normal", 1, 1)

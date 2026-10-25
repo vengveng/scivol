@@ -695,6 +695,10 @@ def _compute_oos_losses(
     stop: int,
     loss: str,
 ) -> np.ndarray:
+    from ._scivolapi_eval import NativeEstimationResult, oos_losses
+
+    if isinstance(result, NativeEstimationResult):
+        return oos_losses(result, full_data, full_x=full_x, start=start, stop=stop, loss=loss)
     state = result.spec.filter(full_data, result.params, x=full_x)
     hold_back = int(getattr(result.fit_info, "effective_hold_back", 0) or 0)
     effective_start = max(start - hold_back, 0)

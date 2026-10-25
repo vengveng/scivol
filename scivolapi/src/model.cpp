@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "mean/regressors.hpp"
 #include "model_layout.hpp"
 #include "volatility/garch.hpp"
 
@@ -45,6 +46,7 @@ bool volatility_evaluable(const ModelSpec& spec, const Layout& layout, const dou
     case VolatilityKind::garch: return detail::GarchVolatility<false>(spec).evaluable(vol);
     case VolatilityKind::gjr: return detail::GarchVolatility<true>(spec).evaluable(vol);
     case VolatilityKind::egarch: return true;  // the log-variance recursion is defined for any finite theta
+    case VolatilityKind::constant: return theta[layout.omega] > 0.0 && std::isfinite(theta[layout.omega]);
     case VolatilityKind::aparch:  // omega > 0, alpha, beta >= 0, |gamma| < 1, delta > 0
         if (!(theta[layout.omega] > 0.0) || !(theta[layout.delta] > 0.0)) return false;
         for (std::size_t i = 0; i < spec.p; ++i)
@@ -88,7 +90,10 @@ std::string indexed(const char* name, std::size_t i) { return std::string(name) 
 
 Model::Model(const ModelSpec& spec) : spec_(spec)
 {
-    require(spec.p >= 1 && spec.q >= 1, "orders p and q must be at least 1");
+    if (spec.volatility == VolatilityKind::constant)
+        require(spec.p == 0 && spec.q == 0, "constant variance has no orders: p and q must be 0");
+    else
+        require(spec.p >= 1 && spec.q >= 1, "orders p and q must be at least 1");
     require(spec.p <= Layout::max_order && spec.q <= Layout::max_order, "orders p and q must be at most 8");
     const MeanSpec& mean = spec.mean;
     require(mean.ar <= Layout::max_order && mean.ma <= Layout::max_order, "AR and MA orders must be at most 8");
@@ -104,7 +109,7 @@ Model::Model(const ModelSpec& spec) : spec_(spec)
     for (std::size_t k = 0; k < mean.har.size(); ++k) names_[layout.har + k] = indexed("har", mean.har[k]);
     for (std::size_t i = 0; i < mean.exog; ++i) names_[layout.exog + i] = indexed("exog", i + 1);
     for (std::size_t j = 0; j < mean.ma; ++j) names_[layout.ma + j] = indexed("ma", j + 1);
-    names_[layout.omega] = "omega";
+    names_[layout.omega] = spec.volatility == VolatilityKind::constant ? "sigma2" : "omega";
     for (std::size_t i = 0; i < spec.p; ++i) names_[layout.alpha + i] = indexed("alpha", i + 1);
     if (spec.volatility != VolatilityKind::garch)
         for (std::size_t i = 0; i < spec.p; ++i) names_[layout.gamma + i] = indexed("gamma", i + 1);
@@ -113,8 +118,7 @@ Model::Model(const ModelSpec& spec) : spec_(spec)
     for (std::size_t i = 0; i < layout.shape_count; ++i) names_[layout.shapes + i] = layout.shape_domain[i].name;
 }
 
-// Regressor rows for the scored rows t = c, ..., n - 1 (c conditioning rows):
-// [1, y_{t-1..t-ar}, mean(y_{t-1..t-w}) per HAR window, x_t].
+// Regressor rows for the scored rows t = c, ..., n - 1 (c conditioning rows).
 Sample Model::prepare(std::span<const double> y, std::span<const double> x) const
 {
     const MeanSpec& mean = spec_.mean;
@@ -133,17 +137,8 @@ Sample Model::prepare(std::span<const double> y, std::span<const double> x) cons
 
     Sample sample{y, seed, c, {}};
     sample.design.resize((y.size() - c) * k);
-    for (std::size_t t = c; t < y.size(); ++t) {
-        double* row = sample.design.data() + (t - c) * k;
-        if (mean.constant) *row++ = 1.0;
-        for (std::size_t i = 1; i <= mean.ar; ++i) *row++ = y[t - i];
-        for (std::size_t w : mean.har) {
-            double total = 0.0;
-            for (std::size_t i = 1; i <= w; ++i) total += y[t - i];
-            *row++ = total / static_cast<double>(w);
-        }
-        for (std::size_t i = 0; i < mean.exog; ++i) *row++ = x[t * mean.exog + i];
-    }
+    for (std::size_t t = c; t < y.size(); ++t)
+        detail::regressor_row(mean, y.data(), x.data(), t, sample.design.data() + (t - c) * k);
     return sample;
 }
 
@@ -286,6 +281,10 @@ std::vector<double> Model::start(const Sample& sample) const
         for (std::size_t i = 0; i < spec_.p; ++i) theta[layout.alpha + i] = 0.1 / p;
         theta[layout.gamma] = -0.05;
         for (std::size_t j = 0; j < spec_.q; ++j) theta[layout.beta + j] = persistence / q;
+        return theta;
+    }
+    if (spec_.volatility == VolatilityKind::constant) {
+        theta[layout.omega] = sample.variance_seed;
         return theta;
     }
     const double shock = 0.20 * persistence;

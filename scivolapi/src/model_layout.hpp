@@ -21,6 +21,7 @@ namespace scivolapi::detail {
 //   GJR     [omega | alpha_1..p, gamma_1..p, beta_1..q]
 //   EGARCH  [omega, alpha_1..p, gamma_1..p | beta_1..q]
 //   APARCH  [omega | alpha_1..p | gamma_1..p | beta_1..q | delta]
+//   constant [sigma2]
 // Three kinds of chart:
 //   scalar   each independent entry has its own ScalarChart (the mean's constant,
 //            HAR and exogenous coefficients, omega, EGARCH's free entries,
@@ -110,6 +111,10 @@ struct Layout {
             beta = gamma + p;
             delta = beta + q;
             shapes = delta + 1;
+            break;
+        case VolatilityKind::constant:  // omega is sigma2
+            beta = alpha;
+            shapes = alpha;
             break;
         }
         dimension = shapes + shape_count;

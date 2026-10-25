@@ -428,7 +428,7 @@ class FitsMixin:
         from ._validation import prepare_series_input, validate_spec
 
         spec = validate_spec(self.spec)
-        if kwargs.get("engine") == "scivolapi":
+        if kwargs.get("engine") == "scivolapi" and not self._has_auto_components():
             # Migration path: compositions covered by the new native library.
             kwargs.pop("engine")
             from ._scivolapi_fit import fit_spec

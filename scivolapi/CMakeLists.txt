@@ -17,6 +17,7 @@ add_library(scivolapi
     ${SCIVOLAPI_JET_SOURCES}
     src/fit.cpp
     src/finalize.cpp
+    src/simulate.cpp
     ${SCIVOLAPI_OPTIMIZE_SOURCES}
     ${SCIVOLAPI_MATH_SOURCES}
 )

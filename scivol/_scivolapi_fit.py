@@ -16,6 +16,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from . import _scivolapi as api
+from ._scivolapi_eval import NativeEstimationResult
 from .result import EstimationResult, FitMetadata
 from .roles import Role
 
@@ -82,7 +83,7 @@ def native_spec(spec: Any, exog: int = 0) -> Optional[api.ModelSpec]:
     density = spec.get_component(Role.DENSITY)
     volatility_kind = {
         GARCH: api.VolatilityKind.garch, GJRGARCH: api.VolatilityKind.gjr, EGARCH: api.VolatilityKind.egarch,
-        APARCH: api.VolatilityKind.aparch,
+        APARCH: api.VolatilityKind.aparch, type(None): api.VolatilityKind.constant,
     }.get(type(volatility))
     if volatility_kind is None or getattr(volatility, "_is_auto", False):
         return None
@@ -92,9 +93,23 @@ def native_spec(spec: Any, exog: int = 0) -> Optional[api.ModelSpec]:
     native = api.ModelSpec()
     native.mean = mean
     native.volatility = volatility_kind
-    native.p, native.q = int(volatility.p), int(volatility.q)
+    native.p, native.q = (0, 0) if volatility is None else (int(volatility.p), int(volatility.q))
     native.density = kind
     return native
+
+
+def unpack_components(spec: Any, theta: NDArray[np.float64]) -> None:
+    """Store theta in the components' fitted parameters (sigma2 of a Normal
+    mean-only model has no component slot; it stays in the result's params)."""
+    from ._evaluation import _apply_theta_to_spec
+
+    if spec.get_component(Role.VOLATILITY) is None and type(spec.get_component(Role.DENSITY)).__name__ in (
+            "Normal", "NoneType"):
+        mean = spec.get_component(Role.MEAN)
+        if mean is not None:
+            mean.unpack(theta[: mean.n_params])
+        return
+    _apply_theta_to_spec(spec, theta)
 
 
 def fit_spec(
@@ -126,14 +141,16 @@ def fit_spec(
     skip = validate_hold_back(hold_back)
     if skip >= len(y):
         raise ValueError("hold_back leaves no observations to estimate on")
+    original_n_obs = len(y)
+    scale_factor = validate_scale(scale)
     x_arr = None if x is None else validate_regressors(x, len(y))[skip:]
-    y = np.ascontiguousarray(y[skip:] * validate_scale(scale), dtype=np.float64)
+    y = np.ascontiguousarray(y[skip:] * scale_factor, dtype=np.float64)
     mean = spec.get_component(Role.MEAN)
     if x_arr is not None and hasattr(mean, "set_n_exog"):
         mean.set_n_exog(x_arr.shape[1])
     native = native_spec(spec, 0 if x_arr is None else x_arr.shape[1])
     if native is None:
-        raise NotImplementedError(f"scivolapi does not cover {spec.uid} yet")
+        raise NotImplementedError(f"scivolapi does not cover {spec} yet")
     if coordinates not in _COORDINATES:
         raise ValueError("coordinates must be 'automatic', 'z' or 'theta'")
     estimator = {"mle": api.Estimator.mle, "qmle": api.Estimator.qmle}.get(str(method).lower())
@@ -146,8 +163,9 @@ def fit_spec(
     options.coordinates = _COORDINATES[coordinates]
     options.maximum_iterations = int(maxiter)
     options.accuracy = float(accuracy)
-    if initial_params is not None:
-        options.start = [float(v) for v in np.asarray(initial_params, dtype=np.float64)]
+    if initial_params is not None:  # parameters, or a previous result to warm start from
+        start = getattr(initial_params, "params", initial_params)
+        options.start = [float(v) for v in np.asarray(start, dtype=np.float64)]
 
     started = time.perf_counter()
     native_result = api.fit(model, y, options, x_arr)
@@ -183,14 +201,20 @@ def fit_spec(
         maxiter=int(maxiter),
         internal_data_scale=float(native_result.data_scale),
         likelihood_n_obs=int(native_result.scored),
+        requested_hold_back=skip,
+        effective_hold_back=skip + native.mean.conditioning,  # rows before the first scored row
+        original_n_obs=original_n_obs,
+        effective_n_obs=len(y),
+        scale=scale_factor,
         warnings=tuple(native_result.warnings),
     )
     def matrix(values: Any) -> Optional[NDArray[np.float64]]:
         return np.array(values) if values.size else None
 
     qmle = native_result.estimator == api.Estimator.qmle
+    unpack_components(spec, theta)
     first = skip + native.mean.conditioning
-    result = EstimationResult(
+    result = NativeEstimationResult(
         spec=spec,
         optimization_result=optimization,
         data=y[native.mean.conditioning:],
@@ -206,4 +230,6 @@ def fit_spec(
         name=name,
     )
     result._resid = np.array(native_result.residual)
+    result._fit_x = x_arr
+    result._attach(model, y, x_arr, skip)
     return result
