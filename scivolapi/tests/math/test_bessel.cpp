@@ -66,16 +66,22 @@ int region(const Reference& row) noexcept {
 using Function = bool (*)(double, double, unsigned, LogK&) noexcept;
 constexpr Function functions[] = {log_k, log_zk, log_k_scaled, log_zk_scaled, log_ratio_gap};
 
-void check_reference(const Reference& row) noexcept {
+bool prepared_zk(double nu, double z, unsigned want, LogK& out) noexcept {
+    PreparedOrder p;
+    return prepare(nu, want, p) && log_zk_scaled(p, z, out);
+}
+
+void check_reference(const Reference& row, bool prepared = false) noexcept {
+    const auto function = prepared ? prepared_zk : functions[row.function];
     LogK complete;
-    const bool complete_ok = functions[row.function](row.nu, row.z, argument|order, complete);
+    const bool complete_ok = function(row.nu, row.z, argument|order, complete);
     const auto full = fields(complete);
     for (unsigned want = 0; want <= (argument|order); ++want) {
         bool expected_ok = true;
         for (int i = 0; i < 6; ++i)
             if (requested(i, want) && !std::isfinite(row.expected[i])) expected_ok = false;
         LogK output;
-        const bool ok = functions[row.function](row.nu, row.z, want, output);
+        const bool ok = function(row.nu, row.z, want, output);
         if (ok != expected_ok) fail("return status", row, want);
         const auto actual = fields(output);
         for (int i = 0; i < 6; ++i) {
@@ -95,7 +101,57 @@ void check_reference(const Reference& row) noexcept {
             if (complete_ok && std::bit_cast<std::uint64_t>(actual[i]) != std::bit_cast<std::uint64_t>(full[i]))
                 fail("sparse bits", row, want, i, actual[i], full[i]);
         }
+        if (want) {
+            LogK first;
+            const auto first_fields = [&] {
+                function(row.nu, row.z, want | first_only, first);
+                return fields(first);
+            }();
+            for (int i : {0, 1, 3}) {
+                if (!requested(i, want) || !std::isfinite(full[i])) continue;
+                if (complete_ok && first_fields[i] != full[i])
+                    fail("first derivative sparse bits", row, want | first_only, i, first_fields[i], full[i]);
+            }
+        }
     }
+}
+
+struct FixedReference { double z; std::array<double, 3> expected; };
+#include "nig_reference.inc"
+
+void check_fixed_nig() noexcept {
+    double worst[3] = {};
+    for (const auto& r : fixed_references) {
+        LogK full;
+        const bool full_ok = log_zk_scaled_nig(r.z, argument, full);
+        for (unsigned want : {0u, unsigned(argument), unsigned(argument | first_only)}) {
+            LogK output;
+            const bool expected_ok = want == 0 || ((want & first_only) ? std::isfinite(r.expected[1])
+                : std::isfinite(r.expected[2]));
+            const bool ok = log_zk_scaled_nig(r.z, want, output);
+            const Reference row{3, -1.0, r.z, {}};
+            if (ok != expected_ok) fail("fixed NIG status", row, want);
+            const auto actual = fields(output), complete = fields(full);
+            for (int i = 0; i < 6; ++i) {
+                const bool requested = i == 0 || (i == 1 && want & argument)
+                    || (i == 2 && want == argument);
+                if (!ok || !requested) {
+                    if (!std::isnan(actual[i])) fail("fixed NIG NaN", row, want, i);
+                    continue;
+                }
+                const double error = std::abs(actual[i] - r.expected[i]) / (i == 0 ? std::max(1.0, std::abs(r.expected[i])) : std::abs(r.expected[i]));
+                worst[i] = std::max(worst[i], error);
+                if (error > 1e-14) fail("fixed NIG relative error", row, want, i, actual[i], r.expected[i]);
+                if (full_ok && actual[i] != complete[i]) fail("fixed NIG sparse bits", row, want, i);
+            }
+        }
+    }
+    for (double z : {-1.0, 0.0, inf, nan}) {
+        LogK output;
+        if (log_zk_scaled_nig(z, 0u, output)) fail("fixed NIG domain", {3, -1.0, z, {}}, 0u);
+    }
+    std::printf("Fixed NIG worst errors log value scaled, derivatives relative: value=%.3g z=%.3g zz=%.3g, %zu points\n",
+        worst[0], worst[1], worst[2], std::size(fixed_references));
 }
 
 void check_ladders() noexcept {
@@ -143,6 +199,12 @@ void check_domains() noexcept {
     if (log_k(20, 1e-300, argument, out[0]) || !log_k(20, 1e-300, order, out[0])
         || log_zk(0.25, 1e-300, argument, out[0]) || !log_zk(0.25, 1e-300, order, out[0]))
         fail("representability", {false, 20, 1e-300, {}}, argument);
+    if (!log_zk(0.75, 0.0, argument | first_only, out[0]) || out[0].z != 0.0
+        || !std::isnan(out[0].zz) || !log_zk(0.25, 0.0, order | first_only, out[0])
+        || !std::isfinite(out[0].nu) || !std::isnan(out[0].nunu)
+        || log_zk(0.25, 0.0, argument | first_only, out[0])
+        || !log_k(20.0, 1e-300, argument | first_only, out[0]))
+        fail("first derivative limits", {true, 0.75, 0.0, {}}, argument | first_only);
 }
 
 void check_extreme_limits() noexcept {
@@ -301,7 +363,11 @@ void print_timings() noexcept {
 int main() {
     watch_allocations = true;
     for (const auto& row : references) check_reference(row);
-    for (const auto& row : extended_references) check_reference(row);
+    for (const auto& row : extended_references) {
+        check_reference(row);
+        if (row.function == 3) check_reference(row, true);
+    }
+    check_fixed_nig();
     check_ladders();
     check_domains();
     check_extreme_limits();

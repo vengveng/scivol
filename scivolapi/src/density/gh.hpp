@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cmath>
+#include <type_traits>
 
 #include "../math/bessel.hpp"
 #include "../math/dual2.hpp"
@@ -27,9 +28,9 @@
 // differentiated by hand and chained to the shapes.
 namespace scivolapi::detail {
 
-template<std::size_t S>
+template<std::size_t S, int Order = 2>
 struct GhPoint {
-    Dual2<S> alpha, minus, plus, d2, mu, nu, constant;  // minus = alpha - beta, plus = alpha + beta
+    Dual2<S, Order> alpha, minus, plus, d2, mu, nu, constant;  // minus = alpha - beta, plus = alpha + beta
 };
 
 namespace gh_detail {
@@ -37,11 +38,12 @@ namespace gh_detail {
 inline constexpr double half_log_2pi = 0.5 * log_2pi;
 
 // A Bessel quantity f(lambda, zeta) as a Dual2 number in the shapes.
-template<std::size_t S>
-Dual2<S> lift_bessel(const Dual2<S>& lambda, const Dual2<S>& zeta, bool lambda_varies, const bessel::LogK& k) noexcept
+template<std::size_t S, int Order = 2>
+Dual2<S, Order> lift_bessel(const Dual2<S, Order>& lambda, const Dual2<S, Order>& zeta, bool lambda_varies, const bessel::LogK& k) noexcept
 {
-    return lambda_varies ? lift2(lambda, zeta, k.value, k.nu, k.z, k.nunu, k.nuz, k.zz)
-                         : lift(zeta, k.value, k.z, k.zz);
+    if constexpr (Order == 0) return Dual2<S, Order>::constant(k.value);
+    return lambda_varies ? lift2(lambda, zeta, k.value, k.nu, k.z, Order >= 2 ? k.nunu : 0.0, Order >= 2 ? k.nuz : 0.0, Order >= 2 ? k.zz : 0.0)
+                         : lift(zeta, k.value, k.z, Order >= 2 ? k.zz : 0.0);
 }
 
 // Unit-variance GH: with kappa = K_{l+1}(zeta) / (zeta K_l(zeta)) and the Turan gap
@@ -50,23 +52,24 @@ Dual2<S> lift_bessel(const Dual2<S>& lambda, const Dual2<S>& zeta, bool lambda_v
 //   beta = alpha rho,  delta^2 = zeta^2 / (alpha^2 (1 - rho^2)),  mu = -beta delta^2 kappa,
 //   c = -lambda log(gamma / delta) + log(2 pi) / 2 + log K_l(zeta) + 2 nu log alpha,
 // where gamma / delta = alpha^2 (1 - rho^2) / zeta.
-template<std::size_t S>
-bool standardize(const Dual2<S>& rho, const Dual2<S>& zeta, const Dual2<S>& lambda, bool lambda_varies,
-                 GhPoint<S>& out) noexcept
+template<std::size_t S, int Order = 2>
+bool standardize(const Dual2<S, Order>& rho, const Dual2<S, Order>& zeta, const Dual2<S, Order>& lambda, bool lambda_varies,
+                 GhPoint<S, Order>& out) noexcept
 {
     if (!(std::abs(rho.v) < 1.0) || !(zeta.v > 0.0) || !std::isfinite(zeta.v) || !std::isfinite(lambda.v))
         return false;
-    const unsigned want = bessel::argument | (lambda_varies ? bessel::order : 0u);
+    const unsigned want = Order == 0 ? 0u : bessel::argument | (lambda_varies ? bessel::order : 0u)
+        | (Order == 1 ? bessel::first_only : 0u);
     bessel::LogK k[2], gap;
     if (!bessel::log_k_ladder(lambda.v, zeta.v, 2, want, k) || !bessel::log_ratio_gap(lambda.v, zeta.v, want, gap))
         return false;
-    const Dual2<S> l0 = lift_bessel(lambda, zeta, lambda_varies, k[0]);
-    const Dual2<S> kappa = exp(lift_bessel(lambda, zeta, lambda_varies, k[1]) - l0) / zeta;
-    const Dual2<S> w = exp(lift_bessel(lambda, zeta, lambda_varies, gap));
-    const Dual2<S> one_minus = 1.0 - rho, one_plus = rho + 1.0;
-    const Dual2<S> rho2 = one_minus * one_plus;
-    const Dual2<S> zeta2 = zeta * zeta;
-    const Dual2<S> alpha2 = zeta2 * kappa * ((rho * rho * zeta * w / rho2) + 1.0) / rho2;
+    const Dual2<S, Order> l0 = lift_bessel(lambda, zeta, lambda_varies, k[0]);
+    const Dual2<S, Order> kappa = exp(lift_bessel(lambda, zeta, lambda_varies, k[1]) - l0) / zeta;
+    const Dual2<S, Order> w = exp(lift_bessel(lambda, zeta, lambda_varies, gap));
+    const Dual2<S, Order> one_minus = 1.0 - rho, one_plus = rho + 1.0;
+    const Dual2<S, Order> rho2 = one_minus * one_plus;
+    const Dual2<S, Order> zeta2 = zeta * zeta;
+    const Dual2<S, Order> alpha2 = zeta2 * kappa * ((rho * rho * zeta * w / rho2) + 1.0) / rho2;
     if (!(alpha2.v > 0.0) || !std::isfinite(alpha2.v)) return false;
     out.alpha = sqrt(alpha2);
     out.minus = out.alpha * one_minus;
@@ -85,9 +88,10 @@ struct GeneralizedHyperbolic {
     static constexpr std::size_t shapes = 3;
     static constexpr bool order_varies = true;
     static constexpr bool has_delta = true;
-    static bool point(const double* s, GhPoint<3>& out) noexcept
+    template<int Order = 2>
+    static bool point(const double* s, GhPoint<3, Order>& out) noexcept
     {
-        using D = Dual2<3>;
+        using D = Dual2<3, Order>;
         return gh_detail::standardize(D::variable(s[0], 0), D::variable(s[1], 1), D::variable(s[2], 2), true, out);
     }
 };
@@ -97,9 +101,11 @@ struct FixedIndexGh {
     static constexpr std::size_t shapes = 2;
     static constexpr bool order_varies = false;
     static constexpr bool has_delta = true;
-    static bool point(const double* s, GhPoint<2>& out) noexcept
+    static constexpr bool fixed_nig = TwiceLambda == -1;
+    template<int Order = 2>
+    static bool point(const double* s, GhPoint<2, Order>& out) noexcept
     {
-        using D = Dual2<2>;
+        using D = Dual2<2, Order>;
         return gh_detail::standardize(D::variable(s[0], 0), D::variable(s[1], 1), D::constant(0.5 * TwiceLambda),
                                       false, out);
     }
@@ -119,10 +125,11 @@ struct VarianceGamma {
     static constexpr std::size_t shapes = 2;
     static constexpr bool order_varies = true;
     static constexpr bool has_delta = false;
-    static bool point(const double* s, GhPoint<2>& out) noexcept
+    template<int Order = 2>
+    static bool point(const double* s, GhPoint<2, Order>& out) noexcept
     {
         constexpr double log_2 = 0.69314718055994530941723212145818;
-        using D = Dual2<2>;
+        using D = Dual2<2, Order>;
         if (!(std::abs(s[0]) < 1.0) || !(s[1] > 1.5) || !std::isfinite(s[1])) return false;
         const D rho = D::variable(s[0], 0), lambda = D::variable(s[1], 1);
         const D rho2 = (1.0 - rho) * (rho + 1.0);
@@ -137,7 +144,7 @@ struct VarianceGamma {
         out.mu = -1.0 * (theta * lambda / scale);
         out.d2 = D::constant(0.0);
         out.nu = lambda + (-0.5);
-        const D log_gamma_lambda = lift(lambda, log_gamma(lambda.v), digamma(lambda.v), trigamma(lambda.v));
+        const D log_gamma_lambda = lift(lambda, log_gamma(lambda.v), Order >= 1 ? digamma(lambda.v) : 0.0, Order >= 2 ? trigamma(lambda.v) : 0.0);
         out.constant = (-1.0 * log(scale)) + (gh_detail::half_log_2pi - log_2) + log_gamma_lambda
             + 2.0 * (out.nu * log(a));
         return std::isfinite(out.constant.v);
@@ -152,6 +159,7 @@ struct GhFamilyDensity {
 
     struct Prepared {
         Constant<shapes> constant;
+        std::conditional_t<Member::order_varies, bessel::PreparedOrder, std::array<double, 0>> bessel_order;
         double alpha = 0.0, minus = 0.0, plus = 0.0, d2 = 0.0, mu = 0.0, nu = 0.0;
         std::array<std::array<double, shapes>, INTERMEDIATES> grad{};
         std::array<std::array<double, packed_size(shapes)>, INTERMEDIATES> hess{};
@@ -163,15 +171,16 @@ struct GhFamilyDensity {
         else return std::array<double, 1>{p.mu};
     }
 
-    [[nodiscard]] static bool prepare(const double* shape, int /*order*/, Prepared& p) noexcept
+    template<int Order>
+    [[nodiscard]] static bool prepare_point(const double* shape, Prepared& p) noexcept
     {
-        GhPoint<shapes> pt;
+        GhPoint<shapes, Order> pt;
         if (!Member::point(shape, pt)) return false;
-        const Dual2<shapes>* q[INTERMEDIATES] = {&pt.alpha, &pt.minus, &pt.plus, &pt.d2, &pt.mu, &pt.nu};
+        const Dual2<shapes, Order>* q[INTERMEDIATES] = {&pt.alpha, &pt.minus, &pt.plus, &pt.d2, &pt.mu, &pt.nu};
         for (int i = 0; i < INTERMEDIATES; ++i) {
             if (!std::isfinite(q[i]->v)) return false;
-            p.grad[i] = q[i]->g;
-            p.hess[i] = q[i]->h;
+            if constexpr (Order >= 1) p.grad[i] = q[i]->g;
+            if constexpr (Order >= 2) p.hess[i] = q[i]->h;
         }
         p.alpha = pt.alpha.v;
         p.minus = pt.minus.v;
@@ -180,9 +189,20 @@ struct GhFamilyDensity {
         p.mu = pt.mu.v;
         p.nu = pt.nu.v;
         p.constant.value = pt.constant.v;
-        p.constant.s = pt.constant.g;
-        p.constant.ss = pt.constant.h;
+        if constexpr (Order >= 1) p.constant.s = pt.constant.g;
+        if constexpr (Order >= 2) p.constant.ss = pt.constant.h;
+        const unsigned want = Order == 0 ? 0u : bessel::argument | (Member::order_varies ? bessel::order : 0u)
+            | (Order == 1 ? bessel::first_only : 0u);
+        if constexpr (Member::order_varies)
+            return std::isfinite(p.constant.value) && bessel::prepare(p.nu, want, p.bessel_order);
         return std::isfinite(p.constant.value);
+    }
+
+    [[nodiscard]] static bool prepare(const double* shape, int order, Prepared& p) noexcept
+    {
+        if (order == 0) return prepare_point<0>(shape, p);
+        if (order == 1) return prepare_point<1>(shape, p);
+        return order == 2 && prepare_point<2>(shape, p);
     }
 
     // With u = (c, alpha, gamma, d2, nu):
@@ -204,9 +224,18 @@ struct GhFamilyDensity {
         unsigned want = order >= 1 ? bessel::argument : 0u;
         if (order >= 1 && Member::order_varies) want |= bessel::order;
         bessel::LogK e;
-        if (!bessel::log_zk_scaled(p.nu, z, want, e)) {
+        if (order == 1) want |= bessel::first_only;
+        const auto evaluate_bessel = [&](unsigned request) {
+            if constexpr (requires { Member::fixed_nig; }) {
+                if constexpr (Member::fixed_nig) return bessel::log_zk_scaled_nig(z, request, e);
+            }
+            if constexpr (Member::order_varies)
+                if (request == p.bessel_order.want) return bessel::log_zk_scaled(p.bessel_order, z, e);
+            return bessel::log_zk_scaled(p.nu, z, request, e);
+        };
+        if (!evaluate_bessel(want)) {
             // The value exists but a derivative does not, or nothing is representable.
-            if (order >= 1 && bessel::log_zk_scaled(p.nu, z, bessel::value_only, e)) {
+            if (order >= 1 && evaluate_bessel(bessel::value_only)) {
                 t.g = p.alpha * w + gamma * abs_c - e.value;
                 t.defined = 0;
                 return t;

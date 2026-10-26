@@ -99,29 +99,40 @@ inline double tolerance(std::size_t component, double value) noexcept
     return component == 0 ? 6e-15 * std::abs(value) : 1e-13 * std::max(1.0, std::abs(value));
 }
 
-// A posteriori DE error control, not an interval-arithmetic certificate. Require
+// A posteriori trapezoid error control, with DE maps for finite and half lines. Require
 // two consecutive successful mesh halvings, an L1 roundoff check, and geometric
 // tail estimates on every requested component. No fixed x cutoff is used.
-template<std::size_t N, class Function>
-bool integrate_piece(const Function& function, double left, double right, int order, Dual2<N>& result) noexcept
+template<std::size_t N, bool WholeLine, class Function>
+bool integrate_piece_impl(const Function& function, double left, double right, int order, Dual2<N>& result) noexcept
 {
     constexpr std::size_t M = 1 + N + packed_size(N);
     const std::size_t count = order == 0 ? 1 : order == 1 ? 1 + N : M;
     const bool finite_interval = std::isfinite(left) && std::isfinite(right);
+    constexpr bool whole_line = WholeLine;
     const double width = finite_interval ? right - left : 1.0;
     if (!(width > 0.0) || !std::isfinite(width)) return false;
-    Components<N> previous{};
+    Components<N> previous{}, previous_l1{};
     int successes = 0;
+    // Log-mixture components stop independently, retaining sparse-request bits.
+    std::array<bool, M> complete{}, skip{};
+    std::array<int, M> component_successes{};
     for (int level = 0; level <= 10; ++level) {
-        const double h = std::ldexp(0.25, -level);
+        const double h = std::ldexp(whole_line ? 1.0 : 0.25, -level);
         std::array<CompensatedSum, M> sum{}, l1{};
         double sampled_log_weight = 0.0;
         bool endpoint_lost = false;
         auto sample = [&](double t, Components<N>& value) {
             endpoint_lost = false;
-            const double u = std::sinh(t), log_cosh = std::log(std::cosh(t));
+            double u = 0.0, log_cosh = 0.0;
+            if (!whole_line) {
+                u = std::sinh(t);
+                log_cosh = std::log(std::cosh(t));
+            }
             double x, log_jacobian;
-            if (finite_interval) {
+            if (whole_line) {
+                x = t;
+                log_jacobian = 0.0;
+            } else if (finite_interval) {
                 // Logistic form of tanh(pi*sinh(t)/2), retaining the distance
                 // to the closer endpoint instead of subtracting tanh from one.
                 constexpr double pi = 3.1415926535897932384626433832795;
@@ -146,19 +157,32 @@ bool integrate_piece(const Function& function, double left, double right, int or
             if (!function(x, sampled_log_weight, d) || !finite(d, order)) return false;
             value = components(d, order);
             for (std::size_t j = 0; j < count; ++j) {
-                sum[j].add(value[j]);
-                l1[j].add(std::abs(value[j]));
+                if (!whole_line || !skip[j]) {
+                    sum[j].add(value[j]);
+                    l1[j].add(std::abs(value[j]));
+                }
             }
             return true;
         };
-        Components<N> centre{};
-        if (!sample(0.0, centre)) return false;
+        skip = complete;
+        const bool refine = whole_line && level > 0;
+        if (refine) {
+            for (std::size_t j = 0; j < count; ++j) if (!complete[j]) {
+                sum[j].add(0.5 * previous[j]);
+                l1[j].add(0.5 * previous_l1[j]);
+            }
+        } else {
+            Components<N> centre{};
+            if (!sample(0.0, centre)) return false;
+        }
         for (int direction : {-1, 1}) {
+            skip = complete;
+            std::array<int, M> small_tails{};
             Components<N> last{};
             last.fill(std::numeric_limits<double>::infinity());
             double last_log_weight = 0.0;
             bool ended = false;
-            for (int k = 1; k <= 32768; ++k) {
+            for (int k = 1; k <= 32768; k += refine ? 2 : 1) {
                 const double t = direction * k * h;
                 Components<N> term{};
                 if (!sample(t, term)) {
@@ -178,29 +202,58 @@ bool integrate_piece(const Function& function, double left, double right, int or
                 last_log_weight = sampled_log_weight;
                 bool tail_small = std::abs(t) >= 2.0;
                 for (std::size_t j = 0; j < count; ++j) {
-                    const double a = std::abs(term[j]), b = std::abs(last[j]);
+                    if (whole_line && skip[j]) continue;
+                    // A positive envelope prevents a score's zero crossing
+                    // from being mistaken for the end of its tail.
+                    const double a = whole_line ? std::max(std::abs(term[j]), std::abs(term[0])) : std::abs(term[j]);
+                    const double b = std::abs(last[j]);
                     const double ratio = b > 0.0 ? a / b : (a == 0.0 ? 0.0 : 1.0);
-                    const double bound = ratio < 0.5 ? a * ratio / (1.0 - ratio) : std::numeric_limits<double>::infinity();
-                    tail_small = tail_small && bound <= 0.01 * tolerance(j, sum[j].total());
-                    last[j] = term[j];
+                    const double bound = ratio < (whole_line ? 1.0 : 0.5)
+                        ? a * ratio / (1.0 - ratio) : std::numeric_limits<double>::infinity();
+                    const bool small = std::abs(t) >= 2.0 && bound <= 0.01 * tolerance(j, sum[j].total());
+                    last[j] = a;
+                    if (whole_line) {
+                        small_tails[j] = small ? small_tails[j] + 1 : 0;
+                        skip[j] = small_tails[j] >= 4;
+                        tail_small = tail_small && skip[j];
+                    } else tail_small = tail_small && small;
                 }
                 if (tail_small) { ended = true; break; }
             }
             if (!ended) return false;
         }
         Components<N> current{};
-        bool converged = level >= 2;
+        bool converged = level >= 2, all_complete = true;
         for (std::size_t j = 0; j < count; ++j) {
-            current[j] = sum[j].total();
+            current[j] = whole_line && complete[j] ? previous[j] : sum[j].total();
             const double tol = tolerance(j, current[j]);
-            converged = converged && std::abs(current[j] - previous[j]) <= tol
+            const bool component_converged = level >= 2 && std::abs(current[j] - previous[j]) <= tol
                 && 2.0 * std::numeric_limits<double>::epsilon() * l1[j].total() <= tol;
+            if (whole_line && !complete[j]) {
+                component_successes[j] = component_converged ? component_successes[j] + 1 : 0;
+                complete[j] = component_successes[j] == 2;
+            }
+            all_complete = all_complete && complete[j];
+            converged = converged && component_converged;
         }
-        successes = converged ? successes + 1 : 0;
-        if (successes == 2) { result = dual<N>(current, order); return true; }
+        if (whole_line) {
+            if (all_complete) { result = dual<N>(current, order); return true; }
+        } else {
+            successes = converged ? successes + 1 : 0;
+            if (successes == 2) { result = dual<N>(current, order); return true; }
+        }
         previous = current;
+        for (std::size_t j = 0; j < count; ++j) previous_l1[j] = l1[j].total();
     }
     return false;
+}
+
+template<std::size_t N, class Function>
+bool integrate_piece(const Function& function, double left, double right, int order, Dual2<N>& result) noexcept
+{
+    if (std::isinf(left) && std::isinf(right))
+        return integrate_piece_impl<N, true>(function, left, right, order, result);
+    return integrate_piece_impl<N, false>(function, left, right, order, result);
 }
 
 template<class Density>
@@ -434,6 +487,65 @@ template<class M> struct GhTraits<GhFamilyDensity<M>> {
     using Member = M;
 };
 
+// Conditional on W, Z is Normal(mu + beta W, W). Integrating its
+// partial second moment removes the observation-level Bessel function.
+template<class Density, int Order>
+bool gh_mixture_negative(const double* shape, Dual2<Density::shapes>& out) noexcept
+{
+    using Member = typename GhTraits<Density>::Member;
+    constexpr std::size_t S = Density::shapes;
+    constexpr int order = Order;
+    using D = Dual2<S, Order>;
+    GhPoint<S, Order> p;
+    if (!Member::point(shape, p)) return false;
+    const D alpha = p.alpha, mu = p.mu;
+    const D rho = D::variable(shape[0], 0);
+    const D beta = alpha * rho, lambda = p.nu + 0.5;
+    D scale, normalizer, zeta;
+    double center, width;
+    if constexpr (Member::has_delta) {
+        zeta = order ? D::variable(shape[1], 1) : D::constant(shape[1]);
+        scale = p.d2 / zeta;
+        bessel::LogK k;
+        const unsigned want = order == 0 ? 0u : bessel::argument | (Member::order_varies ? bessel::order : 0u)
+            | (order == 1 ? bessel::first_only : 0u);
+        if (!bessel::log_k_scaled(lambda.v, zeta.v, want, k)) return false;
+        normalizer = gh_detail::lift_bessel(lambda, zeta, Member::order_varies, k) + 0.69314718055994530941723212145818;
+        center = std::asinh(lambda.v / zeta.v);
+        width = 1.0 / std::sqrt(std::hypot(lambda.v, zeta.v));
+    } else {
+        scale = D::constant(2.0) / ((alpha * alpha) * ((1.0 - rho) * (rho + 1.0)));
+        normalizer = lift(lambda, log_gamma(lambda.v), Order >= 1 ? digamma(lambda.v) : 0.0,
+                          Order >= 2 ? trigamma(lambda.v) : 0.0);
+        center = std::log(lambda.v);
+        width = 1.0 / std::sqrt(lambda.v);
+    }
+    if (!std::isfinite(center) || !std::isfinite(width) || !(scale.v > 0.0)) return false;
+    const auto weighted = [&](double u, double log_weight, Dual2<S>& d) {
+        const double t = center + width * u, v = std::exp(t);
+        if (!(v > 0.0) || !std::isfinite(v)) return false;
+        D log_density = t * lambda - normalizer + (log_weight + std::log(width));
+        if constexpr (Member::has_delta) {
+            const double sh = std::sinh(0.5 * t);
+            log_density = log_density - (2.0 * sh * sh) * zeta;
+        } else log_density = log_density + (-v);
+        const D w = v * scale, m = mu + beta * w;
+        const double root = std::sqrt(w.v), a = -m.v / root;
+        const double phi = std::exp(-0.5 * a * a) / std::sqrt(2.0 * 3.1415926535897932384626433832795);
+        const double cdf = 0.5 * std::erfc(-a / std::sqrt(2.0));
+        const double value = (m.v * m.v + w.v) * cdf - m.v * root * phi;
+        const D conditional = lift2(m, w, value, 2.0 * (m.v * cdf - root * phi), cdf,
+                                     2.0 * cdf, -phi / root, -0.5 * a * phi / w.v);
+        const auto value_dual = exp(log_density) * conditional;
+        d.v = value_dual.v;
+        if constexpr (Order >= 1) d.g = value_dual.g;
+        if constexpr (Order >= 2) d.h = value_dual.h;
+        return finite(d, order);
+    };
+    const double inf = std::numeric_limits<double>::infinity();
+    return integrate_piece<S>(weighted, -inf, inf, order, out) && out.v > 0.0;
+}
+
 // A second, mathematically equivalent coordinate for difficult GH points.
 // Integrate y=(z-mu)/scale and differentiate the complete moving map. Density
 // constants in y do not contain the unit-variance standardization. Splitting
@@ -622,6 +734,13 @@ template<class Density>
 [[nodiscard]] bool negative_second_moment(const double* shape, int order, Dual2<Density::shapes>& out) noexcept
 {
     if (order < 0 || order > 2 || (Density::shapes && !shape)) return false;
+    if constexpr(moment_detail::GhTraits<Density>::value && !std::is_same_v<Density,GhFamilyDensity<Hyperbolic>>) {
+        Dual2<Density::shapes> d;
+        const bool ok = order == 0 ? moment_detail::gh_mixture_negative<Density,0>(shape,d)
+            : order == 1 ? moment_detail::gh_mixture_negative<Density,1>(shape,d)
+                         : moment_detail::gh_mixture_negative<Density,2>(shape,d);
+        if(ok) return moment_detail::assign(d,order,out);
+    }
     typename Density::Prepared p;
     if (!Density::prepare(shape, order, p)) return false;
     if constexpr (Density::symmetric) return moment_detail::assign(Dual2<Density::shapes>::constant(0.5),order,out);

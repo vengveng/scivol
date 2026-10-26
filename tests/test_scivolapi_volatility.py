@@ -72,6 +72,8 @@ def test_gjr_every_sparse_request_equals_the_full_request(series):
 @pytest.mark.parametrize("case", [
     lambda: (gjr_model("skew_t"), gjr_point(1, 1, [1/6.0, -0.3])),
     lambda: (gjr_model("nig"), gjr_point(1, 1, [-0.2, 1.5])),
+    lambda: (gjr_model("generalized_hyperbolic"), gjr_point(1, 1, [-0.2, 1.5, 0.7])),
+    lambda: (gjr_model("variance_gamma"), gjr_point(1, 1, [-0.2, 3.0])),
     lambda: (aparch_model("student_t"), aparch_point(1, 1, 1.4, [1/6.0])),
 ])
 def test_z_jet_every_sparse_request_equals_the_full_request(series, case):

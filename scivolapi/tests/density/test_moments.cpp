@@ -71,6 +71,11 @@ void reference_tests() {
                     ++failures;
                 }
             };
+            if (r.moment == 0 && (r.kind == 4 || r.kind == 5 || r.kind == 7)) {
+                check(d.value == full.value,"mixture sparse value bits");
+                if (order >= 1) for (std::size_t j=0;j<n;++j)
+                    check(d.gradient[j] == full.gradient[j],"mixture sparse gradient bits");
+            }
             compare(d.value,r.expected[0],0);
             check(std::abs(d.value-full.value)<=1e-14*std::abs(full.value),"sparse value equality");
             if (order>=1) for(std::size_t j=0;j<n;++j) compare(d.gradient[j],r.expected[1+j],1);

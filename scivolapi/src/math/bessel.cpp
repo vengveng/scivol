@@ -19,37 +19,38 @@ LogK empty() noexcept { return {nan, nan, nan, nan, nan, nan}; }
 
 // Only the optional order channel is differentiated. Value arithmetic is
 // identical for every request; no argument differentiation state is carried.
-struct Jet { double f, g = 0.0, h = 0.0; };
+using Jet = OrderJet;
 struct Arithmetic {
     bool derivatives;
+    bool second = true;
     Jet add(Jet a, Jet b) const noexcept {
         Jet c{a.f + b.f};
-        if (derivatives) { c.g = a.g + b.g; c.h = a.h + b.h; }
+        if (derivatives) { c.g = a.g + b.g; if (second) c.h = a.h + b.h; }
         return c;
     }
     Jet scale(Jet a, double b) const noexcept {
         Jet c{a.f * b};
-        if (derivatives) { c.g = a.g * b; c.h = a.h * b; }
+        if (derivatives) { c.g = a.g * b; if (second) c.h = a.h * b; }
         return c;
     }
     Jet mul(Jet a, Jet b) const noexcept {
         Jet c{a.f * b.f};
         if (derivatives) {
             c.g = a.g * b.f + a.f * b.g;
-            c.h = a.h * b.f + 2.0 * a.g * b.g + a.f * b.h;
+            if (second) c.h = a.h * b.f + 2.0 * a.g * b.g + a.f * b.h;
         }
         return c;
     }
     Jet unary(Jet a, double f, double g, double h) const noexcept {
         Jet c{f};
-        if (derivatives) { c.g = g * a.g; c.h = g * a.h + h * a.g * a.g; }
+        if (derivatives) { c.g = g * a.g; if (second) c.h = g * a.h + h * a.g * a.g; }
         return c;
     }
     Jet divide(Jet a, Jet b) const noexcept {
         Jet c{a.f/b.f};
         if (derivatives) {
             c.g = std::fma(-c.f, b.g, a.g)/b.f;
-            c.h = (std::fma(-c.f, b.h, a.h)-2.0*c.g*b.g)/b.f;
+            if (second) c.h = (std::fma(-c.f, b.h, a.h)-2.0*c.g*b.g)/b.f;
         }
         return c;
     }
@@ -59,7 +60,7 @@ struct Arithmetic {
     }
     Jet log(Jet a) const noexcept {
         Jet c{std::log(a.f)};
-        if (derivatives) { c.g = a.g/a.f; c.h = a.h/a.f-c.g*c.g; }
+        if (derivatives) { c.g = a.g/a.f; if (second) c.h = a.h/a.f-c.g*c.g; }
         return c;
     }
     Jet exprel(Jet a) const noexcept {
@@ -78,6 +79,14 @@ struct Arithmetic {
             (e * (a.f * a.f - 2.0 * a.f + 2.0) - 2.0) * r * r * r);
     }
 };
+
+bool wants_curvature(unsigned want) noexcept {
+    return (want & argument) && !(want & first_only);
+}
+
+int gap_degree(unsigned want) noexcept {
+    return want & argument ? (want & first_only ? 1 : 2) : (want & order) && !(want & first_only) ? 1 : 0;
+}
 
 // zeta(k)/k, k = 2,...,81, rounded at 80 decimal digits.
 constexpr double gamma_coefficients[] = { 0.8224670334241132, 0.40068563438653143, 0.27058080842778454, 0.20738555102867398,
@@ -114,13 +123,29 @@ GammaPair gamma_pair(Jet u, Arithmetic op) noexcept {
     return {even, odd, op.scale(op.exp(op.add(even, op.mul(u, odd))), 0.5)};
 }
 
+GammaPair gamma_seed(double u, Arithmetic op, const PreparedOrder* prepared) noexcept {
+    if (prepared && (u == prepared->reduced || u == prepared->reflected_reduced)) {
+        const auto& g = u == prepared->reduced ? prepared->gamma : prepared->reflected_gamma;
+        return {g[0], g[1], g[2]};
+    }
+    return gamma_pair({u, op.derivatives ? 1.0 : 0.0}, op);
+}
+
+Jet temme_polynomial(const std::array<Jet, 17>& c, double w, Arithmetic op) noexcept {
+    Jet sum = c[16];
+    for (int k = 15; k >= 0; --k) sum = op.add(op.scale(sum, w), c[k]);
+    return sum;
+}
+
 // Temme's convergent series at |u| <= 1/2. The even form retains odd
 // derivatives near zero without subtracting two nearly equal gamma factors.
 struct Base { Jet logarithm, slope; };
-Base temme_even(double u_value, double z, bool derivatives) noexcept {
-    const Arithmetic op{derivatives};
+template<int Degree>
+Base temme_even_jet(double u_value, double z, const PreparedOrder* prepared, bool slope) noexcept {
+    constexpr bool derivatives = Degree >= 1;
+    const Arithmetic op{derivatives, Degree >= 2};
     const Jet u{u_value, derivatives ? 1.0 : 0.0};
-    const GammaPair gamma = gamma_pair(u, op);
+    const GammaPair gamma = gamma_seed(u.f, op, prepared);
     const Jet d = op.add(gamma.odd, {log_two - std::log(z)});
     const Jet x2 = op.mul(op.mul(u, d), op.mul(u, d));
     // sinh(x)/x and cosh(x) as even functions, including their derivatives.
@@ -152,20 +177,28 @@ Base temme_even(double u_value, double z, bool derivatives) noexcept {
         f = next;
         coefficient *= w / k;
         sum = op.add(sum, op.scale(f, coefficient));
-        qsum = op.add(qsum, op.scale(op.add(s, op.scale(f, -2.0*k)), coefficient));
+        if (slope) qsum = op.add(qsum, op.scale(op.add(s, op.scale(f, -2.0*k)), coefficient));
     }
-    return {op.log(sum), op.scale(op.divide(qsum, sum), -1.0)};
+    return {op.log(sum), slope ? op.scale(op.divide(qsum, sum), -1.0) : Jet{}};
+}
+
+Base temme_even(double u, double z, bool derivatives, const PreparedOrder* prepared = nullptr, bool second = true, bool slope = true) noexcept {
+    if (!derivatives) return temme_even_jet<0>(u, z, prepared, slope);
+    if (!second) return temme_even_jet<1>(u, z, prepared, slope);
+    return temme_even_jet<2>(u, z, prepared, slope);
 }
 
 // C_a = (z/2)^a K_a. For n >= 1 carry w*C_u, not C_u: this
 // cancels the singular power before evaluation, even at subnormal z.
 struct Product { Jet logarithm, previous_ratio; int n; double u; };
-Product temme_product(double a, double z, bool derivatives) noexcept {
-    const Arithmetic op{derivatives};
+template<int Degree>
+Product temme_product_jet(double a, double z, const PreparedOrder* prepared, bool ratio_needed) noexcept {
+    constexpr bool derivatives = Degree >= 1;
+    const Arithmetic op{derivatives, Degree >= 2};
     const int n = static_cast<int>(std::ceil(a - 0.5));
     const double uv = a - n;
     const Jet u{uv, derivatives ? 1.0 : 0.0};
-    const GammaPair gamma = gamma_pair(u, op);
+    const GammaPair gamma = gamma_seed(u.f, op, prepared);
     const double t = std::log(z) - log_two, w = (0.25*z)*z;
     const bool weighted = n >= 1;
     const Jet d = op.add(gamma.odd, {-t});
@@ -180,17 +213,25 @@ Product temme_product(double a, double z, bool derivatives) noexcept {
         f = op.mul(op.scale(p, 2.0), op.mul(d, op.exprel(op.scale(op.mul(u, d), -2.0))));
     }
     Jet previous = f, current = gamma.half_gamma;
-    const Jet u2 = op.mul(u, u);
-    double coefficient = 1.0;
-    for (int k = 1; k <= 16; ++k) {
-        f = op.divide(op.add(op.scale(f, k), op.add(p, q)),
-            op.add({double(k*k)}, op.scale(u2, -1.0)));
-        p = op.divide(p, op.add({double(k)}, op.scale(u, -1.0)));
-        q = op.divide(q, op.add({double(k)}, u));
-        coefficient *= (weighted ? 1.0 : w) / k;
-        previous = op.add(previous, op.scale(f, weighted ? w*coefficient : coefficient));
-        current = op.add(current, op.scale(op.add(p, op.scale(f, -double(k))), coefficient));
-        if (weighted) coefficient *= w;
+    if (prepared && (uv == prepared->reduced || uv == prepared->reflected_reduced)) {
+        const auto& series = uv == prepared->reduced ? prepared->series : prepared->reflected_series;
+        if (n == 0 || n >= 2) previous = op.add(op.add(op.mul(f, temme_polynomial(series[0], w, op)),
+            op.mul(p, temme_polynomial(series[1], w, op))), op.mul(q, temme_polynomial(series[2], w, op)));
+        if (n >= 1) current = op.add(current, op.add(op.add(op.mul(f, temme_polynomial(series[3], w, op)),
+            op.mul(p, temme_polynomial(series[4], w, op))), op.mul(q, temme_polynomial(series[5], w, op))));
+    } else {
+        const Jet u2 = op.mul(u, u);
+        double coefficient = 1.0;
+        for (int k = 1; k <= 16; ++k) {
+            f = op.divide(op.add(op.scale(f, k), op.add(p, q)),
+                op.add({double(k*k)}, op.scale(u2, -1.0)));
+            p = op.divide(p, op.add({double(k)}, op.scale(u, -1.0)));
+            q = op.divide(q, op.add({double(k)}, u));
+            coefficient *= (weighted ? 1.0 : w) / k;
+            previous = op.add(previous, op.scale(f, weighted ? w*coefficient : coefficient));
+            current = op.add(current, op.scale(op.add(p, op.scale(f, -double(k))), coefficient));
+            if (weighted) coefficient *= w;
+        }
     }
     Jet ratio{};
     if (n == 0) current = previous;
@@ -201,105 +242,107 @@ Product temme_product(double a, double z, bool derivatives) noexcept {
             next = op.add(op.mul(op.add(u, {double(k)}), current), op.scale(previous, w));
             previous = current; current = next;
         }
-        ratio = op.divide(previous, current);
+        if (ratio_needed) ratio = op.divide(previous, current);
     }
     // The small path is limited to a <= 128, so the gamma-sized recurrence
     // stays below DBL_MAX without rescaling (128! < 4e215).
     return {op.add(op.log(current), {a*log_two, derivatives ? log_two : 0.0}), ratio, n, uv};
 }
 
-// Steed's CF2 with the Thompson--Barnett normalization sum. The recurrence
-// works only at the reduced order; forward recurrence is stable for K.
-struct Consecutive { double value, lower_ratio, upper_ratio, scaled_slope; };
-Consecutive continued_fraction(double a, double z, bool scaled) noexcept {
-    const int n = static_cast<int>(std::ceil(a - 0.5));
-    const double u = a - n, initial = u*u - 0.25;
-    double coefficient = initial, b = 2.0*(z+1.0), d = 1.0/b;
-    double delta = d, f = delta, q0 = 0.0, q1 = 1.0;
-    double c = -initial, qsum = c, sum = 1.0 + qsum*delta;
-    for (int k = 2; k < 256; ++k) {
-        coefficient -= 2.0*(k-1.0); b += 2.0;
-        d = 1.0 / (b + coefficient*d);
-        delta *= b*d - 1.0;
-        f += delta;
-        const double q = (q0 - (b-2.0)*q1) / coefficient;
-        q0 = q1; q1 = q;
-        c *= -coefficient / k;
-        qsum += c*q;
-        const double term = qsum*delta;
-        sum += term;
-        if (std::abs(term) < 2e-17*std::abs(sum)) break;
-    }
-    double previous = 1.0/sum;
-    double difference = previous*((u+0.5+initial*f)/z);
-    double current = previous*(1.0 + (u+0.5+initial*f)/z);
-    if (n == 0) return {0.5*(log_pi_half-std::log(z))-(scaled ? 0.0 : z)+std::log(previous),
-        0.0, current/previous, -(0.5+initial*f)/z};
-    for (int k = 1; k < n; ++k) {
-        const double increment = (2.0*(u+k)/z)*current;
-        const double next = previous + increment;
-        difference = increment-difference;
-        previous = current; current = next;
-    }
-    return {0.5*(log_pi_half-std::log(z))-(scaled ? 0.0 : z)+std::log(current),
-        previous/current, previous/current+2.0*a/z, difference/current-a/z};
+Product temme_product(double a, double z, bool derivatives, const PreparedOrder* prepared = nullptr, bool second = true, bool ratio = true) noexcept {
+    if (!derivatives) return temme_product_jet<0>(a, z, prepared, ratio);
+    if (!second) return temme_product_jet<1>(a, z, prepared, ratio);
+    return temme_product_jet<2>(a, z, prepared, ratio);
 }
 
-struct Sum {
-    double value = 0.0, correction = 0.0;
-    void add(double x) noexcept {
-        const double y = x-correction, next = value+y;
-        correction = (next-value)-y; value = next;
+// Steed's CF2 with the Thompson--Barnett normalization sum. The recurrence
+// works only at the reduced order; forward recurrence is stable for K.
+struct Consecutive { Jet logarithm, lower_ratio, upper_ratio, scaled_slope; };
+template<int Degree>
+Consecutive continued_fraction_jet(double a, double z, bool scaled, bool argument_needed) noexcept {
+    const Arithmetic op{Degree >= 1, Degree >= 2};
+    const int n = static_cast<int>(std::ceil(a - 0.5));
+    const Jet u{a - n, op.derivatives ? 1.0 : 0.0};
+    const Jet initial = op.add(op.mul(u, u), {-0.25});
+    Jet coefficient = initial;
+    double b = 2.0 * (z + 1.0);
+    Jet d{1.0 / b}, delta = d, f = d, q0{}, q1{1.0};
+    Jet c = op.scale(initial, -1.0), qsum = c;
+    Jet sum = op.add({1.0}, op.mul(qsum, delta));
+    bool value_done = false;
+    double value_f = f.f;
+    for (int k = 2; k < 256; ++k) {
+        coefficient = op.add(coefficient, {-2.0 * (k - 1.0)});
+        b += 2.0;
+        d = op.divide({1.0}, op.add({b}, op.mul(coefficient, d)));
+        delta = op.mul(delta, op.add(op.scale(d, b), {-1.0}));
+        f = op.add(f, delta);
+        const Jet q = op.divide(op.add(q0, op.scale(q1, -(b - 2.0))), coefficient);
+        q0 = q1; q1 = q;
+        c = op.scale(op.mul(c, coefficient), -1.0 / k);
+        qsum = op.add(qsum, op.mul(c, q));
+        Jet term = op.mul(qsum, delta);
+        const bool small_value = std::abs(term.f) < 2e-17 * std::abs(sum.f);
+        if (value_done) term.f = 0.0;
+        sum = op.add(sum, term);
+        if (!value_done) value_f = f.f;
+        value_done = value_done || small_value;
+        if (value_done && (!op.derivatives || (k >= 32
+            && std::abs(delta.f) < 1e-24 * std::abs(f.f)))) break;
     }
-};
+    Jet previous = op.divide({1.0}, sum);
+    Jet product = op.mul(initial, f);
+    product.f = initial.f * value_f;
+    const Jet correction = op.add(op.add(u, {0.5}), product);
+    Jet difference = argument_needed ? op.scale(op.mul(previous, correction), 1.0 / z) : Jet{};
+    Jet current = op.mul(previous, op.add({1.0}, op.scale(correction, 1.0 / z)));
+    const double constant = 0.5 * (log_pi_half - std::log(z)) - (scaled ? 0.0 : z);
+    if (n == 0) return {op.add(op.log(previous), {constant}), {},
+        argument_needed ? op.divide(current, previous) : Jet{},
+        argument_needed ? op.scale(op.add({0.5}, product), -1.0 / z) : Jet{}};
+    for (int k = 1; k < n; ++k) {
+        const Jet increment = op.scale(op.mul(op.add(u, {double(k)}), current), 2.0 / z);
+        const Jet next = op.add(previous, increment);
+        if (argument_needed) difference = op.add(increment, op.scale(difference, -1.0));
+        previous = current; current = next;
+    }
+    if (!argument_needed) return {op.add(op.log(current), {constant}), {}, {}, {}};
+    const Jet ratio = op.divide(previous, current);
+    return {op.add(op.log(current), {constant}), ratio, op.add(ratio, {2.0 * a / z}),
+        op.add(op.divide(difference, current), {-a / z, op.derivatives ? -1.0 / z : 0.0})};
+}
 
-// K = integral_0^infinity exp(-z cosh(t)) cosh(a t) dt.
-// Center the moments, and scale both the exponent and mesh at the saddle.
-void order_integral(double a, double z, LogK& out) noexcept {
-    const double h = std::hypot(a, z), center = std::asinh(a/z);
-    const double step = 0.125/std::sqrt(h);
-    const double shift = a*center - (a*a)/(h+z);
-    const double center_cosh = h/z;
-    Sum s0, s1, s2, sc, s1c;
-    for (int k = 0; k < 16000; ++k) {
-        const double t = k*step, sh = std::sinh(0.5*t), at = a*t;
-        const double exponent = -2.0*z*sh*sh + at-shift;
-        if (t > center && exponent < -60.0) break;
-        const double reflection = at == 0.0 ? 1.0 : std::exp(-2.0*at);
-        const double weight = (k == 0 ? 0.5 : 1.0)*std::exp(exponent)*(1.0+reflection);
-        const double mean = t*std::tanh(at)-center;
-        const double second = t*t - 2.0*center*t*std::tanh(at)+center*center;
-        const double dc = 2.0*sh*sh - (center_cosh-1.0);
-        s0.add(weight); s1.add(weight*mean); s2.add(weight*second);
-        sc.add(weight*dc); s1c.add(weight*mean*dc);
-    }
-    const double mean = s1.value/s0.value;
-    out.nu = center+mean;
-    out.nunu = s2.value/s0.value-mean*mean;
-    out.nuz = -(s1c.value/s0.value-mean*(sc.value/s0.value));
+Consecutive continued_fraction(double a, double z, bool scaled, unsigned want) noexcept {
+    const bool argument_needed = (want & argument) || ((want & order) && !(want & first_only));
+    if (!(want & order)) return continued_fraction_jet<0>(a, z, scaled, argument_needed);
+    if (want & first_only) return continued_fraction_jet<1>(a, z, scaled, argument_needed);
+    return continued_fraction_jet<2>(a, z, scaled, argument_needed);
 }
 
 // DLMF 10.40.2. Adjacent-order coefficient identities give the ratio
 // correction c = sum(k term_k)/sum(term_k). Substitution into the ODE
 // cancels the O(z^2) and O(a^2) terms symbolically, before rounding.
 void large_argument(double a, double z, unsigned want, bool product, bool scaled, LogK& out) noexcept {
-    const Arithmetic op{bool(want & order)};
+    const Arithmetic op{bool(want & order), !(want & first_only)};
     const Jet nu{a, op.derivatives ? 1.0 : 0.0};
     const Jet a2 = op.mul(nu, nu);
     Jet term{1.0}, sum{1.0}, weighted{}, curvature{};
     for (int k = 1; k <= 32; ++k) {
         term = op.scale(op.mul(term, op.add(a2, {-(k-0.5)*(k-0.5)})), (0.5/z)/k);
         sum = op.add(sum, term);
-        weighted = op.add(weighted, op.scale(term, k));
-        curvature = op.add(curvature, op.scale(term, double(k)*(k+1.0)));
+        if ((want & argument) || ((want & order) && !(want & first_only)))
+            weighted = op.add(weighted, op.scale(term, k));
+        if (wants_curvature(want)) curvature = op.add(curvature, op.scale(term, double(k)*(k+1.0)));
     }
-    const Jet logarithm = op.log(sum), c = op.divide(weighted, sum);
+    const Jet logarithm = op.log(sum);
+    const Jet c = (want & argument) || ((want & order) && !(want & first_only))
+        ? op.divide(weighted, sum) : Jet{};
     out.value = scaled ? 0.5*log_pi_half+((product ? a : 0.0)-0.5)*std::log(z)+logarithm.f
         : 0.5*(log_pi_half-std::log(z))-z+logarithm.f;
     if (product && !scaled) out.value += a*std::log(z);
     if (want & argument) {
         out.z = (scaled ? 0.0 : -1.0) + ((product ? a : 0.0)-0.5-c.f)/z;
-        out.zz = (0.5 + curvature.f/sum.f-c.f*c.f-(product ? a : 0.0))/z/z;
+        if (wants_curvature(want)) out.zz = (0.5 + curvature.f/sum.f-c.f*c.f-(product ? a : 0.0))/z/z;
     }
     if (want & order) {
         out.nu = logarithm.g + (product ? std::log(z) : 0.0);
@@ -324,7 +367,7 @@ constexpr auto debye_polynomials() noexcept {
 constexpr auto debye = debye_polynomials();
 
 void large_order(double a, double z, unsigned want, bool product, bool scaled, LogK& out, bool negative_power = false) noexcept {
-    const Arithmetic op{bool(want & order)};
+    const Arithmetic op{bool(want & order), !(want & first_only)};
     const double scale = std::max(a, z), ar = a/scale, zr = z/scale;
     const double norm = std::hypot(ar, zr), t = ar/norm, r = zr/norm;
     const double invh = (1.0/scale)/norm, inva = 1.0/a;
@@ -333,9 +376,9 @@ void large_order(double a, double z, unsigned want, bool product, bool scaled, L
     const double ratio = a/z;
     const double saddle = std::isfinite(ratio) ? std::asinh(ratio) : logsum-std::log(z);
     const Jet tj{t, op.derivatives ? r*r*invh : 0.0,
-        op.derivatives ? -3.0*t*r*r*invh*invh : 0.0};
+        op.derivatives && op.second ? -3.0*t*r*r*invh*invh : 0.0};
     const Jet inverse{inva, op.derivatives ? -inva*inva : 0.0,
-        op.derivatives ? 2.0*inva*inva*inva : 0.0};
+        op.derivatives && op.second ? 2.0*inva*inva*inva : 0.0};
     Jet sum{1.0}, dc{}, power{1.0};
     for (int k = 1; k <= 10; ++k) {
         power = op.mul(power, op.scale(inverse, -1.0));
@@ -365,8 +408,10 @@ void large_order(double a, double z, unsigned want, bool product, bool scaled, L
         out.z = scaled
             ? (product ? t*(1.0+t/(1.0+r))/(1.0+t) : -t*(a/z)/(1.0+r))-r*invh*d.f
             : (product ? -r/(1.0+t) : -norm*(scale/z))-r*invh*d.f;
-        const double remainder = -2.0*correction.f*invh+(d.f-r*r*d.f*d.f)*invh*invh;
-        out.zz = (product ? -t*invh/(1.0+t) : (t*(a/z))/z)+remainder;
+        if (wants_curvature(want)) {
+            const double remainder = -2.0*correction.f*invh+(d.f-r*r*d.f*d.f)*invh*invh;
+            out.zz = (product ? -t*invh/(1.0+t) : (t*(a/z))/z)+remainder;
+        }
     }
     if (want & order) {
         out.nu = (product ? logsum : saddle)-0.5*t*invh+logarithm.g;
@@ -376,47 +421,49 @@ void large_order(double a, double z, unsigned want, bool product, bool scaled, L
     }
 }
 
-void small_argument(double a, double z, unsigned want, bool product, bool scaled, LogK& out) noexcept {
+void small_argument(double a, double z, unsigned want, bool product, bool scaled, LogK& out, const PreparedOrder* prepared = nullptr) noexcept {
     const bool derivatives = want & order;
+    const bool argument_needed = (want & argument) || (derivatives && !(want & first_only));
+    const bool mixed_needed = derivatives && !(want & first_only);
     if (!product && a <= 0.5) {
-        const Base base = temme_even(a, z, derivatives);
+        const Base base = temme_even(a, z, derivatives, prepared, !(want & first_only), argument_needed);
         out.value = base.logarithm.f+(scaled ? z : 0.0);
         if (want & argument) {
             out.z = (base.slope.f+(scaled ? z : 0.0))/z;
-            out.zz = 1.0+(a*a-base.slope.f-base.slope.f*base.slope.f)/z/z;
+            if (wants_curvature(want)) out.zz = 1.0+(a*a-base.slope.f-base.slope.f*base.slope.f)/z/z;
         }
         if (derivatives) {
             if (a*(log_two-std::log(z)-euler) <= 0.5) {
                 out.nu = base.logarithm.g; out.nunu = base.logarithm.h;
             } else {
-                const Product p = temme_product(a, z, true);
+                const Product p = temme_product(a, z, true, prepared, !(want & first_only));
                 out.nu = p.logarithm.g-std::log(z); out.nunu = p.logarithm.h;
             }
             out.nuz = base.slope.g/z;
         }
         return;
     }
-    const Product p = temme_product(a, z, derivatives);
+    const Product p = temme_product(a, z, derivatives, prepared, !(want & first_only), argument_needed);
     out.value = p.logarithm.f-(product ? 0.0 : a*std::log(z))+(scaled ? z : 0.0);
     double slope = 0.0, mixed = 0.0, curvature = 0.0, log_ratio = 0.0;
-    if (want != value_only) {
+    if (argument_needed) {
         if (p.n >= 2) {
             slope = -0.5*z*p.previous_ratio.f;
-            if (derivatives) mixed = -0.5*z*p.previous_ratio.g;
+            if (derivatives && !(want & first_only)) mixed = -0.5*z*p.previous_ratio.g;
         } else if (p.n == 1) {
-            const Base lower = temme_even(a-1.0, z, derivatives);
+            const Base lower = temme_even(a-1.0, z, mixed_needed, prepared, !(want & first_only));
             log_ratio = lower.logarithm.f+a*std::log(z)-p.logarithm.f;
             slope = -std::exp(log_ratio);
-            if (derivatives)
+            if (derivatives && !(want & first_only))
                 mixed = slope*(lower.logarithm.g+std::log(z)-p.logarithm.g);
         } else {
-            const Product lower = temme_product(1.0-a, z, derivatives);
+            const Product lower = temme_product(1.0-a, z, mixed_needed, prepared, !(want & first_only));
             log_ratio = lower.logarithm.f-p.logarithm.f+(2.0*a-1.0)*std::log(z);
             slope = -std::exp(log_ratio);
-            if (derivatives)
+            if (derivatives && !(want & first_only))
                 mixed = slope*(-lower.logarithm.g-p.logarithm.g+2.0*std::log(z));
         }
-        if (want & argument) {
+        if (wants_curvature(want)) {
             if (p.n >= 2)
                 curvature = 1.0-0.5*(2.0*a-1.0)*p.previous_ratio.f-slope*slope;
             else {
@@ -431,14 +478,14 @@ void small_argument(double a, double z, unsigned want, bool product, bool scaled
         const double scaled_slope = p.n >= 2 ? std::fma(-0.5*z, p.previous_ratio.f, 1.0)
             : -std::expm1(log_ratio);
         out.z = (scaled ? scaled_slope : slope)-(product ? 0.0 : a/z);
-        out.zz = product ? curvature : (a/z)/z+curvature;
+        if (wants_curvature(want)) out.zz = product ? curvature : (a/z)/z+curvature;
     }
     if (derivatives) {
         out.nu = p.logarithm.g-(product ? 0.0 : std::log(z));
         out.nunu = p.logarithm.h;
         out.nuz = mixed-(product ? 0.0 : 1.0/z);
         if (p.n == 0 && a*(log_two-std::log(z)-euler) <= 0.5) {
-            const Base base = temme_even(a, z, true);
+            const Base base = temme_even(a, z, true, prepared, !(want & first_only));
             out.nu = base.logarithm.g+std::log(z);
             out.nunu = base.logarithm.h;
         }
@@ -557,21 +604,21 @@ struct SeriesArithmetic {
 // the mixed derivative at a=1/2 must survive even at subnormal z.
 Series small_gap_log_m(double a, double z, unsigned want) noexcept {
     const bool derivatives = want & order;
-    const Arithmetic op{derivatives};
+    const Arithmetic op{derivatives, !(want & first_only)};
     const double lz = std::log(z);
-    const Product p = temme_product(a, z, derivatives);
+    const Product p = temme_product(a, z, derivatives, nullptr, !(want & first_only), bool(want));
     Series m; m.c[0] = p.logarithm;
     if (!want) return m;
     Jet slope;
     double log_ratio = 0.0;
     if (p.n >= 2) slope = op.scale(p.previous_ratio, -0.5*z);
     else if (p.n == 1) {
-        const Base lower = temme_even(a-1.0, z, derivatives);
+        const Base lower = temme_even(a-1.0, z, derivatives, nullptr, !(want & first_only));
         const Jet exponent = op.add(op.add(lower.logarithm, op.scale(p.logarithm, -1.0)),
             {a*lz, derivatives ? lz : 0.0});
         slope = op.scale(op.exp(exponent), -1.0); log_ratio = exponent.f;
     } else {
-        const Product lower = temme_product(1.0-a, z, derivatives);
+        const Product lower = temme_product(1.0-a, z, derivatives, nullptr, !(want & first_only));
         const Jet exponent = op.add(op.add(lower.logarithm, op.scale(p.logarithm, -1.0)),
             {(2.0*a-1.0)*lz, derivatives ? 2.0*lz : 0.0});
         // The lower order moves in the opposite direction.
@@ -583,7 +630,7 @@ Series small_gap_log_m(double a, double z, unsigned want) noexcept {
         slope = op.scale(op.exp(corrected), -1.0); log_ratio = exponent.f;
     }
     m.c[1] = slope;
-    if (want & argument) {
+    if (wants_curvature(want)) {
         double curvature;
         if (p.n >= 2) curvature = 1.0-0.5*(2.0*a-1.0)*p.previous_ratio.f-slope.f*slope.f;
         else {
@@ -635,7 +682,7 @@ GapBase small_gap(double nu, double z, unsigned want, SeriesArithmetic op) noexc
     const Jet power{nu < 0.0 ? -2.0*nu : 0.0, (want & order) && nu < 0.0 ? -2.0 : 0.0};
     Series q = power_exp(regular, power, z, want, op);
     if (a*(log_two-std::log(z)-euler) <= 0.5) {
-        const Base base = temme_even(nu, z, bool(want & order));
+        const Base base = temme_even(nu, z, bool(want & order), nullptr, !(want & first_only));
         q.c[0] = op.op.add({nu, want & order ? 1.0 : 0.0}, op.op.scale(base.slope, -1.0));
         if (want) {
             const Jet v{nu, want & order ? 1.0 : 0.0};
@@ -654,7 +701,7 @@ GapBase small_gap(double nu, double z, unsigned want, SeriesArithmetic op) noexc
 // W = (1-z*d(log R)/dz)/z. At these orders and z > 1/2 the parenthesis
 // is of order one, so it never subtracts nearly equal ratios.
 GapBase fraction_gap(double nu, double z, unsigned want) noexcept {
-    const SeriesArithmetic op{{bool(want & order)}, want & argument ? 3 : want & order ? 2 : 1};
+    const SeriesArithmetic op{{bool(want & order), !(want & first_only)}, gap_degree(want) + 1};
     const double a = std::abs(nu);
     const int n = static_cast<int>(std::ceil(a-0.5));
     Series u = op.order_variable(a-n);
@@ -687,7 +734,7 @@ GapBase fraction_gap(double nu, double z, unsigned want) noexcept {
     for (int k = 0; k < op.degree; ++k)
         gap.c[k] = op.op.add(gap.c[k], op.op.scale(logq.c[k+1], -(k+1.0)));
     // No public output depends on the unavailable highest coefficient.
-    const SeriesArithmetic reduced{{bool(want & order)}, want & argument ? 2 : want & order ? 1 : 0};
+    const SeriesArithmetic reduced{{bool(want & order), !(want & first_only)}, gap_degree(want)};
     return {q, gap, logq, reduced.log(reduced.add(q, gap))};
 }
 
@@ -715,7 +762,7 @@ GapBase asymptotic_gap(double nu, double z, SeriesArithmetic op) noexcept {
 // Debye's ratio itself. Normalize h before forming q = z*R, so even
 // a+h > DBL_MAX is harmless. Here 1 <= z*W <= 2.
 Series uniform_gap(double nu, double z, unsigned want, Series& logratio) noexcept {
-    const SeriesArithmetic op{{bool(want & order)}, want & argument ? 3 : want & order ? 2 : 1};
+    const SeriesArithmetic op{{bool(want & order), !(want & first_only)}, gap_degree(want) + 1};
     const double scale = std::max(nu, z);
     const Series a = op.scale(op.order_variable(nu), 1.0/scale);
     const Series x = op.argument(z/scale);
@@ -741,7 +788,7 @@ Series uniform_gap(double nu, double z, unsigned want, Series& logratio) noexcep
     Series d = constant(2.0);
     for (int k = 0; k < op.degree; ++k)
         d.c[k] = op.op.add(d.c[k], op.op.scale(logq.c[k+1], -(k+1.0)));
-    const SeriesArithmetic reduced{{bool(want & order)}, want & argument ? 2 : want & order ? 1 : 0};
+    const SeriesArithmetic reduced{{bool(want & order), !(want & first_only)}, gap_degree(want)};
     Series lz = constant(std::log(z)); lz.c[1].f = 1.0;
     logratio = reduced.add(logq, reduced.scale(lz, -1.0));
     return reduced.add(reduced.log(d), reduced.scale(lz, -1.0));
@@ -749,28 +796,28 @@ Series uniform_gap(double nu, double z, unsigned want, Series& logratio) noexcep
 
 bool finite_result(const LogK& result, unsigned want) noexcept {
     return std::isfinite(result.value)
-        && (!(want & argument) || (std::isfinite(result.z) && std::isfinite(result.zz)))
-        && (!(want & order) || (std::isfinite(result.nu) && std::isfinite(result.nunu)
-            && std::isfinite(result.nuz)));
+        && (!(want & argument) || (std::isfinite(result.z) && ((want & first_only) || std::isfinite(result.zz))))
+        && (!(want & order) || (std::isfinite(result.nu) && ((want & first_only) || (std::isfinite(result.nunu)
+            && std::isfinite(result.nuz)))));
 }
 
-bool evaluate(double nu, double z, unsigned want, bool product, bool scaled, LogK& out) noexcept {
+bool evaluate(double nu, double z, unsigned want, bool product, bool scaled, LogK& out, const PreparedOrder* prepared = nullptr) noexcept {
     out = empty();
-    if (!std::isfinite(nu) || !std::isfinite(z) || want > (argument|order)
+    if (!std::isfinite(nu) || !std::isfinite(z) || (want & ~(argument | order | first_only)) || want == first_only
         || (product ? !(z > 0.0 ? scaled || nu > 0.0 : nu > 0.0 && z == 0.0) : !(z > 0.0))) return false;
     const double a = std::abs(nu);
     LogK result = empty();
     if (z == 0.0) {
-        if (((want & argument) && a <= 1.0 && a != 0.5)
-            || ((want & order) && a <= 0.5)) return false;
+        if (((want & argument) && (a < 0.5 || (!(want & first_only) && a <= 1.0 && a != 0.5)))
+            || ((want & order) && !(want & first_only) && a <= 0.5)) return false;
         result.value = log_gamma(a)+(a-1.0)*log_two;
         if (want & argument) {
             result.z = (a == 0.5 ? -1.0 : 0.0)+(scaled ? 1.0 : 0.0);
-            result.zz = a == 0.5 ? 0.0 : -0.5/(a-1.0);
+            if (wants_curvature(want)) result.zz = a == 0.5 ? 0.0 : -0.5/(a-1.0);
         }
         if (want & order) {
             result.nu = digamma(a)+log_two;
-            result.nunu = trigamma(a); result.nuz = 0.0;
+            if (!(want & first_only)) { result.nunu = trigamma(a); result.nuz = 0.0; }
         }
     } else {
         const bool elementary = a == 0.5 || a == 1.5 || a == 2.5;
@@ -778,18 +825,20 @@ bool evaluate(double nu, double z, unsigned want, bool product, bool scaled, Log
         else if (a <= 128.0 && z >= 64.0 && z >= 0.25*a*a)
             large_argument(a, z, want, product, scaled, result);
         else if (a > 128.0) large_order(a, z, want, product, scaled, result, product && scaled && nu < 0.0);
-        else if (z <= 2.0) small_argument(a, z, want, product, scaled, result);
+        else if (z <= 2.0) small_argument(a, z, want, product, scaled, result, prepared);
         else {
-            const Consecutive k = continued_fraction(a, z, scaled);
-            result.value = k.value+(product ? a*std::log(z) : 0.0);
+            const Consecutive k = continued_fraction(a, z, scaled, want);
+            result.value = k.logarithm.f+(product ? a*std::log(z) : 0.0);
             if (want & argument) {
-                const double lower = a <= 0.5 ? k.upper_ratio-2.0*a/z : k.lower_ratio;
-                const double curvature = 1.0-(2.0*a-1.0)*(lower/z)-lower*lower;
-                result.z = scaled ? k.scaled_slope+(product ? a/z : 0.0) : -lower-(product ? 0.0 : a/z);
-                result.zz = curvature+(product ? 0.0 : (a/z)/z);
+                const double lower = a <= 0.5 ? k.upper_ratio.f-2.0*a/z : k.lower_ratio.f;
+                result.z = scaled ? k.scaled_slope.f+(product ? a/z : 0.0) : -lower-(product ? 0.0 : a/z);
+                if (wants_curvature(want)) result.zz = 1.0-(2.0*a-1.0)*(lower/z)-lower*lower
+                    +(product ? 0.0 : (a/z)/z);
             }
             if (want & order) {
-                order_integral(a, z, result);
+                result.nu = k.logarithm.g;
+                result.nunu = k.logarithm.h;
+                result.nuz = k.scaled_slope.g;
                 if (product) { result.nu += std::log(z); result.nuz += 1.0/z; }
             }
         }
@@ -808,11 +857,58 @@ bool evaluate(double nu, double z, unsigned want, bool product, bool scaled, Log
         }
     }
     if (!finite_result(result, want)) return false;
+    if (want & first_only) result.zz = result.nunu = result.nuz = nan;
     out = result;
     return true;
 }
 
+void prepare_temme(double u_value, Arithmetic op, std::array<Jet, 3>& gamma,
+                   std::array<std::array<Jet, 17>, 6>& series) noexcept {
+    const Jet u{u_value, op.derivatives ? 1.0 : 0.0}, square = op.mul(u, u);
+    const auto g = gamma_pair(u, op);
+    gamma = {g.even, g.odd, g.half_gamma};
+    Jet f[3] = {{1.0}, {}, {}}, p{1.0}, q{1.0};
+    series = {};
+    series[0][0] = {1.0};
+    double factorial = 1.0;
+    for (int k = 1; k <= 16; ++k) {
+        const Jet inverse = op.divide({1.0}, op.add({double(k * k)}, op.scale(square, -1.0)));
+        for (int j = 0; j < 3; ++j) {
+            Jet numerator = op.scale(f[j], k);
+            if (j == 1) numerator = op.add(numerator, p);
+            if (j == 2) numerator = op.add(numerator, q);
+            f[j] = op.mul(numerator, inverse);
+        }
+        p = op.divide(p, op.add({double(k)}, op.scale(u, -1.0)));
+        q = op.divide(q, op.add({double(k)}, u));
+        factorial /= k;
+        for (int j = 0; j < 3; ++j) {
+            series[j][k] = op.scale(f[j], factorial);
+            series[j + 3][k - 1] = op.scale(op.add(j == 1 ? p : Jet{}, op.scale(f[j], -double(k))), factorial);
+        }
+    }
+}
 }  // namespace
+
+bool prepare(double nu, unsigned want, PreparedOrder& out) noexcept {
+    if (!std::isfinite(nu) || (want & ~(argument | order | first_only)) || want == first_only) return false;
+    out.nu = nu;
+    out.want = want;
+    const double a = std::abs(nu);
+    if (a > 128.0) return true;
+    out.reduced = a - std::ceil(a - 0.5);
+    const Arithmetic op{bool(want & order), !(want & first_only)};
+    // Match the complementary reduction's actual binary64 order.
+    const double complement = 1.0 - a;
+    out.reflected_reduced = a < 0.5 ? complement - std::ceil(complement - 0.5) : -out.reduced;
+    prepare_temme(out.reduced, op, out.gamma, out.series);
+    prepare_temme(out.reflected_reduced, op, out.reflected_gamma, out.reflected_series);
+    return true;
+}
+
+bool log_zk_scaled(const PreparedOrder& p, double z, LogK& out) noexcept {
+    return evaluate(p.nu, z, p.want, true, true, out, &p);
+}
 
 bool log_k(double nu, double z, unsigned want, LogK& out) noexcept {
     return evaluate(nu, z, want, false, false, out);
@@ -832,11 +928,11 @@ bool log_zk_scaled(double nu, double z, unsigned want, LogK& out) noexcept {
 
 bool log_ratio_gap(double nu, double z, unsigned want, LogK& out) noexcept {
     out = empty();
-    if (!std::isfinite(nu) || !std::isfinite(z) || !(z > 0.0) || want > (argument|order)) return false;
+    if (!std::isfinite(nu) || !std::isfinite(z) || !(z > 0.0) || (want & ~(argument | order | first_only)) || want == first_only) return false;
     // Reflect the determinant about its middle order, then recur only upwards.
     const bool reflected = nu < -1.0;
     const double p = reflected ? -(nu+2.0) : nu;
-    const SeriesArithmetic op{{bool(want & order)}, want & argument ? 2 : want & order ? 1 : 0};
+    const SeriesArithmetic op{{bool(want & order), !(want & first_only)}, gap_degree(want)};
     Series lz = constant(std::log(z)); lz.c[1].f = 1.0;
     Series g;
     if (p > 128.0) {
@@ -868,7 +964,7 @@ bool log_ratio_gap(double nu, double z, unsigned want, LogK& out) noexcept {
                     // z*q_z stays finite even when q_z overflows. Use it
                     // directly, before multiplying by the small z/q factor.
                     const Jet v{u, want & order ? 1.0 : 0.0};
-                    const Base base = temme_even(u, z, bool(want & order));
+                    const Base base = temme_even(u, z, bool(want & order), nullptr, !(want & first_only));
                     const Jet numerator = op.op.add(op.op.add(op.op.mul(base.slope, base.slope),
                         op.op.scale(op.op.mul(v, v), -1.0)), {-z*z});
                     const Jet z_over_q = op.op.divide({z}, q.c[0]);
@@ -923,6 +1019,7 @@ bool log_ratio_gap(double nu, double z, unsigned want, LogK& out) noexcept {
         result.nu = sign*g.c[0].g; result.nunu = g.c[0].h; result.nuz = natural ? sign*g.c[1].g : sign*g.c[1].g/z;
     }
     if (!finite_result(result, want)) return false;
+    if (want & first_only) result.zz = result.nunu = result.nuz = nan;
     out = result; return true;
 }
 
@@ -933,7 +1030,7 @@ bool log_k_ladder(double nu, double z, std::size_t count, unsigned want, LogK* o
     for (std::size_t i = 0; i < count; ++i)
         if (!log_k(nu+static_cast<double>(i), z, want, result[i])) return false;
     for (std::size_t i = 0; i < count; ++i) out[i] = result[i];
-    return std::isfinite(nu) && std::isfinite(z) && z > 0.0 && want <= (argument|order);
+    return std::isfinite(nu) && std::isfinite(z) && z > 0.0 && !(want & ~(argument | order | first_only)) && want != first_only;
 }
 
 }  // namespace scivolapi::detail::bessel

@@ -88,6 +88,22 @@ def test_gh_family_jet_matches_ad_oracle(series, density):
     check_against_oracle(series[:150], density, 1, 1, SHAPES[density][:1])
 
 
+@pytest.mark.parametrize("density,shape", [
+    ("variance_gamma", [-0.2, 3.0]),
+    ("generalized_hyperbolic", [0.3, 2.01, 1.0]),
+])
+def test_variable_order_at_half_integer_matches_ad_oracle(series, density, shape):
+    check_against_oracle(series[:150], density, 1, 1, [shape])
+    jet = api.Jet(model_for(density), series)
+    theta = point(1, 1, shape)
+    full = jet.theta(theta, 7)
+    for mask in (1, 2, 3, 4, 5, 6):
+        part = jet.theta(theta, mask)
+        for key, bit in (("value", 1), ("gradient", 2), ("hessian", 4)):
+            if mask & bit:
+                assert np.array_equal(part[key], full[key])
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("density", list(GH_ORACLE))
 @pytest.mark.parametrize("p,q", ORDERS)
