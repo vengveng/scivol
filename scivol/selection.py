@@ -324,6 +324,10 @@ class _Reduction:
             model = api.Model(definition)
             declared.append(model.key)
             self._compile(model)
+        self.parents = {key: [] for key in self.nodes}
+        for parent, edges in self.edges.items():
+            for restriction, child in edges:
+                self.parents[child].append((parent, restriction))
         self.allowed = set(self.nodes) if search.closure else set(declared)
         descendants = {child for key in declared for child in self._reachable(key)}
         self.roots = tuple(sorted(set(declared)-descendants))
@@ -426,8 +430,13 @@ class _Reduction:
         return criterion, candidate.key
 
     def _fit_nodes(self, requests, diagnostics):
-        jobs, seen = [], set()
-        for key, parent, restriction in sorted(requests, key=lambda r: r[0]):
+        jobs, seen, dimension = [], set(), None
+        for key, parent, restriction in sorted(requests, key=lambda r: (-self.nodes[r[0]].model.dimension, r[0])):
+            next_dimension = self.nodes[key].model.dimension
+            if dimension != next_dimension:
+                self._complete_fits(jobs, diagnostics)
+                jobs = []
+                dimension = next_dimension
             node = self.nodes[key]
             if node.fit is not None or node.failure_reason or key in seen:
                 continue
@@ -435,15 +444,15 @@ class _Reduction:
             start = None
             if parent is not None:
                 source = self.nodes[parent]
-                reuse = api.restrict_fit(source.model, source.fit, restriction, self.plan)
-                if reuse.status == api.RestrictFitStatus.reused:
+                reuse = self._reuse_child(key, parent, restriction)
+                if reuse is not None:
                     reserve = max(self.deployment_reserve, int(node.model.spec.mean.conditioning != self.first))
                     if self.counts["optimizer_invocations"] + reserve > self.procedure.max_fits:
                         self.frontier.add(key)
                         continue
                     self.deployment_reserve = reserve
                     self.frontier.discard(key)
-                    node.fit, node.free = reuse.result, True
+                    node.fit, node.free = reuse, True
                     self.counts["free_children"] += 1
                     self._diagnose(node, diagnostics)
                     continue
@@ -459,6 +468,26 @@ class _Reduction:
             self.counts["warm_started_fits"] += start is not None
             node.warm_started = start is not None
             jobs.append((node, _options(self.options, start)))
+        self._complete_fits(jobs, diagnostics)
+
+    def _reuse_child(self, key, parent, restriction):
+        # Different paths may have already fitted a parent exactly on this face.
+        # Higher-dimensional siblings are completed before scheduling this node.
+        sources = [(parent, restriction)] + self.parents[key]
+        seen = set()
+        for source_key, edge in sources:
+            if source_key in seen:
+                continue
+            seen.add(source_key)
+            source = self.nodes[source_key]
+            if not source.certified:
+                continue
+            reuse = api.restrict_fit(source.model, source.fit, edge, self.plan)
+            if reuse.status == api.RestrictFitStatus.reused:
+                return reuse.result
+        return None
+
+    def _complete_fits(self, jobs, diagnostics):
         for node, output, elapsed, failure in self.pool.map(self._fit_one, jobs):
             node.fit, node.elapsed, node.failure_reason = output, elapsed, failure
             self._diagnose(node, diagnostics)
@@ -551,12 +580,8 @@ class _Reduction:
         if theta is None:
             record["failure_reason"] = "Child cannot be embedded in parent domain"
             return record
-        output = api.Jet(p.model, self.plan).theta(theta, api.HESSIAN)
-        if output["status"] != "ok":
-            record["failure_reason"] = "Invalid parent Hessian at restricted estimate"
-            return record
         test = api.restriction_test(p.model, c.model, restriction, p.fit, c.fit,
-                                    output["hessian"], level)
+                                    self.plan, level)
         if test.status == api.LRStatus.negative_statistic and self.counts["optimizer_invocations"] + self.deployment_reserve < self.procedure.max_fits:
             self.counts["optimizer_invocations"] += 1
             self.counts["parent_refits"] += 1
@@ -564,7 +589,7 @@ class _Reduction:
             p.fit = api.fit(p.model, self.plan, _options(self.options, theta))
             self._diagnose(p, True)
             test = api.restriction_test(p.model, c.model, restriction, p.fit, c.fit,
-                                        output["hessian"], level)
+                                        self.plan, level)
         if test.status == api.LRStatus.negative_statistic and self.counts["optimizer_invocations"] + self.deployment_reserve >= self.procedure.max_fits:
             self.frontier.add(parent)
         record.update(statistic=test.statistic, law=test.law.name,

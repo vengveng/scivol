@@ -9,6 +9,7 @@
 
 #include "density/distribution.hpp"
 #include "finalize.hpp"
+#include <scivolapi/jet.hpp>
 
 namespace scivolapi {
 namespace {
@@ -303,8 +304,6 @@ LRResult restriction_test(const Model& parent, const Model& child, const Restric
     if (*lifted == pf.theta && std::abs(out.statistic) <= noise) out.statistic = 0.0;
     if (out.statistic < 0.0)
         return invalid(out, LRStatus::negative_statistic, "The child improves on the parent; refit the parent from the embedded child.");
-    if (!r.regular(cf.theta))
-        return invalid(out, LRStatus::retained_boundary, "Retained boundary nuisance or unidentified recursion requires a cone calibration.");
     if (!r.identified(cf.theta))
         return invalid(out, LRStatus::unsupported, "A nonminimal or unidentified recursion under the null requires specialized calibration.");
     if (!symmetric(information, d))
@@ -312,6 +311,40 @@ LRResult restriction_test(const Model& parent, const Model& child, const Restric
     Matrix inverse;
     if (!invert(Matrix(information.begin(), information.end()), d, inverse))
         return invalid(out, LRStatus::singular_information, "Parent information is singular, indefinite, or ill conditioned.");
+    const auto normals = parent.closed_face_normals(*lifted);
+    bool orthogonal = true;
+    for (std::size_t i = 0; i < normals.size()/d; ++i) {
+        // A parent face is retained when it varies along the child embedding.
+        bool retained = false;
+        for (std::size_t j = 0; j < c; ++j) {
+            double v = 0;
+            for (std::size_t a = 0; a < d; ++a) v += normals[i*d+a]*r.embedding[a*c+j];
+            retained = retained || v != 0;
+        }
+        if (!retained) continue;
+        for (std::size_t j = 0; j < r.types.size(); ++j) {
+            double cross = 0, va = 0, vb = 0;
+            for (std::size_t a = 0; a < d; ++a)
+                for (std::size_t b = 0; b < d; ++b) {
+                    const double v = inverse[a*d+b];
+                    cross += r.directions[j*d+a]*v*normals[i*d+b];
+                    va += r.directions[j*d+a]*v*r.directions[j*d+b];
+                    vb += normals[i*d+a]*v*normals[i*d+b];
+                }
+            orthogonal = orthogonal && std::abs(cross) <= 512*eps*std::sqrt(va)*std::sqrt(vb);
+        }
+    }
+    if (!orthogonal) {
+        // At most three prespecified looks; their 99.99% Chernoff intervals have
+        // at least 99.97% simultaneous coverage by the union bound.
+        // Spend the full simulation budget only near the decision threshold.
+        for (const std::size_t budget : {std::size_t{1024}, std::size_t{4096}, maximum_cells}) {
+            out = cone_projection_test(information, d, normals, r.directions, out.statistic, level,
+                                       std::min(budget, maximum_cells));
+            if (out.status != LRStatus::unresolved || budget >= maximum_cells) return out;
+        }
+        return out;
+    }
     std::vector<std::size_t> boundary;
     for (std::size_t i = 0; i < r.types.size(); ++i) {
         if (r.types[i] == RestrictionType::closed_boundary) boundary.push_back(i);
@@ -347,8 +380,30 @@ LRResult restriction_test(const Model& parent, const Model& child, const Restric
         || (out.p_value - out.numerical_error <= level && level <= out.p_value + out.numerical_error))
         return invalid(out, LRStatus::unresolved, "The cubature accuracy or decision interval is unresolved.");
     out.status = LRStatus::ok;
-    out.message = "Asymptotic correct-likelihood law, conditional on identification and interior retained nuisance.";
+    out.message = "Asymptotic correct-likelihood law, conditional on identification and regular information.";
     return out;
+}
+
+LRResult restriction_test(const Model& parent, const Model& child, const Restriction& r,
+                          const FitResult& pf, const FitResult& cf, const ComparisonPlan& plan,
+                          double level, double tolerance, std::size_t maximum_cells)
+{
+    if (pf.comparison != plan.identity() || cf.comparison != plan.identity())
+        return invalid({}, LRStatus::incompatible, "Fits and information must use the same comparison plan.");
+    if (r.identification == Identification::unidentified_under_null)
+        return invalid({}, LRStatus::unsupported, r.condition);
+    const auto theta = r.embed(cf.theta);
+    if (!theta) return invalid({}, LRStatus::incompatible, "The child cannot be embedded in the parent domain.");
+    const auto sample = parent.prepare(plan);
+    Jet jet(parent, sample);
+    const std::size_t d = parent.dimension();
+    std::vector<double> row_scores(sample.scored()*d);
+    JetOutput output;
+    output.scores = row_scores;
+    if (jet.theta(*theta, scores, output).status != Status::ok)
+        return invalid({}, LRStatus::unresolved, "Parent scores are unavailable at the restricted estimate.");
+    return restriction_test(parent, child, r, pf, cf,
+                            detail::outer_products(row_scores, sample.scored(), d), level, tolerance, maximum_cells);
 }
 
 }  // namespace scivolapi

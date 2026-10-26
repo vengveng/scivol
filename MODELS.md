@@ -108,9 +108,9 @@ use closed forms. Larger blocks enumerate orthant faces using deterministic
 Cholesky conditioning and adaptive cube subdivision. Independent blocks factor
 before integration. The reported absolute error encloses the p-value error;
 failure to reach `1e-6`, or an interval crossing the decision level, returns
-`unresolved`. The subdivision budget is explicit. Retained boundary nuisance,
-singular information, unidentified edges and QMLE do not receive an ordinary
-LR p-value. Native resultant-rank checks also reject common-factor and shared
+`unresolved`. The subdivision budget is explicit. Retained boundary nuisance
+uses the nested-cone calibration described below. Singular information,
+unidentified edges and QMLE do not receive an ordinary LR p-value. Native resultant-rank checks also reject common-factor and shared
 trailing-zero ARMA/GARCH representations whose finite seed transients could
 hide asymptotic nonidentification. Enumeration is bounded to twelve boundary
 directions; larger blocks report `unresolved`. A negative statistic requests
@@ -244,3 +244,33 @@ cover free-power no-shock hypotheses, singular simultaneous order reductions,
 GH closure limits, structural breaks, long memory, infinite variance, DCC or
 post-selection confidence intervals. Non-rejection does not identify the true
 model, and the search budget limits any parsimony claim to the explored graph.
+
+### Retained boundary nuisance in restriction tests
+
+Selection evaluates the parent row scores at the embedded restricted estimate
+and uses their outer products as Fisher information. Under a correct-likelihood
+null this is consistent. An observed Hessian at a strongly false restricted
+point can be indefinite even when information and the parent optimum are regular.
+Singular score information and unidentified recursions still preclude calibration.
+
+With retained closed faces, LR uses the difference of squared information-metric
+distances of a Gaussian vector to the child and parent tangent cones. This need
+not be a chi-bar-square mixture (Self and Liang, 1987, Case 8). Orthogonal retained
+blocks reduce to the ordinary chi-square or chi-bar-square law. Other regular
+polyhedral cases enumerate the projection QP's independent active sets and use
+Gaussian simulation with mt19937_64 seed `0x534349564f4c` and an explicit
+Box-Muller conversion. The orthogonal complement of the constraint span is
+profiled out before simulation. Up to 1,024, 4,096 and 32,768 draws are used;
+`maximum_cells` controls the maximum budget. A decision interval crossing the
+requested level is unresolved. The reported error for `cone_projection` is a
+99.99% Bernoulli Chernoff Monte Carlo interval radius, not a deterministic integration bound;
+three prespecified looks have at least 99.97% simultaneous coverage by
+the union bound. The intervals invert the finite-sample Bernoulli relative-entropy
+bound, including zero observed exceedances. The deterministic chi-bar cubature
+retains its absolute-error test.
+These are pointwise asymptotic laws; estimating the active face does not establish
+uniform size over nuisance sequences approaching a boundary.
+
+References: [Self and Liang (1987)](https://doi.org/10.1080/01621459.1987.10478472),
+[Andrews (2001)](https://doi.org/10.1111/1468-0262.00210).
+

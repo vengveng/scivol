@@ -103,7 +103,8 @@ std::vector<double> standard_errors(const std::vector<double>& covariance, std::
 
 template<class ModelT, class JetT>
 FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double data_scale,
-                   const Candidate& selected, std::vector<FitPhase> phases, double accuracy)
+                   const Candidate& selected, std::vector<FitPhase> phases, double accuracy,
+                   std::span<const double> reported_theta)
 {
     constexpr bool univariate = std::is_same_v<ModelT, Model>;
     const std::size_t d = model.dimension();
@@ -153,6 +154,9 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
     unsigned request = value | gradient | hessian | scores;
     if constexpr (univariate) {
         model.rescale(unit_theta, data_scale, r.theta);
+        // An exact restriction supplies its original data-unit point. Preserve
+        // it bit for bit instead of a lossy scale/unscale round trip.
+        if (reported_theta.size() == d) std::copy(reported_theta.begin(), reported_theta.end(), r.theta.begin());
         r.residual.assign(n, 0.0);
         r.variance.assign(n, 0.0);
         r.innovation.assign(n, 0.0);
@@ -205,9 +209,9 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
 }
 
 template FitResult finalize<Model, Jet>(const Model&, Jet&, Jet&, double, const Candidate&, std::vector<FitPhase>,
-                                        double);
+                                        double, std::span<const double>);
 template FitResult finalize<CorrelationModel, CorrelationJet>(const CorrelationModel&, CorrelationJet&,
                                                               CorrelationJet&, double, const Candidate&,
-                                                              std::vector<FitPhase>, double);
+                                                              std::vector<FitPhase>, double, std::span<const double>);
 
 }  // namespace scivolapi::detail

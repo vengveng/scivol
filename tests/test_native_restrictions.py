@@ -159,7 +159,8 @@ def test_lr_interior_boundary_and_plan_mismatch():
     info = api.Jet(parent, plan).theta(r.embed(cf.theta), api.HESSIAN)["hessian"]
     out = api.restriction_test(parent, child, r, pf, cf, info)
     if cf.theta[-1] == 0:
-        assert out.status == api.LRStatus.retained_boundary
+        assert out.status == api.LRStatus.ok, out.message
+        assert out.law == api.ReferenceLaw.cone_projection
     else:
         assert out.status == api.LRStatus.ok, out.message
         assert out.interior_df == 1
@@ -300,3 +301,106 @@ def test_compiled_model_and_edge_spec_queries_are_copies():
     queried.p = 8
     assert r.child.p == 2
     assert edge(model("garch", 1, 0), "volatility.shock").identification == api.Identification.conditional
+
+
+@pytest.mark.parametrize("rho", [-0.7, 0.0, 0.6])
+@pytest.mark.parametrize("tested_boundary", [False, True])
+def test_retained_face_law_against_independent_polar_integral(rho, tested_boundary):
+    from scipy.integrate import quad
+
+    covariance = np.array([[1., rho], [rho, 1.]])
+    information = np.ascontiguousarray(np.linalg.inv(covariance))
+    root = np.linalg.cholesky(covariance)
+    statistic = 3.0
+
+    def angular_tail(angle):
+        z = root @ np.array([np.cos(angle), np.sin(angle)])
+        # Half-plane alternative, positive ray null. These are direct analytic
+        # Gaussian likelihood maxima, independent of the native active-set QP.
+        parent_distance = min(z[1], 0.)**2 / covariance[1, 1]
+        child_distance = z @ information @ z - max(information[1] @ z, 0.)**2 / information[1, 1]
+        if tested_boundary:
+            origin_distance = z @ information @ z
+            other_ray_distance = origin_distance - max(information[0] @ z, 0.)**2/information[0, 0]
+            parent_distance = min(origin_distance, child_distance, other_ray_distance)
+            if np.all(z >= 0):
+                parent_distance = 0.
+        q = child_distance - parent_distance
+        return np.exp(-statistic/(2*q)) if q > 1e-14 else 0.
+
+    reference = quad(angular_tail, 0., 2*np.pi, epsabs=1e-9, limit=300)[0] / (2*np.pi)
+    normals = np.eye(2) if tested_boundary else np.array([[0., 1.]])
+    arguments = (information, normals, np.array([[1., 0.]]), statistic)
+    first = api.cone_projection_test(*arguments)
+    second = api.cone_projection_test(*arguments)
+    assert first.status == api.LRStatus.ok
+    assert first.law == api.ReferenceLaw.cone_projection and first.weights == []
+    assert first.p_value == second.p_value and first.numerical_error == second.numerical_error
+    assert abs(first.p_value-reference) < first.numerical_error
+    if rho == 0:
+        assert_allclose(reference, (.5 if tested_boundary else 1.)*chi2.sf(statistic, 1), atol=1e-10)
+
+
+def test_retained_face_orthogonal_block_reduces_to_ordinary_law():
+    plan = api.ComparisonPlan(np.random.default_rng(2).normal(size=600), 4)
+    parent = model("constant", 0, 0, "student_t", constant=True)
+    r = edge(parent, "mean.intercept")
+    child = api.Model(r.child)
+    pf, cf = api.fit(parent, plan), api.fit(child, plan)
+    assert pf.success and cf.success and cf.theta[-1] == 0
+    out = api.restriction_test(parent, child, r, pf, cf, np.eye(parent.dimension))
+    assert out.status == api.LRStatus.ok and out.law == api.ReferenceLaw.chi_square
+    assert_allclose(out.p_value, chi2.sf(out.statistic, 1), atol=1e-14)
+
+
+@pytest.mark.parametrize("family", ["gjr", "egarch", "aparch"])
+def test_beta_deletion_uses_regular_score_information(family):
+    from scivol import Normal
+
+    y = (GARCH()+Normal()).simulate(3000, [.1, .15, .7], seed=101).data
+    plan = api.ComparisonPlan(y, 1)
+    parent = model(family)
+    r = edge(parent, "volatility.beta")
+    child = api.Model(r.child)
+    pf, cf = api.fit(parent, plan), api.fit(child, plan)
+    assert pf.success and cf.success, (pf.warnings, cf.warnings)
+    output = api.Jet(parent, plan).theta(r.embed(cf.theta), api.HESSIAN | api.SCORES)
+    score_information = np.ascontiguousarray(output["scores"].T @ output["scores"])
+    out = api.restriction_test(parent, child, r, pf, cf, plan)
+    reference = api.restriction_test(parent, child, r, pf, cf, score_information)
+    assert out.status == reference.status == api.LRStatus.ok, out.message
+    assert_allclose(out.p_value, reference.p_value, atol=1e-14)
+    assert out.p_value < .001
+    if family == "egarch":
+        assert np.linalg.eigvalsh(output["hessian"])[0] < 0
+        assert np.linalg.eigvalsh(score_information)[0] > 0
+        assert api.restriction_test(parent, child, r, pf, cf, output["hessian"]).status == api.LRStatus.singular_information
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("rho", [-0.7, 0., 0.7])
+@pytest.mark.parametrize("tested_boundary", [False, True])
+def test_retained_boundary_gaussian_null_size(rho, tested_boundary):
+    from scipy.optimize import brentq
+
+    # Bivariate Gaussian observations with known covariance, theta_1 >= 0,
+    # testing theta_0 = 0 at true theta = (0, 0). sqrt(n)*sample_mean has this
+    # distribution for every n, so these are exact null-DGP likelihood ratios.
+    covariance = np.array([[1., rho], [rho, 1.]])
+    information = np.ascontiguousarray(np.linalg.inv(covariance))
+    normals = np.eye(2) if tested_boundary else np.array([[0., 1.]])
+    equalities = np.array([[1., 0.]])
+    def tail(t):
+        return api.cone_projection_test(information, normals, equalities, t, level=.05, draws=131072).p_value
+    critical = brentq(lambda t: tail(t)-.05, 1., 8., xtol=.002)
+    z = np.random.default_rng(9310).multivariate_normal([0., 0.], covariance, size=100_000)
+    parent_distance = np.minimum(z[:, 1], 0.)**2
+    child_distance = np.einsum("ni,ij,nj->n", z, information, z) - np.maximum(z @ information[1], 0.)**2/information[1, 1]
+    if tested_boundary:
+        origin_distance = np.einsum("ni,ij,nj->n", z, information, z)
+        other_ray_distance = origin_distance - np.maximum(z @ information[0], 0.)**2/information[0, 0]
+        parent_distance = np.minimum(np.minimum(origin_distance, child_distance), other_ray_distance)
+        parent_distance[np.all(z >= 0, axis=1)] = 0.
+    rate = np.mean(child_distance-parent_distance > critical)
+    print(f"retained boundary rho={rho}, tested_boundary={tested_boundary}: 5% null rejection {rate:.4%}; critical={critical:.4f}")
+    assert .045 < rate < .055

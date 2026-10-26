@@ -695,8 +695,7 @@ NB_MODULE(_scivolapi, m)
             return result ? owned_vector(std::move(*result)) : nb::none();
         })
         .def("on_face", [](const Restriction& r, const Vector& t) { return r.on_face(view(t)); })
-        .def("identified", [](const Restriction& r, const Vector& t) { return r.identified(view(t)); })
-        .def("regular", [](const Restriction& r, const Vector& t) { return r.regular(view(t)); });
+        .def("identified", [](const Restriction& r, const Vector& t) { return r.identified(view(t)); });
     model_binding.def_prop_ro("key", [](const Model& m) {
             const auto& s = m.spec();
             return nb::make_tuple(s.mean.constant, s.mean.ar, nb::tuple(nb::cast(s.mean.har)),
@@ -752,10 +751,10 @@ NB_MODULE(_scivolapi, m)
         .value("incompatible", LRStatus::incompatible).value("uncertified", LRStatus::uncertified)
         .value("negative_statistic", LRStatus::negative_statistic)
         .value("singular_information", LRStatus::singular_information)
-        .value("retained_boundary", LRStatus::retained_boundary)
         .value("unresolved", LRStatus::unresolved).value("invalid_argument", LRStatus::invalid_argument);
     nb::enum_<ReferenceLaw>(m, "ReferenceLaw")
-        .value("chi_square", ReferenceLaw::chi_square).value("chi_bar_square", ReferenceLaw::chi_bar_square);
+        .value("chi_square", ReferenceLaw::chi_square).value("chi_bar_square", ReferenceLaw::chi_bar_square)
+        .value("cone_projection", ReferenceLaw::cone_projection);
     nb::class_<LRResult>(m, "LRResult")
         .def_ro("status", &LRResult::status).def_ro("statistic", &LRResult::statistic)
         .def_ro("law", &LRResult::law).def_ro("interior_df", &LRResult::interior_df)
@@ -781,6 +780,22 @@ NB_MODULE(_scivolapi, m)
         return restriction_test(parent, child, r, pf, cf, view(h), level, tolerance, cells);
     }, "parent"_a, "child"_a, "restriction"_a, "parent_fit"_a, "child_fit"_a, "parent_information"_a,
        "level"_a = 0.01, "tolerance"_a = 1e-6, "maximum_cells"_a = 32768);
+    m.def("restriction_test", [](const Model& parent, const Model& child, const Restriction& r,
+                                 const FitResult& pf, const FitResult& cf, const ComparisonPlan& plan,
+                                 double level, double tolerance, std::size_t draws) {
+        nb::gil_scoped_release release;
+        return restriction_test(parent, child, r, pf, cf, plan, level, tolerance, draws);
+    }, "parent"_a, "child"_a, "restriction"_a, "parent_fit"_a, "child_fit"_a, "plan"_a,
+       "level"_a = 0.01, "tolerance"_a = 1e-6, "maximum_cells"_a = 32768);
+    m.def("cone_projection_test", [](const Matrix& information, const Matrix& normals, const Matrix& equalities,
+                                     double statistic, double level, std::size_t draws) {
+        const auto d = information.shape(0);
+        if (information.shape(1) != d || normals.shape(1) != d || equalities.shape(1) != d)
+            throw std::invalid_argument("cone matrices have inconsistent dimensions");
+        nb::gil_scoped_release release;
+        return cone_projection_test(view(information), d, view(normals), view(equalities), statistic, level, draws);
+    }, "information"_a, "normals"_a, "equalities"_a, "statistic"_a,
+       "level"_a = 0.01, "draws"_a = 32768);
     m.def("chi_bar_weights", [](const Matrix& h, double tolerance, std::size_t cells) {
         if (h.shape(0) != h.shape(1)) throw std::invalid_argument("information must be square");
         nb::gil_scoped_release release;

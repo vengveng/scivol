@@ -15,6 +15,7 @@ add_library(scivolapi
     src/model.cpp
     src/restriction.cpp
     src/restriction_test.cpp
+    src/cone_projection.cpp
     src/model_moments.cpp
     src/jet.cpp
     ${SCIVOLAPI_JET_SOURCES}

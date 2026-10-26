@@ -94,9 +94,6 @@ struct Restriction {
     [[nodiscard]] std::optional<std::vector<double>> map_start(std::span<const double> theta) const;
     [[nodiscard]] bool on_face(std::span<const double> theta) const;
     [[nodiscard]] bool identified(std::span<const double> child_theta) const;
-    // Retained constraints must be slack. Rank/minimality is also checked by
-    // the parent information in restriction_test, never by a pseudoinverse.
-    [[nodiscard]] bool regular(std::span<const double> child_theta) const;
 };
 
 // Owns one comparison's input span and exogenous columns. Children retain the

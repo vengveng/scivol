@@ -29,7 +29,7 @@ Restriction make_restriction(const Model& parent, const ModelSpec& child, std::s
     r.offset.assign(d, 0.0);
     r.embedding.assign(d * c, 0.0);
     r.directions.assign(removed.size() * d, 0.0);
-    r.condition = "Identified minimal recursion, full-rank mean design, and interior retained parameters.";
+    r.condition = "Identified minimal recursion, full-rank mean design, and regular parent Fisher information; closed retained faces use cone calibration.";
     for (std::size_t j = 0; j < c; ++j) {
         const auto found = std::find(names.begin(), names.end(), kept[j]);
         if (found != names.end()) r.embedding[(found - names.begin()) * c + j] = 1.0;
@@ -254,19 +254,6 @@ bool Restriction::on_face(std::span<const double> theta) const
     return true;
 }
 
-bool Restriction::regular(std::span<const double> theta) const
-{
-    const Model c(child);
-    if (identification == Identification::unidentified_under_null || !c.feasible(theta)) return false;
-    const std::size_t d = c.dimension(), m = c.constraint_count();
-    std::vector<double> lo(d), hi(d), values(m), jac(m * d);
-    c.bounds(lo, hi);
-    for (std::size_t i = 0; i < d; ++i)
-        if ((!std::isnan(lo[i]) && theta[i] <= lo[i]) || (!std::isnan(hi[i]) && theta[i] >= hi[i])) return false;
-    c.constraints(theta, values, jac);
-    return std::all_of(values.begin(), values.end(), [](double v) { return v > 0.0; });
-}
-
 bool Restriction::identified(std::span<const double> theta) const
 {
     const auto lifted = embed(theta);
@@ -344,7 +331,7 @@ RestrictedFit restrict_fit(const Model& parent, const FitResult& fitted, const R
     phase.value = -fitted.log_likelihood / data_sample.scored() - std::log(scale);
     candidate.value = phase.value;
     const double accuracy = fitted.kkt_tolerance * fitted.kkt_tolerance;
-    out.result = detail::finalize(child, unit_jet, data_jet, scale, candidate, {phase}, accuracy);
+    out.result = detail::finalize(child, unit_jet, data_jet, scale, candidate, {phase}, accuracy, *theta);
     out.result.comparison = plan.identity();
     out.result.fitted_spec = child.spec();
     out.status = out.result.success ? RestrictFitStatus::reused : RestrictFitStatus::child_uncertified;

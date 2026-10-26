@@ -24,7 +24,8 @@ struct Candidate {
 // original data, so no derivative transformation rules are needed.
 template<class ModelT, class JetT>
 FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double data_scale,
-                   const Candidate& selected, std::vector<FitPhase> phases, double accuracy);
+                   const Candidate& selected, std::vector<FitPhase> phases, double accuracy,
+                   std::span<const double> reported_theta = {});
 
 // Covariance as the inverse of a symmetric information matrix (d x d), or why
 // it is not available (not positive definite, ill conditioned).

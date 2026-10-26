@@ -227,7 +227,12 @@ def test_predictive_confidence_set_is_aligned_and_reproducible():
 def test_auto_iid_dgp_selects_constant_variance():
     y = np.random.default_rng(74).normal(size=5000)
     result = Auto().fit(y)
-    assert result.status == 'selected', result.summary()
+    # Calibrating retained faces opens additional paths. The fixed fit budget
+    # may leave a frontier while still selecting the certified constant model.
+    assert result.status in ('selected', 'budget_exhausted'), result.summary()
+    if result.status == 'budget_exhausted':
+        assert not result.search_complete and result.frontier
+        assert result.fit_counts['optimizer_invocations'] == GeneralToSpecific().max_fits
     assert result.selected._native()[0].constant_variance, result.summary()
     assert result.selected.success
 
@@ -259,3 +264,17 @@ def test_budget_does_not_promote_a_rejected_child():
     assert not result.search_complete
     assert str(result.selected_model) == 'GJR-GARCH(1,1)+Normal'
     assert result.fit_counts['optimizer_invocations'] <= 2
+
+
+def test_exact_tail_face_saves_a_fit_without_spurious_parent_refit():
+    y = np.random.default_rng(2).normal(size=600)
+    result = Search(density=[StudentT()]).fit(y)
+    assert result.status == 'selected'
+    assert result.fit_counts['free_children'] == 1
+    assert result.fit_counts['optimizer_invocations'] == 1
+    assert result.fit_counts['parent_refits'] == 0
+    reused = next(c for c in result.candidates if c.free)
+    assert reused.fit.success
+    assert [p.name for p in reused.fit.phases] == ['restriction:projection']
+    assert any(t['statistic'] == 0 and t['p_value'] == 1 for t in result.tests)
+
