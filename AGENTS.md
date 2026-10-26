@@ -29,14 +29,21 @@ evidence. Do not wrap builds or tests in tracking scripts.
   forecasting, simulation, the Python layer) asks the model through its
   interface: `bounds()`, `constraints()`, the charts, `capabilities()`
   (`chart_covers_domain`, `density_free_recursion`, `exact_variance_horizon`),
-  `innovation_density()`, `persistence()`. It never branches on the model's
-  specification. Models may differ in settings and behavior, but the difference
+  `innovation_density()`, `persistence()`, `unconditional_variance(theta)`,
+  `unconditional_mean(theta)`, `innovation_power_moment(theta, gamma, power)`
+  (the density's E[(|z|-gamma*z)^power]), `residual_degrees_of_freedom()`
+  (the conventional AR + HAR + MA residual-test adjustment). Unconditional
+  variance is exact E[h], infinity for a divergent moment and NaN when
+  unavailable; unconditional mean requires known exogenous means. Generic code
+  never branches on the model's specification. Models may differ in settings
+  and behavior, but the difference
   lives in the model's answers to that interface; a new difference means a new,
   documented question on the interface, not an `if` in a consumer.
 - `scivol/` is the thin Python layer: components and compositions, `_fit.py`
   (composition to native model, fit, result), `_evaluation.py` (fixed-parameter
   evaluation, forecasts, simulations), `result.py`, `dcc.py`, and orchestration
-  (auto-selection, batches, rolling fits, parallel workers). No mathematics.
+  (auto-selection, batches, rolling fits, parallel workers). Model and statistical
+  mathematics live natively; NumPy handles array operations and reductions.
 
 ## 2. Mathematical rules (non-negotiable)
 

@@ -19,7 +19,7 @@ deriv:
 # Native library tests (C++)
 native:
 	cmake -S scivolapi -B build/scivolapi-native -G Ninja -DCMAKE_BUILD_TYPE=Release
-	cmake --build build/scivolapi-native -j4
+	cmake --build build/scivolapi-native --parallel $${CMAKE_BUILD_PARALLEL_LEVEL:-4}
 	ctest --test-dir build/scivolapi-native
 
 # Full DGP estimation tests

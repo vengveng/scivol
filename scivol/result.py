@@ -48,17 +48,9 @@ class GARCHParams:
     gamma: Optional[NDArray[np.float64]] = None  # length p (GJR-GARCH only)
     persistence: float = float("nan")  # the model's: GJR weights gamma by E[z^2 1(z<0)] of the fitted density
     
-    @property
-    def is_stationary(self) -> bool:
-        """Check if persistence < 1."""
-        return self.persistence < 1.0
+    is_stationary: bool = False  # supplied by Model domain checks
     
-    @property
-    def unconditional_variance(self) -> float:
-        """Long-run variance (only valid if stationary)."""
-        if not self.is_stationary:
-            return np.inf
-        return api.stationary_variance_state(self.omega, self.persistence)
+    unconditional_variance: float = float("nan")  # exact E[h], supplied by Model
     
     def to_array(self) -> NDArray[np.float64]:
         """Flatten to 1D array.
@@ -92,20 +84,9 @@ class EGARCHParams:
     gamma: NDArray[np.float64]
     persistence: float = float("nan")  # sum beta
 
-    @property
-    def is_stationary(self) -> bool:
-        return abs(self.persistence) < 1.0
+    is_stationary: bool = False  # supplied by Model domain checks
 
-    @property
-    def unconditional_log_variance(self) -> float:
-        if not self.is_stationary:
-            return np.inf
-        return api.stationary_variance_state(self.omega, self.persistence, log_state=True)
-
-    @property
-    def unconditional_variance(self) -> float:
-        """Geometric variance, exp(E[log h]); this is not E[h]."""
-        return api.stationary_variance_state(self.omega, self.persistence, log_state=True, geometric=True)
+    unconditional_variance: float = float("nan")  # exact E[h], supplied by Model
 
     def to_array(self) -> NDArray[np.float64]:
         return np.concatenate([[self.omega], self.alpha, self.gamma, self.beta])
@@ -121,10 +102,9 @@ class APARCHParams:
     gamma: NDArray[np.float64]
     delta: float
     persistence: float = float("nan")  # sum alpha_i E[(|z| - gamma_i z)^delta] + sum beta under the fitted density
+    unconditional_variance: float = float("nan")  # unavailable unless delta=2
 
-    @property
-    def is_stationary(self) -> bool:
-        return self.persistence < 1.0
+    is_stationary: bool = False  # supplied by Model domain checks
 
     def to_array(self) -> NDArray[np.float64]:
         return np.concatenate(
@@ -178,15 +158,9 @@ class ARMAParams:
         """MA order."""
         return len(self.theta)
     
-    @property
-    def unconditional_mean(self) -> float:
-        """Long-run mean (only valid if AR polynomial has roots outside unit circle)."""
-        return api.autoregressive_mean(float(self.c), np.ascontiguousarray(self.phi, dtype=np.float64))[1]
+    unconditional_mean: float = float("nan")  # supplied by Model
 
-    @property
-    def is_stationary(self) -> bool:
-        """Whether all AR roots lie outside the unit circle."""
-        return api.autoregressive_mean(float(self.c), np.ascontiguousarray(self.phi, dtype=np.float64))[0]
+    is_stationary: bool = False  # supplied by Model domain checks
 
     def to_array(self) -> NDArray[np.float64]:
         """Flatten to 1D array [c, phi_1, ..., phi_p, theta_1, ..., theta_q]."""
@@ -418,6 +392,16 @@ class EstimationResult:
         )
         return self.n_iter
 
+    @property
+    def unconditional_variance(self) -> float:
+        """Exact stationary E[h], infinity if divergent, NaN if unavailable."""
+        return self._native()[0].unconditional_variance(np.ascontiguousarray(self.params, dtype=np.float64))
+
+    @property
+    def unconditional_mean(self) -> float:
+        """Stationary E[y], unavailable when exogenous means are unknown."""
+        return self._native()[0].unconditional_mean(np.ascontiguousarray(self.params, dtype=np.float64))
+
     # Information criteria
     # --------------------------------------------------------------------- #
     @property
@@ -473,13 +457,15 @@ class EstimationResult:
         persistence = float(self._native()[0].persistence(np.ascontiguousarray(self.params, dtype=np.float64)))
         arrays = {key: np.array(fp.get(key, []), dtype=np.float64) for key in ("alpha", "gamma", "beta")}
         omega = float(fp.get("omega", 0.0))
+        moments = {"unconditional_variance": self.unconditional_variance,
+                   "is_stationary": self._native()[0].feasible(np.ascontiguousarray(self.params, dtype=np.float64))}
         if isinstance(self.volatility, EGARCH):
-            return EGARCHParams(omega=omega, persistence=persistence, **arrays)
+            return EGARCHParams(omega=omega, persistence=persistence, **moments, **arrays)
         if isinstance(self.volatility, APARCH):
-            return APARCHParams(omega=omega, delta=float(fp["delta"]), persistence=persistence, **arrays)
+            return APARCHParams(omega=omega, delta=float(fp["delta"]), persistence=persistence, **moments, **arrays)
         if fp.get("gamma") is None:
             arrays["gamma"] = None
-        return GARCHParams(omega=omega, persistence=persistence, **arrays)
+        return GARCHParams(omega=omega, persistence=persistence, **moments, **arrays)
 
     @property
     def arma_params(self) -> Optional[ARMAParams]:
@@ -493,7 +479,8 @@ class EstimationResult:
         phi = np.array(fp.get('phi', fp.get('ar', [])), dtype=np.float64)
         theta = np.array(fp.get('theta', fp.get('ma', [])), dtype=np.float64)
         
-        return ARMAParams(c=c, phi=phi, theta=theta)
+        return ARMAParams(c=c, phi=phi, theta=theta, unconditional_mean=self.unconditional_mean,
+                          is_stationary=self._native()[0].feasible(np.ascontiguousarray(self.params, dtype=np.float64)))
     
     @property
     def dist_params(self) -> DistributionParams:
@@ -583,8 +570,7 @@ class EstimationResult:
         resid = self.resid
         if sigma2 is None or resid is None:
             return None
-        z = api.standardized_residuals(np.ascontiguousarray(resid, dtype=np.float64),
-                                       np.ascontiguousarray(sigma2, dtype=np.float64))
+        z = np.asarray(resid, dtype=np.float64) / np.sqrt(np.asarray(sigma2, dtype=np.float64))
         if self._index is not None:
             return _to_pandas_series(z, self._index, self._name, "std_resid")
         return z
@@ -678,7 +664,7 @@ class EstimationResult:
         """Standard errors from covariance matrix."""
         if self._cov_matrix is None:
             return None
-        return api.covariance_standard_errors(np.ascontiguousarray(self._cov_matrix, dtype=np.float64))
+        return np.sqrt(np.diag(self._cov_matrix))
     
     @property
     def opg(self) -> Optional[NDArray[np.float64]]:
@@ -695,7 +681,7 @@ class EstimationResult:
         """Robust standard errors from sandwich covariance."""
         if self._cov_robust is None:
             return None
-        return api.covariance_standard_errors(np.ascontiguousarray(self._cov_robust, dtype=np.float64))
+        return np.sqrt(np.diag(self._cov_robust))
     
     
     # Pretty printer
@@ -855,69 +841,24 @@ class EstimationResult:
             return f"{p:>10.3f}"
     
     def _print_diagnostics_formatted(self, width: int) -> None:
-        """Print model diagnostics with nice formatting."""
-        vol_component = self.vol
-        if vol_component is None:
+        """Print model properties returned by the common native interface."""
+        if self.vol is None:
             return
-        
-        _r = settings.names.resolve
-        
+        model, _, _ = self._native()
+        theta = np.ascontiguousarray(self.params, dtype=np.float64)
+        persistence = model.persistence(theta)
+        variance = model.unconditional_variance(theta)
         print()
         print(f"{'Model Diagnostics':^{width}}")
         print("─" * width)
-        
-        gp = self.garch_params
-        if gp is not None:
-            if isinstance(gp, EGARCHParams):
-                persistence = gp.persistence
-                print(f"{'Persistence (beta):':<35} {persistence:.6f}")
-                if gp.is_stationary:
-                    print(f"{'Stationary:':<35} Yes")
-                    log_var = gp.unconditional_log_variance
-                    print(f"{'Unconditional Log Variance:':<35} {log_var:.6f}")
-                    uncond_var = gp.unconditional_variance
-                    print(f"{'Geometric Variance:':<35} {uncond_var:.6e}")
-                    print(f"{'Geometric Volatility:':<35} {api.square_roots(np.array([uncond_var]))[0]:.6f}")
-                else:
-                    print(f"{'Stationary:':<35} No (non-stationary log-variance recursion)")
-                if 0.0 < abs(persistence) < 1.0:
-                    half_life = api.persistence_half_life(persistence)
-                    print(f"{'Half-life (periods):':<35} {half_life:.1f}")
-                return
+        print(f"{'Persistence:':<35} {persistence:.6f}")
+        print(f"{'In model domain:':<35} {'Yes' if model.feasible(theta) else 'No'}")
+        print(f"{'Unconditional Variance:':<35} {variance:.6e}")
+        print(f"{'Unconditional Volatility:':<35} {np.sqrt(variance):.6f}")
+        if 0.0 < abs(persistence) < 1.0:
+            half_life = np.log(0.5) / np.log(abs(persistence))
+            print(f"{'Half-life proxy (periods):':<35} {half_life:.1f}")
 
-            if isinstance(gp, APARCHParams):
-                persistence = gp.persistence
-                print(f"{'Persistence (density-aware):':<35} {persistence:.6f}")
-                print(f"{'Power (delta):':<35} {gp.delta:.6f}")
-                print(f"{'Power-state stationary:':<35} {'Yes' if gp.is_stationary else 'No'}")
-                if 0.0 < persistence < 1.0:
-                    half_life = api.persistence_half_life(persistence)
-                    print(f"{'Half-life proxy (periods):':<35} {half_life:.1f}")
-                return
-
-            persistence = gp.persistence
-            a_name = _r("alpha")
-            b_name = _r("beta")
-            if gp.gamma is not None:
-                g_name = _r("gamma")
-                persist_label = f"Persistence ({a_name} + E[z²·1(z<0)]{g_name} + {b_name}):"
-            else:
-                persist_label = f"Persistence ({a_name} + {b_name}):"
-            print(f"{persist_label:<35} {persistence:.6f}")
-            
-            if persistence < 1.0:
-                print(f"{'Stationary:':<35} Yes")
-                if gp.omega > 0:
-                    uncond_var = gp.unconditional_variance
-                    print(f"{'Unconditional Variance:':<35} {uncond_var:.6e}")
-                    print(f"{'Unconditional Volatility:':<35} {api.square_roots(np.array([uncond_var]))[0]:.6f}")
-            else:
-                print(f"{'Stationary:':<35} No (IGARCH or explosive)")
-        
-        if gp is not None and gp.persistence < 1.0 and gp.persistence > 0:
-            half_life = api.persistence_half_life(gp.persistence)
-            print(f"{'Half-life (periods):':<35} {half_life:.1f}")
-    
     def _collect_warnings(self) -> List[str]:
         """Collect persistent and derived warnings about the estimation."""
         warnings_list: List[str] = list(self.fit_info.warnings)
@@ -929,24 +870,14 @@ class EstimationResult:
         if not self.converged:
             add("Optimization did not converge")
         
-        gp = self.garch_params
-        if gp is not None:
-            if isinstance(gp, EGARCHParams):
-                if abs(gp.persistence) >= 1.0:
-                    add("Non-stationary EGARCH log-variance recursion detected")
-                elif abs(gp.persistence) > 0.99:
-                    add("Near-unit-root EGARCH persistence very close to 1")
-            elif isinstance(gp, APARCHParams):
-                if not gp.is_stationary:
-                    add("Non-stationary APARCH persistence detected")
-                elif gp.persistence > 0.99:
-                    add("APARCH persistence is very close to 1")
-            else:
-                if gp.persistence >= 1.0:
-                    add("IGARCH or explosive process detected")
-                elif gp.persistence > 0.99:
-                    add("Near-IGARCH: persistence very close to 1")
-        
+        if self.vol is not None:
+            model, _, _ = self._native()
+            theta = np.ascontiguousarray(self.params, dtype=np.float64)
+            if not model.feasible(theta):
+                add("Parameters are outside the model domain")
+            elif abs(model.persistence(theta)) > 0.99:
+                add("Persistence is very close to one")
+
         if self.std_errors is not None:
             if np.any(~np.isfinite(self.std_errors)):
                 add("Some standard errors could not be computed")

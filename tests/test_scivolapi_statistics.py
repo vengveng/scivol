@@ -217,20 +217,13 @@ def test_long_near_boundary_sensitivities_and_kink_status():
     assert output['valid'] & api.RESIDUAL_SENSITIVITIES
 
 
-def test_other_native_statistics_against_numpy():
-    rng = np.random.default_rng(753)
-    x = rng.normal(size=700)
-    u = np.array([0., .01, .25, .5, .97, 1.])
-    np.testing.assert_allclose(api.empirical_quantiles(x, u), np.quantile(x, u), rtol=1e-13)
-    np.testing.assert_allclose(api.empirical_quantiles(x, u, True), np.quantile((x-x.mean())/x.std(), u), rtol=1e-13)
-    covariance = np.array([[4., 1.], [1., 9.]])
-    np.testing.assert_array_equal(api.covariance_standard_errors(covariance), [2., 3.])
-    np.testing.assert_allclose(api.correlation_from_covariance(covariance), [[1., 1/6], [1/6, 1.]])
-    with pytest.raises(ValueError, match='negative'):
-        api.covariance_standard_errors(np.array([[-1., 0.], [0., 1.]]))
-    paths = rng.normal(size=(40, 10, 3))
-    np.testing.assert_allclose(api.path_second_moments(paths).reshape(10, 3, 3), np.einsum('phi,phj->hij', paths, paths)/40, rtol=1e-12)
-    np.testing.assert_allclose(api.column_means(paths.reshape(40, -1)), paths.mean(axis=0).ravel(), rtol=1e-12)
+def test_status_enum_keeps_public_string_statuses():
+    status = api.TestStatus.ok
+    assert status.name == "ok"
+    test = api.portmanteau(np.random.default_rng(71).normal(size=100), 5)
+    assert isinstance(test['status'], str)
+    assert test['status'] == status.name
+    assert api.TestStatus[test['status']] == status
 
 
 def test_package_does_not_import_scipy():

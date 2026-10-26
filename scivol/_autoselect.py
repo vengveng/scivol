@@ -769,7 +769,11 @@ def _finalize_candidate_ranking(candidates: List[ModelCandidate]) -> None:
     if not finite:
         return
     best = min(finite)
-    weights = api.score_weights(np.ascontiguousarray([candidate.score for candidate in candidates], dtype=np.float64))
+    scores = np.array([candidate.score for candidate in candidates], dtype=np.float64)
+    weights = np.zeros(len(scores))
+    valid = np.isfinite(scores)
+    weights[valid] = np.exp(-0.5 * (scores[valid] - best))
+    weights /= weights.sum()
     for candidate, weight in zip(candidates, weights):
         candidate.delta_score = float(candidate.score - best) if np.isfinite(candidate.score) else np.inf
         candidate.weight = float(weight)
@@ -1304,7 +1308,7 @@ def select_best_model(
                             "OOS filter produced non-finite losses."
                         )
                     candidate.oos_losses = losses
-                    candidate.oos_loss = api.sample_mean(np.ascontiguousarray(losses, dtype=np.float64))
+                    candidate.oos_loss = float(np.mean(losses))
                     candidate.oos_loss_name = oos_loss.lower()
                     candidate.oos_start = holdout_start
                     candidate.oos_stop = holdout_stop

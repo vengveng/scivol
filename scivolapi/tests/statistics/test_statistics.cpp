@@ -30,14 +30,10 @@ int main()
     std::vector<double> series(80), variance(80, 1.0);
     for (std::size_t t = 0; t < series.size(); ++t) series[t] = std::sin(double(t) * 1.7) + 0.3;
     const auto test = portmanteau(series, 5, 2);
-    assert(test.ljung_box.df == 3 && test.ljung_box.status == "ok");
-    assert(portmanteau(variance, 5).ljung_box.status == "not_estimable");
-    const auto normal = standardized_residuals(series, variance);
-    assert(normal == series);
+    assert(test.ljung_box.df == 3 && test.ljung_box.status == TestStatus::ok);
+    assert(portmanteau(variance, 5).ljung_box.status == TestStatus::not_estimable);
     const auto ic = information_criteria(-100.0, 3, 100);
     assert(ic.aic == 206.0 && std::abs(ic.bic - (200.0 + 3 * std::log(100.0))) < 1e-13);
-    assert(autoregressive_mean(1.0, std::vector<double>{1.2, -0.4}).first);
-    assert(!autoregressive_mean(1.0, std::vector<double>{0.5, 0.6}).first);
 
     ModelSpec spec;
     spec.mean.constant = true;
@@ -46,6 +42,8 @@ int main()
     const Sample sample = model.prepare(series);
     Jet jet(model, sample);
     const std::vector<double> theta{0.1, 0.2, 0.15, 0.1, 0.1, 0.8};
+    assert(std::abs(model.unconditional_mean(theta)-0.125) < 1e-14);
+    assert(std::abs(model.unconditional_variance(theta)-1.0) < 1e-14);
     const std::size_t n = sample.scored(), d = model.dimension();
     std::vector<double> log_variance(n*d), residual(n*d), sentinel(d, 12345.0), hessian_buffer(d*d, 6789.0);
     JetOutput out;

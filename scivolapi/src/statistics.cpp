@@ -36,15 +36,15 @@ TestStatistic chi_test(double statistic, std::size_t df)
     out.df = df;
     if (df == 0 || !(statistic >= 0.0) || !std::isfinite(statistic)) return out;
     if (!detail::chi_square_log_upper(statistic, double(df), out.log_p_value)) {
-        out.status = "numerical_range";
+        out.status = TestStatus::numerical_range;
         return out;
     }
     out.statistic = statistic;
     const double probability = std::exp(out.log_p_value);
     if (probability > 0.0 && std::numeric_limits<double>::denorm_min()/probability <= 2e-13) {
         out.p_value = probability;
-        out.status = "ok";
-    } else out.status = "probability_underflow";
+        out.status = TestStatus::ok;
+    } else out.status = TestStatus::probability_underflow;
     return out;
 }
 
@@ -55,7 +55,7 @@ TestStatistic t_test(double statistic, std::size_t df)
     if (df == 0 || !std::isfinite(statistic)) return out;
     double log_upper;
     if (!detail::student_log_upper(std::abs(statistic), double(df), log_upper)) {
-        out.status = "numerical_range";
+        out.status = TestStatus::numerical_range;
         return out;
     }
     out.statistic = statistic;
@@ -63,8 +63,8 @@ TestStatistic t_test(double statistic, std::size_t df)
     const double probability = std::exp(out.log_p_value);
     if (probability > 0.0 && std::numeric_limits<double>::denorm_min()/probability <= 2e-13) {
         out.p_value = probability;
-        out.status = "ok";
-    } else out.status = "probability_underflow";
+        out.status = TestStatus::ok;
+    } else out.status = TestStatus::probability_underflow;
     return out;
 }
 
@@ -90,13 +90,16 @@ struct Regression {
 
 Regression regress(std::span<const double> response, std::span<const double> design, std::size_t columns)
 {
+    finite(response);
     const std::size_t n = response.size();
     Regression out;
     if (n <= columns + 1) return out;
     std::vector<double> means(columns, 0.0), gram(columns * columns, 0.0), cross(columns, 0.0);
     for (std::size_t t = 0; t < n; ++t)
         for (std::size_t j = 0; j < columns; ++j) means[j] += design[t * columns + j] / n;
-    const double mean_y = sample_mean(response);
+    detail::CompensatedSum response_sum;
+    for (double y : response) response_sum.add(y / double(n));
+    const double mean_y = response_sum.total();
     double total = 0.0;
     for (std::size_t t = 0; t < n; ++t) {
         const double y = response[t] - mean_y;
@@ -138,7 +141,7 @@ double studentize(double mean, double se)
 
 bool TestStatistic::rejects(double alpha) const noexcept
 {
-    return (status == "ok" || status == "probability_underflow") && log_p_value < std::log(alpha);
+    return (status == TestStatus::ok || status == TestStatus::probability_underflow) && log_p_value < std::log(alpha);
 }
 
 double normal_survival(double x)
@@ -167,25 +170,6 @@ double chi_square_survival(double x, double df)
     return upper;
 }
 
-double sample_mean(std::span<const double> values)
-{
-    require(!values.empty(), "a sample must not be empty");
-    finite(values);
-    detail::CompensatedSum total;
-    for (double x : values) total.add(x / double(values.size()));
-    if (!std::isfinite(total.total())) throw std::range_error("sample mean is not representable");
-    return total.total();
-}
-
-double sample_sum(std::span<const double> values)
-{
-    finite(values);
-    detail::CompensatedSum sum;
-    for (double x : values) sum.add(x);
-    if (!std::isfinite(sum.total())) throw std::range_error("sample sum is not representable");
-    return sum.total();
-}
-
 TestStatistic coefficient_test(double coefficient, double standard_error, std::size_t df)
 {
     require(std::isfinite(coefficient) && std::isfinite(standard_error) && standard_error > 0.0,
@@ -197,7 +181,10 @@ Portmanteau portmanteau(std::span<const double> series, std::size_t lags, std::s
 {
     finite(series);
     check_lags(series.size(), lags);
-    const double n = double(series.size()), mean = sample_mean(series);
+    const double n = double(series.size());
+    detail::CompensatedSum sum;
+    for (double x : series) sum.add(x / n);
+    const double mean = sum.total();
     double denominator = 0.0;
     for (double x : series) denominator += (x - mean) * (x - mean);
     Portmanteau out;
@@ -284,9 +271,9 @@ LiMak li_mak(Jet& jet, std::span<const double> theta, std::size_t lags, Estimato
     check_lags(n, lags);
     LiMak out;
     out.test.df = lags;
-    if (!model.feasible(theta)) { out.test.status = "infeasible_parameters"; return out; }
+    if (!model.feasible(theta)) { out.test.status = TestStatus::infeasible_parameters; return out; }
     if (!std::isfinite(model.innovation_power_moment(theta, 0.0, 4.0))) {
-        out.test.status = "fourth_moment_unavailable";
+        out.test.status = TestStatus::fourth_moment_unavailable;
         return out;
     }
     std::vector<double> e(n), h(n), z(n), sensitivity(n * d), score(n * d), information(d * d);
@@ -297,7 +284,7 @@ LiMak li_mak(Jet& jet, std::span<const double> theta, std::size_t lags, Estimato
     evaluated.hessian = information;
     const unsigned request = paths | (estimated ? log_variance_sensitivities | scores | hessian : 0u);
     if ((jet.theta(theta, request, evaluated).valid & request) != request) {
-        out.test.status = "invalid_derivatives";
+        out.test.status = TestStatus::invalid_derivatives;
         return out;
     }
     // Gaussian QMLE shape estimates have no effect on a density-free recursion.
@@ -309,10 +296,10 @@ LiMak li_mak(Jet& jet, std::span<const double> theta, std::size_t lags, Estimato
         model.constraints(theta, constraints, jacobian);
         for (std::size_t j = 0; j < d; ++j)
             if ((std::isfinite(lower[j]) && theta[j] == lower[j]) || (std::isfinite(upper[j]) && theta[j] == upper[j])) {
-                out.test.status = "at_boundary";
+                out.test.status = TestStatus::at_boundary;
                 return out;
             }
-        for (double c : constraints) if (c <= 0.0) { out.test.status = "at_boundary"; return out; }
+        for (double c : constraints) if (c <= 0.0) { out.test.status = TestStatus::at_boundary; return out; }
         if (estimator == Estimator::qmle) {
             const Model gaussian = model.gaussian_model();
             require(model.capabilities().density_free_recursion || gaussian.dimension() == d,
@@ -325,12 +312,12 @@ LiMak li_mak(Jet& jet, std::span<const double> theta, std::size_t lags, Estimato
             gaussian_out.scores = score;
             gaussian_out.hessian = information;
             if ((gaussian_jet.theta(theta.first(parameters), scores | hessian, gaussian_out).valid & (scores | hessian)) != (scores | hessian)) {
-                out.test.status = "invalid_qmle_derivatives";
+                out.test.status = TestStatus::invalid_qmle_derivatives;
                 return out;
             }
         }
         if (detail::invert_information(information, parameters, inverse) != Inference::available) {
-            out.test.status = "singular_information";
+            out.test.status = TestStatus::singular_information;
             return out;
         }
     }
@@ -363,7 +350,7 @@ LiMak li_mak(Jet& jet, std::span<const double> theta, std::size_t lags, Estimato
             for (std::size_t j = 0; j < lags; ++j)
                 covariance[i * lags + j] += (moments[t * lags + i] - influence_mean[i]) * (moments[t * lags + j] - influence_mean[j]) / n;
     if (detail::invert_information(covariance, lags, covariance_inverse) != Inference::available) {
-        out.test.status = "singular_moment_covariance";
+        out.test.status = TestStatus::singular_moment_covariance;
         return out;
     }
     double statistic = 0.0;
@@ -390,7 +377,11 @@ DieboldMariano diebold_mariano(std::span<const double> loss_a, std::span<const d
     require(out.bandwidth < rows, "DM bandwidth must be smaller than the sample size");
     std::vector<double> difference(rows);
     for (std::size_t t = 0; t < rows; ++t) difference[t] = loss_a[t] - loss_b[t];
-    const double mean = sample_mean(difference), n = double(rows), h = double(horizon);
+    finite(difference);
+    const double n = double(rows), h = double(horizon);
+    detail::CompensatedSum sum;
+    for (double x : difference) sum.add(x / n);
+    const double mean = sum.total();
     for (double& x : difference) x -= mean;
     double variance = 0.0;
     for (double x : difference) variance += x * x / n;
@@ -518,66 +509,6 @@ InformationCriteria information_criteria(double log_likelihood, std::size_t para
     return {deviance + 2.0 * k, deviance + k * std::log(n), deviance + 2.0 * k * std::log(std::log(n))};
 }
 
-std::vector<double> covariance_standard_errors(std::span<const double> covariance, std::size_t dimension)
-{
-    require(dimension > 0 && covariance.size() / dimension == dimension && covariance.size() % dimension == 0,
-            "covariance must be square");
-    finite(covariance);
-    std::vector<double> out(dimension);
-    for (std::size_t j = 0; j < dimension; ++j) {
-        require(covariance[j * dimension + j] >= 0.0, "negative covariance diagonal cannot give a standard error");
-        out[j] = std::sqrt(covariance[j * dimension + j]);
-    }
-    return out;
-}
-
-std::vector<double> standardized_residuals(std::span<const double> residual, std::span<const double> variance)
-{
-    require(residual.size() == variance.size(), "residual and variance paths must have the same length");
-    finite(residual);
-    finite(variance);
-    std::vector<double> out(residual.size());
-    for (std::size_t t = 0; t < out.size(); ++t) {
-        require(variance[t] > 0.0, "standardization requires strictly positive variance");
-        out[t] = residual[t] / std::sqrt(variance[t]);
-    }
-    finite(out);
-    return out;
-}
-
-std::vector<double> square_roots(std::span<const double> values)
-{
-    finite(values);
-    std::vector<double> out(values.size());
-    for (std::size_t j = 0; j < values.size(); ++j) {
-        require(values[j] >= 0.0, "square roots require nonnegative values");
-        out[j] = std::sqrt(values[j]);
-    }
-    return out;
-}
-
-double persistence_half_life(double persistence)
-{
-    require(std::isfinite(persistence), "persistence must be finite");
-    const double magnitude = std::abs(persistence);
-    return magnitude > 0.0 && magnitude < 1.0 ? std::log(0.5) / std::log(magnitude) : nan;
-}
-
-std::vector<double> score_weights(std::span<const double> scores)
-{
-    double best = std::numeric_limits<double>::infinity();
-    for (double score : scores) if (std::isfinite(score)) best = std::min(best, score);
-    std::vector<double> weights(scores.size(), 0.0);
-    if (!std::isfinite(best)) return weights;
-    double total = 0.0;
-    for (std::size_t j = 0; j < scores.size(); ++j) {
-        if (std::isfinite(scores[j])) weights[j] = std::exp(-0.5 * (scores[j] - best));
-        total += weights[j];
-    }
-    for (double& weight : weights) weight /= total;
-    return weights;
-}
-
 Diagnostics diagnostics(Jet& jet, std::span<const double> theta, std::size_t cells, std::size_t lags,
                          std::size_t df_adjustment, Estimator estimator, bool estimated, std::size_t pit_df_adjustment)
 {
@@ -607,79 +538,11 @@ Diagnostics diagnostics(Jet& jet, std::span<const double> theta, std::size_t cel
         out.pit_normal = portmanteau(normal_scores(out.pit), lags, pit_df_adjustment);
         if (n >= 5) out.density = berkowitz(out.pit);
     } else {
-        out.density.test.status = "pit_endpoint";
-        out.pit_normal.ljung_box.status = out.pit_normal.box_pierce.status = "pit_endpoint";
+        out.density.test.status = TestStatus::pit_endpoint;
+        out.pit_normal.ljung_box.status = out.pit_normal.box_pierce.status = TestStatus::pit_endpoint;
     }
     if (n >= 6) out.asymmetry = sign_bias(z, e);
     out.squared_residual = li_mak(jet, theta, lags, estimator, estimated);
-    return out;
-}
-
-std::pair<bool, double> autoregressive_mean(double intercept, std::span<const double> ar)
-{
-    require(std::isfinite(intercept), "the intercept must be finite");
-    finite(ar);
-    ModelSpec spec;
-    spec.volatility = VolatilityKind::constant;
-    spec.p = spec.q = 0;
-    spec.mean.constant = true;
-    spec.mean.ar = ar.size();
-    const Model model(spec);
-    std::vector<double> theta(ar.size() + 2, 1.0);
-    theta[0] = intercept;
-    std::copy(ar.begin(), ar.end(), theta.begin() + 1);
-    const bool stationary = model.feasible(theta);
-    detail::CompensatedSum sum;
-    for (double coefficient : ar) sum.add(coefficient);
-    return {stationary, stationary ? intercept / (1.0 - sum.total()) : std::numeric_limits<double>::infinity()};
-}
-
-double stationary_variance_state(double omega, double persistence, bool log_state, bool geometric)
-{
-    require(std::isfinite(omega) && std::isfinite(persistence), "variance state parameters must be finite");
-    if (!(log_state ? std::abs(persistence) < 1.0 : persistence < 1.0)) return std::numeric_limits<double>::infinity();
-    const double state = omega / (1.0 - persistence);
-    if (!geometric) return state;
-    const double level = std::exp(state);
-    if (!(level > 0.0) || !std::isfinite(level)) throw std::range_error("geometric variance is not representable");
-    return level;
-}
-
-std::vector<double> variance_losses(std::span<const double> residual, std::span<const double> variance, bool qlike)
-{
-    require(residual.size() == variance.size(), "loss paths must have equal lengths");
-    finite(residual);
-    finite(variance);
-    std::vector<double> out(residual.size());
-    for (std::size_t t = 0; t < out.size(); ++t) {
-        require(variance[t] > 0.0, "variance losses require positive variances");
-        const double squared = residual[t] * residual[t], difference = squared - variance[t];
-        out[t] = qlike ? std::log(variance[t]) + squared / variance[t] : difference * difference;
-    }
-    finite(out);
-    return out;
-}
-
-std::vector<double> empirical_quantiles(std::span<const double> sample, std::span<const double> probabilities, bool standardize)
-{
-    require(!sample.empty(), "empirical quantiles require observations");
-    finite(sample);
-    finite(probabilities);
-    std::vector<double> sorted(sample.begin(), sample.end()), out(probabilities.size());
-    if (standardize) {
-        const double mean = sample_mean(sample);
-        double variance = 0.0;
-        for (double x : sample) variance += (x - mean) * (x - mean) / sample.size();
-        require(variance > 0.0 && std::isfinite(variance), "empirical standardization requires positive finite variance");
-        for (double& x : sorted) x = (x - mean) / std::sqrt(variance);
-    }
-    std::sort(sorted.begin(), sorted.end());
-    for (std::size_t j = 0; j < probabilities.size(); ++j) {
-        require(probabilities[j] >= 0.0 && probabilities[j] <= 1.0, "empirical probabilities must belong to [0, 1]");
-        const double position = probabilities[j] * (sorted.size() - 1);
-        const std::size_t lower = std::size_t(position), upper = std::min(lower + 1, sorted.size() - 1);
-        out[j] = std::lerp(sorted[lower], sorted[upper], position - lower);
-    }
     return out;
 }
 
@@ -693,55 +556,6 @@ std::vector<double> location_scale_quantiles(double mean, double variance, const
         != detail::ExpectationStatus::ok) throw std::range_error("innovation quantiles could not be evaluated accurately");
     const double sigma = std::sqrt(variance);
     for (double& x : out) x = std::fma(sigma, x, mean);
-    finite(out);
-    return out;
-}
-
-std::vector<double> column_means(std::span<const double> values, std::size_t rows, std::size_t columns)
-{
-    require(rows > 0 && columns > 0 && values.size() / rows == columns && values.size() % rows == 0,
-            "column means need a nonempty rectangular array");
-    finite(values);
-    std::vector<double> out(columns);
-    for (std::size_t j = 0; j < columns; ++j) {
-        detail::CompensatedSum sum;
-        for (std::size_t t = 0; t < rows; ++t) sum.add(values[t * columns + j] / rows);
-        out[j] = sum.total();
-    }
-    finite(out);
-    return out;
-}
-
-std::vector<double> path_second_moments(std::span<const double> values, std::size_t paths,
-                                       std::size_t horizon, std::size_t series)
-{
-    require(paths > 0 && horizon > 0 && series > 0 && values.size() / paths / horizon == series
-                && values.size() % paths == 0 && (values.size() / paths) % horizon == 0,
-            "second moments need a paths by horizon by series array");
-    finite(values);
-    std::vector<double> out(horizon * series * series, 0.0);
-    for (std::size_t p = 0; p < paths; ++p)
-        for (std::size_t t = 0; t < horizon; ++t)
-            for (std::size_t i = 0; i < series; ++i)
-                for (std::size_t j = 0; j < series; ++j)
-                    out[(t * series + i) * series + j] += values[(p * horizon + t) * series + i]
-                                                       * values[(p * horizon + t) * series + j] / paths;
-    finite(out);
-    return out;
-}
-
-std::vector<double> correlation_from_covariance(std::span<const double> covariance, std::size_t series)
-{
-    require(series > 0 && covariance.size() / series == series && covariance.size() % series == 0,
-            "covariance must be a nonempty square matrix");
-    finite(covariance);
-    std::vector<double> scales(series), out(covariance.size());
-    for (std::size_t i = 0; i < series; ++i) {
-        require(covariance[i * series + i] > 0.0, "covariance diagonal must be positive");
-        scales[i] = std::sqrt(covariance[i * series + i]);
-    }
-    for (std::size_t i = 0; i < series; ++i)
-        for (std::size_t j = 0; j < series; ++j) out[i * series + j] = covariance[i * series + j] / scales[i] / scales[j];
     finite(out);
     return out;
 }

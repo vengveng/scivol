@@ -13,6 +13,7 @@ file(GLOB SCIVOLAPI_MATH_SOURCES CONFIGURE_DEPENDS src/math/*.cpp src/density/*.
 file(GLOB SCIVOLAPI_JET_SOURCES CONFIGURE_DEPENDS src/jet_*.cpp)
 add_library(scivolapi
     src/model.cpp
+    src/model_moments.cpp
     src/jet.cpp
     ${SCIVOLAPI_JET_SOURCES}
     src/fit.cpp

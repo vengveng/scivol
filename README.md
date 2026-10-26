@@ -1003,9 +1003,10 @@ g = GARCH(auto={'max_p': 2, 'max_q': 2})
 
 g.p, g.q, g.n_params, g.signature
 g.fitted_params   # {'omega': ..., 'alpha': [...], 'beta': [...]}
-g.persistence()
-g.is_stationary()
-g.unconditional_variance()
+result = g.fit(data)
+result.garch_params.persistence
+result.garch_params.is_stationary
+result.unconditional_variance  # exact E[h], through the common native Model interface
 ```
 
 ### GJRGARCH

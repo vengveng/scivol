@@ -347,7 +347,7 @@ def _fit_candidate_worker(
             if not np.all(np.isfinite(losses)):
                 raise FloatingPointError("OOS filter produced non-finite losses.")
             candidate.oos_losses = losses
-            candidate.oos_loss = api.sample_mean(np.ascontiguousarray(losses, dtype=np.float64))
+            candidate.oos_loss = float(np.mean(losses))
             candidate.oos_loss_name = oos_loss.lower()
             candidate.oos_start = holdout_start
             candidate.oos_stop = holdout_stop

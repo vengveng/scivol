@@ -3,8 +3,6 @@
 #include <array>
 #include <limits>
 #include <span>
-#include <string>
-#include <utility>
 #include <vector>
 
 #include "fit.hpp"
@@ -14,11 +12,18 @@ namespace scivolapi {
 
 // Invalid inputs throw invalid_argument. Unidentified tests and numerical
 // failures return an explicit status, with NaN statistic and probability.
+enum class TestStatus {
+    ok, not_estimable, probability_underflow, numerical_range,
+    infeasible_parameters, fourth_moment_unavailable, invalid_derivatives,
+    invalid_qmle_derivatives, at_boundary, singular_information,
+    singular_moment_covariance, pit_endpoint,
+};
+
 struct TestStatistic {
     double statistic = std::numeric_limits<double>::quiet_NaN();
     double p_value = std::numeric_limits<double>::quiet_NaN();
     std::size_t df = 0;
-    std::string status = "not_estimable";
+    TestStatus status = TestStatus::not_estimable;
     // Underflow keeps a finite statistic and log p-value, with an explicit
     // probability_underflow status and NaN p_value. Rejection remains defined.
     double log_p_value = std::numeric_limits<double>::quiet_NaN();
@@ -128,25 +133,7 @@ ModelConfidenceSet model_confidence_set(std::span<const double> losses, std::siz
 
 struct InformationCriteria { double aic, bic, hqic; };
 InformationCriteria information_criteria(double log_likelihood, std::size_t parameters, std::size_t rows);
-std::vector<double> covariance_standard_errors(std::span<const double> covariance, std::size_t dimension);
-std::vector<double> standardized_residuals(std::span<const double> residual, std::span<const double> variance);
-std::vector<double> square_roots(std::span<const double> values);
-double sample_mean(std::span<const double> values);
-double persistence_half_life(double persistence);
-std::vector<double> score_weights(std::span<const double> scores);
-std::pair<bool, double> autoregressive_mean(double intercept, std::span<const double> ar);
-double stationary_variance_state(double omega, double persistence, bool log_state = false, bool geometric = false);
-std::vector<double> variance_losses(std::span<const double> residual, std::span<const double> variance, bool qlike);
-// NumPy's linear empirical quantile convention, with optional population
-// centering/standardization before taking quantiles. No observations are dropped.
-std::vector<double> empirical_quantiles(std::span<const double> sample, std::span<const double> probabilities,
-                                        bool standardize = false);
 std::vector<double> location_scale_quantiles(double mean, double variance, const InnovationDensity&,
                                              std::span<const double> probabilities);
-std::vector<double> column_means(std::span<const double> values, std::size_t rows, std::size_t columns);
-// E[e e'] over paths, for a paths x horizon x series array.
-std::vector<double> path_second_moments(std::span<const double>, std::size_t paths, std::size_t horizon, std::size_t series);
-std::vector<double> correlation_from_covariance(std::span<const double>, std::size_t series);
-double sample_sum(std::span<const double> values);
 
 } // namespace scivolapi

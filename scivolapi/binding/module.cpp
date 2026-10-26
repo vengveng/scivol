@@ -219,7 +219,7 @@ nb::dict test_dictionary(const TestStatistic& test, double alpha = 0.05)
     out["statistic"] = test.statistic;
     out["p_value"] = test.p_value;
     out["df"] = test.df;
-    out["status"] = test.status;
+    out["status"] = nb::cast(test.status).attr("name");
     out["log_p_value"] = test.log_p_value;
     out["reject"] = test.rejects(alpha);
     return out;
@@ -271,6 +271,20 @@ nb::dict li_mak_dictionary(LiMak test, std::size_t lags, std::size_t parameters,
 NB_MODULE(_scivolapi, m)
 {
     m.doc() = "scivolapi: native volatility-model mathematics";
+
+    nb::enum_<TestStatus>(m, "TestStatus")
+        .value("ok", TestStatus::ok)
+        .value("not_estimable", TestStatus::not_estimable)
+        .value("probability_underflow", TestStatus::probability_underflow)
+        .value("numerical_range", TestStatus::numerical_range)
+        .value("infeasible_parameters", TestStatus::infeasible_parameters)
+        .value("fourth_moment_unavailable", TestStatus::fourth_moment_unavailable)
+        .value("invalid_derivatives", TestStatus::invalid_derivatives)
+        .value("invalid_qmle_derivatives", TestStatus::invalid_qmle_derivatives)
+        .value("at_boundary", TestStatus::at_boundary)
+        .value("singular_information", TestStatus::singular_information)
+        .value("singular_moment_covariance", TestStatus::singular_moment_covariance)
+        .value("pit_endpoint", TestStatus::pit_endpoint);
 
     nb::enum_<VolatilityKind>(m, "VolatilityKind")
         .value("garch", VolatilityKind::garch)
@@ -329,6 +343,11 @@ NB_MODULE(_scivolapi, m)
         })
         .def_prop_ro("capabilities", &Model::capabilities)
         .def("persistence", [](const Model& m, const Vector& theta) { return m.persistence(view(theta)); }, "theta"_a)
+        .def("unconditional_variance", [](const Model& m, const Vector& theta) { return m.unconditional_variance(view(theta)); }, "theta"_a)
+        .def("unconditional_mean", [](const Model& m, const Vector& theta) { return m.unconditional_mean(view(theta)); }, "theta"_a)
+        .def("innovation_power_moment", [](const Model& m, const Vector& theta, double gamma, double power) {
+            return m.innovation_power_moment(view(theta), gamma, power);
+        }, "theta"_a, "gamma"_a, "power"_a)
         .def("innovation_density", [](const Model& m, const Vector& theta) { return m.innovation_density(view(theta)); },
              "theta"_a)
         .def("constraints", [](const Model& m, const Vector& theta) {
@@ -689,36 +708,7 @@ NB_MODULE(_scivolapi, m)
         const auto ic = information_criteria(log_likelihood, parameters, rows);
         return nb::make_tuple(ic.aic, ic.bic, ic.hqic);
     }, "log_likelihood"_a, "parameters"_a, "rows"_a);
-    m.def("covariance_standard_errors", [](const Matrix& covariance) {
-        if (covariance.shape(0) != covariance.shape(1)) throw std::invalid_argument("covariance must be square");
-        return owned_vector(covariance_standard_errors({covariance.data(), covariance.size()}, covariance.shape(0)));
-    }, "covariance"_a);
-    m.def("standardized_residuals", [](const Vector& e, const Vector& h) { return owned_vector(standardized_residuals(view(e), view(h))); });
-    m.def("square_roots", [](const Vector& x) { return owned_vector(square_roots(view(x))); });
-    m.def("sample_mean", [](const Vector& x) { return sample_mean(view(x)); });
-    m.def("sample_sum", [](const Vector& x) { return sample_sum(view(x)); });
-    m.def("persistence_half_life", &persistence_half_life);
-    m.def("score_weights", [](const Vector& x) { return owned_vector(score_weights(view(x))); });
-    m.def("autoregressive_mean", [](double intercept, const Vector& ar) { return autoregressive_mean(intercept, view(ar)); });
-    m.def("stationary_variance_state", &stationary_variance_state, "omega"_a, "persistence"_a,
-          "log_state"_a = false, "geometric"_a = false);
-    m.def("variance_losses", [](const Vector& e, const Vector& h, bool qlike) {
-        return owned_vector(variance_losses(view(e), view(h), qlike));
-    }, "residual"_a, "variance"_a, "qlike"_a);
-    m.def("empirical_quantiles", [](const Vector& x, const Vector& u, bool standardize) {
-        return owned_vector(empirical_quantiles(view(x), view(u), standardize));
-    }, "sample"_a, "probabilities"_a, "standardize"_a = false);
     m.def("location_scale_quantiles", [](double mean, double variance, const InnovationDensity& law, const Vector& u) {
         return owned_vector(location_scale_quantiles(mean, variance, law, view(u)));
-    });
-    m.def("column_means", [](const Matrix& x) {
-        return owned_vector(column_means({x.data(), x.size()}, x.shape(0), x.shape(1)));
-    });
-    m.def("path_second_moments", [](const Tensor3& x) {
-        return owned_vector(path_second_moments({x.data(), x.size()}, x.shape(0), x.shape(1), x.shape(2)));
-    });
-    m.def("correlation_from_covariance", [](const Matrix& x) {
-        if (x.shape(0) != x.shape(1)) throw std::invalid_argument("covariance must be square");
-        return owned_matrix(correlation_from_covariance({x.data(), x.size()}, x.shape(0)), x.shape(0), x.shape(1));
     });
 }

@@ -49,7 +49,7 @@ class FilteredState:
 
     @property
     def std_resid(self) -> NDArray[np.float64]:
-        return api.standardized_residuals(np.ascontiguousarray(self.residuals), np.ascontiguousarray(self.sigma2))
+        return self.residuals / np.sqrt(self.sigma2)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -109,11 +109,11 @@ class ForecastResult(Mapping[str, NDArray[np.float64]]):
 
     @property
     def volatility(self) -> NDArray[np.float64]:
-        return api.square_roots(np.ascontiguousarray(self.variance).ravel()).reshape(self.variance.shape)
+        return np.sqrt(self.variance)
 
     @property
     def residual_volatility(self) -> NDArray[np.float64]:
-        return api.square_roots(np.ascontiguousarray(self.residual_variance).ravel()).reshape(self.residual_variance.shape)
+        return np.sqrt(self.residual_variance)
 
     def quantile(self, level: float | NDArray[np.float64]) -> NDArray[np.float64]:
         levels = np.asarray(level, dtype=np.float64)
@@ -126,8 +126,7 @@ class ForecastResult(Mapping[str, NDArray[np.float64]]):
         if len(self.mean) > 1:
             paths = self.simulated_paths()
             for horizon in range(1, len(self.mean)):
-                out[horizon] = api.empirical_quantiles(np.ascontiguousarray(paths[:, horizon]),
-                                                      np.ascontiguousarray(flat))
+                out[horizon] = np.quantile(paths[:, horizon], flat)
         return out[:, 0] if levels.ndim == 0 else out
 
     def var(self, level: float | NDArray[np.float64]) -> NDArray[np.float64]:
@@ -488,6 +487,7 @@ def oos_losses(result: "EstimationResult", full_data: Any, *, full_x: Any, start
     if key == "logscore":
         return np.ascontiguousarray(out["terms"][rows])
     if key in {"qlike", "mse"}:
-        return api.variance_losses(np.ascontiguousarray(out["residual"][rows]),
-                                  np.ascontiguousarray(out["variance"][rows]), key == "qlike")
+        squared = out["residual"][rows] ** 2
+        variance = out["variance"][rows]
+        return np.log(variance) + squared / variance if key == "qlike" else (squared - variance) ** 2
     raise ValueError("oos_loss must be 'logscore', 'qlike', or 'mse'.")
