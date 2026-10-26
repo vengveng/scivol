@@ -102,10 +102,6 @@ class EGARCHParams:
             return np.inf
         return self.omega / (1.0 - self.persistence)
 
-    @property
-    def unconditional_variance(self) -> float:
-        log_var = self.unconditional_log_variance
-        return np.inf if not np.isfinite(log_var) else float(np.exp(log_var))
 
     def to_array(self) -> NDArray[np.float64]:
         return np.concatenate([[self.omega], self.alpha, self.gamma, self.beta])
@@ -879,10 +875,7 @@ class EstimationResult:
                 if gp.is_stationary:
                     print(f"{'Stationary:':<35} Yes")
                     log_var = gp.unconditional_log_variance
-                    print(f"{'Unconditional Log Variance:':<35} {log_var:.6f}")
-                    uncond_var = gp.unconditional_variance
-                    print(f"{'Unconditional Variance:':<35} {uncond_var:.6e}")
-                    print(f"{'Unconditional Volatility:':<35} {np.sqrt(uncond_var):.6f}")
+                    print(f"{'Unconditional E[log h]:':<35} {log_var:.6f}")
                 else:
                     print(f"{'Stationary:':<35} No (non-stationary log-variance recursion)")
                 if 0.0 < abs(persistence) < 1.0:

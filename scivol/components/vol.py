@@ -222,11 +222,6 @@ class EGARCH(Component):
         }
         return self.fitted_params
 
-    def unconditional_log_variance(self) -> float:
-        if not self.is_stationary():
-            return np.inf
-        assert self.fitted_params is not None
-        return float(self.fitted_params["omega"]) / (1.0 - self.persistence())
 
 class GARCH(Component):
     """
