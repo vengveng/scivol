@@ -328,11 +328,13 @@ NB_MODULE(_scivolapi, m)
 
     nb::class_<ModelSpec>(m, "ModelSpec")
         .def(nb::init<>())
+        .def("__deepcopy__", [](const ModelSpec& s, nb::dict) { return s; }, "memo"_a)
         .def_rw("mean", &ModelSpec::mean)
         .def_rw("volatility", &ModelSpec::volatility)
         .def_rw("p", &ModelSpec::p)
         .def_rw("q", &ModelSpec::q)
-        .def_rw("density", &ModelSpec::density);
+        .def_rw("density", &ModelSpec::density)
+        .def("__eq__", [](const ModelSpec& a, const ModelSpec& b) { return a == b; });
 
     auto model_binding = nb::class_<Model>(m, "Model")
         .def("__init__", [](Model* self, const ModelSpec& spec) { new (self) Model(spec); }, "spec"_a)
@@ -678,6 +680,7 @@ NB_MODULE(_scivolapi, m)
         .def_ro("embedding", &Restriction::embedding)
         .def_ro("directions", &Restriction::directions)
         .def_ro("null_values", &Restriction::null_values)
+        .def("then", &Restriction::then)
         .def("embed", [](const Restriction& r, const Vector& t) -> nb::object {
             auto result = r.embed(view(t));
             return result ? owned_vector(std::move(*result)) : nb::none();
@@ -689,7 +692,45 @@ NB_MODULE(_scivolapi, m)
         .def("on_face", [](const Restriction& r, const Vector& t) { return r.on_face(view(t)); })
         .def("identified", [](const Restriction& r, const Vector& t) { return r.identified(view(t)); })
         .def("regular", [](const Restriction& r, const Vector& t) { return r.regular(view(t)); });
-    model_binding.def("restrictions", &Model::restrictions)
+    model_binding.def_prop_ro("key", [](const Model& m) {
+            const auto& s = m.spec();
+            return nb::make_tuple(s.mean.constant, s.mean.ar, nb::tuple(nb::cast(s.mean.har)),
+                                  s.mean.exog, s.mean.ma, static_cast<int>(s.volatility), s.p, s.q,
+                                  static_cast<int>(s.density));
+        })
+        .def_prop_ro("constant_variance", [](const Model& m) { return m.spec().volatility == VolatilityKind::constant; })
+        .def_prop_ro("components", [](const Model& m) {
+            const auto& s = m.spec();
+            nb::list out;
+            nb::dict kw;
+            kw["constant"] = s.mean.constant;
+            if (s.mean.ma) out.append(nb::make_tuple("ARMA", nb::make_tuple(s.mean.ar, s.mean.ma), kw));
+            else if (!s.mean.har.empty()) out.append(nb::make_tuple("HARX", nb::make_tuple(s.mean.har), kw));
+            else if (s.mean.width()) out.append(nb::make_tuple("ARX", nb::make_tuple(s.mean.ar), kw));
+            const char* vol = nullptr;
+            switch (s.volatility) {
+                case VolatilityKind::garch: vol = "GARCH"; break;
+                case VolatilityKind::gjr: vol = "GJRGARCH"; break;
+                case VolatilityKind::egarch: vol = "EGARCH"; break;
+                case VolatilityKind::aparch: vol = "APARCH"; break;
+                case VolatilityKind::constant: break;
+            }
+            if (vol) out.append(nb::make_tuple(vol, nb::make_tuple(s.p, s.q), nb::dict()));
+            const char* density = nullptr;
+            switch (s.density) {
+                case DensityKind::normal: density = "Normal"; break;
+                case DensityKind::student_t: density = "StudentT"; break;
+                case DensityKind::skew_t: density = "SkewT"; break;
+                case DensityKind::ged: density = "GED"; break;
+                case DensityKind::generalized_hyperbolic: density = "GeneralizedHyperbolic"; break;
+                case DensityKind::nig: density = "NormalInverseGaussian"; break;
+                case DensityKind::hyperbolic: density = "Hyperbolic"; break;
+                case DensityKind::variance_gamma: density = "VarianceGamma"; break;
+            }
+            out.append(nb::make_tuple(density, nb::tuple(), nb::dict()));
+            return out;
+        })
+        .def("restrictions", &Model::restrictions)
         .def_prop_ro("spec", [](const Model& model) { return model.spec(); })
         .def("start", [](const Model& m, const ComparisonPlan& p) { return owned_vector(m.start(m.prepare(p))); }, "plan"_a);
     nb::enum_<RestrictFitStatus>(m, "RestrictFitStatus")
@@ -787,6 +828,75 @@ NB_MODULE(_scivolapi, m)
         return out;
     }, "jet"_a, "theta"_a, "cells"_a = 40, "lags"_a = 10, "df_adjustment"_a = nb::none(),
        "estimator"_a = Estimator::mle, "estimated"_a = true, "alpha"_a = 0.05);
+    m.def("selection_diagnostics", [](BoundJet& jet, const Vector& theta, double alpha, Estimator estimator) {
+        if (!(alpha > 0.0 && alpha < 1.0)) throw std::invalid_argument("diagnostic level must be between zero and one");
+        const std::size_t maximum = std::min<std::size_t>(20, jet.sample.scored()/5);
+        nb::list checks;
+        std::vector<TestStatistic> family;
+        std::vector<bool> calibrated_tests;
+        auto add = [&](std::string name, const TestStatistic& test, bool calibrated) {
+            nb::dict record = test_dictionary(test, alpha);
+            record["name"] = name;
+            record["calibrated"] = calibrated;
+            checks.append(record);
+            family.push_back(test);
+            calibrated_tests.push_back(calibrated);
+        };
+        bool first = true;
+        std::size_t previous = 0;
+        for (const std::size_t requested : {10u, 20u}) {
+            const std::size_t lag = std::min(requested, maximum);
+            if (!lag || lag == previous) continue;
+            previous = lag;
+            auto tests = diagnostics(jet.jet, view(theta), 40, lag,
+                                     jet.model->residual_degrees_of_freedom(), estimator);
+            add("residual_ljung_box[" + std::to_string(lag) + "]", tests.residual.ljung_box, true);
+            add("li_mak[" + std::to_string(lag) + "]", tests.squared_residual.test, true);
+            if (first) {
+                const bool moments = tests.squared_residual.test.status != TestStatus::fourth_moment_unavailable;
+                add("sign_bias", tests.asymmetry.joint, moments);
+                add("berkowitz", tests.density.test, false);
+                first = false;
+            }
+        }
+        bool unresolved = first;
+        std::vector<double> p;
+        for (std::size_t i = 0; i < family.size(); ++i) {
+            const auto& t = family[i];
+            if (!calibrated_tests[i]) { unresolved = true; p.push_back(1.0); }
+            else if (t.status == TestStatus::ok && std::isfinite(t.p_value)) p.push_back(t.p_value);
+            else if (t.status == TestStatus::probability_underflow && std::isfinite(t.log_p_value)) p.push_back(0.0);
+            else { unresolved = true; p.push_back(1.0); }
+        }
+        std::sort(p.begin(), p.end());
+        bool rejected = false;
+        for (std::size_t i = 0; i < p.size(); ++i) {
+            if (p[i] <= alpha/static_cast<double>(p.size()-i)) rejected = true;
+            else break;
+        }
+        nb::dict out;
+        out["checks"] = checks;
+        out["status"] = rejected ? "rejected" : (unresolved ? "adequacy_unresolved" : "adequate");
+        out["reason"] = "In-sample Berkowitz estimation calibration is unavailable; boundary and moment failures remain unresolved.";
+        out["holm_level"] = alpha;
+        out["no_arch_status"] = jet.model->spec().volatility == VolatilityKind::constant
+            ? "unavailable: identified auxiliary one-sided score calibration is not implemented" : "not_applicable";
+        out["no_arch_lags"] = std::min<std::size_t>(10, maximum);
+        return out;
+    }, "jet"_a, "theta"_a, "alpha"_a = 0.01, "estimator"_a = Estimator::mle);
+    m.def("predictive_losses", [](BoundJet& jet, const Vector& theta, const std::string& loss) {
+        if (loss != "log_score" && loss != "qlike") throw std::invalid_argument("loss must be log_score or qlike");
+        const std::size_t n = jet.sample.scored();
+        std::vector<double> values(n), e(n), h(n), z(n);
+        JetOutput out;
+        out.terms = values;
+        out.paths = {e, h, z};
+        const auto result = jet.jet.theta(view(theta), loss == "log_score" ? terms : paths, out);
+        if (result.status != Status::ok) throw std::domain_error("Predictive loss cannot be evaluated at these parameters");
+        if (loss == "qlike")
+            for (std::size_t i = 0; i < n; ++i) values[i] = std::log(h[i]) + e[i]*e[i]/h[i];
+        return owned_vector(std::move(values));
+    }, "jet"_a, "theta"_a, "loss"_a = "log_score");
     m.def("diebold_mariano", [](const Vector& a, const Vector& b, std::size_t horizon, int bandwidth) {
         const DieboldMariano test = diebold_mariano(view(a), view(b), horizon, bandwidth);
         nb::dict out = test_dictionary(test.test);

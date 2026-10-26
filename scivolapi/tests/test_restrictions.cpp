@@ -152,6 +152,18 @@ int main()
     });
     CHECK(!mean_tail->identified(std::vector<double>{.2, -.2, .1, .1, .03, .5, .14}));
 
+    const auto symmetry = skew.restrictions().front();
+    const Model symmetric(symmetry.child);
+    const auto gaussian_edge = symmetric.restrictions().back();
+    const auto joint = symmetry.then(gaussian_edge);
+    const std::vector<double> constant_theta{1.2};
+    const auto joint_theta = joint.embed(constant_theta);
+    const auto sequential_theta = symmetry.embed(*gaussian_edge.embed(constant_theta));
+    CHECK(joint_theta && sequential_theta && *joint_theta == *sequential_theta);
+    CHECK(joint.map_start(*joint_theta) == std::optional(constant_theta));
+    CHECK(joint.types.size() == 2 && joint.on_face(*joint_theta));
+    CHECK(joint.null_values == std::vector<double>({0.0, 0.0}));
+
     const auto w = chi_bar_weights(std::vector<double>{1.0, -0.5, -0.5, 1.0}, 2);
     CHECK(w.status == LRStatus::ok);
     CHECK(std::abs(w.weights[2] - 1.0 / 3.0) < 1e-13);

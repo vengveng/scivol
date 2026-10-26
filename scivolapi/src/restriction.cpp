@@ -164,12 +164,55 @@ std::vector<Restriction> Model::restrictions() const
     if (c.density == DensityKind::skew_t) {
         c.density = DensityKind::student_t;
         scalar(c, "density.symmetry", l.shapes + 1, T::interior_equality);
+        c.density = DensityKind::normal;
+        out.push_back(make_restriction(*this, c, "density.normal",
+                                      {{l.shapes, T::closed_boundary},
+                                       {l.shapes + 1, T::interior_equality}}));
     } else if (c.density == DensityKind::student_t) {
         c.density = DensityKind::normal;
         scalar(c, "density.normal", l.shapes, T::closed_boundary);
     } else if (c.density == DensityKind::ged) {
         c.density = DensityKind::normal;
         scalar(c, "density.normal", l.shapes, T::interior_equality, 2.0);
+    }
+    return out;
+}
+
+Restriction Restriction::then(const Restriction& next) const
+{
+    if (!(child == next.parent)) throw std::invalid_argument("Restriction path does not connect.");
+    const std::size_t d = Model(parent).dimension(), k = Model(child).dimension(), c = Model(next.child).dimension();
+    // Current restrictions select orthonormal coordinate columns. Reject a
+    // future nonlinear/nonorthonormal map until it supplies its own pullback.
+    for (std::size_t i = 0; i < k; ++i)
+        for (std::size_t j = 0; j < k; ++j) {
+            double value = 0.0;
+            for (std::size_t a = 0; a < d; ++a) value += embedding[a*k+i]*embedding[a*k+j];
+            if (value != (i == j ? 1.0 : 0.0))
+                throw std::invalid_argument("Restriction composition needs an orthonormal affine map.");
+        }
+    Restriction out = *this;
+    out.name += ";" + next.name;
+    out.child = next.child;
+    out.condition += " " + next.condition;
+    if (next.identification == Identification::unidentified_under_null) out.identification = next.identification;
+    out.embedding.assign(d*c, 0.0);
+    for (std::size_t a = 0; a < d; ++a)
+        for (std::size_t b = 0; b < k; ++b) {
+            out.offset[a] += embedding[a*k+b]*next.offset[b];
+            for (std::size_t j = 0; j < c; ++j)
+                out.embedding[a*c+j] += embedding[a*k+b]*next.embedding[b*c+j];
+        }
+    for (std::size_t i = 0; i < next.types.size(); ++i) {
+        double value = next.null_values[i];
+        for (std::size_t a = 0; a < d; ++a) {
+            double direction = 0.0;
+            for (std::size_t b = 0; b < k; ++b) direction += next.directions[i*k+b]*embedding[a*k+b];
+            out.directions.push_back(direction);
+            value += direction*offset[a];
+        }
+        out.null_values.push_back(value);
+        out.types.push_back(next.types[i]);
     }
     return out;
 }

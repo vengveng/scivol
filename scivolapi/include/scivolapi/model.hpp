@@ -89,6 +89,7 @@ struct Restriction {
     std::string condition;
     std::vector<double> offset, embedding, directions, null_values;
 
+    [[nodiscard]] Restriction then(const Restriction& next) const;
     [[nodiscard]] std::optional<std::vector<double>> embed(std::span<const double> theta) const;
     [[nodiscard]] std::optional<std::vector<double>> map_start(std::span<const double> theta) const;
     [[nodiscard]] bool on_face(std::span<const double> theta) const;
