@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cstddef>
+#include <limits>
+#include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -32,6 +35,7 @@ struct MeanSpec {
     std::vector<std::size_t> har;  // HAR windows, strictly increasing
     std::size_t exog = 0;
     std::size_t ma = 0;
+    bool operator==(const MeanSpec&) const = default;
 
     [[nodiscard]] std::size_t regressors() const noexcept { return (constant ? 1u : 0u) + ar + har.size() + exog; }
     [[nodiscard]] std::size_t width() const noexcept { return regressors() + ma; }
@@ -66,9 +70,54 @@ struct ModelCapabilities {
 struct ModelSpec {
     MeanSpec mean;
     VolatilityKind volatility = VolatilityKind::garch;
-    std::size_t p = 1;  // ARCH (squared-residual) lags; 0 for constant variance
-    std::size_t q = 1;  // GARCH (variance) lags; 0 for constant variance
+    std::size_t p = 1;  // ARCH (squared-residual) lags; zero orders are supported
+    std::size_t q = 1;  // GARCH (variance) lags; zero gives an ARCH recursion
     DensityKind density = DensityKind::normal;
+    bool operator==(const ModelSpec&) const = default;
+};
+
+enum class RestrictionType { interior_equality, closed_boundary };
+enum class Identification { conditional, unidentified_under_null };
+
+// theta_parent = offset + embedding theta_child. Each row of directions gives
+// one tested coordinate in parent theta, at the corresponding null value.
+struct Restriction {
+    std::string name;
+    ModelSpec parent, child;
+    std::vector<RestrictionType> types;
+    Identification identification = Identification::conditional;
+    std::string condition;
+    std::vector<double> offset, embedding, directions, null_values;
+
+    [[nodiscard]] std::optional<std::vector<double>> embed(std::span<const double> theta) const;
+    [[nodiscard]] std::optional<std::vector<double>> map_start(std::span<const double> theta) const;
+    [[nodiscard]] bool on_face(std::span<const double> theta) const;
+    [[nodiscard]] bool identified(std::span<const double> child_theta) const;
+    // Retained constraints must be slack. Rank/minimality is also checked by
+    // the parent information in restriction_test, never by a pseudoinverse.
+    [[nodiscard]] bool regular(std::span<const double> child_theta) const;
+};
+
+// Owns one comparison's input span and exogenous columns. Children retain the
+// leading columns. All recursions begin at first_scored with this fixed seed.
+class ComparisonPlan {
+public:
+    ComparisonPlan(std::span<const double> y, std::size_t first_scored,
+                   std::span<const double> x = {}, std::size_t columns = 0,
+                   double variance_seed = std::numeric_limits<double>::quiet_NaN());
+    [[nodiscard]] std::span<const double> y() const noexcept { return y_; }
+    [[nodiscard]] std::span<const double> x() const noexcept { return x_; }
+    [[nodiscard]] std::size_t columns() const noexcept { return columns_; }
+    [[nodiscard]] std::size_t first_scored() const noexcept { return first_; }
+    [[nodiscard]] double variance_seed() const noexcept { return seed_; }
+    [[nodiscard]] const std::shared_ptr<const void>& identity() const noexcept { return identity_; }
+    [[nodiscard]] ComparisonPlan rescaled(double factor) const;
+
+private:
+    std::vector<double> y_, x_;
+    std::size_t columns_, first_;
+    double seed_;
+    std::shared_ptr<const void> identity_ = std::make_shared<const unsigned char>(0);
 };
 
 // The sample plan: the observations, how the recursions are conditioned, and
@@ -101,6 +150,11 @@ public:
     // Sample plan for y and, with exogenous regressors, x (rows x exog, row-major,
     // aligned with y). Throws std::invalid_argument for unusable data.
     [[nodiscard]] Sample prepare(std::span<const double> y, std::span<const double> x = {}) const;
+    [[nodiscard]] Sample prepare(const ComparisonPlan& plan) const;
+
+    // Exact, spec-representable immediate restrictions. Identification and
+    // tangent coordinates belong to the model, not to its consumers.
+    [[nodiscard]] std::vector<Restriction> restrictions() const;
 
     // Theoretical domain.
     [[nodiscard]] bool feasible(std::span<const double> theta) const;

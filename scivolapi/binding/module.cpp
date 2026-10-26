@@ -53,12 +53,18 @@ std::vector<double> exogenous(const std::optional<Matrix>& x)
 struct BoundJet {
     std::shared_ptr<const Model> model;
     std::vector<double> y, x;
+    std::optional<ComparisonPlan> comparison;
     Sample sample;
     Jet jet;
 
     BoundJet(std::shared_ptr<const Model> m, std::span<const double> data, std::vector<double> regressors)
         : model(std::move(m)), y(data.begin(), data.end()), x(std::move(regressors)), sample(model->prepare(y, x)),
           jet(*model, sample)
+    {
+    }
+
+    BoundJet(std::shared_ptr<const Model> m, const ComparisonPlan& plan)
+        : model(std::move(m)), comparison(plan), sample(model->prepare(*comparison)), jet(*model, sample)
     {
     }
 };
@@ -254,7 +260,7 @@ NB_MODULE(_scivolapi, m)
         .def_rw("q", &ModelSpec::q)
         .def_rw("density", &ModelSpec::density);
 
-    nb::class_<Model>(m, "Model")
+    auto model_binding = nb::class_<Model>(m, "Model")
         .def("__init__", [](Model* self, const ModelSpec& spec) { new (self) Model(spec); }, "spec"_a)
         .def("__getstate__", [](const Model& m) { return spec_state(m.spec()); })
         .def("__setstate__", [](Model& self, const SpecState& state) { new (&self) Model(spec_from(state)); })
@@ -550,10 +556,110 @@ NB_MODULE(_scivolapi, m)
                  new (self) BoundJet(std::make_shared<const Model>(model), view(y), exogenous(x));
              },
              "model"_a, "y"_a, "x"_a = nb::none())
+        .def("__init__", [](BoundJet* self, const Model& model, const ComparisonPlan& plan) {
+            new (self) BoundJet(std::make_shared<const Model>(model), plan);
+        }, "model"_a, "plan"_a)
         .def_prop_ro("first_scored", [](const BoundJet& j) { return j.sample.first_scored; })
         .def_prop_ro("variance_seed", [](const BoundJet& j) { return j.sample.variance_seed; })
         .def("theta", [](BoundJet& j, const Vector& theta, unsigned request) { return evaluate(j, theta, request, false); },
              "theta"_a, "request"_a)
         .def("z", [](BoundJet& j, const Vector& z, unsigned request) { return evaluate(j, z, request, true); },
              "z"_a, "request"_a);
+
+    nb::class_<ComparisonPlan>(m, "ComparisonPlan")
+        .def("__init__", [](ComparisonPlan* self, const Vector& y, std::size_t first,
+                            const std::optional<Matrix>& x, std::optional<double> seed) {
+            const auto rows = exogenous(x);
+            if (x && x->shape(0) != y.shape(0)) throw std::invalid_argument("comparison x and y must have equal rows");
+            new (self) ComparisonPlan(view(y), first, rows, x ? x->shape(1) : 0,
+                                     seed.value_or(std::numeric_limits<double>::quiet_NaN()));
+        }, "y"_a, "first_scored"_a, "x"_a = nb::none(), "variance_seed"_a = nb::none())
+        .def_prop_ro("first_scored", &ComparisonPlan::first_scored)
+        .def_prop_ro("variance_seed", &ComparisonPlan::variance_seed)
+        .def_prop_ro("columns", &ComparisonPlan::columns)
+        .def_prop_ro("y", [](const ComparisonPlan& p) { return owned_vector(std::vector<double>(p.y().begin(), p.y().end())); })
+        .def_prop_ro("x", [](const ComparisonPlan& p) {
+            return owned_matrix(std::vector<double>(p.x().begin(), p.x().end()), p.y().size(), p.columns());
+        });
+    nb::enum_<RestrictionType>(m, "RestrictionType")
+        .value("interior_equality", RestrictionType::interior_equality)
+        .value("closed_boundary", RestrictionType::closed_boundary);
+    nb::enum_<Identification>(m, "Identification")
+        .value("conditional", Identification::conditional)
+        .value("unidentified_under_null", Identification::unidentified_under_null);
+    nb::class_<Restriction>(m, "Restriction")
+        .def_ro("name", &Restriction::name)
+        .def_prop_ro("parent", [](const Restriction& r) { return r.parent; })
+        .def_prop_ro("child", [](const Restriction& r) { return r.child; })
+        .def_ro("types", &Restriction::types)
+        .def_ro("identification", &Restriction::identification)
+        .def_ro("condition", &Restriction::condition)
+        .def_ro("offset", &Restriction::offset)
+        .def_ro("embedding", &Restriction::embedding)
+        .def_ro("directions", &Restriction::directions)
+        .def_ro("null_values", &Restriction::null_values)
+        .def("embed", [](const Restriction& r, const Vector& t) -> nb::object {
+            auto result = r.embed(view(t));
+            return result ? owned_vector(std::move(*result)) : nb::none();
+        })
+        .def("map_start", [](const Restriction& r, const Vector& t) -> nb::object {
+            auto result = r.map_start(view(t));
+            return result ? owned_vector(std::move(*result)) : nb::none();
+        })
+        .def("on_face", [](const Restriction& r, const Vector& t) { return r.on_face(view(t)); })
+        .def("identified", [](const Restriction& r, const Vector& t) { return r.identified(view(t)); })
+        .def("regular", [](const Restriction& r, const Vector& t) { return r.regular(view(t)); });
+    model_binding.def("restrictions", &Model::restrictions)
+        .def_prop_ro("spec", [](const Model& model) { return model.spec(); })
+        .def("start", [](const Model& m, const ComparisonPlan& p) { return owned_vector(m.start(m.prepare(p))); }, "plan"_a);
+    nb::enum_<RestrictFitStatus>(m, "RestrictFitStatus")
+        .value("reused", RestrictFitStatus::reused)
+        .value("fit_needed", RestrictFitStatus::fit_needed)
+        .value("parent_uncertified", RestrictFitStatus::parent_uncertified)
+        .value("incompatible", RestrictFitStatus::incompatible)
+        .value("child_uncertified", RestrictFitStatus::child_uncertified);
+    nb::class_<RestrictedFit>(m, "RestrictedFit")
+        .def_ro("status", &RestrictedFit::status)
+        .def_ro("result", &RestrictedFit::result);
+    nb::enum_<LRStatus>(m, "LRStatus")
+        .value("ok", LRStatus::ok).value("unsupported", LRStatus::unsupported)
+        .value("incompatible", LRStatus::incompatible).value("uncertified", LRStatus::uncertified)
+        .value("negative_statistic", LRStatus::negative_statistic)
+        .value("singular_information", LRStatus::singular_information)
+        .value("retained_boundary", LRStatus::retained_boundary)
+        .value("unresolved", LRStatus::unresolved).value("invalid_argument", LRStatus::invalid_argument);
+    nb::enum_<ReferenceLaw>(m, "ReferenceLaw")
+        .value("chi_square", ReferenceLaw::chi_square).value("chi_bar_square", ReferenceLaw::chi_bar_square);
+    nb::class_<LRResult>(m, "LRResult")
+        .def_ro("status", &LRResult::status).def_ro("statistic", &LRResult::statistic)
+        .def_ro("law", &LRResult::law).def_ro("interior_df", &LRResult::interior_df)
+        .def_ro("weights", &LRResult::weights).def_ro("p_value", &LRResult::p_value)
+        .def_ro("numerical_error", &LRResult::numerical_error).def_ro("message", &LRResult::message);
+    nb::class_<LRWeights>(m, "LRWeights")
+        .def_ro("status", &LRWeights::status).def_ro("weights", &LRWeights::weights)
+        .def_ro("numerical_error", &LRWeights::numerical_error);
+    m.def("fit", [](const Model& model, const ComparisonPlan& plan, const FitOptions& options) {
+        nb::gil_scoped_release release;
+        return fit(model, plan, options);
+    }, "model"_a, "plan"_a, "options"_a = FitOptions());
+    m.def("restrict_fit", [](const Model& model, const FitResult& fit, const Restriction& r, const ComparisonPlan& p) {
+        nb::gil_scoped_release release;
+        return restrict_fit(model, fit, r, p);
+    }, "parent"_a, "parent_fit"_a, "restriction"_a, "plan"_a);
+    m.def("restriction_test", [](const Model& parent, const Model& child, const Restriction& r,
+                                 const FitResult& pf, const FitResult& cf, const Matrix& h,
+                                 double level, double tolerance, std::size_t cells) {
+        if (h.shape(0) != parent.dimension() || h.shape(1) != parent.dimension())
+            throw std::invalid_argument("parent information has the wrong shape");
+        nb::gil_scoped_release release;
+        return restriction_test(parent, child, r, pf, cf, view(h), level, tolerance, cells);
+    }, "parent"_a, "child"_a, "restriction"_a, "parent_fit"_a, "child_fit"_a, "parent_information"_a,
+       "level"_a = 0.01, "tolerance"_a = 1e-6, "maximum_cells"_a = 32768);
+    m.def("chi_bar_weights", [](const Matrix& h, double tolerance, std::size_t cells) {
+        if (h.shape(0) != h.shape(1)) throw std::invalid_argument("information must be square");
+        nb::gil_scoped_release release;
+        return chi_bar_weights(view(h), h.shape(0), tolerance, cells);
+    }, "information"_a, "tolerance"_a = 1e-6, "maximum_cells"_a = 32768);
+    m.def("chi_square_survival", &chi_square_survival, "statistic"_a, "degrees"_a);
+
 }

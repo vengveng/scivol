@@ -2824,5 +2824,21 @@ def test_standalone_mean_tensor_recovery(family, density):
 # Run tests directly
 # -----------------------------------------------------------------------------
 
+@pytest.mark.parametrize("order,omega,alpha", [(1, .2, .25), (0, .5, 0.0)])
+def test_native_zero_order_children_recover_on_comparison_plan(order, omega, alpha):
+    from scivol import _scivolapi as api
+
+    y = simulate_garch_normal(5000, omega, alpha, 0.0, seed=83)
+    spec = api.ModelSpec()
+    spec.p, spec.q = order, 0
+    model = api.Model(spec)
+    plan = api.ComparisonPlan(y, 12)
+    result = api.fit(model, plan)
+    assert result.success, result.warnings
+    assert result.scored == len(y) - 12
+    truth = [omega, alpha] if order else [omega]
+    np.testing.assert_allclose(result.theta, truth, rtol=.12, atol=.025)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

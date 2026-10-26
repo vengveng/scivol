@@ -38,7 +38,8 @@ inline VolatilityShape volatility_shape(const ModelSpec& spec) noexcept
     switch (spec.volatility) {
     case VolatilityKind::gjr: v = {1u + 2u * spec.p + spec.q, std::max<std::size_t>(spec.q, 1u)}; break;
     case VolatilityKind::egarch:
-        v = {1u + 2u * spec.p + spec.q + shape_domains(spec.density).size(), std::max(spec.p, spec.q)};
+        v = {1u + 2u * spec.p + spec.q + shape_domains(spec.density).size(),
+             std::max({spec.p, spec.q, std::size_t{1}})};
         break;
     case VolatilityKind::aparch: v = {2u + 2u * spec.p + spec.q, std::max<std::size_t>(spec.q, 1u)}; break;
     default: v = {1u + spec.p + spec.q, std::max<std::size_t>(spec.q, 1u)};

@@ -110,6 +110,21 @@ class PreparedSample:
     scale: float
 
 
+def fit_spec_on_plan(spec: Any, plan: api.ComparisonPlan, *,
+                     options: Optional[api.FitOptions] = None,
+                     exog: Optional[int] = None) -> api.FitResult:
+    """Fit a candidate on an immutable native comparison plan.
+
+    Returns the native fit for restriction testing. ``exog`` selects the number
+    of leading plan columns retained by this candidate, defaulting to all.
+    Single-fit sample preparation and result presentation are unchanged.
+    """
+    native = native_spec(spec, plan.columns if exog is None else exog)
+    if native is None:
+        raise NotImplementedError(f"{spec} cannot be estimated: unsupported component combination")
+    return api.fit(api.Model(native), plan, api.FitOptions() if options is None else options)
+
+
 def prepare_sample(spec: Any, data: Any, x: Any = None, hold_back: int = 0,
                    scale: Optional[float] = None) -> PreparedSample:
     from ._validation import validate_data, validate_hold_back, validate_regressors, validate_scale

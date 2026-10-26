@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -57,6 +58,9 @@ struct FitPhase {
 // The only result type, built only by the finalizer, for every model.
 // All quantities are in the units of the data passed to fit().
 struct FitResult {
+    // Comparison fits must originate from the same immutable plan.
+    std::shared_ptr<const void> comparison;
+    std::optional<ModelSpec> fitted_spec;
     bool estimate_available = false;  // false: no finite, feasible estimate (a fit failure)
     std::vector<std::string> names;
     std::vector<double> theta;
@@ -96,6 +100,8 @@ inline FitResult fit(const Model& model, std::span<const double> y, const FitOpt
 {
     return fit(model, y, {}, options);
 }
+
+FitResult fit(const Model& model, const ComparisonPlan& plan, const FitOptions& options = {});
 
 // A copula on standardized residuals with given marginal densities (default Normal).
 // An empty target means x'x / rows at each parameter point. Inference treats

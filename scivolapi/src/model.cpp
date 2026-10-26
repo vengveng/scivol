@@ -134,8 +134,6 @@ Model::Model(const ModelSpec& spec) : spec_(spec)
 {
     if (spec.volatility == VolatilityKind::constant)
         require(spec.p == 0 && spec.q == 0, "constant variance has no orders: p and q must be 0");
-    else
-        require(spec.p >= 1 && spec.q >= 1, "orders p and q must be at least 1");
     require(spec.p <= Layout::max_order && spec.q <= Layout::max_order, "orders p and q must be at most 8");
     const MeanSpec& mean = spec.mean;
     require(mean.ar <= Layout::max_order && mean.ma <= Layout::max_order, "AR and MA orders must be at most 8");
@@ -181,6 +179,54 @@ Sample Model::prepare(std::span<const double> y, std::span<const double> x) cons
     sample.design.resize((y.size() - c) * k);
     for (std::size_t t = c; t < y.size(); ++t)
         detail::regressor_row(mean, y.data(), x.data(), t, sample.design.data() + (t - c) * k);
+    return sample;
+}
+
+ComparisonPlan::ComparisonPlan(std::span<const double> y, std::size_t first_scored,
+                               std::span<const double> x, std::size_t columns, double variance_seed)
+    : y_(y.begin(), y.end()), x_(x.begin(), x.end()), columns_(columns), first_(first_scored), seed_(variance_seed)
+{
+    require(first_ < y.size() && y.size() - first_ >= 2, "the comparison needs at least two scored observations");
+    require(columns == 0 || y.size() <= std::numeric_limits<std::size_t>::max() / columns,
+            "the comparison design size overflows");
+    require(x.size() == y.size() * columns, "the comparison design must have one row per observation");
+    double sum = 0.0;
+    for (double v : y) {
+        require(std::isfinite(v), "observations must be finite");
+        sum += v * v;
+    }
+    for (double v : x) require(std::isfinite(v), "exogenous regressors must be finite");
+    if (std::isnan(seed_)) seed_ = sum / static_cast<double>(y.size());
+    require(std::isfinite(seed_) && seed_ > 0.0, "the comparison variance seed must be positive and finite");
+}
+
+ComparisonPlan ComparisonPlan::rescaled(double factor) const
+{
+    require(std::isfinite(factor) && factor > 0.0, "the scale factor must be positive and finite");
+    std::vector<double> y = y_;
+    for (double& v : y) v *= factor;
+    return ComparisonPlan(y, first_, x_, columns_, seed_ * factor * factor);
+}
+
+Sample Model::prepare(const ComparisonPlan& plan) const
+{
+    const MeanSpec& mean = spec_.mean;
+    require(mean.conditioning() <= plan.first_scored(), "the model's lags exceed the comparison conditioning");
+    require(mean.exog <= plan.columns(), "the model needs more exogenous columns than the comparison has");
+    const auto y = plan.y();
+    const std::size_t c = plan.first_scored(), k = mean.regressors();
+    Sample sample{y, plan.variance_seed(), c, {}};
+    require(k == 0 || sample.scored() <= std::numeric_limits<std::size_t>::max() / k,
+            "the comparison regressor size overflows");
+    sample.design.resize(sample.scored() * k);
+    MeanSpec endogenous = mean;
+    endogenous.exog = 0;
+    for (std::size_t t = c; t < y.size(); ++t) {
+        double* row = k ? sample.design.data() + (t - c) * k : nullptr;
+        detail::regressor_row(endogenous, y.data(), nullptr, t, row);
+        for (std::size_t j = 0; j < mean.exog; ++j)
+            row[k - mean.exog + j] = plan.x()[t * plan.columns() + j];
+    }
     return sample;
 }
 
@@ -332,7 +378,7 @@ std::vector<double> Model::start(const Sample& sample) const
     if (layout.egarch()) {
         theta[layout.omega] = (1.0 - persistence) * std::log(sample.variance_seed);
         for (std::size_t i = 0; i < spec_.p; ++i) theta[layout.alpha + i] = 0.1 / p;
-        theta[layout.gamma] = -0.05;
+        if (spec_.p) theta[layout.gamma] = -0.05;
         for (std::size_t j = 0; j < spec_.q; ++j) theta[layout.beta + j] = persistence / q;
         return theta;
     }

@@ -61,7 +61,7 @@ public:
 
     [[nodiscard]] std::size_t own() const noexcept { return shape_ + shapes; }
     [[nodiscard]] std::size_t width() const noexcept { return own() + m_; }
-    [[nodiscard]] std::size_t ring_slots() const noexcept { return std::max(p_, q_); }
+    [[nodiscard]] std::size_t ring_slots() const noexcept { return std::max({p_, q_, std::size_t{1}}); }
 
     [[nodiscard]] bool evaluable(const double* theta) const noexcept
     {

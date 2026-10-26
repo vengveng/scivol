@@ -118,15 +118,19 @@ void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, s
 }
 
 FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const double> x,
-                  const FitOptions& options)
+                  const FitOptions& options, const ComparisonPlan* plan = nullptr)
 {
     // Exact internal scaling of y (not x) to unit second moment; the finalizer
     // reports in data units.
-    const Sample data_sample = model.prepare(y, x);
+    const Sample data_sample = plan ? model.prepare(*plan) : model.prepare(y, x);
     const double scale = std::sqrt(data_sample.variance_seed);
-    std::vector<double> unit_y(y.begin(), y.end());
-    for (double& v : unit_y) v /= scale;
-    const Sample unit_sample = model.prepare(unit_y, x);
+    std::vector<double> unit_y;
+    if (!plan) {
+        unit_y.assign(y.begin(), y.end());
+        for (double& v : unit_y) v /= scale;
+    }
+    const std::optional<ComparisonPlan> unit_plan = plan ? std::optional(plan->rescaled(1.0 / scale)) : std::nullopt;
+    const Sample unit_sample = unit_plan ? model.prepare(*unit_plan) : model.prepare(unit_y, x);
     Jet unit_jet(model, unit_sample);
     Jet data_jet(model, data_sample);
 
@@ -159,10 +163,11 @@ FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const
 // The Gaussian and the model's recursions coincide (the density does not enter
 // them), so H21 and H22 are blocks of the model's Hessian.
 FitResult fit_shapes(const Model& model, const Model& gaussian, std::span<const double> y,
-                     std::span<const double> x, const FitOptions& options, FitResult first)
+                     std::span<const double> x, const FitOptions& options, FitResult first,
+                     const ComparisonPlan* plan = nullptr)
 {
     const std::size_t d = model.dimension(), k1 = gaussian.dimension(), k2 = d - k1;
-    const Sample sample = model.prepare(y, x);
+    const Sample sample = plan ? model.prepare(*plan) : model.prepare(y, x);
     if (!first.estimate_available)
         return failure(model, sample, first.data_scale, std::move(first.phases),
                        "the Gaussian first stage produced no estimate");
@@ -239,7 +244,7 @@ FitResult fit_shapes(const Model& model, const Model& gaussian, std::span<const 
     if (!r.stationary) r.warnings.push_back("first-order conditions are not met; the estimate is uncertified");
     r.success = r.feasible && first.success && r.termination == Termination::converged && r.stationary;
 
-    const Sample gaussian_sample = gaussian.prepare(y, x);
+    const Sample gaussian_sample = plan ? gaussian.prepare(*plan) : gaussian.prepare(y, x);
     Jet gaussian_jet(gaussian, gaussian_sample);
     JetOutput gaussian_out;
     gaussian_out.scores = gaussian_scores;
@@ -298,7 +303,7 @@ FitResult fit_shapes(const Model& model, const Model& gaussian, std::span<const 
 // Gaussian qmle (see Estimator). The first stage is the Gaussian model's own
 // maximum-likelihood fit, whose finalizer supplies H^-1 OPG H^-1.
 FitResult fit_qmle(const Model& model, std::span<const double> y, std::span<const double> x,
-                   const FitOptions& options)
+                   const FitOptions& options, const ComparisonPlan* plan = nullptr)
 {
     const ModelSpec& spec = model.spec();
     if (spec.density != DensityKind::normal && !model.capabilities().density_free_recursion)
@@ -308,9 +313,9 @@ FitResult fit_qmle(const Model& model, std::span<const double> y, std::span<cons
     ModelSpec gaussian_spec = spec;
     gaussian_spec.density = DensityKind::normal;
     const Model gaussian(gaussian_spec);
-    FitResult first = fit_mle(gaussian, y, x, options);
+    FitResult first = fit_mle(gaussian, y, x, options, plan);
     first.estimator = Estimator::qmle;
-    if (spec.density != DensityKind::normal) return fit_shapes(model, gaussian, y, x, options, std::move(first));
+    if (spec.density != DensityKind::normal) return fit_shapes(model, gaussian, y, x, options, std::move(first), plan);
     first.covariance = first.robust_covariance;
     first.std_errors = first.robust_std_errors;
     return first;
@@ -323,6 +328,17 @@ FitResult fit(const Model& model, std::span<const double> y, std::span<const dou
     if (!(options.accuracy > 0.0) || options.maximum_iterations < 1)
         throw std::invalid_argument("accuracy must be positive and maximum_iterations at least 1");
     return options.estimator == Estimator::qmle ? fit_qmle(model, y, x, options) : fit_mle(model, y, x, options);
+}
+
+FitResult fit(const Model& model, const ComparisonPlan& plan, const FitOptions& options)
+{
+    if (!(options.accuracy > 0.0) || !std::isfinite(options.accuracy) || options.maximum_iterations < 1)
+        throw std::invalid_argument("accuracy must be finite and positive and maximum_iterations at least 1");
+    FitResult r = options.estimator == Estimator::qmle
+        ? fit_qmle(model, plan.y(), {}, options, &plan) : fit_mle(model, plan.y(), {}, options, &plan);
+    r.comparison = plan.identity();
+    r.fitted_spec = model.spec();
+    return r;
 }
 
 FitResult fit(const CorrelationModel& model, std::span<const double> eps, std::size_t series,

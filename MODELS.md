@@ -46,6 +46,83 @@ For APARCH with StudentT or SkewT, the power moment also requires
   Every likelihood is therefore equivariant to the scale of the data.
 - The likelihood is the complete negative log-likelihood, constants included.
 
+### Comparison samples and native restrictions
+
+`ComparisonPlan(y, first_scored, x, variance_seed)` owns the input observations
+and exogenous columns for one comparison. Build it once using the largest mean
+lag in the search, or a larger declared hold-back. Every candidate scores exactly
+`y[first_scored:]`. Earlier rows supply mean regressors only; they do not advance
+the residual or volatility recursion. All dynamic candidates start those
+recursions on the same row, with the same parameter-independent variance seed
+and zero pre-sample residuals. The default seed is `mean(y^2)` over the entire
+plan input span. An explicit positive finite seed is also supported. Internal
+data scaling scales that seed exactly, without recomputing it from a sliced
+sample. Exogenous reductions retain leading columns of the same plan design.
+
+The constant-variance model uses `sigma2` on **every** scored row, including the
+first. It shares scored rows and mean conditioning with the plan but does not
+use its seed as a variance parameter. It remains a separate comparison root.
+Zero-order dynamic models retain the dynamic initialization: their first row
+uses the seed and subsequent rows follow their recursion. They are not
+substituted for the constant-variance root. Single fits keep their existing
+sample preparation by default.
+
+`Model::restrictions()` lists exact children expressible as ordinary native
+specifications. Each child runs its own compiled kernel. Its affine embedding,
+tested coordinate rows, null values, restriction types, and identification
+conditions come from the parent model. `embed` and `map_start` reject a map
+outside the relevant domain. Warm starts do not fix the retained parameters.
+
+| Parent | Immediate restriction | Tested directions |
+|---|---|---|
+| Any mean | Drop intercept, last AR, last MA, last exogenous column, or one HAR window | Interior equalities |
+| GARCH | Drop last shock or last variance lag | Closed nonnegative boundaries |
+| GJR | Drop last shock pair | Two closed boundaries, `c+ = alpha`, `c- = alpha + gamma` |
+| GJR | Drop last variance lag | Closed nonnegative boundary |
+| GJR | All `gamma = 0`, child GARCH | Interior equalities when common sign loadings are positive |
+| EGARCH | Drop last alpha/gamma pair or last variance lag | Interior equalities |
+| APARCH | Drop last shock/asymmetry pair | Boundary alpha and signed gamma; unidentified under the null |
+| APARCH | Drop last variance lag | Closed nonnegative boundary |
+| Skew-t | `lam = 0`, child Student-t | Interior equality |
+| Student-t | `eta = 0`, child Normal | Closed nonnegative boundary |
+| GED | `nu = 2`, child Normal | Interior equality |
+
+Dropping the last remaining shock while retaining variance lags is listed as
+unidentified under the null, including the variance-lag nuisance in a no-shock
+GARCH or EGARCH. ARCH can reduce to a seeded zero-order dynamic model; this
+edge has no unidentified variance-lag nuisance. APARCH
+shock deletion removes an unidentified asymmetry even when other shocks remain.
+These edges have no ordinary LR calibration. ARMA reductions require a minimal,
+nonsingular representation and are intended for opt-in searches. Non-trailing
+volatility lags, separate EGARCH alpha/gamma deletions, APARCH fixed power or
+asymmetry, GJR one-sign faces and the skew-Gaussian face are not listed because
+they lack the required child representation. GH density reductions are deferred
+in this first version; GH closure limits have no ordinary finite restriction.
+
+`restriction_test` requires certified MLE fits from the same immutable plan and
+the parent observed information at the embedded child estimate. It profiles
+all signed directions and nuisance before computing boundary weights. Interior
+equalities use chi-square; closed coordinates use chi-bar-square, with the
+interior count shifting its degrees. Weights for one through three boundaries
+use closed forms. Larger blocks enumerate orthant faces using deterministic
+Cholesky conditioning and adaptive cube subdivision. Independent blocks factor
+before integration. The reported absolute error encloses the p-value error;
+failure to reach `1e-6`, or an interval crossing the decision level, returns
+`unresolved`. The subdivision budget is explicit. Retained boundary nuisance,
+singular information, unidentified edges and QMLE do not receive an ordinary
+LR p-value. Native resultant-rank checks also reject common-factor and shared
+trailing-zero ARMA/GARCH representations whose finite seed transients could
+hide asymptotic nonidentification. Enumeration is bounded to twelve boundary
+directions; larger blocks report `unresolved`. A negative statistic requests
+a parent refit; it is not clamped.
+
+`restrict_fit` reuses an estimate only when a certified parent lies exactly on
+the declared face and embedding the projected child reproduces that parent
+point exactly. It evaluates the child with its own kernel and runs the common
+finalizer, including the child's original-domain KKT check. Otherwise a new
+fit is needed. Fit bindings release the GIL; separate Model/Jet instances and
+their workspaces can be used by independent Python threads.
+
 ## Inference
 
 - MLE: inverse observed information; the sandwich `H^-1 OPG H^-1` is reported
