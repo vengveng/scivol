@@ -4,9 +4,9 @@
 
 namespace scivolapi::detail {
 
-Assembler assembler_skew_t(VolatilityKind kind, bool mean)
+Assembler assembler_skew_t(const ModelSpec& spec)
 {
-    return assembler_with<SkewTDensity>(kind, mean);
+    return assembler_with<SkewTDensity>(spec);
 }
 
 PathRunner path_runner_skew_t(VolatilityKind kind)

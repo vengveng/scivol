@@ -4,9 +4,9 @@
 
 namespace scivolapi::detail {
 
-Assembler assembler_normal(VolatilityKind kind, bool mean)
+Assembler assembler_normal(const ModelSpec& spec)
 {
-    return assembler_with<NormalDensity>(kind, mean);
+    return assembler_with<NormalDensity>(spec);
 }
 
 PathRunner path_runner_normal(VolatilityKind kind)

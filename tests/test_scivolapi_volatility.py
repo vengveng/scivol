@@ -417,13 +417,32 @@ def test_egarch_fit_reaches_the_production_optimum(egarch_data, density):
     assert result.log_likelihood >= PRODUCTION_LOG_LIKELIHOOD["egarch_" + density.__name__] - 1e-6
 
 
-def test_egarch_fit_is_exactly_equivariant_to_data_scale(egarch_data):
-    base = (EGARCH(1, 1) + StudentT()).fit(egarch_data)
-    scaled = (EGARCH(1, 1) + StudentT()).fit(10.0 * egarch_data)
-    beta = base.params[3]
-    assert scaled.params[0] == pytest.approx(base.params[0] + 2.0 * np.log(10.0) * (1.0 - beta), abs=1e-7)
+@pytest.mark.parametrize("q", [1, 2])
+def test_egarch_fit_is_exactly_equivariant_to_data_scale(egarch_data, q):
+    base = (EGARCH(1, q) + StudentT()).fit(egarch_data)
+    scaled = (EGARCH(1, q) + StudentT()).fit(10.0 * egarch_data)
+    persistence = 1.0 - sum(base.params[3:3 + q])
+    assert base.converged and scaled.converged
+    assert scaled.params[0] == pytest.approx(base.params[0] + 2.0 * np.log(10.0) * persistence, abs=1e-7)
     assert scaled.params[1:] == pytest.approx(base.params[1:], rel=1e-6)
     assert scaled.log_likelihood == pytest.approx(base.log_likelihood - egarch_data.size * np.log(10.0), abs=1e-6)
+
+
+@pytest.mark.parametrize("q", [1, 2, 3])
+def test_egarch_likelihood_is_equivariant_to_data_scale(egarch_data, q):
+    """Missing log-variance lags are log seed, so F(c y; omega + 2 log c (1 - sum beta)) = F(y) + n log c."""
+    model = egarch_model("ged", 1, q)
+    theta = np.array([-0.3, 0.15, -0.08] + [0.9 / q] * q + [1.4])
+    for c in (0.01, 10.0):
+        mapped = theta.copy()
+        mapped[0] += 2.0 * np.log(c) * (1.0 - theta[3:3 + q].sum())
+        a = api.Jet(model, egarch_data).theta(theta, api.VALUE | api.GRADIENT)
+        b = api.Jet(model, c * egarch_data).theta(mapped, api.VALUE | api.GRADIENT)
+        assert b["value"] == pytest.approx(a["value"] + egarch_data.size * np.log(c), rel=1e-13)
+        # d/dbeta_j picks up -2 log c times d/domega through the mapped omega.
+        expected = a["gradient"].copy()
+        expected[3:3 + q] += 2.0 * np.log(c) * a["gradient"][0]
+        assert np.allclose(b["gradient"], expected, rtol=1e-9, atol=1e-9 * egarch_data.size)
 
 
 @pytest.fixture(scope="module")

@@ -14,19 +14,23 @@ template<class Eps, class Lagged>
 void q_step(const Layout& layout, const double* theta, const double* target, std::size_t n, std::size_t p_t,
             std::size_t q_t, const Eps& eps, const Lagged& lagged, double* q) noexcept
 {
-    const std::size_t m = n * n;
     double slack = 1.0;
     for (std::size_t a = 0; a < layout.coefficients; ++a) slack -= theta[a];
-    for (std::size_t x = 0; x < m; ++x) q[x] = slack * target[x];
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t j = 0; j <= i; ++j) q[i * n + j] = slack * target[i * n + j];
     for (std::size_t lag = 1; lag <= p_t; ++lag) {
         const double* e = eps(lag);
         for (std::size_t i = 0; i < n; ++i)
-            for (std::size_t j = 0; j < n; ++j) q[i * n + j] += theta[lag - 1] * (e[i] * e[j]);
+            for (std::size_t j = 0; j <= i; ++j) q[i * n + j] += theta[lag - 1] * (e[i] * e[j]);
     }
     for (std::size_t lag = 1; lag <= q_t; ++lag) {
         const double* previous = lagged(lag);
-        for (std::size_t x = 0; x < m; ++x) q[x] += theta[layout.p + lag - 1] * previous[x];
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t j = 0; j <= i; ++j)
+                q[i * n + j] += theta[layout.p + lag - 1] * previous[i * n + j];
     }
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t j = 0; j < i; ++j) q[j * n + i] = q[i * n + j];
 }
 
 }  // namespace scivolapi::detail::correlation

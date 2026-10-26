@@ -4,9 +4,9 @@
 
 namespace scivolapi::detail {
 
-Assembler assembler_nig(VolatilityKind kind, bool mean)
+Assembler assembler_nig(const ModelSpec& spec)
 {
-    return assembler_with<GhFamilyDensity<NormalInverseGaussian>>(kind, mean);
+    return assembler_with<GhFamilyDensity<NormalInverseGaussian>>(spec);
 }
 
 PathRunner path_runner_nig(VolatilityKind kind)

@@ -2095,6 +2095,22 @@ class TestEGARCHGED:
 
 
 class TestEGARCHHigherOrder:
+    @pytest.mark.parametrize("seed", [42, 43, 44])
+    def test_egarch_12_recovers_and_is_stationary_on_original_data(self, seed: int) -> None:
+        from scivol import EGARCH, Normal, _scivolapi as api
+
+        data = 0.01 * simulate_egarch_pq(5500, -0.04, [0.18], [-0.12], [0.65, 0.30], seed=seed)[500:]
+        result = (EGARCH(1, 2) + Normal()).fit(data)
+        assert result.converged
+        spec = api.ModelSpec()
+        spec.volatility = api.VolatilityKind.egarch
+        spec.p, spec.q = 1, 2
+        gradient = api.Jet(api.Model(spec), data).theta(result.params, api.GRADIENT)["gradient"]
+        assert np.max(np.abs(gradient)) / data.size < result.fit_info.kkt_tolerance
+        assert abs(result.params[1] - 0.18) < 0.10
+        assert abs(result.params[2] + 0.12) < 0.06
+        assert abs(sum(result.params[3:5]) - 0.95) < 0.06
+
     @pytest.fixture
     def data_21_normal(self) -> NDArray[np.float64]:
         p = TRUE_PARAMS["egarch_21_normal"]

@@ -4,9 +4,9 @@
 
 namespace scivolapi::detail {
 
-Assembler assembler_variance_gamma(VolatilityKind kind, bool mean)
+Assembler assembler_variance_gamma(const ModelSpec& spec)
 {
-    return assembler_with<GhFamilyDensity<VarianceGamma>>(kind, mean);
+    return assembler_with<GhFamilyDensity<VarianceGamma>>(spec);
 }
 
 PathRunner path_runner_variance_gamma(VolatilityKind kind)

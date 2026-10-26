@@ -18,8 +18,11 @@ namespace scivolapi::detail {
 //
 //   x_0 = log seed (constant),
 //   x_t = omega + sum_{i<=min(p,t)} [alpha_i (|z_{t-i}| - m) + gamma_i z_{t-i}]
-//               + sum_{j<=min(q,t)} beta_j x_{t-j},     z_k = e_k exp(-x_k / 2),
+//               + sum_{j<=q} beta_j x_{t-j},     z_k = e_k exp(-x_k / 2),
 //
+// with the missing log-variance lags x_{-1}, x_{-2}, ... = log seed, like x_0,
+// so the likelihood is equivariant to the scale of the data (a zero lag would
+// mean h = 1 in the data's units).
 // with m = E|z| of the density, a function of its shapes. The recursion feeds
 // back through z: dz_k = -z_k D_k / 2 and d|z_k| = -|z_k| D_k / 2 (smooth at
 // e_k = 0 for fixed data), so with D = dx/dtheta over the whole theta and
@@ -78,7 +81,8 @@ public:
     {
         const std::size_t width = this->width(), pw = packed_size(width), slots = ring_slots();
         double* x = w.state;  // the log-variance path
-        double value = std::log(sample.variance_seed);
+        const double log_seed = std::log(sample.variance_seed);
+        double value = log_seed;
         if (t > 0) {
             value = theta[0];
             for (std::size_t i = 1, n = std::min(p_, t); i <= n; ++i) {
@@ -86,6 +90,7 @@ public:
                 value += theta[i] * (std::abs(z) - moment_.v) + theta[p_ + i] * z;
             }
             for (std::size_t j = 1, n = std::min(q_, t); j <= n; ++j) value += theta[beta_ + j - 1] * x[t - j];
+            for (std::size_t j = t + 1; j <= q_; ++j) value += theta[beta_ + j - 1] * log_seed;
         }
         const double h = std::exp(value);
         if (!std::isfinite(value) || !(h > 0.0) || !std::isfinite(h)) return false;
@@ -121,6 +126,7 @@ public:
                 const double* previous = w.first_ring + ((t - j) % slots) * width;
                 for (std::size_t a = 0; a < width; ++a) d[a] += beta * previous[a];
             }
+            for (std::size_t j = t + 1; j <= q_; ++j) d[beta_ + j - 1] += log_seed;
         }
         std::copy_n(d, width, w.l1);
 

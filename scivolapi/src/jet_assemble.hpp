@@ -146,7 +146,7 @@ inline void add_packed(double* hp, std::size_t dim, std::size_t i, std::size_t j
 //   g += l_lambda L1 + l_e E + l_s,
 //   H += l_lambda,lambda L1 L1' + l_lambda L2 + l_ee E E' + l_e F + l_e,lambda (E L1' + L1 E')
 //        + shape rows l_lambda,s L1 + l_e,s E + l_ss.
-template<class Mean, class Volatility, class Density>
+template<class Mean, class Volatility, class Density, int Order = -1>
 ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
 {
     constexpr bool coupled = Mean::present;
@@ -159,7 +159,7 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
         else return Mean{};
     }();
     const double* theta = in.theta;
-    const int order = in.order;
+    const int order = Order < 0 ? in.order : Order;
     const std::size_t n = in.sample.scored();
     const std::size_t own = volatility.own(), w = volatility.width();
     const std::size_t dim = in.layout.dimension;
@@ -280,50 +280,75 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
 
 using Assembler = ThetaResult (*)(const AssembleInput&, Work&, double&);
 
+template<class Mean, class Volatility, class Density>
+ThetaResult assemble_requested(const AssembleInput& in, Work& work, double& value)
+{
+    switch (in.order) {
+    case 0: return assemble<Mean, Volatility, Density, 0>(in, work, value);
+    case 1: return assemble<Mean, Volatility, Density, 1>(in, work, value);
+    default: return assemble<Mean, Volatility, Density, 2>(in, work, value);
+    }
+}
+
 // The loop for a density with a given volatility recursion, with or without a
 // mean, one set per density translation unit.
 template<class Density, bool Coupled>
 Assembler assembler_coupled(VolatilityKind kind) noexcept
 {
-    using Mean = std::conditional_t<Coupled, ArmaxMean, NoMean>;
+    using Mean = std::conditional_t<Coupled, ArmaxMean<>, NoMean>;
     switch (kind) {
-    case VolatilityKind::garch: return assemble<Mean, GarchVolatility<false, Coupled>, Density>;
-    case VolatilityKind::gjr: return assemble<Mean, GarchVolatility<true, Coupled>, Density>;
-    case VolatilityKind::egarch: return assemble<Mean, EgarchVolatility<Density, Coupled>, Density>;
-    case VolatilityKind::aparch: return assemble<Mean, AparchVolatility<Coupled>, Density>;
-    case VolatilityKind::constant: return assemble<Mean, ConstantVolatility<Coupled>, Density>;
+    case VolatilityKind::garch: return assemble_requested<Mean, GarchVolatility<false, Coupled>, Density>;
+    case VolatilityKind::gjr: return assemble_requested<Mean, GarchVolatility<true, Coupled>, Density>;
+    case VolatilityKind::egarch: return assemble_requested<Mean, EgarchVolatility<Density, Coupled>, Density>;
+    case VolatilityKind::aparch: return assemble_requested<Mean, AparchVolatility<Coupled>, Density>;
+    case VolatilityKind::constant: return assemble_requested<Mean, ConstantVolatility<Coupled>, Density>;
     }
     return nullptr;
 }
 
 template<class Density>
-Assembler assembler_with(VolatilityKind kind, bool mean) noexcept
+Assembler assembler_with(const ModelSpec& spec) noexcept
 {
-    return mean ? assembler_coupled<Density, true>(kind) : assembler_coupled<Density, false>(kind);
+    if (spec.p == 1 && spec.q == 1) {
+        if (spec.mean.width() == 0) {
+            if (spec.volatility == VolatilityKind::garch)
+                return assemble_requested<NoMean, GarchVolatility<false, false, 1, 1>, Density>;
+            if (spec.volatility == VolatilityKind::gjr)
+                return assemble_requested<NoMean, GarchVolatility<true, false, 1, 1>, Density>;
+        }
+        if (spec.mean.constant && spec.mean.ar == 1 && spec.mean.ma == 1
+            && spec.mean.har.empty() && spec.mean.exog == 0) {
+            if (spec.volatility == VolatilityKind::garch)
+                return assemble_requested<ArmaxMean<2, 1>, GarchVolatility<false, true, 1, 1, 3>, Density>;
+            if (spec.volatility == VolatilityKind::gjr)
+                return assemble_requested<ArmaxMean<2, 1>, GarchVolatility<true, true, 1, 1, 3>, Density>;
+        }
+    }
+    return spec.mean.width() ? assembler_coupled<Density, true>(spec.volatility)
+                             : assembler_coupled<Density, false>(spec.volatility);
 }
 
-Assembler assembler_normal(VolatilityKind, bool mean);
-Assembler assembler_student_t(VolatilityKind, bool mean);
-Assembler assembler_skew_t(VolatilityKind, bool mean);
-Assembler assembler_ged(VolatilityKind, bool mean);
-Assembler assembler_generalized_hyperbolic(VolatilityKind, bool mean);
-Assembler assembler_nig(VolatilityKind, bool mean);
-Assembler assembler_hyperbolic(VolatilityKind, bool mean);
-Assembler assembler_variance_gamma(VolatilityKind, bool mean);
+Assembler assembler_normal(const ModelSpec&);
+Assembler assembler_student_t(const ModelSpec&);
+Assembler assembler_skew_t(const ModelSpec&);
+Assembler assembler_ged(const ModelSpec&);
+Assembler assembler_generalized_hyperbolic(const ModelSpec&);
+Assembler assembler_nig(const ModelSpec&);
+Assembler assembler_hyperbolic(const ModelSpec&);
+Assembler assembler_variance_gamma(const ModelSpec&);
 
 // The loop for a model, chosen once per evaluation.
 inline Assembler assembler_for(const ModelSpec& spec) noexcept
 {
-    const bool mean = spec.mean.width() > 0;
     switch (spec.density) {
-    case DensityKind::normal: return assembler_normal(spec.volatility, mean);
-    case DensityKind::student_t: return assembler_student_t(spec.volatility, mean);
-    case DensityKind::skew_t: return assembler_skew_t(spec.volatility, mean);
-    case DensityKind::ged: return assembler_ged(spec.volatility, mean);
-    case DensityKind::generalized_hyperbolic: return assembler_generalized_hyperbolic(spec.volatility, mean);
-    case DensityKind::nig: return assembler_nig(spec.volatility, mean);
-    case DensityKind::hyperbolic: return assembler_hyperbolic(spec.volatility, mean);
-    case DensityKind::variance_gamma: return assembler_variance_gamma(spec.volatility, mean);
+    case DensityKind::normal: return assembler_normal(spec);
+    case DensityKind::student_t: return assembler_student_t(spec);
+    case DensityKind::skew_t: return assembler_skew_t(spec);
+    case DensityKind::ged: return assembler_ged(spec);
+    case DensityKind::generalized_hyperbolic: return assembler_generalized_hyperbolic(spec);
+    case DensityKind::nig: return assembler_nig(spec);
+    case DensityKind::hyperbolic: return assembler_hyperbolic(spec);
+    case DensityKind::variance_gamma: return assembler_variance_gamma(spec);
     }
     return nullptr;
 }

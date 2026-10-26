@@ -4,9 +4,9 @@
 
 namespace scivolapi::detail {
 
-Assembler assembler_student_t(VolatilityKind kind, bool mean)
+Assembler assembler_student_t(const ModelSpec& spec)
 {
-    return assembler_with<StudentTDensity>(kind, mean);
+    return assembler_with<StudentTDensity>(spec);
 }
 
 PathRunner path_runner_student_t(VolatilityKind kind)
