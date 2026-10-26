@@ -322,7 +322,7 @@ def test_fit_reaches_the_production_optimum(t_data, hyperbolic_data, density):
     # On Student-t data the GH optimum is its zeta -> 0 limit, a boundary point.
     data = hyperbolic_data if density == "generalized_hyperbolic" else t_data
     result = (GARCH(1, 1) + COMPONENTS[density]()).fit(data)
-    assert result.converged and result.fit_info.inference_status == "available"
+    assert result.success and result.fit_info.inference_status == "available"
     assert result.log_likelihood >= PRODUCTION_LOG_LIKELIHOOD["density_" + density] - 1e-6
 
 
@@ -346,7 +346,7 @@ def test_gaussian_tail_optimum_is_the_closed_eta_face(coordinates, iid, capsys):
         y = np.random.default_rng(2).normal(size=2500)
     normal = (GJRGARCH(1, 1) + Normal()).fit(y, coordinates=coordinates)
     student = (GJRGARCH(1, 1) + StudentT()).fit(y, coordinates=coordinates)
-    assert normal.converged and student.converged
+    assert normal.success and student.success
     assert student.params[-1] == 0.0
     assert student.fit_info.optimizer_phases[-1] == "theta:newton"
     assert student.log_likelihood == pytest.approx(normal.log_likelihood, rel=0.0, abs=2e-10)
@@ -356,7 +356,7 @@ def test_gaussian_tail_optimum_is_the_closed_eta_face(coordinates, iid, capsys):
     assert "eta=" in summary and "nu=inf" in summary
 
     skew = (GJRGARCH(1, 1) + SkewT()).fit(y, coordinates=coordinates)
-    assert skew.converged and skew.params[-2] == 0.0
+    assert skew.success and skew.params[-2] == 0.0
     # Hansen's Normal limit retains lambda. Check its two-piece Normal density.
     spec = api.ModelSpec()
     spec.volatility, spec.density = api.VolatilityKind.gjr, api.DensityKind.skew_t

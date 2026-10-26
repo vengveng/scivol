@@ -135,7 +135,7 @@ def garch_data() -> np.ndarray:
 
 def test_fit_recovers_known_parameters(garch_data):
     result = (GARCH(1, 1) + Normal()).fit(garch_data)
-    assert result.converged
+    assert result.success
     assert result.fit_info.inference_status == "available"
     omega, alpha, beta = result.params
     se = result.std_errors
@@ -158,7 +158,7 @@ def test_theta_and_z_paths_run_independently_and_agree(garch_data):
     z = (GARCH(1, 1) + Normal()).fit(garch_data, coordinates="z")
     assert theta.fit_info.optimizer_phases == ("theta:slsqp", "theta:newton")
     assert z.fit_info.optimizer_phases == ("z:slsqp",)
-    assert theta.converged and z.converged
+    assert theta.success and z.success
     assert theta.log_likelihood == pytest.approx(z.log_likelihood, abs=1e-6)
 
 

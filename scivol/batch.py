@@ -88,7 +88,7 @@ class BatchFitResult(Mapping[str, "EstimationResult"]):
                 {
                     "series": name,
                     "status": "ok",
-                    "converged": result.converged,
+                    "success": result.success,
                     "loglik": result.log_likelihood,
                     "n_iter": result.n_iter,
                     "fit_time": result.time_elapsed,
@@ -103,7 +103,7 @@ class BatchFitResult(Mapping[str, "EstimationResult"]):
                 {
                     "series": name,
                     "status": "timeout" if failure.timed_out else "failed",
-                    "converged": False,
+                    "success": False,
                     "loglik": np.nan,
                     "n_iter": np.nan,
                     "fit_time": failure.elapsed,

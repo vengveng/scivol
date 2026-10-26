@@ -451,6 +451,8 @@ def simulate(spec: Any, n_obs: int, params: Any, *, burn: int = 500, seed: Any =
         raise NotImplementedError(f"{spec} cannot be simulated: unsupported component combination")
     model = api.Model(native)
     theta = parameters(spec, model, params)
+    if not model.feasible(theta):
+        raise ValueError("theta is outside the model's domain")
     z = innovations(model.innovation_density(theta), 1, total, seed)
     out = api.simulate_series(model, theta, z, rows)
     keep = slice(burn, total)

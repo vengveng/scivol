@@ -83,7 +83,7 @@ def test_scalar_properties():
     # optimisation proxy
     assert res.params is opt.x
     assert res.n_iter == opt.nit
-    assert res.converged is True
+    assert res.success is True
     assert res.convergence_message == "converged"
 
     # log-likelihood sign convention
@@ -128,7 +128,7 @@ def test_to_dict_structure():
         "hqic",
         "n_obs",
         "n_params",
-        "converged",
+        "success",
         "n_iter",
         "parameters",
     } <= d.keys()
@@ -282,3 +282,15 @@ def test_forecast_convergence():
     # Loose tolerance due to estimation error
     rel_diff = abs(fc.variance[-1] - unconditional_var) / unconditional_var
     assert rel_diff < 0.3, f"Forecast didn't converge: rel_diff = {rel_diff}"
+
+
+def test_success_is_the_single_estimation_certification_flag():
+    import warnings
+    from scivol import GARCH, Normal
+
+    result = (GARCH()+Normal()).fit(np.random.default_rng(2026).normal(size=300))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert result.success == result.optimization_result.success
+    assert not caught
+    assert not hasattr(result, "converged")

@@ -335,8 +335,8 @@ class EstimationResult:
         return -self.optimization_result.fun
 
     @property
-    def converged(self) -> bool:
-        """Whether the optimization converged successfully."""
+    def success(self) -> bool:
+        """Whether the estimate is finite, feasible, converged, and KKT certified."""
         return self.optimization_result.success
 
     @property
@@ -363,16 +363,6 @@ class EstimationResult:
             stacklevel=2,
         )
         return self.log_likelihood
-
-    @property
-    def success(self) -> bool:
-        """Deprecated: Use converged instead."""
-        warnings.warn(
-            "success is deprecated, use converged instead",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.converged
 
     @property
     def niter(self) -> int:
@@ -715,7 +705,7 @@ class EstimationResult:
         print("─" * WIDTH)
         
         # Estimation summary (two columns)
-        conv_str = "Yes" if self.converged else "No"
+        conv_str = "Yes" if self.success else "No"
         time_str = f"{self.time_elapsed:.3f}s" if self.time_elapsed else "N/A"
         print(f"{'No. Observations:':<20} {self.n_obs:<15} {'Converged:':<15} {conv_str}")
         print(f"{'No. Parameters:':<20} {len(self.params):<15} {'Iterations:':<15} {self.n_iter}")
@@ -859,7 +849,7 @@ class EstimationResult:
             if message not in warnings_list:
                 warnings_list.append(message)
 
-        if not self.converged:
+        if not self.success:
             add("Optimization did not converge")
         
         if self.vol is not None:
@@ -914,7 +904,7 @@ class EstimationResult:
             'hqic': self.hqic,
             'n_obs': self.n_obs,
             'n_params': len(self.params),
-            'converged': self.converged,
+            'success': self.success,
             'n_iter': self.n_iter,
             'time_elapsed': self.time_elapsed,
             'fit_info': self.fit_info.to_dict(),
@@ -1111,7 +1101,7 @@ class EstimationResult:
             lines.append(f"  {name:<12} {val_str}")
         
         # Status
-        status = "Converged" if self.converged else "Not converged"
+        status = "Converged" if self.success else "Not converged"
         lines.append("")
         lines.append(f"Status: {status}")
         
@@ -1119,7 +1109,7 @@ class EstimationResult:
     
     def __repr__(self) -> str:
         """Concise representation of result"""
-        status = "converged" if self.converged else "failed"
+        status = "converged" if self.success else "failed"
         return (f"{self.__class__.__name__}({self.spec}, "
                 f"LL={self.log_likelihood:.4f}, "
                 f"{status})")

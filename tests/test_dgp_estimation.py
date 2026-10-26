@@ -1291,7 +1291,7 @@ class TestGARCHGeneralizedHyperbolic:
         )
 
     def test_convergence(self, result) -> None:
-        assert result.converged
+        assert result.success
         assert result.params.shape == (6,)
         assert np.all(np.isfinite(result.params))
 
@@ -1325,7 +1325,7 @@ class TestGARCHNormalInverseGaussian:
         )
 
     def test_convergence(self, result) -> None:
-        assert result.converged
+        assert result.success
         assert result.params.shape == (5,)
         assert np.all(np.isfinite(result.params))
 
@@ -1356,7 +1356,7 @@ class TestGARCHHyperbolic:
         return (GARCH(1, 1) + Hyperbolic()).fit(data)
 
     def test_convergence(self, result) -> None:
-        assert result.converged
+        assert result.success
         assert result.params.shape == (5,)
         assert np.all(np.isfinite(result.params))
 
@@ -1388,7 +1388,7 @@ class TestGARCHVarianceGamma:
         )
 
     def test_convergence(self, result) -> None:
-        assert result.converged
+        assert result.success
         assert result.params.shape == (5,)
         assert np.all(np.isfinite(result.params))
 
@@ -1992,7 +1992,7 @@ class TestAPARCHNormal:
         return (APARCH(1, 1) + Normal()).fit(data, maxiter=3000)
 
     def test_convergence(self, result) -> None:
-        assert result.converged, result.optimization_result.message
+        assert result.success, result.optimization_result.message
         assert np.all(np.isfinite(result.params))
 
     def test_parameter_recovery(self, result) -> None:
@@ -2101,7 +2101,7 @@ class TestEGARCHHigherOrder:
 
         data = 0.01 * simulate_egarch_pq(5500, -0.04, [0.18], [-0.12], [0.65, 0.30], seed=seed)[500:]
         result = (EGARCH(1, 2) + Normal()).fit(data)
-        assert result.converged
+        assert result.success
         spec = api.ModelSpec()
         spec.volatility = api.VolatilityKind.egarch
         spec.p, spec.q = 1, 2
@@ -2337,7 +2337,7 @@ class TestARXHARXStandalone:
 
         result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         np.testing.assert_allclose(result.params, params, atol=0.18, rtol=0.0)
 
     def test_harx_normal_parameter_recovery(self) -> None:
@@ -2349,7 +2349,7 @@ class TestARXHARXStandalone:
 
         result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         np.testing.assert_allclose(result.params, params, atol=0.20, rtol=0.0)
 
     def test_arx_studentt_estimation_runs(self) -> None:
@@ -2361,7 +2361,7 @@ class TestARXHARXStandalone:
 
         result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         assert len(result.params) == params.size
         assert np.all(np.isfinite(result.params))
 
@@ -2374,7 +2374,7 @@ class TestARXHARXStandalone:
 
         result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         assert len(result.params) == params.size
         assert np.all(np.isfinite(result.params))
 
@@ -2387,7 +2387,7 @@ class TestARXHARXStandalone:
 
         result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         assert len(result.params) == params.size
         assert np.all(np.isfinite(result.params))
 
@@ -2402,7 +2402,7 @@ class TestARXHARXEGARCH:
 
         result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         np.testing.assert_allclose(result.params[:3], params[:3], atol=0.16, rtol=0.0)
         assert result.params[6] == pytest.approx(params[6], abs=0.10)
 
@@ -2415,7 +2415,7 @@ class TestARXHARXEGARCH:
 
         result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         assert len(result.params) == params.size
         assert np.all(np.isfinite(result.params))
 
@@ -2428,7 +2428,7 @@ class TestARXHARXEGARCH:
 
         result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         assert len(result.params) == params.size
         assert np.all(np.isfinite(result.params))
 
@@ -2441,7 +2441,7 @@ class TestARXHARXEGARCH:
 
         result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         assert len(result.params) == params.size
         assert np.all(np.isfinite(result.params))
 
@@ -2637,7 +2637,7 @@ class TestDCCGARCH:
     def test_univariate_convergence(self, dcc_result) -> None:
         """All univariate fits should converge."""
         for i, r in enumerate(dcc_result.univariate_results):
-            assert r.converged, f"Series {i} failed to converge"
+            assert r.success, f"Series {i} failed to converge"
 
     def test_univariate_parameter_recovery(self, dcc_result) -> None:
         """Univariate GARCH parameters should be close to truth."""
@@ -2813,7 +2813,7 @@ def test_standalone_mean_tensor_recovery(family, density):
     x = None if x is None else x[200:]
     spec = mean + densities[density]()
     result = spec.fit(data, x=x)
-    assert result.converged, result.convergence_message
+    assert result.success, result.convergence_message
     np.testing.assert_allclose(result.params[:4], coefficients, atol=0.12, rtol=0)
     assert abs(result.params[4] - 1.2) < 0.25  # sigma2
     truth = np.r_[coefficients, 1.2, shape]

@@ -24,7 +24,7 @@ class DummyBatchResult:
         return self.fit_info.warnings
 
     @property
-    def converged(self) -> bool:
+    def success(self) -> bool:
         return True
 
     @property

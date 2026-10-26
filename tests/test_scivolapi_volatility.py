@@ -401,7 +401,7 @@ PRODUCTION_LOG_LIKELIHOOD = {
 @pytest.mark.parametrize("density", [Normal, StudentT, GED])
 def test_gjr_fit_reaches_the_production_optimum(gjr_data, density):
     result = (GJRGARCH(1, 1) + density()).fit(gjr_data)
-    assert result.converged and result.fit_info.inference_status == "available"
+    assert result.success and result.fit_info.inference_status == "available"
     assert result.log_likelihood >= PRODUCTION_LOG_LIKELIHOOD["gjr_" + density.__name__] - 1e-6
 
 
@@ -425,7 +425,7 @@ def egarch_data() -> np.ndarray:
 @pytest.mark.parametrize("density", [Normal, StudentT, SkewT])
 def test_egarch_fit_reaches_the_production_optimum(egarch_data, density):
     result = (EGARCH(1, 1) + density()).fit(egarch_data)
-    assert result.converged and result.fit_info.inference_status == "available"
+    assert result.success and result.fit_info.inference_status == "available"
     assert result.log_likelihood >= PRODUCTION_LOG_LIKELIHOOD["egarch_" + density.__name__] - 1e-6
 
 
@@ -434,7 +434,7 @@ def test_egarch_fit_is_exactly_equivariant_to_data_scale(egarch_data, q):
     base = (EGARCH(1, q) + StudentT()).fit(egarch_data)
     scaled = (EGARCH(1, q) + StudentT()).fit(10.0 * egarch_data)
     persistence = 1.0 - sum(base.params[3:3 + q])
-    assert base.converged and scaled.converged
+    assert base.success and scaled.success
     assert scaled.params[0] == pytest.approx(base.params[0] + 2.0 * np.log(10.0) * persistence, abs=1e-7)
     assert scaled.params[1:] == pytest.approx(base.params[1:], rel=1e-6)
     assert scaled.log_likelihood == pytest.approx(base.log_likelihood - egarch_data.size * np.log(10.0), abs=1e-6)
@@ -471,7 +471,7 @@ def aparch_data() -> np.ndarray:
 @pytest.mark.parametrize("density", [Normal, StudentT, SkewT])
 def test_aparch_fit_reaches_the_production_optimum(aparch_data, density):
     result = (APARCH(1, 1) + density()).fit(aparch_data)
-    assert result.converged and result.fit_info.inference_status == "available"
+    assert result.success and result.fit_info.inference_status == "available"
     assert result.log_likelihood >= PRODUCTION_LOG_LIKELIHOOD["aparch_" + density.__name__] - 1e-6
 
 

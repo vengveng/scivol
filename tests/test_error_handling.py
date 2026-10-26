@@ -253,7 +253,7 @@ class TestConvergence:
         result = spec.fit(sample_data)
         
         # Check convergence
-        assert result.converged or np.isfinite(result.log_likelihood)
+        assert result.success or np.isfinite(result.log_likelihood)
     
     def test_nelder_mead_converges(self, sample_data):
         """Nelder-Mead solver should converge on well-behaved data."""
@@ -274,3 +274,15 @@ class TestConvergence:
         ll_diff = abs(result_slsqp.log_likelihood - result_nm.log_likelihood)
         # Allow some tolerance since they're different optimization methods
         assert ll_diff < 10.0  # Within 10 LL units
+
+
+@pytest.mark.parametrize("theta", [[.1, .1, .8, 5.], [.1, .1, .8, -.1], [.1, .3, .8, .2]])
+def test_simulate_rejects_infeasible_parameters_before_drawing(theta, monkeypatch):
+    from scivol import GARCH, StudentT
+
+    def must_not_draw(*args):
+        raise AssertionError("innovations must not be drawn for an infeasible theta")
+
+    monkeypatch.setattr("scivol._evaluation.innovations", must_not_draw)
+    with pytest.raises(ValueError, match="outside the model's domain"):
+        (GARCH()+StudentT()).simulate(20, theta)

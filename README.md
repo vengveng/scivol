@@ -36,7 +36,7 @@ y = (GARCH() + StudentT()).simulate(
 ).data
 spec = ARMA(1, 0) + GJRGARCH(1, 1) + StudentT()
 result = spec.fit(y)
-print(result.log_likelihood, result.bic, result.converged)
+print(result.log_likelihood, result.bic, result.success)
 result.summary()
 ```
 
@@ -49,7 +49,7 @@ QMLE estimates mean and volatility with a Gaussian quasi-likelihood and sandwich
 covariance. A shaped density adds a staged shape fit and two-step sandwich
 covariance. Inspect `result.fit_info` for optimizer phases, stationarity,
 inference status and warnings. A finite estimate can remain uncertified;
-`result.converged` reports certification.
+`result.success` reports certification.
 
 ```python
 robust = (GARCH() + Normal()).fit(y, method="qmle")

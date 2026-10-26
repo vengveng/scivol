@@ -400,7 +400,7 @@ def test_li_mak_monte_carlo_size(joint_mean):
             e = np.sqrt(h)*shock[t]
             y[t] = (.2*y[t-1] if joint_mean and t else 0.0) + e
         result = spec.fit(y[600:], accuracy=1e-9)
-        if not result.converged:
+        if not result.success:
             continue
         model, sample, x = result._native()
         jet = api.Jet(model, sample, x)

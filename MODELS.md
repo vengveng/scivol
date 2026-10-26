@@ -131,7 +131,7 @@ their workspaces can be used by independent Python threads.
 - QMLE: Gaussian quasi-likelihood for the mean and volatility, sandwich
   covariance; with a shaped density, a staged shape fit with the two-step
   sandwich. Not offered for EGARCH with a shaped density.
-- A fit is certified (`result.converged`) when the estimate is finite and
+- A fit is certified (`result.success`) when the estimate is finite and
   feasible, the solver converged, and the projected-gradient (KKT) residual is
   at most `max(sqrt(accuracy), sqrt(eps))`.
 

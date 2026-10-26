@@ -79,7 +79,7 @@ def test_budget_returns_best_certified_candidate_and_frontier(garch_data):
                                                procedure=GeneralToSpecific(max_fits=1))
     assert result.status == 'budget_exhausted'
     assert not result.search_complete and result.frontier
-    assert result.selected.converged
+    assert result.selected.success
     assert result.fit_counts['optimizer_invocations'] == 1
     assert not result.terminals
     assert any(t['decision'] == 'budget_exhausted' for t in result.tests)
@@ -229,7 +229,7 @@ def test_auto_iid_dgp_selects_constant_variance():
     result = Auto().fit(y)
     assert result.status == 'selected', result.summary()
     assert result.selected._native()[0].constant_variance, result.summary()
-    assert result.selected.converged
+    assert result.selected.success
 
 
 def test_selected_model_supports_threaded_batches(garch_data):

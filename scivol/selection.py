@@ -263,7 +263,7 @@ class Search:
             result.fit_counts["full_sample_refits"] += 1
             result.fit_counts["optimizer_invocations"] += 1
             result.fit_counts["warm_started_fits"] += 1
-            if not result.selected.converged:
+            if not result.selected.success:
                 result.status = "full_sample_refit_uncertified"
         return result
 
@@ -607,5 +607,5 @@ class _Reduction:
             self.counts["full_sample_refits"] += 1
             self.counts["warm_started_fits"] += 1
             self.counts["optimizer_invocations"] += 1
-        if not result.selected.converged:
+        if not result.selected.success:
             result.status = "full_sample_refit_uncertified"

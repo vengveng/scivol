@@ -57,7 +57,7 @@ def main(n: int = 5000, repetitions: int = 5) -> None:
             started = time.perf_counter()
             result = make().fit(y, x=x if exog else None)
             times.append(time.perf_counter() - started)
-        status = f"{'certified' if result.converged else 'uncertified'}, {result.fit_info.inference_status}"
+        status = f"{'certified' if result.success else 'uncertified'}, {result.fit_info.inference_status}"
         print(f"{name:34s} {1e3 * np.median(times):8.1f} {result.log_likelihood:12.3f} {result.n_iter:5d}  {status}")
 
 

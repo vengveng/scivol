@@ -517,7 +517,7 @@ def test_har_fits_stay_stationary_on_a_near_unit_root():
     spec = HARX([1, 5, 22]) + GARCH(1, 1) + Normal()
     for coordinates in ("theta", "automatic"):
         result = spec.fit(y, x=x, coordinates=coordinates)
-        assert result.converged, (coordinates, result.fit_info.warnings)
+        assert result.success, (coordinates, result.fit_info.warnings)
         assert result._native()[0].feasible(np.asarray(result.params))
 
 
