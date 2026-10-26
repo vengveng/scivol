@@ -41,6 +41,9 @@ For APARCH with StudentT or SkewT, the power moment also requires
   mean's largest lag). Earlier rows only supply lags.
 - The first scored row has variance `mean(y^2)` over the rows passed to the
   model; pre-sample residuals are zero.
+- Pre-sample variance lags of GARCH, GJR and APARCH are omitted (zero);
+  EGARCH's pre-sample log variances equal the first row's, `log mean(y^2)`.
+  Every likelihood is therefore equivariant to the scale of the data.
 - The likelihood is the complete negative log-likelihood, constants included.
 
 ## Inference

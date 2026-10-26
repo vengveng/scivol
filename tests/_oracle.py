@@ -1009,9 +1009,7 @@ def egarch_value_grad_hess(
             raise ValueError(f"Unsupported EGARCH distribution: {dist}")
 
         z0 = resid_j[0] / jnp.sqrt(sigma0)
-        x_buf0 = jnp.concatenate(
-            [jnp.array([logh0], dtype=theta_j.dtype), jnp.zeros((max(q - 1, 0),), dtype=theta_j.dtype)]
-        )
+        x_buf0 = jnp.full((q,), logh0, dtype=theta_j.dtype)  # missing log-variance lags: log seed
         z_buf0 = jnp.concatenate(
             [jnp.array([z0], dtype=theta_j.dtype), jnp.zeros((max(p - 1, 0),), dtype=theta_j.dtype)]
         )
@@ -1023,7 +1021,7 @@ def egarch_value_grad_hess(
                 term = alpha[i] * (jnp.abs(z_buf[i]) - abs_moment) + gamma[i] * z_buf[i]
                 logh_t = logh_t + jnp.where(t > i, term, 0.0)
             for j in range(q):
-                logh_t = logh_t + jnp.where(t > j, beta[j] * x_buf[j], 0.0)
+                logh_t = logh_t + beta[j] * x_buf[j]
             h_t = jnp.exp(logh_t)
             z_t = resid_j[t] / jnp.sqrt(h_t)
             if q > 0:

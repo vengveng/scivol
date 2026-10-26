@@ -159,7 +159,9 @@ def row_terms(y, x, mean, volatility, p, q, density):
                         return alpha[lag]*shock**delta
                     state = state+jax.lax.cond(t>lag,shock_term,lambda:jnp.asarray(0.0))
                 for lag in range(q):
-                    state = state+jax.lax.cond(t>lag,lambda:beta[lag]*history[lag],lambda:jnp.asarray(0.0))
+                    # EGARCH's missing log-variance lags are log seed; the others are omitted.
+                    missing = beta[lag]*seed if family == 2 else jnp.asarray(0.0)
+                    state = state+jax.lax.cond(t>lag,lambda:beta[lag]*history[lag],lambda:missing)
                 variance = jnp.exp(state) if family == 2 else state**(2/delta) if family == 3 else state
                 return jnp.concatenate([state[None],history[:-1]]),variance
 
