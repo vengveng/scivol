@@ -416,7 +416,9 @@ std::vector<double> Model::start(const Sample& sample) const
         return theta;
     }
     const double shock = 0.20 * persistence;
-    theta[layout.omega] = sample.variance_seed * (1.0 - persistence);
+    const double initial_persistence = spec_.p && spec_.q ? persistence
+        : (spec_.p ? shock : 0.0) + (spec_.q ? 0.80 * persistence : 0.0);
+    theta[layout.omega] = sample.variance_seed * (1.0 - initial_persistence);
     for (std::size_t j = 0; j < spec_.q; ++j) theta[layout.beta + j] = 0.80 * persistence / q;
     if (spec_.volatility == VolatilityKind::gjr) {
         for (std::size_t i = 0; i < spec_.p; ++i) {
@@ -467,6 +469,9 @@ ModelCapabilities Model::capabilities() const noexcept
     ModelCapabilities c;
     c.chart_covers_domain = spec_.mean.har.empty();
     c.density_free_recursion = spec_.volatility != VolatilityKind::egarch;
+    c.likelihood_can_have_gradient_kinks = spec_.mean.width() != 0
+        && (spec_.volatility == VolatilityKind::egarch || spec_.volatility == VolatilityKind::aparch
+            || spec_.density == DensityKind::ged);
     if (spec_.volatility == VolatilityKind::aparch) c.exact_variance_horizon = 1;
     return c;
 }

@@ -278,3 +278,29 @@ def test_exact_tail_face_saves_a_fit_without_spurious_parent_refit():
     assert [p.name for p in reused.fit.phases] == ['restriction:projection']
     assert any(t['statistic'] == 0 and t['p_value'] == 1 for t in result.tests)
 
+
+def test_auto_boundary_tests_and_kink_stopping():
+    y = (GARCH()+Normal()).simulate(3000, [.1, .15, .7], seed=101).data
+    result = Auto().fit(y)
+    assert result.status == 'selected'
+    assert str(result.selected_model) == 'GARCH(1,1)+Normal'
+    assert not any(t['decision'] in ('retained_boundary', 'singular_information') for t in result.tests)
+    kink = next(c for c in result.candidates
+                if str(c.specification) == 'ARX(1,constant=False)+EGARCH(1,1)+Normal')
+    assert not kink.fit.success
+    assert kink.fit.termination in (api.Termination.stalled, api.Termination.line_search_failed)
+    assert kink.fit.warnings
+    assert sum(p.iterations for p in kink.fit.phases) < 100
+    # At the finite cusp, opposing one-sided gradients explain why the smooth
+    # KKT check cannot certify it. No claim of nonexistence of an MLE is made.
+    theta = np.array(kink.fit.theta)
+    plan = api.ComparisonPlan(y, 1)
+    jet = api.Jet(kink.model, plan)
+    residual = jet.theta(theta, api.PATHS)['residual']
+    index = np.argmin(np.abs(residual)) + 1
+    root = y[index]/y[index-1]
+    assert abs(theta[0]-root) < 1e-7
+    left, right = theta.copy(), theta.copy()
+    left[0], right[0] = root-1e-8, root+1e-8
+    assert jet.theta(left, api.GRADIENT)['gradient'][0] < 0
+    assert jet.theta(right, api.GRADIENT)['gradient'][0] > 0

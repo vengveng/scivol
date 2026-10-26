@@ -16,7 +16,8 @@ namespace scivolapi {
 // paths; `automatic` is the named hybrid: a z-space solve, then exact-Newton
 // refinement in theta, except where the z charts do not cover the model's domain
 // (ModelCapabilities::chart_covers_domain): there it is the theta path. Every
-// phase a fit ran is listed in FitResult::phases.
+// phase a fit ran is listed in FitResult::phases. An uncertified automatic
+// solve restarts in theta from the model start within the same total budget.
 enum class Coordinates { automatic, z, theta };
 
 // How theta is estimated and how its covariance is formed.
@@ -36,7 +37,7 @@ struct FitOptions {
     std::vector<double> start;      // optional theta; empty = the model's start
 };
 
-enum class Termination { converged, iteration_limit, line_search_failed, failed };
+enum class Termination { converged, iteration_limit, line_search_failed, stalled, failed };
 
 enum class Inference {
     available,

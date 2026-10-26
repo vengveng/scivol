@@ -109,7 +109,7 @@ void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, s
         offer(slsqp, d, 0, from_z, candidates);
         if (hybrid) {
             const optimize::Record newton = run_phase("theta:newton", in_theta, true, from_z(solved(slsqp, z)),
-                                                      std::max(1, budget - iterations(phases)), options.accuracy,
+                                                      std::min(reserve, std::max(1, budget - iterations(phases))), options.accuracy,
                                                       phases);
             offer(newton, d, 1, same, candidates);
         }
@@ -147,10 +147,33 @@ FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const
     solve(model, unit_jet, start, inside, options, phases, candidates);
     keep_feasible(model, candidates);
 
-    if (candidates.empty())
-        return failure(model, data_sample, scale, std::move(phases), "no phase produced a finite, feasible estimate");
-    return detail::finalize(model, unit_jet, data_jet, scale, select(candidates), std::move(phases),
-                            options.accuracy);
+    FitResult result = candidates.empty()
+        ? failure(model, data_sample, scale, phases, "no phase produced a finite, feasible estimate")
+        : detail::finalize(model, unit_jet, data_jet, scale, select(candidates), phases, options.accuracy);
+
+    // Leave a poor warm-start basin or saturated z chart by restarting the
+    // original theta problem from the model start. Explicit theta/z paths
+    // never enter this policy; all phases share the original iteration budget.
+    if (options.coordinates == Coordinates::automatic && model.capabilities().chart_covers_domain && !result.success
+        && iterations(phases) < options.maximum_iterations) {
+        const auto problem = make_problem(model, unit_jet, false);
+        const auto same = [](const std::vector<double>& t) { return t; };
+        const int remaining = options.maximum_iterations-iterations(phases);
+        const int reserve = std::min(100, std::max(1, remaining/4));
+        const auto retry = run_phase("theta:slsqp:restart", problem, false, inside,
+                                     std::max(1, remaining-reserve), options.accuracy, phases);
+        offer(retry, model.dimension(), phases.size()-1, same, candidates);
+        if (iterations(phases) < options.maximum_iterations) {
+            const auto refine = run_phase("theta:newton:restart", problem, true, solved(retry, inside),
+                options.maximum_iterations-iterations(phases), options.accuracy, phases);
+            offer(refine, model.dimension(), phases.size()-1, same, candidates);
+        }
+        keep_feasible(model, candidates);
+        if (!candidates.empty())
+            result = detail::finalize(model, unit_jet, data_jet, scale, select(candidates),
+                                      std::move(phases), options.accuracy);
+    }
+    return result;
 }
 
 // Second stage of a staged qmle fit: the shapes by maximum likelihood with the

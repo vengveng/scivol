@@ -2840,5 +2840,32 @@ def test_native_zero_order_children_recover_on_comparison_plan(order, omega, alp
     np.testing.assert_allclose(result.theta, truth, rtol=.12, atol=.025)
 
 
+def test_aparch_zero_beta_start_has_an_interior_mle():
+    from scivol import APARCH, GARCH, Normal
+
+    data = (GARCH()+Normal()).simulate(3000, [.1, .15, .7], seed=101).data
+    fitted = (APARCH(1, 0)+Normal()).fit(data)
+    assert fitted.success, fitted.warnings
+    assert 1 < fitted.params[-1] < 5
+    assert fitted.params[0] > .1 and fitted.params[1] > .1
+    assert fitted.log_likelihood > -3600
+
+
+def test_automatic_restarts_a_degenerate_aparch_warm_start():
+    from scivol import APARCH, ARX, GJRGARCH, Normal
+
+    y = (GJRGARCH()+Normal()).simulate(3000, [.1, .05, .08, .8], seed=102).data
+    theta = [.018522, .6868, 4.7e-34, -.096, 49.8]
+    model = ARX(1, constant=False)+APARCH(1, 0)+Normal()
+    fitted = model.fit(y, initial_params=theta)
+    assert fitted.success, fitted.warnings
+    assert fitted.log_likelihood > -4193
+    assert 1 < fitted.params[-1] < 5
+    assert any('restart' in name for name in fitted.fit_info.optimizer_phases)
+    assert fitted.n_iter <= 1000
+    independent = model.fit(y, initial_params=theta, coordinates='z')
+    assert all('restart' not in name for name in independent.fit_info.optimizer_phases)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

@@ -25,6 +25,7 @@ struct Problem {
     std::size_t dimension = 0;
     Objective objective;
     Hessian hessian;                  // may be empty
+    bool objective_can_have_gradient_kinks = false;
     std::vector<double> lower, upper;  // dimension each; NaN means unbounded; empty = no bounds
     std::size_t constraint_count = 0;
     Constraints constraints;          // required when constraint_count > 0
@@ -39,6 +40,7 @@ enum class Termination {
     converged,           // the solver's own convergence test passed
     iteration_limit,     // budget exhausted
     line_search_failed,  // no acceptable step
+    stalled,             // repeated vanishing steps before stationarity
     not_evaluable_start, // the objective or constraints failed at the start
     singular,            // the subproblem could not be solved
     invalid_problem,     // inconsistent dimensions or bounds

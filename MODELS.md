@@ -135,6 +135,21 @@ their workspaces can be used by independent Python threads.
   feasible, the solver converged, and the projected-gradient (KKT) residual is
   at most `max(sqrt(accuracy), sqrt(eps))`.
 
+The model capability `likelihood_can_have_gradient_kinks` tells optimizers whether
+moving residuals can cross a face with a nondifferentiable first derivative.
+The Newton stall rule applies only to such objectives; smooth constrained models
+retain their full refinement budget. Four consecutive vanishing steps at
+objective resolution before KKT passes produce `stalled`, with a warning rather
+than certification. A finite cusp can be an MLE even though a smooth KKT test
+cannot certify it. Pointwise jets still report derivatives as invalid at a kink.
+
+The automatic z-first path gives its first theta refinement at most 100 steps.
+If the resulting estimate is uncertified, it restarts theta-space SLSQP and
+Newton from the model's own start, within the original total iteration budget.
+Every restart is named in `fit_info.optimizer_phases`. Explicit theta and z
+paths retain their separate formulations. Zero-order starts set the intercept
+from the persistence of the lags actually present.
+
 ## Forecasts
 
 | | Exact | Simulated |
@@ -263,8 +278,9 @@ Box-Muller conversion. The orthogonal complement of the constraint span is
 profiled out before simulation. Up to 1,024, 4,096 and 32,768 draws are used;
 `maximum_cells` controls the maximum budget. A decision interval crossing the
 requested level is unresolved. The reported error for `cone_projection` is a
-99.99% Bernoulli Chernoff Monte Carlo interval radius, not a deterministic integration bound;
-three prespecified looks have at least 99.97% simultaneous coverage by
+99.99% Bernoulli Chernoff Monte Carlo interval radius, not a deterministic
+integration bound; three prespecified looks have at least 99.97% simultaneous
+coverage by
 the union bound. The intervals invert the finite-sample Bernoulli relative-entropy
 bound, including zero observed exceedances. The deterministic chi-bar cubature
 retains its absolute-error test.
@@ -273,4 +289,3 @@ uniform size over nuisance sequences approaching a boundary.
 
 References: [Self and Liang (1987)](https://doi.org/10.1080/01621459.1987.10478472),
 [Andrews (2001)](https://doi.org/10.1111/1468-0262.00210).
-

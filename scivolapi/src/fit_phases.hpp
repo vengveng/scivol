@@ -20,6 +20,7 @@ inline Termination termination_of(optimize::Termination t)
     case optimize::Termination::converged: return Termination::converged;
     case optimize::Termination::iteration_limit: return Termination::iteration_limit;
     case optimize::Termination::line_search_failed: return Termination::line_search_failed;
+    case optimize::Termination::stalled: return Termination::stalled;
     default: return Termination::failed;
     }
 }

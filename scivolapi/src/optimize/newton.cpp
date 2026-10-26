@@ -224,6 +224,7 @@ Record refine_newton(const Problem& problem, std::span<const double> start, cons
     const double target = std::sqrt(std::numeric_limits<double>::epsilon());
     const double tolerance = std::max(std::sqrt(options.accuracy), target);
     double residual = std::numeric_limits<double>::infinity();
+    int vanishing_steps = 0;
     auto stationary_within = [&](double limit) { return residual <= limit; };
     auto converge = [&] {
         record.termination = Termination::converged;
@@ -276,6 +277,7 @@ Record refine_newton(const Problem& problem, std::span<const double> start, cons
         const bool backtrack = !(stationary_within(tolerance) && descent < 0
             && -descent <= 2 * std::numeric_limits<double>::epsilon() * std::abs(value));
         const double previous = value;
+        std::copy_n(w.x, problem.dimension, w.projected);
         if (!take_step(problem, w, evaluate, points, value, backtrack)) {
             if (stationary_within(tolerance)) {
                 if (take_face_step(problem, w, evaluate, points, value)) continue;
@@ -284,6 +286,17 @@ Record refine_newton(const Problem& problem, std::span<const double> start, cons
                 record.termination = Termination::line_search_failed;
                 record.solver_mode = 8;
             }
+            break;
+        }
+        double displacement = 0;
+        for (std::size_t i = 0; i < problem.dimension; ++i)
+            displacement = std::max(displacement, std::abs(w.x[i]-w.projected[i])/(1+std::abs(w.x[i])));
+        const bool vanishing = displacement <= target
+            && std::abs(previous-value) <= 8*std::numeric_limits<double>::epsilon()*(1+std::abs(value));
+        vanishing_steps = vanishing ? vanishing_steps+1 : 0;
+        if (problem.objective_can_have_gradient_kinks && vanishing_steps >= 4 && !stationary_within(tolerance)) {
+            record.termination = Termination::stalled;
+            record.solver_mode = -102;
             break;
         }
         // Stalled progress at a point that already meets the tolerance (for

@@ -28,6 +28,7 @@ optimize::Problem make_problem(const ModelT& model, JetT& jet, bool in_z)
     const double scale = 1.0 / static_cast<double>(scored_rows(jet.sample()));
     optimize::Problem problem;
     problem.dimension = d;
+    problem.objective_can_have_gradient_kinks = model.capabilities().likelihood_can_have_gradient_kinks;
     problem.objective = [&jet, d, scale, in_z](const double* x, double& f, double* g) {
         JetOutput out;
         unsigned request = value;

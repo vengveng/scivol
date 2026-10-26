@@ -63,6 +63,7 @@ std::vector<std::pair<std::string, double>> derived_shapes(const InnovationDensi
 struct ModelCapabilities {
     bool chart_covers_domain = true;     // z covers the domain apart from closed boundary faces
     bool density_free_recursion = true;  // the variance recursion does not involve the density's shapes
+    bool likelihood_can_have_gradient_kinks = false; // moving residuals can cross a nondifferentiable likelihood face
     std::size_t exact_variance_horizon = static_cast<std::size_t>(-1);  // horizons with exact variance forecasts
 };
 

@@ -182,6 +182,8 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
         r.warnings.push_back("returned the best feasible trial of phase " + phase.name
                              + ", which the solver had not accepted");
     if (r.termination != Termination::converged) r.warnings.push_back("the optimizer did not converge");
+    if (r.termination == Termination::stalled)
+        r.warnings.push_back("vanishing steps before KKT certification; a likelihood kink or numerical limit may prevent smooth certification");
     if (!r.stationary) r.warnings.push_back("first-order conditions are not met; the estimate is uncertified");
 
     if (!r.stationary) r.inference = Inference::not_stationary;
