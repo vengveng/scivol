@@ -465,12 +465,7 @@ def simulate(spec: Any, n_obs: int, params: Any, *, burn: int = 500, seed: Any =
 
 def oos_losses(result: "EstimationResult", full_data: Any, *, full_x: Any, start: int, stop: int,
                loss: str) -> NDArray[np.float64]:
-    """Losses of rows [start, stop) of `full_data` (indexed like the data passed to fit) at the fitted parameters.
-
-    The sample is filtered from the fit's first row through `stop`. logscore is
-    each row's negative log density (the likelihood's own terms); qlike and mse
-    compare the squared residual with the conditional variance.
-    """
+    """Native predictive losses on a specified slice of the observed series."""
     skip = result._native_skip
     scale = float(result.fit_info.scale or 1.0)
     y = np.ascontiguousarray(np.asarray(full_data, dtype=np.float64)[skip:stop] * scale)
@@ -479,15 +474,6 @@ def oos_losses(result: "EstimationResult", full_data: Any, *, full_x: Any, start
     first = skip + jet.first_scored
     if start < first or stop <= start:
         raise ValueError("The OOS slice must lie after the rows that condition the fit.")
-    out = jet.theta(np.ascontiguousarray(result.params), api.TERMS | api.PATHS)
-    if out["status"] != "ok":
-        raise ValueError(f"The model cannot be filtered over the OOS slice ({out['status']}).")
-    rows = slice(start - first, stop - first)
-    key = loss.lower()
-    if key == "logscore":
-        return np.ascontiguousarray(out["terms"][rows])
-    if key in {"qlike", "mse"}:
-        squared = out["residual"][rows] ** 2
-        variance = out["variance"][rows]
-        return np.log(variance) + squared / variance if key == "qlike" else (squared - variance) ** 2
-    raise ValueError("oos_loss must be 'logscore', 'qlike', or 'mse'.")
+    values = api.predictive_losses(jet, np.ascontiguousarray(result.params),
+                                   "log_score" if loss == "logscore" else loss)
+    return np.ascontiguousarray(values[start-first:stop-first])

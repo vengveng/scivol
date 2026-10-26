@@ -10,33 +10,33 @@ from ..roles import Role
 
 class Normal(Component):
     role = Role.DENSITY
-    
+
     def __init__(self):
         self.fitted_params = {}
-    
+
     @property
     def signature(self): return 'Normal'
-    
-    @property  
+
+    @property
     def n_params(self): return 0
-    
+
     def pack(self, params_dict): return np.array([])
-    def unpack(self, flat_params): 
+    def unpack(self, flat_params):
         self.fitted_params = {}
         return {}
 
 class StudentT(Component):
     role = Role.DENSITY
-    
+
     def __init__(self):
         self.fitted_params = None
-    
+
     @property
     def signature(self): return "StudentT"
-    
+
     @property
     def n_params(self): return 1  # reciprocal tail
-    
+
     def pack(self, params_dict): return np.array([params_dict['eta']])
     def unpack(self, flat_params):
         self.fitted_params = {'eta': flat_params[0]} if len(flat_params) > 0 else {}
@@ -46,7 +46,7 @@ class StudentT(Component):
 class SkewT(Component):
     """
     Skewed Student-t distribution (Hansen, 1994 parameterization).
-    
+
     Parameters
     ----------
     eta : float
@@ -55,19 +55,19 @@ class SkewT(Component):
         Skewness parameter (-1, 1), where lam=0 gives symmetric Student-t
     """
     role = Role.DENSITY
-    
+
     def __init__(self):
         self.fitted_params = None
-    
+
     @property
     def signature(self): return "SkewT"
-    
+
     @property
     def n_params(self): return 2  # reciprocal tail + skewness
-    
-    def pack(self, params_dict): 
+
+    def pack(self, params_dict):
         return np.array([params_dict['eta'], params_dict['lam']])
-    
+
     def unpack(self, flat_params):
         if len(flat_params) >= 2:
             self.fitted_params = {'eta': flat_params[0], 'lam': flat_params[1]}
@@ -237,58 +237,3 @@ class VarianceGamma(Component):
         else:
             self.fitted_params = {}
         return self.fitted_params
-
-
-class AutoDensity(Component):
-    """
-    Placeholder component for automatic density/distribution selection.
-    
-    When used in a spec, the fit method will search over candidate distributions
-    and select the best one based on a blended criterion of AIC and diagnostic tests.
-    
-    Parameters
-    ----------
-    candidates : list of str, optional
-        List of distribution names to search over.
-        Default is ['Normal', 'StudentT', 'SkewT'].
-        
-    Examples
-    --------
-    >>> from scivol import GARCH, AutoDensity
-    >>> spec = GARCH(1, 1) + AutoDensity()  # Search all distributions
-    >>> spec = GARCH(auto=True) + AutoDensity(candidates=['Normal', 'StudentT'])
-    
-    Notes
-    -----
-    When used with QMLE estimation, AutoDensity is redundant since QMLE always
-    fits with Normal likelihood. A warning will be issued and Normal will be used.
-    """
-    role = Role.DENSITY
-    
-    # Keep the default grid inexpensive and backward compatible. Other shipped
-    # densities, including GED, GH, and NIG, remain available explicitly.
-    CANDIDATES = ['Normal', 'StudentT', 'SkewT']
-    
-    def __init__(self, candidates: Optional[List[str]] = None):
-        self.candidates = candidates or self.CANDIDATES.copy()
-        self.fitted_params = {}
-        self._is_auto = True
-    
-    @property
-    def signature(self) -> str:
-        return "AutoDensity"
-    
-    @property
-    def n_params(self) -> int:
-        # Placeholder - actual n_params depends on selected distribution
-        return 0
-    
-    def pack(self, params_dict: dict) -> np.ndarray:
-        return np.array([])
-    
-    def unpack(self, flat_params: np.ndarray) -> dict:
-        return {}
-    
-    def get_candidates(self) -> List[str]:
-        """Return list of candidate distribution names."""
-        return self.candidates

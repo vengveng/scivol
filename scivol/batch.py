@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-import signal
-import sys
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import numpy as np
-from joblib import Parallel, delayed
 
 if TYPE_CHECKING:
     from .result import EstimationResult
@@ -136,62 +135,25 @@ class RollingFitResult(Sequence[RollingFitWindow]):
         return len(self.windows)
 
 
-@contextmanager
-def _wall_clock_limit(seconds: Optional[float]):
-    if seconds is None:
-        yield
-        return
-    if not np.isfinite(seconds) or seconds <= 0:
-        raise ValueError("timeout must be a positive finite number of seconds.")
-    if not hasattr(signal, "setitimer"):
-        raise RuntimeError("Per-fit timeout is unavailable on this platform.")
-
-    def _raise_timeout(_signum, _frame):
-        raise FitTimeoutError(f"Fit exceeded the {seconds:g}-second timeout.")
-
-    previous_handler = signal.getsignal(signal.SIGALRM)
-    signal.signal(signal.SIGALRM, _raise_timeout)
-    previous_timer = signal.setitimer(signal.ITIMER_REAL, float(seconds))
-    try:
-        yield
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, *previous_timer)
-        signal.signal(signal.SIGALRM, previous_handler)
-
-
-def _fit_many_worker(
-    name: str,
-    series: np.ndarray,
-    spec_params: Dict[str, Any],
-    index: Any,
-    initial: Any,
-    timeout: Optional[float],
-    fit_kwargs: Dict[str, Any],
-):
-    from ._parallel import _reconstruct_spec
-
+def _fit_many_worker(name, series, spec, index, initial, timeout, fit_kwargs):
     started = time.perf_counter()
     try:
-        spec = _reconstruct_spec(spec_params)
         kwargs = dict(fit_kwargs)
         if initial is not None:
             kwargs["initial_params"] = initial
-        with _wall_clock_limit(timeout):
-            result = spec.fit(series, n_jobs=1, **kwargs)
-        effective_hold_back = result.fit_info.effective_hold_back or 0
-        result._index = None if index is None else index[effective_hold_back:]
+        result = deepcopy(spec).fit(series, **kwargs)
+        elapsed = time.perf_counter() - started
+        if timeout is not None and elapsed > timeout:
+            raise FitTimeoutError(f"Fit exceeded the {timeout:g}-second timeout. Native fits finish before timeout is recorded.")
+        first = result.fit_info.effective_hold_back or 0
+        result._index = None if index is None else index[first:]
         result._name = name
         result.fit_info.timeout = timeout
         return name, result, None
     except Exception as exc:
-        elapsed = time.perf_counter() - started
-        failure = BatchFitFailure(
-            series=name,
-            error_type=type(exc).__name__,
-            message=str(exc),
-            elapsed=elapsed,
-            timed_out=isinstance(exc, FitTimeoutError),
-        )
+        failure = BatchFitFailure(name, type(exc).__name__, str(exc),
+                                  time.perf_counter() - started,
+                                  isinstance(exc, FitTimeoutError))
         return name, None, failure
 
 
@@ -206,8 +168,6 @@ def fit_many_spec(
     show_progress: bool = False,
     **fit_kwargs: Any,
 ) -> BatchFitResult:
-    if owner._has_auto_components():
-        raise NotImplementedError("fit_many() currently requires a fixed specification.")
     if on_error not in {"record", "raise"}:
         raise ValueError("on_error must be 'record' or 'raise'.")
     if timeout is not None and (not np.isfinite(timeout) or timeout <= 0):
@@ -234,12 +194,10 @@ def fit_many_spec(
         else:
             raise TypeError("initial_results must be a mapping, sequence, or BatchFitResult.")
 
-    from ._parallel import get_default_workers
-
-    workers = get_default_workers() if n_jobs is None or n_jobs == -1 else int(n_jobs)
+    workers = min(4, os.cpu_count() or 1) if n_jobs is None or n_jobs == -1 else int(n_jobs)
     if workers <= 0:
         raise ValueError("n_jobs must be a positive integer.")
-    spec_params = owner._spec_to_params()
+    spec = owner.spec
     tasks = [
         (
             str(column),
@@ -250,31 +208,15 @@ def fit_many_spec(
     ]
 
     started = time.perf_counter()
-    if workers == 1 or len(tasks) == 1:
-        from ._progress import get_progress_bar
+    def run(task):
+        name_i, series, initial = task
+        return _fit_many_worker(name_i, series, spec, index, initial, timeout, fit_kwargs)
 
-        output = [
-            _fit_many_worker(name_i, series, spec_params, index, initial, timeout, fit_kwargs)
-            for name_i, series, initial in get_progress_bar(
-                tasks,
-                total=len(tasks),
-                desc="Fitting series",
-                disable=not show_progress,
-            )
-        ]
-    else:
-        from ._progress import tqdm_joblib
+    from ._progress import get_progress_bar
 
-        with tqdm_joblib(
-            total=len(tasks), desc="Fitting series", disable=not show_progress
-        ):
-            prefer = "threads" if "jax" in sys.modules else "processes"
-            output = Parallel(n_jobs=min(workers, len(tasks)), prefer=prefer)(
-                delayed(_fit_many_worker)(
-                    name_i, series, spec_params, index, initial, timeout, fit_kwargs
-                )
-                for name_i, series, initial in tasks
-            )
+    with ThreadPoolExecutor(max_workers=min(workers, max(1, len(tasks)))) as pool:
+        output = list(get_progress_bar(pool.map(run, tasks), total=len(tasks),
+                                      desc="Fitting series", disable=not show_progress))
 
     results = {name_i: result for name_i, result, failure in output if failure is None}
     failures = {name_i: failure for name_i, result, failure in output if failure is not None}

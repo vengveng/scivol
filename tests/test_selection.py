@@ -1,0 +1,244 @@
+"""Search contracts, native LR traversal, and explicit calibration limits."""
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from scivol import (APARCH, ARMA, ARX, Auto, ConfidenceSet, EGARCH, GARCH, Role,
+                    GJRGARCH, GeneralToSpecific, InformationCriterion, Normal,
+                    Search, SkewT, StudentT)
+from scivol import _scivolapi as api
+from scivol._fit import native_spec
+from scivol.result import EstimationResult
+
+
+def search(**kwargs):
+    return Search(volatility=[GJRGARCH.up_to(1, 1)], density=[SkewT()], **kwargs)
+
+
+@pytest.fixture
+def garch_data():
+    return (GARCH()+Normal()).simulate(1800, [.1, .15, .7], seed=17).data
+
+
+@pytest.fixture
+def adequate_verdict(monkeypatch):
+    """Exercise traversal independently of the unavailable diagnostic calibration."""
+    monkeypatch.setattr(api, 'selection_diagnostics',
+                        lambda *args: dict(status='adequate', no_arch_status='ok'))
+
+
+def test_templates_declare_generators_and_native_closure():
+    for cls in [GARCH, GJRGARCH, EGARCH, APARCH]:
+        part = cls.up_to(2, 1)
+        assert (part.p, part.q) == (2, 1)
+    assert ARX.up_to(2).lags == 2
+    assert (ARMA.up_to(2, 1).p, ARMA.up_to(2, 1).q) == (2, 1)
+    with pytest.raises(TypeError):
+        GARCH(auto=True)
+    with pytest.raises(ValueError):
+        GARCH('auto')
+
+
+def test_gets_reduces_native_graph_and_records_joint_tests(garch_data, adequate_verdict):
+    result = search(constant_variance=False).fit(garch_data, n_jobs=2)
+    assert isinstance(result.selected, EstimationResult)
+    assert str(result.selected_model) == 'GARCH(1,1)+Normal'
+    assert result.status == 'selected' and result.search_complete
+    assert len(result.terminals) == 1
+    assert len(result.paths) > 1
+    assert any(t['purpose'] == 'gum_backtest' and ';' in t['restriction'] for t in result.tests)
+    assert any(t['decision'] == 'unsupported' and 'Unidentified' in t['failure_reason'] for t in result.tests)
+    assert all(t['law'] in ('chi_square', 'chi_bar_square')
+               for t in result.tests if t['decision'] == 'accepted')
+    for t in result.tests:
+        assert {'parent', 'child', 'restriction', 'parent_log_likelihood',
+                'child_log_likelihood', 'statistic', 'law', 'weights', 'p_value',
+                'level', 'decision', 'failure_reason'} <= t.keys()
+    assert result.fit_counts['warm_started_fits'] > 0
+    assert not result.table().empty
+
+
+def test_real_diagnostics_do_not_certify_uncalibrated_pits(garch_data):
+    result = search(constant_variance=False).fit(garch_data)
+    assert result.selected is None and not result.terminals
+    assert result.status in ('adequacy_unresolved', 'no_adequate_model')
+    assert all(not c.adequate for c in result.candidates)
+    assert any(c.diagnostics['status'] == 'adequacy_unresolved' for c in result.candidates)
+    assert all(t['decision'] != 'accepted' for t in result.tests)
+    assert 'not been calibrated' in result.summary()
+
+
+def test_thread_scheduling_does_not_change_paths_or_decisions(garch_data, adequate_verdict):
+    serial = search(constant_variance=False).fit(garch_data, n_jobs=1)
+    parallel = search(constant_variance=False).fit(garch_data, n_jobs=4)
+    assert serial.paths == parallel.paths
+    assert serial.fit_counts == parallel.fit_counts
+    assert [(t['parent'], t['child'], t['decision'], t['p_value']) for t in serial.tests] == [
+        (t['parent'], t['child'], t['decision'], t['p_value']) for t in parallel.tests]
+    np.testing.assert_array_equal(serial.selected.params, parallel.selected.params)
+
+
+def test_budget_returns_best_certified_candidate_and_frontier(garch_data, adequate_verdict):
+    result = search(constant_variance=False).fit(garch_data,
+                                               procedure=GeneralToSpecific(max_fits=1))
+    assert result.status == 'budget_exhausted'
+    assert not result.search_complete and result.frontier
+    assert result.selected.converged
+    assert result.fit_counts['optimizer_invocations'] == 1
+    assert not result.terminals
+    assert any(t['decision'] == 'budget_exhausted' for t in result.tests)
+
+
+def test_qmle_and_unknown_options_raise(garch_data):
+    with pytest.raises(ValueError, match='requires MLE'):
+        search().fit(garch_data, method='qmle')
+    with pytest.raises(TypeError):
+        search().fit(garch_data, diagnostic_weight=50)
+    with pytest.raises(TypeError):
+        GARCH().fit(garch_data, select_by='bic')
+    with pytest.raises(ValueError, match='explicit adequacy'):
+        search().fit(garch_data, procedure=InformationCriterion('bic'))
+
+
+def test_closure_false_fits_only_listed_candidates(garch_data):
+    result = Search(volatility=[GARCH()], density=[Normal(), StudentT()],
+                    constant_variance=False, closure=False).fit(
+                        garch_data, procedure=InformationCriterion('bic', adequacy=False))
+    assert len(result.candidates) == 2
+    assert not result.tests
+    expected = min(result.candidates, key=lambda c: c.information_criteria['bic'])
+    assert result.selected_model is expected.specification
+    assert all(c.diagnostics['status'] == 'disabled' for c in result.candidates)
+    assert result.selected.log_likelihood == expected.fit.log_likelihood
+
+
+def test_common_plan_survives_mean_and_regressor_reductions(garch_data):
+    x = np.random.default_rng(7).normal(size=(len(garch_data), 2))
+    result = Search(mean=[ARX(2)], volatility=[GARCH()], density=[Normal()],
+                    constant_variance=False).fit(garch_data, x,
+                    procedure=InformationCriterion('bic', adequacy=False, max_fits=96), n_jobs=2)
+    assert {c.fit.scored for c in result.candidates if c.fit is not None} == {len(garch_data)-2}
+    assert result.selected._native()[0].spec.mean.exog <= 2
+    assert len(result.selected.params) == result.selected._native()[0].dimension
+
+
+def test_constant_root_is_independent_and_encompassing_unavailable(garch_data):
+    result = Search(density=[Normal()]).fit(garch_data)
+    assert len(result.candidates) == 1
+    constant = result.candidates[0]
+    assert constant.model.constant_variance
+    assert constant.encompassing['volatility_gum'] == 'unavailable'
+    assert constant.diagnostics['no_arch_status'].startswith('unavailable')
+    assert result.selected is None
+
+
+def test_native_composition_preserves_likelihood_and_derivatives(garch_data):
+    parent = api.Model(native_spec(ARX(1)+GJRGARCH()+SkewT()))
+    a = next(r for r in parent.restrictions() if r.name == 'volatility.symmetry')
+    middle = api.Model(a.child)
+    b = next(r for r in middle.restrictions() if r.name == 'density.symmetry')
+    ab = a.then(b)
+    child = api.Model(ab.child)
+    c = next(r for r in child.restrictions() if r.name == 'density.normal')
+    joint = ab.then(c)
+    child = api.Model(joint.child)
+    plan = api.ComparisonPlan(garch_data, 3)
+    theta = child.start(plan)
+    lifted = joint.embed(theta)
+    np.testing.assert_array_equal(lifted, a.embed(b.embed(c.embed(theta))))
+    np.testing.assert_allclose(joint.map_start(lifted), theta)
+    po = api.Jet(parent, plan).theta(lifted, 7)
+    co = api.Jet(child, plan).theta(theta, 7)
+    embedding = np.asarray(joint.embedding).reshape(parent.dimension, child.dimension)
+    assert po['value'] == pytest.approx(co['value'], abs=1e-10)
+    np.testing.assert_allclose(embedding.T @ po['gradient'], co['gradient'], atol=1e-9)
+    np.testing.assert_allclose(embedding.T @ po['hessian'] @ embedding, co['hessian'], atol=1e-8)
+    assert joint.types.count(api.RestrictionType.closed_boundary) == 1
+    with pytest.raises(ValueError, match='does not connect'):
+        b.then(a)
+
+
+@pytest.mark.parametrize('loss', ['log_score', 'qlike'])
+def test_native_predictive_losses(garch_data, loss):
+    model = api.Model(native_spec(GARCH().spec))
+    jet = api.Jet(model, garch_data)
+    theta = np.array([.1, .15, .7])
+    out = jet.theta(theta, api.TERMS | api.PATHS)
+    expected = out['terms'] if loss == 'log_score' else np.log(out['variance'])+out['residual']**2/out['variance']
+    np.testing.assert_allclose(api.predictive_losses(jet, theta, loss), expected, atol=1e-13)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('density,truth', [(Normal(), [.1, .15, .7]), (StudentT(), [.1, .15, .7, 1/5])])
+def test_density_dgp_ic_recovery_with_adequacy_explicitly_disabled(density, truth):
+    y = (GARCH()+density).simulate(5000, truth, seed=51).data
+    result = Search(volatility=[GARCH()], density=[SkewT()],
+                    constant_variance=False).fit(y, procedure=InformationCriterion('bic', adequacy=False))
+    fitted = result.selected._native()[0].innovation_density(result.selected.params)
+    assert fitted.density == (api.DensityKind.normal if isinstance(density, Normal) else api.DensityKind.student_t)
+    if fitted.shape:
+        assert fitted.shape[0] > 0
+
+
+@pytest.mark.slow
+def test_gjr_dgp_keeps_asymmetry_when_reduction_rejects_or_is_unresolved(adequate_verdict):
+    y = (GJRGARCH()+Normal()).simulate(5000, [.05, .025, .22, .82], seed=81).data
+    result = search(constant_variance=False).fit(y)
+    assert isinstance(result.selected_model.get_component(Role.VOLATILITY), GJRGARCH)
+    assert any(t['restriction'] == 'volatility.symmetry' and t['decision'] != 'accepted' for t in result.tests)
+
+
+@pytest.mark.slow
+def test_predictive_confidence_set_is_aligned_and_reproducible():
+    y = (GARCH()+StudentT()).simulate(2600, [.1, .15, .7, .15], seed=62).data
+    space = Search(volatility=[GARCH()], density=[Normal(), StudentT()],
+                   closure=False, constant_variance=False)
+    procedure = ConfidenceSet(reduction=InformationCriterion('bic', adequacy=False),
+                              refit_every=100, bootstrap_draws=199, seed=44)
+    a = space.fit(y, procedure=procedure, n_jobs=1)
+    b = space.fit(y, procedure=procedure, n_jobs=2)
+    assert a.status == b.status == 'predictive_confidence_set'
+    np.testing.assert_array_equal(a.predictive['losses'], b.predictive['losses'])
+    assert a.predictive['losses'].shape == (520, 2)
+    assert [c.key for c in a.confidence_set] == [c.key for c in b.confidence_set]
+    assert a.selected.n_obs == len(y)
+
+
+@pytest.mark.slow
+def test_iid_dgp_selects_independent_constant_root_by_ic():
+    y = np.random.default_rng(74).normal(size=5000)
+    result = Search(volatility=[GARCH()], density=[Normal()], closure=False).fit(
+        y, procedure=InformationCriterion('bic', adequacy=False))
+    assert result.selected._native()[0].constant_variance
+    assert result.selected.converged
+    assert len(result.selected.params) == 1
+
+
+def test_selected_model_supports_threaded_batches(garch_data):
+    result = Search(volatility=[GARCH()], density=[Normal()], closure=False,
+                    constant_variance=False).fit(garch_data,
+                    procedure=InformationCriterion('bic', adequacy=False))
+    panel = np.column_stack([garch_data, .8*garch_data])
+    batch = result.selected_model.fit_many(panel, n_jobs=2)
+    assert not batch.failures
+    assert batch.succeeded == ('0', '1')
+
+
+def test_budget_includes_full_sample_deployment_refit(garch_data):
+    result = Search(mean=[ARX(2)], volatility=[GARCH()], density=[Normal()],
+                    constant_variance=False).fit(garch_data,
+                    procedure=InformationCriterion('bic', adequacy=False, max_fits=8))
+    assert result.fit_counts['optimizer_invocations'] <= 8
+    assert result.selected is not None
+    assert result.fit_counts['full_sample_refits'] == 1
+
+
+def test_budget_does_not_promote_a_rejected_child(adequate_verdict):
+    y = (GJRGARCH()+Normal()).simulate(3000, [.05, .025, .22, .82], seed=81).data
+    result = Search(volatility=[GJRGARCH()], density=[Normal()],
+                    constant_variance=False).fit(y,
+                    procedure=GeneralToSpecific(max_fits=2))
+    assert not result.search_complete
+    assert str(result.selected_model) == 'GJR-GARCH(1,1)+Normal'
+    assert result.fit_counts['optimizer_invocations'] <= 2

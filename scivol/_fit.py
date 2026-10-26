@@ -60,7 +60,7 @@ def native_mean(mean: Any, exog: int) -> Optional[api.MeanSpec]:
     if isinstance(mean, ARMA):
         if exog:
             return None
-        native.constant, native.ar, native.ma = True, int(mean.p), int(mean.q)
+        native.constant, native.ar, native.ma = bool(mean.constant), int(mean.p), int(mean.q)
     elif isinstance(mean, ARX):
         native.constant, native.ar, native.exog = bool(mean.constant), int(mean.lags), exog
     elif isinstance(mean, HARX):
@@ -74,8 +74,11 @@ def native_spec(spec: Any, exog: int = 0) -> Optional[api.ModelSpec]:
     """The native specification for a composition, or None if not yet covered."""
     from .components.vol import APARCH, EGARCH, GARCH, GJRGARCH
 
+    if hasattr(spec, "_native_definition"):
+        return spec._native_definition
+
     mean = native_mean(spec.get_component(Role.MEAN), exog)
-    if mean is None or getattr(spec.get_component(Role.MEAN), "_is_auto", False):
+    if mean is None:
         return None
     volatility = spec.get_component(Role.VOLATILITY)
     density = spec.get_component(Role.DENSITY)
@@ -83,7 +86,7 @@ def native_spec(spec: Any, exog: int = 0) -> Optional[api.ModelSpec]:
         GARCH: api.VolatilityKind.garch, GJRGARCH: api.VolatilityKind.gjr, EGARCH: api.VolatilityKind.egarch,
         APARCH: api.VolatilityKind.aparch, type(None): api.VolatilityKind.constant,
     }.get(type(volatility))
-    if volatility_kind is None or getattr(volatility, "_is_auto", False):
+    if volatility_kind is None:
         return None
     kind = DENSITIES.get("Normal" if density is None else type(density).__name__)
     if kind is None:
@@ -135,6 +138,11 @@ def prepare_sample(spec: Any, data: Any, x: Any = None, hold_back: int = 0,
         raise ValueError("hold_back leaves no observations to estimate on")
     scale_factor = validate_scale(scale)
     x_all = None if x is None else validate_regressors(x, len(y))
+    if hasattr(spec, "_native_definition") and x_all is not None:
+        columns = spec._native_definition.mean.exog
+        if x_all.shape[1] < columns:
+            raise ValueError("not enough exogenous columns for this specification")
+        x_all = np.ascontiguousarray(x_all[:, :columns]) if columns else None
     mean = spec.get_component(Role.MEAN)
     if x_all is not None and hasattr(mean, "set_n_exog"):
         mean.set_n_exog(x_all.shape[1])
@@ -211,6 +219,35 @@ def fit_spec(
     started = time.perf_counter()
     native_result = api.fit(model, y, options, x_arr)
     elapsed = time.perf_counter() - started
+    return present_fit(spec, sample, native_result, maxiter=maxiter,
+                       warm_started=initial_params is not None, elapsed=elapsed,
+                       index=index, name=name)
+
+
+def spec_from_native(definition: api.ModelSpec):
+    """Present a native child with its ordinary component representation."""
+    from . import components
+    from .spec import CompositeSpec
+
+    model = api.Model(definition)
+    parts = [getattr(components, name)(*args, **kwargs)
+             for name, args, kwargs in model.components]
+    spec = CompositeSpec(*parts)
+    spec._native_definition = definition
+    mean = spec.get_component(Role.MEAN)
+    if mean is not None and hasattr(mean, "set_n_exog"):
+        mean.set_n_exog(definition.mean.exog)
+    return spec
+
+
+def present_fit(spec, sample: PreparedSample, native_result: api.FitResult, *,
+                maxiter: int, warm_started: bool, elapsed: float,
+                index=None, name=None) -> EstimationResult:
+    """One result presenter for ordinary fits and identical comparison-plan fits."""
+    native, y, x_arr = sample.native, sample.y, sample.x
+    skip, held = sample.skip, sample.hold_back
+    original_n_obs, scale_factor = sample.original_n_obs, sample.scale
+    model = api.Model(native)
     if not native_result.estimate_available:
         raise RuntimeError("Fit failed: " + "; ".join(native_result.warnings))
 
@@ -239,7 +276,7 @@ def fit_spec(
         gradient_evaluations=optimization.njev,
         hessian_evaluations=sum(phase.hessian_requests for phase in phases),
         maxiter=int(maxiter),
-        warm_started=initial_params is not None,
+        warm_started=warm_started,
         internal_data_scale=float(native_result.data_scale),
         likelihood_n_obs=int(native_result.scored),
         requested_hold_back=held,

@@ -13,9 +13,6 @@ from .components import (
     ARMA,
     APARCH,
     ARX,
-    AutoDensity,
-    AutoMean,
-    AutoVol,
     Component,
     EGARCH,
     GED,
@@ -50,9 +47,6 @@ __all__: list[str] = [
     "ARMA",
     "APARCH",
     "ARX",
-    "AutoDensity",
-    "AutoMean",
-    "AutoVol",
     "BatchFitFailure",
     "BatchFitResult",
     "Component",
@@ -85,3 +79,7 @@ __all__: list[str] = [
     "VarianceGamma",
     "__version__",
 ]
+
+from .selection import Auto, Search, GeneralToSpecific, InformationCriterion, ConfidenceSet, SelectionResult
+
+__all__ += ["Auto", "Search", "GeneralToSpecific", "InformationCriterion", "ConfidenceSet", "SelectionResult"]

@@ -192,7 +192,7 @@ class OptimizeResultLike(Protocol):
 @dataclass
 class FitMetadata:
     """What a fit did: the optimizer phases and coordinate path, the sample it
-    scored, how the estimate qualified, and auto-selection details."""
+    scored, and how the estimate qualified."""
     solver: Optional[str] = None                # optimizer phases joined, e.g. "z:slsqp+theta:newton"
     optimization_space: Optional[str] = None    # coordinate path, e.g. "z+theta"
     optimizer_phases: Optional[tuple[str, ...]] = None
@@ -214,14 +214,6 @@ class FitMetadata:
     original_n_obs: Optional[int] = None
     effective_n_obs: Optional[int] = None
     scale: Optional[float] = None
-    common_sample: Optional[bool] = None
-    selected_by: Optional[str] = None
-    selection_search_space: Optional[Dict[str, Any]] = None
-    selection_refit_on_full: Optional[bool] = None
-    oos_train_size: Optional[int] = None
-    oos_test_size: Optional[int] = None
-    oos_loss: Optional[str] = None
-    oos_refit: Optional[int] = None
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
@@ -1094,84 +1086,8 @@ class EstimationResult:
         print()
     
     # =========================================================================
-    # MODEL SELECTION SUMMARY (for auto-fitted models)
+    # REPRESENTATION
     # =========================================================================
-    
-    def selection_summary(self, top_n: int = 10) -> None:
-        """
-        Print model selection summary (only available for auto-fitted models).
-        
-        Parameters
-        ----------
-        top_n : int, default 10
-            Number of top models to display.
-            
-        Notes
-        -----
-        This method is only available when the model was fitted using
-        auto-selection (e.g., GARCH(auto=True) or AutoDensity).
-        """
-        if hasattr(self, "selection"):
-            self.selection.summary(top_n=top_n)
-            return
-
-        if not hasattr(self, '_selection_candidates'):
-            print("Model was not auto-selected. No selection summary available.")
-            return
-        
-        candidates = self._selection_candidates
-        WIDTH = 78
-        
-        print()
-        print("=" * WIDTH)
-        print(f"{'Model Selection Summary':^{WIDTH}}")
-        print("=" * WIDTH)
-        
-        # Header
-        print(f"{'Rank':<6} {'Model':<28} {'AIC':>12} {'Diag Pen':>10} {'Score':>12} {'Time':>8}")
-        print("-" * WIDTH)
-        
-        # Show top N models
-        for i, c in enumerate(candidates[:top_n], 1):
-            model_str = str(c.spec)[:27]
-            
-            if c.aic < np.inf:
-                aic_str = f"{c.aic:.2f}"
-            else:
-                aic_str = "Failed"
-            
-            pen_str = f"{c.diagnostic_penalty:.1f}"
-            
-            if c.score < np.inf:
-                score_str = f"{c.score:.2f}"
-            else:
-                score_str = "Failed"
-            
-            time_str = f"{c.fit_time:.2f}s"
-            
-            # Mark best model
-            marker = " *" if i == 1 else ""
-            
-            print(f"{i:<6} {model_str:<28} {aic_str:>12} {pen_str:>10} {score_str:>12} {time_str:>8}{marker}")
-        
-        # Footer
-        print("-" * WIDTH)
-        total_time = sum(c.fit_time for c in candidates)
-        n_failed = sum(1 for c in candidates if c.result is None)
-        n_total = len(candidates)
-        
-        print(f"Total: {n_total} models evaluated ({n_failed} failed), {total_time:.2f}s total time")
-        print(f"Best:  {candidates[0].spec}")
-        
-        # Show diagnostic status of best model
-        best = candidates[0]
-        if best.result is not None:
-            dgt_status = "PASS" if best.dgt_passed else "FAIL"
-            lb_status = f"{best.lb_failures}/4 failed" if best.lb_failures > 0 else "all PASS"
-            print(f"       DGT: {dgt_status}, Ljung-Box: {lb_status}")
-        
-        print("=" * WIDTH)
-        print()
     
     def __str__(self) -> str:
         """Compact string representation with key results."""

@@ -153,7 +153,7 @@ kernel.
 Component composition with a universal `.fit()`:
 
 ```python
-from scivol import ARMA, GARCH, GJRGARCH, StudentT
+from scivol import ARMA, ARX, GARCH, GJRGARCH, SkewT, StudentT
 
 spec = GARCH(1, 1)                            # Normal() added automatically
 spec = ARMA(1, 1) + GJRGARCH(1, 1) + StudentT()
@@ -175,6 +175,34 @@ result = spec.fit(data, method="qmle")        # robust (sandwich) SEs
 - `result.fit_info` shows the optimizer phases and coordinate path, so defaults
   are never silent.
 - User-facing messages never mention migrations, legacy kernels or internal history.
+
+Selection is separate from component estimation:
+
+```python
+from scivol import Search, Auto, GeneralToSpecific, InformationCriterion
+
+search = Search(mean=[ARX.up_to(1)], volatility=[GJRGARCH.up_to(1, 1)],
+                density=[SkewT()], constant_variance=True)
+selection = search.fit(data, procedure=GeneralToSpecific(), n_jobs=2)
+ranked = search.fit(data, procedure=InformationCriterion("bic", adequacy=False))
+selection = Auto().fit(data)
+```
+
+- Native `restrictions()` supplies downward closure. `closure=False` permits only
+  listed candidates. Python orchestration contains no family-specific reductions.
+- GETS requires certified MLE fits, calibrated adequacy with Holm, supported LR
+  laws, and joint GUM backtests. Unsupported diagnostics remain unresolved;
+  uncalibrated in-sample PIT references cannot certify adequacy. GETS rejects QMLE.
+- `SelectionResult` contains the ordinary full-sample estimation result, terminal
+  models, paths, every attempted test, candidates, optional confidence set,
+  completeness/frontier and fit counts. Exhausted budgets are explicit.
+- `ConfidenceSet` freezes training candidates and uses native one-step losses and
+  the range-statistic MCS on a chronological holdout. NumPy owns bootstrap uniforms.
+- `fit_many` and `fit_rolling` copy ordinary specifications into thread pools.
+  No process pools, string specification serialization, auto components or
+  diagnostic penalties belong in orchestration.
+- Defaults and the whole adaptive procedure are not yet calibrated. See MODELS.md
+  for the currently unavailable restrictions and diagnostics.
 
 ## 6. Native interface rules
 

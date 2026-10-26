@@ -202,3 +202,32 @@ face `eta = 0` is the exact Normal limit, or Hansen's two-piece Normal limit
 for SkewT. Summaries report derived `nu`, infinite at zero. The scalar eta
 chart covers the interior; as with the simplex, excluded closed boundary faces
 do not change `chart_covers_domain`.
+
+## Automatic selection
+
+`Search` declares component generators; native restrictions determine the
+permitted downward closure. `GeneralToSpecific` uses certified MLE fits, Holm
+adequacy checks, multipath LR reductions and joint backtests against each root.
+It ranks terminals by free parameters and then BIC, or explicitly by IC alone.
+Interior restrictions use chi-square laws; supported closed faces use native
+chi-bar-square weights after nuisance profiling. Unidentified, singular,
+retained-boundary and unresolved edges cannot authorize a reduction. QMLE LR
+selection is rejected pending its own calibration.
+
+The defaults are not yet calibrated. In particular, the current native
+in-sample Berkowitz reference lacks estimation calibration, so GETS returns
+`adequacy_unresolved` instead of certifying a non-rejected fit. Constant variance
+is an independent root with unavailable volatility-GUM encompassing and
+auxiliary no-ARCH score calibration. The graph currently lacks APARCH
+fixed-power/asymmetry, skew-Gaussian and finite GH restrictions. Cross-terminal
+union tests and equivalence deduplication beyond native spec identity are not
+implemented.
+
+`InformationCriterion` requires an explicit adequacy choice. `ConfidenceSet`
+compares frozen training candidates using chronological predictive losses and
+the native range-statistic MCS with joint circular-block resampling. A full-data
+deployment refit supplies no additional holdout evidence. Selection does not
+cover free-power no-shock hypotheses, singular simultaneous order reductions,
+GH closure limits, structural breaks, long memory, infinite variance, DCC or
+post-selection confidence intervals. Non-rejection does not identify the true
+model, and the search budget limits any parsimony claim to the explored graph.

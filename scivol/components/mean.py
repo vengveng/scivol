@@ -10,32 +10,40 @@ from ..roles import Role
 
 class ARMA(Component):
     role = Role.MEAN
-    
-    def __init__(self, p: int, q: int):
+
+    def __init__(self, p: int, q: int, *, constant: bool = True):
+        if any(type(order) is not int or order < 0 for order in (p, q)):
+            raise ValueError("orders must be non-negative integers")
         self.p, self.q = p, q
+        self.constant = bool(constant)
         self.fitted_params = None
         self.fitted_values = None
-        
+
+    @classmethod
+    def up_to(cls, p: int, q: int):
+        """Declare a maximal generator; native restrictions supply descendants."""
+        return cls(p, q)
+
     @property
-    def signature(self): return f"ARMA({self.p},{self.q})"
-    
+    def signature(self): return f"ARMA({self.p},{self.q})" if self.constant else f"ARMA({self.p},{self.q},constant=False)"
+
     @property
-    def n_params(self): return 1 + self.p + self.q  # constant + AR + MA
-    
+    def n_params(self): return int(self.constant) + self.p + self.q  # constant + AR + MA
+
     def pack(self, params_dict):
-        return np.array([params_dict['const']] + 
-                         params_dict['ar'] + 
+        return np.array(([params_dict['const']] if self.constant else []) +
+                         params_dict['ar'] +
                          params_dict['ma'])
-    
+
     def unpack(self, flat_params):
         if len(flat_params) == 0:
             self.fitted_params = {}
             return {}
-            
+
         self.fitted_params = {
-            'const': flat_params[0],
-            'ar': flat_params[1:1+self.p].tolist(),
-            'ma': flat_params[1+self.p:].tolist()
+            'const': float(flat_params[0]) if self.constant else 0.0,
+            'ar': flat_params[int(self.constant):int(self.constant)+self.p].tolist(),
+            'ma': flat_params[int(self.constant)+self.p:].tolist()
         }
         return self.fitted_params
 
@@ -44,7 +52,7 @@ class ARX(Component):
     role = Role.MEAN
 
     def __init__(self, lags: int = 0, *, constant: bool = True):
-        if lags < 0:
+        if type(lags) is not int or lags < 0:
             raise ValueError("lags must be non-negative")
         self.lags = int(lags)
         self.constant = bool(constant)
@@ -52,9 +60,14 @@ class ARX(Component):
         self.fitted_params = None
         self.fitted_values = None
 
+    @classmethod
+    def up_to(cls, k: int):
+        """Declare a maximal generator; native restrictions supply descendants."""
+        return cls(k)
+
     @property
     def signature(self):
-        return f"ARX({self.lags})"
+        return f"ARX({self.lags})" if self.constant else f"ARX({self.lags},constant=False)"
 
     @property
     def n_params(self):
@@ -158,74 +171,3 @@ class HARX(Component):
         exog = flat_params[offset:offset + self.n_exog].tolist()
         self.fitted_params = {"const": const, "har": har, "exog": exog}
         return self.fitted_params
-
-
-class AutoMean(Component):
-    """Placeholder for bounded automatic conditional-mean selection.
-
-    The default grid screens a zero mean and every ARMA(p, q) combination
-    through order two. When composed with automatic volatility or density
-    components, only the best screened mean specifications enter the full
-    cross-product search.
-    """
-
-    role = Role.MEAN
-    CANDIDATES = ("Zero", "ARMA")
-
-    def __init__(
-        self,
-        candidates: Optional[Sequence[str]] = None,
-        *,
-        max_p: int = 2,
-        max_q: int = 2,
-        candidate_budget: int = 120,
-        finalists: int = 2,
-    ) -> None:
-        selected = tuple(candidates) if candidates is not None else self.CANDIDATES
-        invalid = [name for name in selected if name not in self.CANDIDATES]
-        if invalid:
-            raise ValueError(
-                f"Unknown AutoMean candidates {invalid}; valid choices are "
-                f"{list(self.CANDIDATES)}."
-            )
-        if max_p < 0 or max_q < 0:
-            raise ValueError("AutoMean max_p and max_q must be non-negative.")
-        if candidate_budget <= 0:
-            raise ValueError("AutoMean candidate_budget must be positive.")
-        if finalists <= 0:
-            raise ValueError("AutoMean finalists must be positive.")
-        self.candidates = selected
-        self.max_p = int(max_p)
-        self.max_q = int(max_q)
-        self.candidate_budget = int(candidate_budget)
-        self.finalists = int(finalists)
-        self.fitted_params: Dict[str, Any] = {}
-        self._is_auto = True
-
-    @property
-    def signature(self) -> str:
-        return "AutoMean"
-
-    @property
-    def n_params(self) -> int:
-        return 0
-
-    def pack(self, params_dict: Dict[str, Any]) -> np.ndarray:
-        return np.array([], dtype=np.float64)
-
-    def unpack(self, flat_params: np.ndarray) -> Dict[str, Any]:
-        return {}
-
-    def get_candidates(self) -> List[Tuple[str, Tuple[Any, ...]]]:
-        candidates: List[Tuple[str, Tuple[Any, ...]]] = []
-        if "Zero" in self.candidates:
-            candidates.append(("Zero", ()))
-        if "ARMA" in self.candidates:
-            orders = [
-                (p, q)
-                for p in range(self.max_p + 1)
-                for q in range(self.max_q + 1)
-            ]
-            orders.sort(key=lambda order: (sum(order), order[0], order[1]))
-            candidates.extend(("ARMA", order) for order in orders)
-        return candidates

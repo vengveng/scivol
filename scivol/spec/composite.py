@@ -12,7 +12,7 @@ from ..components.density import Normal
 CANONICAL = ("mean", "volatility", "density")
 
 class CompositeSpec(FitsMixin):
-    __slots__ = ('components', '_sig') # signature
+    __slots__ = ('components', '_sig', '_native_definition') # signature
 
     def __init__(self, *components: Union[Component, CompositeSpec]):
         self.components: List[Component] = self._canonicalize(components)

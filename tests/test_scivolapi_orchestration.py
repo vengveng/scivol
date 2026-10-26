@@ -10,8 +10,6 @@ pd = pytest.importorskip("pandas")
 from scivol import ARMA, GARCH, GJRGARCH, Normal, StudentT  # noqa: E402
 from scivol._evaluation import oos_losses  # noqa: E402
 from scivol.result import EstimationResult  # noqa: E402
-from scivol.components.density import AutoDensity  # noqa: E402
-from scivol.components.mean import AutoMean  # noqa: E402
 from tests.test_scivolapi_mean import mean_point, mean_spec, model_for, volatility_point  # noqa: E402
 
 
@@ -54,29 +52,6 @@ def test_oos_losses_are_the_likelihood_terms(returns):
     np.testing.assert_allclose(tail, np.log(h) + e * e / h, rtol=1e-12)
     with pytest.raises(ValueError, match="after the rows"):
         oos_losses(result, returns, full_x=None, start=5, stop=n, loss="logscore")
-
-
-@pytest.mark.parametrize("select_by", ["aic", "bic"])
-def test_auto_selection_picks_the_best_criterion(returns, select_by):
-    kwargs = dict(n_jobs=1, show_progress=False, select_by=select_by)
-    best = (GJRGARCH(auto={"max_p": 2, "max_q": 2}) + StudentT()).fit(returns, **kwargs)
-    assert isinstance(best, EstimationResult)
-    criteria = []
-    for p in (1, 2):
-        for q in (1, 2):
-            fit = (GJRGARCH(p, q) + StudentT()).fit(returns, hold_back=2)  # the candidates' common sample
-            criteria.append(getattr(fit, select_by))
-    assert getattr(best, select_by) == pytest.approx(min(criteria), abs=1e-6)
-
-
-def test_oos_selection_runs(returns):
-    result = (GJRGARCH(auto=True) + AutoDensity()).fit(returns, n_jobs=1, show_progress=False, select_by="oos")
-    assert isinstance(result, EstimationResult)
-
-
-def test_mean_auto_selection_runs_on_scivolapi(returns):
-    result = (AutoMean() + GARCH(1, 1) + Normal()).fit(returns, n_jobs=1, show_progress=False)
-    assert isinstance(result, EstimationResult) and "ARMA" in str(result.spec)
 
 
 def test_batches_rolling_windows_and_frames():

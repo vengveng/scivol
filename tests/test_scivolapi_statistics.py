@@ -244,12 +244,12 @@ class BlockScipy(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, BlockScipy())
 import numpy as np
 from scivol import GARCH, Normal
-from scivol._autoselect import _diebold_mariano
+from scivol._scivolapi import diebold_mariano
 result = (GARCH() + Normal()).fit(np.random.default_rng(53).normal(size=350))
 result.diagnostic_tests(print_results=False)
 result.summary()
 assert np.isfinite(result.aic)
-_diebold_mariano(np.arange(100, dtype=float), np.zeros(100))
+diebold_mariano(np.arange(100, dtype=float), np.zeros(100))
 '''
     subprocess.run([sys.executable, '-c', script], check=True, capture_output=True, text=True)
 
