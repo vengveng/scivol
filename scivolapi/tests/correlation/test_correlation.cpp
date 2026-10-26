@@ -2,6 +2,7 @@
 
 #include "correlation/density.hpp"
 #include "correlation/layout.hpp"
+#include "correlation/work.hpp"
 #include "density/distribution.hpp"
 
 #include <algorithm>
@@ -2711,6 +2712,54 @@ void size_test()
     }
 }
 
+void symmetric_matrices_test()
+{
+    namespace dc = detail::correlation;
+    for(std::size_t n:{1u,3u,20u,50u}) {
+        const std::size_t m=n*n,s=dc::symmetric_size(n);
+        std::vector<double> l(m),matrix(m),inverse(s),expected(m),scratch(n),column(n),whitened(s);
+        for(std::size_t i=0;i<n;++i) {
+            l[i*n+i]=1.+.01*i;
+            for(std::size_t j=0;j<i;++j) l[i*n+j]=.03*std::sin((i+1)*(j+2));
+            for(std::size_t j=0;j<=i;++j)
+                matrix[i*n+j]=matrix[j*n+i]=std::cos((i+2)*(j+3))-.2*(i==j);
+        }
+        watching=true;
+        dc::inverse(l.data(),n,inverse.data());
+        watching=false;
+        for(std::size_t j=0;j<n;++j) {
+            std::fill(scratch.begin(),scratch.end(),0.);
+            scratch[j]=1.;
+            dc::forward(l.data(),scratch.data(),n,scratch.data());
+            dc::backward(l.data(),scratch.data(),n,scratch.data());
+            for(std::size_t i=0;i<n;++i) expected[i*n+j]=scratch[i];
+        }
+        for(std::size_t i=0;i<n;++i)
+            for(std::size_t j=0;j<=i;++j) {
+                close(inverse[dc::lower(i,j)],expected[i*n+j],3e-14,"symmetric inverse matches solves");
+                whitened[dc::lower(i,j)]=matrix[i*n+j];
+            }
+        for(std::size_t j=0;j<n;++j) {
+            for(std::size_t i=0;i<n;++i) column[i]=matrix[i*n+j];
+            dc::forward(l.data(),column.data(),n,scratch.data());
+            for(std::size_t i=0;i<n;++i) expected[i*n+j]=scratch[i];
+        }
+        for(std::size_t i=0;i<n;++i)
+            dc::forward(l.data(),expected.data()+i*n,n,expected.data()+i*n);
+        watching=true;
+        dc::whiten(l.data(),n,whitened.data(),scratch.data());
+        watching=false;
+        for(std::size_t i=0;i<n;++i)
+            for(std::size_t j=0;j<=i;++j)
+                close(whitened[dc::lower(i,j)],expected[i*n+j],3e-14,"symmetric congruence matches solves");
+    }
+    rejects([&]{(void)dc::symmetric_size(std::numeric_limits<std::size_t>::max());},"symmetric size overflow");
+    dc::Layout layout({8,8,CorrelationDensity::student_t});
+    dc::Work work{};
+    rejects([&]{(void)dc::workspace(layout,1,std::numeric_limits<std::size_t>::max(),nullptr,work);},
+            "accumulated workspace overflow");
+}
+
 void benchmark()
 {
     const std::size_t rows=2000,n=10;
@@ -2750,6 +2799,7 @@ int main(int argc,char** argv)
         cumulative_quantiles_test();
         conditioning_test();
         size_test();
+        symmetric_matrices_test();
         check(allocations==0,"evaluations allocate nothing");
         const char* names[]={"value","gradient","Hessian","scores","terms"};
         for(int family=0;family<2;++family)

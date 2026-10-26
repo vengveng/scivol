@@ -19,6 +19,7 @@ namespace {
 namespace dc = detail::correlation;
 using dc::Layout;
 using dc::Work;
+using dc::lower;
 using detail::packed;
 using detail::packed_size;
 
@@ -65,11 +66,12 @@ void validate_sample(const CorrelationSample& sample)
 void recursion(const Layout& layout, const CorrelationSample& sample, const double* theta,
                std::size_t t, int order, Work& work)
 {
-    const std::size_t n = sample.series, m = n * n, k = layout.coefficients, d = layout.dimension;
+    const std::size_t n = sample.series, m = n * n, s = dc::symmetric_size(n);
+    const std::size_t k = layout.coefficients, d = layout.dimension;
     const std::size_t slots = layout.q + 1, pairs = packed_size(d), slot = t % slots;
     double* q = work.ring + slot * m;
-    double* first = work.first + slot * d * m;
-    double* second = work.second + slot * pairs * m;
+    double* first = work.first + slot * d * s;
+    double* second = work.second + slot * pairs * s;
     q_step(layout, theta, work.target, n, std::min(layout.p, t), std::min(layout.q, t),
            [&](std::size_t lag) { return work.x + (t - lag) * n; },
            [&](std::size_t lag) { return work.ring + ((t - lag) % slots) * m; }, q);
@@ -77,34 +79,39 @@ void recursion(const Layout& layout, const CorrelationSample& sample, const doub
     double slack = 1.0;
     for (std::size_t a = 0; a < k; ++a) slack -= theta[a];
     for (std::size_t a = 0; a < k; ++a)
-        for (std::size_t x = 0; x < m; ++x) first[a * m + x] = -work.target[x];
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t j = 0; j <= i; ++j) first[a * s + lower(i, j)] = -work.target[i * n + j];
     if (layout.student)
-        for (std::size_t x = 0; x < m; ++x) first[k * m + x] = slack * work.target_first[x];
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t j = 0; j <= i; ++j)
+                first[k * s + lower(i, j)] = slack * work.target_first[i * n + j];
     if (order >= 2) {
-        std::fill_n(second, pairs * m, 0.0);
+        std::fill_n(second, pairs * s, 0.0);
         if (layout.student) {
             for (std::size_t a = 0; a < k; ++a)
-                for (std::size_t x = 0; x < m; ++x)
-                    second[packed(d, a, k) * m + x] = -work.target_first[x];
-            for (std::size_t x = 0; x < m; ++x)
-                second[packed(d, k, k) * m + x] = slack * work.target_second[x];
+                for (std::size_t i = 0; i < n; ++i)
+                    for (std::size_t j = 0; j <= i; ++j)
+                        second[packed(d, a, k) * s + lower(i, j)] = -work.target_first[i * n + j];
+            for (std::size_t i = 0; i < n; ++i)
+                for (std::size_t j = 0; j <= i; ++j)
+                    second[packed(d, k, k) * s + lower(i, j)] = slack * work.target_second[i * n + j];
         }
     }
     for (std::size_t lag = 1; lag <= std::min(layout.p, t); ++lag) {
         const std::size_t offset = (t - lag) * n, a = lag - 1;
         const double* e = work.x + offset;
         for (std::size_t i = 0; i < n; ++i)
-            for (std::size_t j = 0; j < n; ++j) {
-                const std::size_t x = i * n + j;
-                first[a * m + x] += e[i] * e[j];
+            for (std::size_t j = 0; j <= i; ++j) {
+                const std::size_t x = lower(i, j);
+                first[a * s + x] += e[i] * e[j];
                 if (!layout.student) continue;
                 const double* de = work.x_first + offset;
                 const double shock_first = de[i] * e[j] + e[i] * de[j];
-                first[k * m + x] += theta[a] * shock_first;
+                first[k * s + x] += theta[a] * shock_first;
                 if (order >= 2) {
                     const double* dde = work.x_second + offset;
-                    second[packed(d, a, k) * m + x] += shock_first;
-                    second[packed(d, k, k) * m + x] += theta[a]
+                    second[packed(d, a, k) * s + x] += shock_first;
+                    second[packed(d, k, k) * s + x] += theta[a]
                         * (dde[i] * e[j] + 2.0 * de[i] * de[j] + e[i] * dde[j]);
                 }
             }
@@ -112,69 +119,79 @@ void recursion(const Layout& layout, const CorrelationSample& sample, const doub
     for (std::size_t lag = 1; lag <= std::min(layout.q, t); ++lag) {
         const std::size_t previous = (t - lag) % slots, b = layout.p + lag - 1;
         const double* qlag = work.ring + previous * m;
-        const double* glag = work.first + previous * d * m;
+        const double* glag = work.first + previous * d * s;
         for (std::size_t a = 0; a < d; ++a)
-            for (std::size_t x = 0; x < m; ++x)
-                first[a * m + x] += theta[b] * glag[a * m + x] + (a == b ? qlag[x] : 0.0);
+            for (std::size_t i = 0; i < n; ++i)
+                for (std::size_t j = 0; j <= i; ++j) {
+                    const std::size_t x = lower(i, j);
+                    first[a * s + x] += theta[b] * glag[a * s + x] + (a == b ? qlag[i * n + j] : 0.0);
+                }
         if (order >= 2) {
-            const double* hlag = work.second + previous * pairs * m;
+            const double* hlag = work.second + previous * pairs * s;
             for (std::size_t a = 0; a < d; ++a)
                 for (std::size_t c = a; c < d; ++c) {
                     const std::size_t pair = packed(d, a, c);
-                    for (std::size_t x = 0; x < m; ++x)
-                        second[pair * m + x] += theta[b] * hlag[pair * m + x]
-                            + (a == b ? glag[c * m + x] : 0.0) + (c == b ? glag[a * m + x] : 0.0);
+                    for (std::size_t x = 0; x < s; ++x)
+                        second[pair * s + x] += theta[b] * hlag[pair * s + x]
+                            + (a == b ? glag[c * s + x] : 0.0) + (c == b ? glag[a * s + x] : 0.0);
                 }
         }
     }
 }
 
-// A_a = Q^{-1} Q_a. Only the log-determinant Hessian needs these matrices.
-void inverse_products(const double* inverse, const double* first, std::size_t n, std::size_t k, double* out)
-{
-    const std::size_t m = n * n;
-    std::fill_n(out, k * m, 0.0);
-    for (std::size_t a = 0; a < k; ++a)
-        for (std::size_t i = 0; i < n; ++i)
-            for (std::size_t h = 0; h < n; ++h) {
-                const double v = inverse[i * n + h];
-                for (std::size_t j = 0; j < n; ++j) out[a * m + i * n + j] += v * first[a * m + h * n + j];
-            }
-}
-
-// u_i = eps_i sqrt(Q_ii), w = Q^{-1}u, v_a = u_a - Q_a w.
-// d_a = 2 u_a'w - w'Q_a w, d_ab = 2 u_ab'w - w'Q_ab w + 2 v_a'Q^{-1}v_b.
-// log|R|_ab = tr(Q^{-1}Q_ab - A_a A_b) - sum_i (Q_ab,ii/Q_ii - Q_a,ii Q_b,ii/Q_ii^2).
+// u_i = x_i sqrt(Q_ii), w = Q^{-1}u, ld = dL/d(u'Q^{-1}u).
+// C = .5 Q^{-1} - ld ww' + diag((ld u_i w_i - .5)/Q_ii) contracts every Q derivative.
+// B_a = L^{-1} Q_a L^{-T}: tr(Q^{-1}Q_a Q^{-1}Q_b) = <B_a, B_b>.
+// v_a = L^{-1}(u_a - Q_a w) gives the distance curvature 2 v_a'v_b.
 void derivatives(const Layout& layout, const double* q, const double* first, const double* second,
                  const double* eps, const double* x_first, const double* x_second,
                  double distance, double eta, std::size_t n, int order, Work& work)
 {
-    const std::size_t k = layout.coefficients, d = layout.dimension, m = n * n;
+    const std::size_t k = layout.coefficients, d = layout.dimension, s = dc::symmetric_size(n);
     const double reciprocal = layout.student ? eta / (1.0 + eta * distance) : 0.0;
     const double ld = layout.student ? (0.5 + 0.5 * n * eta) / (1.0 + eta * distance) : 0.5;
     const double ldd = layout.student ? -ld * reciprocal : 0.0;
-    dc::inverse(work.chol, n, work.inverse, work.scratch);
-    if (order >= 2) inverse_products(work.inverse, first, n, d, work.products);
-    for (std::size_t a = 0; a < d; ++a) {
-        const double* qa = first + a * m;
-        double logdet = 0.0, da = 0.0;
-        for (std::size_t i = 0; i < n; ++i) {
-            double ua = 0.5 * work.u[i] * (qa[i * n + i] / q[i * n + i]);
-            if (layout.student && a == k) ua += x_first[i] * work.scale[i];
-            double qw = 0.0;
-            for (std::size_t j = 0; j < n; ++j) {
-                qw += qa[i * n + j] * work.w[j];
-                logdet += work.inverse[i * n + j] * qa[i * n + j];
-            }
-            logdet -= qa[i * n + i] / q[i * n + i];
-            da += (2.0 * ua - qw) * work.w[i];
-            if (order >= 2) work.v[a * n + i] = ua - qw;
+    dc::inverse(work.chol, n, work.sensitivity);
+    for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t j = 0; j <= i; ++j) {
+            const std::size_t x = lower(i, j);
+            work.sensitivity[x] = 0.5 * work.sensitivity[x] - ld * work.w[i] * work.w[j];
         }
-        work.row[a] = 0.5 * logdet + ld * da;
+        work.sensitivity[lower(i, i)] += (ld * work.u[i] * work.w[i] - 0.5) / q[i * n + i];
+    }
+    for (std::size_t a = 0; a < d; ++a) {
+        const double* qa = first + a * s;
+        double score = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            for (std::size_t j = 0; j < i; ++j)
+                score += 2.0 * work.sensitivity[lower(i, j)] * qa[lower(i, j)];
+            score += work.sensitivity[lower(i, i)] * qa[lower(i, i)];
+        }
+        if (layout.student && a == k)
+            for (std::size_t i = 0; i < n; ++i) score += 2.0 * ld * work.w[i] * x_first[i] * work.scale[i];
+        work.row[a] = score;
         if (order >= 2) {
+            std::fill_n(work.scratch, n, 0.0);
+            for (std::size_t i = 0; i < n; ++i) {
+                for (std::size_t j = 0; j < i; ++j) {
+                    const double v = qa[lower(i, j)];
+                    work.scratch[i] += v * work.w[j];
+                    work.scratch[j] += v * work.w[i];
+                }
+                work.scratch[i] += qa[lower(i, i)] * work.w[i];
+            }
+            double da = 0.0;
+            for (std::size_t i = 0; i < n; ++i) {
+                double ua = 0.5 * work.u[i] * (qa[lower(i, i)] / q[i * n + i]);
+                if (layout.student && a == k) ua += x_first[i] * work.scale[i];
+                da += (2.0 * ua - work.scratch[i]) * work.w[i];
+                work.v[a * n + i] = ua - work.scratch[i];
+            }
             work.tmp[a] = da;
             dc::forward(work.chol, work.v + a * n, n, work.dv + a * n);
-            dc::backward(work.chol, work.dv + a * n, n, work.dv + a * n);
+            double* whitened = work.whitened + a * s;
+            std::copy_n(qa, s, whitened);
+            dc::whiten(work.chol, n, whitened, work.scratch);
         }
     }
     if (layout.student) {
@@ -193,29 +210,32 @@ void derivatives(const Layout& layout, const double* q, const double* first, con
     for (std::size_t a = 0; a < d; ++a) work.g[a] += work.row[a];
     if (order < 2) return;
     for (std::size_t a = 0; a < d; ++a) {
-        const double* qa = first + a * m;
+        const double* qa = first + a * s;
         for (std::size_t b = a; b < d; ++b) {
-            const double* qb = first + b * m;
-            const double* qab = second + packed(d, a, b) * m;
-            double logdet = 0.0, dab = 0.0;
+            const double* qb = first + b * s;
+            const double* qab = second + packed(d, a, b) * s;
+            const double* ba = work.whitened + a * s;
+            const double* bb = work.whitened + b * s;
+            double curvature = 0.0;
             for (std::size_t i = 0; i < n; ++i) {
                 const double inv_diagonal = 1.0 / q[i * n + i];
-                const double diagonal_product = (qa[i * n + i] * inv_diagonal) * (qb[i * n + i] * inv_diagonal);
-                double uab = work.u[i] * (0.5 * qab[i * n + i] * inv_diagonal - 0.25 * diagonal_product);
+                const std::size_t diagonal = lower(i, i);
+                const double diagonal_product = (qa[diagonal] * inv_diagonal) * (qb[diagonal] * inv_diagonal);
+                double uab = 0.0;
                 if (layout.student) {
-                    if (a == k) uab += 0.5 * work.scale[i] * x_first[i] * qb[i * n + i] * inv_diagonal;
-                    if (b == k) uab += 0.5 * work.scale[i] * x_first[i] * qa[i * n + i] * inv_diagonal;
+                    if (a == k) uab += 0.5 * work.scale[i] * x_first[i] * qb[diagonal] * inv_diagonal;
+                    if (b == k) uab += 0.5 * work.scale[i] * x_first[i] * qa[diagonal] * inv_diagonal;
                     if (a == k && b == k) uab += work.scale[i] * x_second[i];
                 }
-                logdet += diagonal_product - qab[i * n + i] * inv_diagonal;
-                dab += 2.0 * uab * work.w[i] + 2.0 * work.v[a * n + i] * work.dv[b * n + i];
-                for (std::size_t j = 0; j < n; ++j) {
-                    logdet += work.inverse[i * n + j] * qab[i * n + j]
-                        - work.products[a * m + i * n + j] * work.products[b * m + j * n + i];
-                    dab -= work.w[i] * qab[i * n + j] * work.w[j];
+                curvature += 0.5 * (1.0 - ld * work.u[i] * work.w[i]) * diagonal_product
+                    + 2.0 * ld * (uab * work.w[i] + work.dv[a * n + i] * work.dv[b * n + i]);
+                for (std::size_t j = 0; j < i; ++j) {
+                    const std::size_t x = lower(i, j);
+                    curvature += 2.0 * work.sensitivity[x] * qab[x] - ba[x] * bb[x];
                 }
+                curvature += work.sensitivity[diagonal] * qab[diagonal] - 0.5 * ba[diagonal] * bb[diagonal];
             }
-            work.h[a * d + b] += 0.5 * logdet + ld * dab + ldd * work.tmp[a] * work.tmp[b];
+            work.h[a * d + b] += curvature + ldd * work.tmp[a] * work.tmp[b];
         }
         if (layout.student) work.h[a * d + k] += 0.5 * (static_cast<double>(n) - distance)
             / std::pow(1.0 + eta * distance, 2) * work.tmp[a] * (a == k ? 2.0 : 1.0);
@@ -225,7 +245,7 @@ void derivatives(const Layout& layout, const double* q, const double* first, con
 JetResult evaluate(const Layout& layout, const CorrelationSample& sample, const double* theta,
                    unsigned request, JetOutput& out, std::span<double> correlations, Work& work, detail::StudentQuantileCache& cache)
 {
-    const std::size_t n = sample.series, rows = sample.rows(), m = n * n;
+    const std::size_t n = sample.series, rows = sample.rows(), m = n * n, s = dc::symmetric_size(n);
     const std::size_t k = layout.coefficients, d = layout.dimension, slots = layout.q + 1;
     const int order = (request & hessian) ? 2 : (request & (gradient | scores)) ? 1 : 0;
     const double eta = layout.student ? theta[k] : 0.0;
@@ -248,16 +268,19 @@ JetResult evaluate(const Layout& layout, const CorrelationSample& sample, const 
     const dc::Constant constant = layout.student ? dc::student_constant(eta, n, order) : dc::Constant{};
     std::copy_n(work.target, m, work.ring);
     if (order >= 1) {
-        std::fill_n(work.first, slots * d * m, 0.0);
+        std::fill_n(work.first, slots * d * s, 0.0);
         std::fill_n(work.g, d, 0.0);
     }
     if (order >= 2) {
-        std::fill_n(work.second, slots * packed_size(d) * m, 0.0);
+        std::fill_n(work.second, slots * packed_size(d) * s, 0.0);
         std::fill_n(work.h, d * d, 0.0);
     }
-    if (layout.student) {
-        if (order >= 1) std::copy_n(work.target_first, m, work.first + k * m);
-        if (order >= 2) std::copy_n(work.target_second, m, work.second + packed(d, k, k) * m);
+    if (layout.student && order >= 1) {
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t j = 0; j <= i; ++j) {
+                work.first[k * s + lower(i, j)] = work.target_first[i * n + j];
+                if (order >= 2) work.second[packed(d, k, k) * s + lower(i, j)] = work.target_second[i * n + j];
+            }
     }
     detail::CompensatedSum total;
     for (std::size_t t = 0; t < rows; ++t) {
@@ -291,7 +314,7 @@ JetResult evaluate(const Layout& layout, const CorrelationSample& sample, const 
                     correlations[t * m + i * n + j] = (q[i * n + j] / work.scale[i]) / work.scale[j];
         if (order >= 1) {
             dc::backward(work.chol, work.scratch, n, work.w);
-            derivatives(layout, q, work.first + slot * d * m, work.second + slot * packed_size(d) * m,
+            derivatives(layout, q, work.first + slot * d * s, work.second + slot * packed_size(d) * s,
                         eps, work.x_first + (layout.student ? t * n : 0),
                         work.x_second + (layout.student ? t * n : 0), distance, eta, n, order, work);
             if (request & scores) {
