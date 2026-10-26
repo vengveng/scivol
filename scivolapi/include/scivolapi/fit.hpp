@@ -97,11 +97,11 @@ inline FitResult fit(const Model& model, std::span<const double> y, const FitOpt
     return fit(model, y, {}, options);
 }
 
-// A correlation model on standardized residuals eps (rows x series, row-major)
-// with target matrix `target` (series x series; empty: eps'eps / rows). The
-// marginal fits that produced eps are a first stage: this is the second stage of
-// a staged estimator, and its covariance treats eps and the target as given.
+// A copula on standardized residuals with given marginal densities (default Normal).
+// An empty target means x'x / rows at each parameter point. Inference treats
+// the marginal estimates as given, including the target's eta derivatives.
 FitResult fit(const CorrelationModel& model, std::span<const double> eps, std::size_t series,
-              std::span<const double> target, const FitOptions& options = {});
+              std::span<const double> target, const FitOptions& options = {},
+              std::span<const InnovationDensity> marginals = {});
 
 }  // namespace scivolapi

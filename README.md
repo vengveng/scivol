@@ -246,11 +246,14 @@ Dynamic Conditional Correlation for multivariate return series, introduced by
 
 `DCC.fit()` uses a two-step workflow:
 1. Fit a univariate volatility model to each series.
-2. Fit Gaussian or Student-t copula DCC dynamics to the standardized residuals,
-   with correlation targeting `Qbar = eps'eps / T`.
+2. Transform the standardized residuals through their fitted marginal CDFs and
+   the copula's inverse CDF, then fit Gaussian or Student-t copula DCC dynamics
+   with correlation targeting `Qbar = x'x / T` on those scores.
 
-The correlation stage's standard errors treat the marginal estimates and `Qbar`
-as given.
+The correlation stage's standard errors treat the marginal estimates as given.
+They include the target's dependence on the Student-t copula tail parameter.
+`fit_from_residuals(eps, marginals=...)` accepts native `InnovationDensity`
+objects; omitted marginals default to Normal.
 
 ```python
 from scivol import DCC, GARCH, StudentT

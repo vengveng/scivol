@@ -2708,7 +2708,7 @@ class TestDCCStudentT:
 
     @pytest.fixture(scope="class")
     def result(self):
-        from scivol import DCC
+        from scivol import DCC, _scivolapi as api
 
         truth = {
             "a": 0.04,
@@ -2722,13 +2722,14 @@ class TestDCCStudentT:
             10_000, truth["a"], truth["b"], truth["eta"], truth["qbar"]
         )
         fitted = DCC(1, 1, "studentt").fit_from_residuals(
-            eps, maxiter=300
+            eps, maxiter=300,
+            marginals=[api.InnovationDensity(api.DensityKind.student_t, [truth["eta"]])] * eps.shape[1],
         )
         return fitted, truth
 
     def test_convergence(self, result) -> None:
         fitted, _ = result
-        assert fitted.converged
+        assert fitted.success and fitted.converged
 
     def test_parameter_recovery(self, result) -> None:
         fitted, truth = result

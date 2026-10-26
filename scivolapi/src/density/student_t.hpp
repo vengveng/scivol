@@ -90,15 +90,17 @@ struct TKernel {
     double t = 0.0, u = 0.0, uu = 0.0, eta = 0.0, ueta = 0.0, etaeta = 0.0;
 };
 
-// T = c log1p(x) / (2 eta) = c u^2 phi(x) / (2r),  c = 1 + s eta, r = 1 - 2eta, x = eta u^2 / r.
+// T = c log1p(x) / (2 eta) = c u^2 phi(x) / (2r), c = 1 + s eta,
+// r = 1 - scale_rate eta, x = eta u^2 / r. scale_rate = 0 removes the common
+// unit-variance scale, which cancels from a copula density ratio.
 // The same tail with s = N gives the multivariate t contribution. The value is
 // one log1p times a point constant; below eta = 2^-300, where c / (2 eta)
 // overflows, the phi form (exactly u^2 / 2 at eta = 0). The value expression is
 // the same at every order, so sparse and full requests agree bitwise.
-[[nodiscard]] inline TKernel t_square_kernel(double u2, double eta, int order, double s = 1.0) noexcept
+[[nodiscard]] inline TKernel t_square_kernel(double u2, double eta, int order, double s = 1.0, double scale_rate = 2.0) noexcept
 {
     TKernel t;
-    const double r = 1.0 - 2.0 * eta, c = 1.0 + s * eta;
+    const double r = 1.0 - scale_rate * eta, c = 1.0 + s * eta;
     const double x = (eta / r) * u2;
     const double l = std::isfinite(x) ? std::log1p(x) : std::log(eta) + std::log(u2) - std::log(r);
     const double phi = x == 0.0 ? 1.0 : x < 0x1p-60 ? 1.0 - 0.5 * x : l / x;
@@ -108,28 +110,28 @@ struct TKernel {
         double d1, d2;
         log1p_ratio_derivatives(x, phi, order, d1, d2);
         const double a = 0.5 * u2 / r, dx = u2 / (r * r);
-        t.eta = a * ((s + 2.0) / r * phi + c * d1 * dx);
+        t.eta = a * ((s + scale_rate) / r * phi + c * d1 * dx);
         if (order >= 2)
-            t.etaeta = a * (4.0 * (s + 2.0) / (r * r) * phi + 2.0 * (s + 2.0 + 2.0 * c) / r * d1 * dx
+            t.etaeta = a * (2.0 * scale_rate * (s + scale_rate) / (r * r) * phi + 2.0 * (s + scale_rate + scale_rate * c) / r * d1 * dx
                             + c * d2 * dx * dx);
     } else {
         const double v = std::isfinite(x) ? x / (1.0 + x) : 1.0;
         t.eta = (c * v / r - l) / (2.0 * eta * eta);
-        if (order >= 2) t.etaeta = (l - v / r + 0.5 * c * v * (4.0 * eta - v) / (r * r)) / (eta * eta * eta);
+        if (order >= 2) t.etaeta = (l - v / r + 0.5 * c * v * (2.0 * scale_rate * eta - v) / (r * r)) / (eta * eta * eta);
     }
     return t;
 }
 
-[[nodiscard]] inline TKernel t_kernel(double u, double eta, int order, double s = 1.0) noexcept
+[[nodiscard]] inline TKernel t_kernel(double u, double eta, int order, double s = 1.0, double scale_rate = 2.0) noexcept
 {
     const double u2 = u * u;
-    TKernel t = t_square_kernel(u2, eta, order, s);
+    TKernel t = t_square_kernel(u2, eta, order, s, scale_rate);
     if (order >= 1) {
-        const double c = 1.0 + s * eta, iq = 1.0 / (1.0 - 2.0 * eta + eta * u2);
+        const double c = 1.0 + s * eta, iq = 1.0 / (1.0 - scale_rate * eta + eta * u2);
         t.u = c * u * iq;
         if (order >= 2) {
-            t.uu = c * iq * iq * std::fma(-eta, u2 + 2.0, 1.0);
-            t.ueta = u * iq * iq * (s + 2.0 - u2);
+            t.uu = c * iq * iq * std::fma(-eta, u2 + scale_rate, 1.0);
+            t.ueta = u * iq * iq * (s + scale_rate - u2);
         }
     }
     return t;

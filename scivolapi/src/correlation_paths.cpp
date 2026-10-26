@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "correlation/recursion.hpp"
+#include "correlation/copula.hpp"
 #include "correlation/work.hpp"
 #include "density/distribution.hpp"
 #include "density/domain.hpp"
@@ -39,7 +40,7 @@ CorrelationPaths simulate_correlation(const CorrelationModel& model, std::span<c
 {
     const CorrelationSpec& spec = model.spec();
     const bool student = spec.density == CorrelationDensity::student_t;
-    const CorrelationSample sample = model.prepare(eps, series, target);
+    const CorrelationSample sample = model.prepare(eps, series, target, marginals);
     const std::size_t n = series, m = n * n, rows = sample.rows();
     require(theta.size() == model.dimension() && model.evaluable(theta),
             "theta must have the model's dimension and lie where the model is defined");
@@ -59,17 +60,18 @@ CorrelationPaths simulate_correlation(const CorrelationModel& model, std::span<c
                                          "scaled chi-square draws must be positive and finite");
     const DensityKind copula = student ? DensityKind::student_t : DensityKind::normal;
     const double* copula_shape = student ? &eta : nullptr;
-    auto identity = [&](const InnovationDensity& marginal) {  // F = G: z = e exactly
-        return marginal.density == copula && (!student || marginal.shape[0] == eta);
-    };
+    std::vector<double> scores(eps.size()), qbar(sample.target);
+    require(dc::copula_scores(sample, student, eta, 0, scores.data()) == Status::ok,
+            "the observed copula scores could not be computed accurately");
+    if (!sample.fixed_target) dc::score_target(scores.data(), rows, n, qbar.data());
 
     // Filter the observed rows: Q of the last q + 1 rows, slot r % (q + 1).
     const std::size_t slots = spec.q + 1;
     std::vector<double> observed(slots * m);
-    std::copy_n(sample.target.data(), m, observed.data());
+    std::copy_n(qbar.data(), m, observed.data());
     for (std::size_t t = 1; t < rows; ++t)
-        dc::q_step(layout, theta.data(), sample.target.data(), n, std::min(spec.p, t), std::min(spec.q, t),
-                   [&](std::size_t lag) { return sample.eps.data() + (t - lag) * n; },
+        dc::q_step(layout, theta.data(), qbar.data(), n, std::min(spec.p, t), std::min(spec.q, t),
+                   [&](std::size_t lag) { return scores.data() + (t - lag) * n; },
                    [&](std::size_t lag) { return observed.data() + ((t - lag) % slots) * m; },
                    observed.data() + (t % slots) * m);
 
@@ -83,15 +85,16 @@ CorrelationPaths simulate_correlation(const CorrelationModel& model, std::span<c
     // Path state: its Q rows (slot r % (q + 1)); its innovations are in `out`.
     std::vector<double> ring(paths * slots * m), chol(m), scale(n), draws(paths * n), u(paths), z(paths);
     std::vector<std::size_t> batch(paths);
+    std::vector<double> copula_draws(paths * horizon * n);
     for (std::size_t f = 0; f < horizon; ++f) {
         const std::size_t t = rows + f;
         for (std::size_t path = 0; path < paths; ++path) {
-            const double* innovation = out.innovation.data() + path * horizon * n;
+            const double* innovation = copula_draws.data() + path * horizon * n;
             double* own = ring.data() + path * slots * m;
             double* q = own + (t % slots) * m;
-            dc::q_step(layout, theta.data(), sample.target.data(), n, std::min(spec.p, t), std::min(spec.q, t),
+            dc::q_step(layout, theta.data(), qbar.data(), n, std::min(spec.p, t), std::min(spec.q, t),
                        [&](std::size_t lag) {
-                           return t - lag < rows ? sample.eps.data() + (t - lag) * n
+                           return t - lag < rows ? scores.data() + (t - lag) * n
                                                  : innovation + (t - lag - rows) * n;
                        },
                        [&](std::size_t lag) { return (t - lag < rows ? observed.data() : own) + ((t - lag) % slots) * m; },
@@ -108,6 +111,7 @@ CorrelationPaths simulate_correlation(const CorrelationModel& model, std::span<c
                 double e = 0.0;
                 for (std::size_t j = 0; j <= i; ++j) e += chol[i * n + j] * g[j];
                 draws[path * n + i] = factor * e;
+                copula_draws[(path * horizon + f) * n + i] = factor * e;
             }
         }
         for (std::size_t i = 0; i < n; ++i) {  // z_i = F_i^{-1}(G(e*_i))
@@ -117,7 +121,7 @@ CorrelationPaths simulate_correlation(const CorrelationModel& model, std::span<c
             for (std::size_t path = 0; path < paths; ++path) {
                 double& slot = out.innovation[(path * horizon + f) * n + i];
                 const double e = draws[path * n + i];
-                if (identity(marginal)) {
+                if (dc::identity(marginal, spec.density, eta)) {
                     slot = e;
                     continue;
                 }

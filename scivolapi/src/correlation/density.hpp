@@ -28,9 +28,9 @@ inline Constant student_constant(double eta, std::size_t n, int order) noexcept
     return r;
 }
 
-inline Constant student_tail(double square, double eta, double shift, int order) noexcept
+inline Constant student_tail(double square, double eta, double shift, int order, double scale_rate = 2.0) noexcept
 {
-    const auto t = t_square_kernel(square, eta, order, shift - 2.0);
+    const auto t = t_square_kernel(square, eta, order, shift - 2.0, scale_rate);
     return {t.t, t.eta, t.etaeta};
 }
 

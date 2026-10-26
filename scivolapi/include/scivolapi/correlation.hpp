@@ -17,11 +17,15 @@ struct CorrelationSpec {
     CorrelationDensity density = CorrelationDensity::normal;
 };
 
-// Borrows standardized residuals (rows x series, row-major), owns Qbar.
+// Borrows residuals; owns fixed marginal probabilities and Gaussian scores.
 struct CorrelationSample {
     std::span<const double> eps;
     std::size_t series = 0;
     std::vector<double> target;
+    std::vector<double> probability, normal;
+    std::vector<InnovationDensity> marginals;
+    std::vector<double> identity_eta;
+    bool fixed_target = false;
 
     [[nodiscard]] std::size_t rows() const noexcept { return series ? eps.size() / series : 0; }
 };
@@ -35,7 +39,8 @@ public:
     [[nodiscard]] const std::vector<std::string>& parameter_names() const noexcept { return names_; }
 
     [[nodiscard]] CorrelationSample prepare(std::span<const double> eps, std::size_t series,
-                                            std::span<const double> target = {}) const;
+                                            std::span<const double> target = {},
+                                            std::span<const InnovationDensity> marginals = {}) const;
     [[nodiscard]] InnovationDensity innovation_density(std::span<const double> theta) const;
     [[nodiscard]] bool feasible(std::span<const double> theta) const;
     // Parameter-only checks; the jet also checks positive definiteness of every Q_t.
@@ -57,13 +62,15 @@ private:
 };
 
 // Owns its workspace, borrows both model and sample. Evaluations allocate nothing.
-// Q_0 = Qbar is constant; every row is scored, including row zero.
+// Q_0 = Qbar; an estimated target varies with the copula's eta.
 class CorrelationJet {
 public:
     CorrelationJet(const CorrelationModel& model, const CorrelationSample& sample);
 
     [[nodiscard]] const CorrelationModel& model() const noexcept { return model_; }
     [[nodiscard]] const CorrelationSample& sample() const noexcept { return sample_; }
+    // Target at the last evaluated point; Gaussian scores before the first call.
+    [[nodiscard]] std::span<const double> target() const noexcept;
 
     // `paths` writes correlations (rows x series x series). JetOutput.paths is unused.
     JetResult theta(std::span<const double> theta, unsigned request, JetOutput& out,
@@ -90,7 +97,7 @@ struct CorrelationPaths {
 // e* = sqrt((1 - 2 eta) / c) L g, c ~ eta chi2(1/eta));
 // at eta = 0 the factor is one and no chi-square draws are needed. The marginal innovations
 // z_i = F_i^{-1}(G(e*_i)), G the copula's standardized marginal and F_i the
-// marginal densities, which drive the recursion. normals: paths x horizon x series
+// marginal densities. Copula scores drive the correlation recursion. normals: paths x horizon x series
 // standard normal draws; chi2: paths x horizon scaled chi-square draws (eta > 0). Each
 // marginal model then continues along its column of z.
 CorrelationPaths simulate_correlation(const CorrelationModel& model, std::span<const double> theta,

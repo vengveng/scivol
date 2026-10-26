@@ -67,12 +67,23 @@ For APARCH with StudentT or SkewT, the power moment also requires
 
 ## DCC
 
-`DCC(p, q)` with Gaussian or Student-t copula correlation likelihood on the
-marginals' standardized residuals, correlation targeting `Qbar = eps'eps / T`,
-`Q_0 = Qbar`. Domain: `a, b >= 0`, `sum a + sum b < 1`, `0 <= eta < 1/2`. The
-correlation stage is the second stage of a staged estimator; its standard errors
-treat the marginal estimates and `Qbar` as given. `CCC` is the constant
-correlation `R = Qbar` normalized.
+`DCC(p, q)` uses a Gaussian or Student-t copula. For each marginal's
+standardized residual, fix `u[t,i] = F_i(eps[t,i])` using its fitted innovation
+CDF. The copula scores are `x[t,i] = G_eta^{-1}(u[t,i])`, where `G_eta` is the
+standardized Student-t CDF, or the Normal CDF for a Gaussian copula. The row
+log-likelihood is `log g_{eta,R_t}(x_t) - sum_i log g_eta(x[t,i])`.
+Normal marginals with a Gaussian copula preserve `x = eps` exactly.
+
+Correlation targeting uses `Qbar = x'x / T`, `Q_0 = Qbar`, and the recursion
+`Q_t = (1 - sum a - sum b) Qbar + sum_i a_i x_{t-i} x_{t-i}' + sum_j b_j Q_{t-j}`.
+An explicit target stays fixed. For a Student-t copula, the estimated target,
+shocks and scores depend on eta; the likelihood gradient and Hessian include
+all these derivatives. Domain: `a, b >= 0`, `sum a + sum b < 1`, `0 <= eta < 1/2`.
+The correlation stage's standard errors treat the marginal estimates and their
+probabilities as given. They include the estimated target's eta dependence.
+`fit_from_residuals` accepts one `InnovationDensity` per series through
+`marginals`; its default is Normal marginals. `CCC` uses Gaussian scores and
+`R = Qbar` normalized to a correlation matrix.
 
 For StudentT, SkewT and the Student-t copula, `eta = 1/nu`. The closed
 face `eta = 0` is the exact Normal limit, or Hansen's two-piece Normal limit

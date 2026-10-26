@@ -326,13 +326,14 @@ FitResult fit(const Model& model, std::span<const double> y, std::span<const dou
 }
 
 FitResult fit(const CorrelationModel& model, std::span<const double> eps, std::size_t series,
-              std::span<const double> target, const FitOptions& options)
+              std::span<const double> target, const FitOptions& options,
+              std::span<const InnovationDensity> marginals)
 {
     if (!(options.accuracy > 0.0) || options.maximum_iterations < 1)
         throw std::invalid_argument("accuracy must be positive and maximum_iterations at least 1");
     if (options.estimator != Estimator::mle)
         throw std::invalid_argument("correlation models are fitted by maximum likelihood");
-    const CorrelationSample sample = model.prepare(eps, series, target);
+    const CorrelationSample sample = model.prepare(eps, series, target, marginals);
     CorrelationJet jet(model, sample);
     const std::vector<double> start = options.start.empty() ? model.start() : options.start;
     if (start.size() != model.dimension() || !model.feasible(start))

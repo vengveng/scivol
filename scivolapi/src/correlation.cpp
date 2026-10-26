@@ -6,6 +6,8 @@
 #include <stdexcept>
 
 #include "correlation/density.hpp"
+#include "correlation/copula.hpp"
+#include "density/domain.hpp"
 #include "correlation/recursion.hpp"
 #include "correlation/work.hpp"
 
@@ -42,51 +44,81 @@ void validate_sample(const CorrelationSample& sample)
     require(n > 0 && sample.eps.size() % n == 0 && sample.rows() >= 2,
             "standardized residuals must have at least two complete rows and one series");
     require(sample.target.size() == m, "the correlation target must be series x series");
+    require(sample.probability.size() == sample.eps.size() && sample.normal.size() == sample.eps.size()
+                && sample.marginals.size() == n && sample.identity_eta.size() == n,
+            "the correlation sample needs prepared marginal probabilities and scores");
     require(dc::finite(sample.eps.data(), sample.eps.size()), "standardized residuals must be finite");
     require(dc::finite(sample.target.data(), m), "the correlation target must be finite");
     for (std::size_t i = 0; i < n; ++i)
         for (std::size_t j = 0; j < i; ++j)
             require(sample.target[i * n + j] == sample.target[j * n + i], "the correlation target must be symmetric");
-    std::vector<double> l(m);
-    require(dc::cholesky(sample.target.data(), n, l.data()) == Status::ok,
-            "the correlation target must be positive definite and representable");
+    if (sample.fixed_target) {
+        std::vector<double> l(m);
+        require(dc::cholesky(sample.target.data(), n, l.data()) == Status::ok,
+                "the correlation target must be positive definite and representable");
+    }
 }
 
-// Q_a = -Qbar + shock_a + sum_j (b_j Q_a,lag + 1[a=b_j] Q_lag).
-// Q_ab adds the two product-rule terms involving b_j and Q_a,lag.
+// Differentiate the target, shocks and lagged Q matrices in the same coordinates.
 void recursion(const Layout& layout, const CorrelationSample& sample, const double* theta,
                std::size_t t, int order, Work& work)
 {
-    const std::size_t n = sample.series, m = n * n, k = layout.coefficients;
-    const std::size_t slots = layout.q + 1, pairs = packed_size(k), slot = t % slots;
+    const std::size_t n = sample.series, m = n * n, k = layout.coefficients, d = layout.dimension;
+    const std::size_t slots = layout.q + 1, pairs = packed_size(d), slot = t % slots;
     double* q = work.ring + slot * m;
-    double* first = work.first + slot * k * m;
+    double* first = work.first + slot * d * m;
     double* second = work.second + slot * pairs * m;
-    q_step(layout, theta, sample.target.data(), n, std::min(layout.p, t), std::min(layout.q, t),
-           [&](std::size_t lag) { return sample.eps.data() + (t - lag) * n; },
+    q_step(layout, theta, work.target, n, std::min(layout.p, t), std::min(layout.q, t),
+           [&](std::size_t lag) { return work.x + (t - lag) * n; },
            [&](std::size_t lag) { return work.ring + ((t - lag) % slots) * m; }, q);
     if (order < 1) return;
+    double slack = 1.0;
+    for (std::size_t a = 0; a < k; ++a) slack -= theta[a];
     for (std::size_t a = 0; a < k; ++a)
-        for (std::size_t x = 0; x < m; ++x) first[a * m + x] = -sample.target[x];
-    if (order >= 2) std::fill_n(second, pairs * m, 0.0);
-
+        for (std::size_t x = 0; x < m; ++x) first[a * m + x] = -work.target[x];
+    if (layout.student)
+        for (std::size_t x = 0; x < m; ++x) first[k * m + x] = slack * work.target_first[x];
+    if (order >= 2) {
+        std::fill_n(second, pairs * m, 0.0);
+        if (layout.student) {
+            for (std::size_t a = 0; a < k; ++a)
+                for (std::size_t x = 0; x < m; ++x)
+                    second[packed(d, a, k) * m + x] = -work.target_first[x];
+            for (std::size_t x = 0; x < m; ++x)
+                second[packed(d, k, k) * m + x] = slack * work.target_second[x];
+        }
+    }
     for (std::size_t lag = 1; lag <= std::min(layout.p, t); ++lag) {
-        const double* eps = sample.eps.data() + (t - lag) * n;
+        const std::size_t offset = (t - lag) * n, a = lag - 1;
+        const double* e = work.x + offset;
         for (std::size_t i = 0; i < n; ++i)
-            for (std::size_t j = 0; j < n; ++j) first[(lag - 1) * m + i * n + j] += eps[i] * eps[j];
+            for (std::size_t j = 0; j < n; ++j) {
+                const std::size_t x = i * n + j;
+                first[a * m + x] += e[i] * e[j];
+                if (!layout.student) continue;
+                const double* de = work.x_first + offset;
+                const double shock_first = de[i] * e[j] + e[i] * de[j];
+                first[k * m + x] += theta[a] * shock_first;
+                if (order >= 2) {
+                    const double* dde = work.x_second + offset;
+                    second[packed(d, a, k) * m + x] += shock_first;
+                    second[packed(d, k, k) * m + x] += theta[a]
+                        * (dde[i] * e[j] + 2.0 * de[i] * de[j] + e[i] * dde[j]);
+                }
+            }
     }
     for (std::size_t lag = 1; lag <= std::min(layout.q, t); ++lag) {
         const std::size_t previous = (t - lag) % slots, b = layout.p + lag - 1;
         const double* qlag = work.ring + previous * m;
-        const double* glag = work.first + previous * k * m;
-        for (std::size_t a = 0; a < k; ++a)
+        const double* glag = work.first + previous * d * m;
+        for (std::size_t a = 0; a < d; ++a)
             for (std::size_t x = 0; x < m; ++x)
                 first[a * m + x] += theta[b] * glag[a * m + x] + (a == b ? qlag[x] : 0.0);
         if (order >= 2) {
             const double* hlag = work.second + previous * pairs * m;
-            for (std::size_t a = 0; a < k; ++a)
-                for (std::size_t c = a; c < k; ++c) {
-                    const std::size_t pair = packed(k, a, c);
+            for (std::size_t a = 0; a < d; ++a)
+                for (std::size_t c = a; c < d; ++c) {
+                    const std::size_t pair = packed(d, a, c);
                     for (std::size_t x = 0; x < m; ++x)
                         second[pair * m + x] += theta[b] * hlag[pair * m + x]
                             + (a == b ? glag[c * m + x] : 0.0) + (c == b ? glag[a * m + x] : 0.0);
@@ -112,19 +144,21 @@ void inverse_products(const double* inverse, const double* first, std::size_t n,
 // d_a = 2 u_a'w - w'Q_a w, d_ab = 2 u_ab'w - w'Q_ab w + 2 v_a'Q^{-1}v_b.
 // log|R|_ab = tr(Q^{-1}Q_ab - A_a A_b) - sum_i (Q_ab,ii/Q_ii - Q_a,ii Q_b,ii/Q_ii^2).
 void derivatives(const Layout& layout, const double* q, const double* first, const double* second,
-                 const double* eps, double distance, double eta, std::size_t n, int order, Work& work)
+                 const double* eps, const double* x_first, const double* x_second,
+                 double distance, double eta, std::size_t n, int order, Work& work)
 {
     const std::size_t k = layout.coefficients, d = layout.dimension, m = n * n;
-    const double reciprocal = layout.student ? eta / (1.0 - 2.0 * eta + eta * distance) : 0.0;
-    const double ld = layout.student ? (0.5 + 0.5 * n * eta) / (1.0 - 2.0 * eta + eta * distance) : 0.5;
+    const double reciprocal = layout.student ? eta / (1.0 + eta * distance) : 0.0;
+    const double ld = layout.student ? (0.5 + 0.5 * n * eta) / (1.0 + eta * distance) : 0.5;
     const double ldd = layout.student ? -ld * reciprocal : 0.0;
     dc::inverse(work.chol, n, work.inverse, work.scratch);
-    if (order >= 2) inverse_products(work.inverse, first, n, k, work.products);
-    for (std::size_t a = 0; a < k; ++a) {
+    if (order >= 2) inverse_products(work.inverse, first, n, d, work.products);
+    for (std::size_t a = 0; a < d; ++a) {
         const double* qa = first + a * m;
         double logdet = 0.0, da = 0.0;
         for (std::size_t i = 0; i < n; ++i) {
-            const double ua = 0.5 * work.u[i] * (qa[i * n + i] / q[i * n + i]);
+            double ua = 0.5 * work.u[i] * (qa[i * n + i] / q[i * n + i]);
+            if (layout.student && a == k) ua += x_first[i] * work.scale[i];
             double qw = 0.0;
             for (std::size_t j = 0; j < n; ++j) {
                 qw += qa[i * n + j] * work.w[j];
@@ -135,7 +169,6 @@ void derivatives(const Layout& layout, const double* q, const double* first, con
             if (order >= 2) work.v[a * n + i] = ua - qw;
         }
         work.row[a] = 0.5 * logdet + ld * da;
-        work.g[a] += work.row[a];
         if (order >= 2) {
             work.tmp[a] = da;
             dc::forward(work.chol, work.v + a * n, n, work.dv + a * n);
@@ -143,28 +176,35 @@ void derivatives(const Layout& layout, const double* q, const double* first, con
         }
     }
     if (layout.student) {
-        const dc::Constant joint = dc::student_tail(distance, eta, static_cast<double>(n) + 2.0, order);
-        work.row[k] = joint.first;
+        const dc::Constant joint = dc::student_tail(distance, eta, static_cast<double>(n) + 2.0, order, 0.0);
+        work.row[k] += joint.first;
         double shape_second = joint.second;
         for (std::size_t i = 0; i < n; ++i) {
-            const dc::Constant marginal = dc::student_tail(eps[i] * eps[i], eta, 3.0, order);
-            work.row[k] -= marginal.first;
-            if (order >= 2) shape_second -= marginal.second;
+            const dc::Constant marginal = dc::student_tail(eps[i] * eps[i], eta, 3.0, order, 0.0);
+            const auto kernel = detail::t_kernel(eps[i], eta, order, 1.0, 0.0);
+            work.row[k] -= marginal.first + kernel.u * x_first[i];
+            if (order >= 2) shape_second -= marginal.second + 2.0 * kernel.ueta * x_first[i]
+                + kernel.uu * x_first[i] * x_first[i] + kernel.u * x_second[i];
         }
-        work.g[k] += work.row[k];
         if (order >= 2) work.h[k * d + k] += shape_second;
     }
+    for (std::size_t a = 0; a < d; ++a) work.g[a] += work.row[a];
     if (order < 2) return;
-    for (std::size_t a = 0; a < k; ++a) {
+    for (std::size_t a = 0; a < d; ++a) {
         const double* qa = first + a * m;
-        for (std::size_t b = a; b < k; ++b) {
+        for (std::size_t b = a; b < d; ++b) {
             const double* qb = first + b * m;
-            const double* qab = second + packed(k, a, b) * m;
+            const double* qab = second + packed(d, a, b) * m;
             double logdet = 0.0, dab = 0.0;
             for (std::size_t i = 0; i < n; ++i) {
                 const double inv_diagonal = 1.0 / q[i * n + i];
                 const double diagonal_product = (qa[i * n + i] * inv_diagonal) * (qb[i * n + i] * inv_diagonal);
-                const double uab = work.u[i] * (0.5 * qab[i * n + i] * inv_diagonal - 0.25 * diagonal_product);
+                double uab = work.u[i] * (0.5 * qab[i * n + i] * inv_diagonal - 0.25 * diagonal_product);
+                if (layout.student) {
+                    if (a == k) uab += 0.5 * work.scale[i] * x_first[i] * qb[i * n + i] * inv_diagonal;
+                    if (b == k) uab += 0.5 * work.scale[i] * x_first[i] * qa[i * n + i] * inv_diagonal;
+                    if (a == k && b == k) uab += work.scale[i] * x_second[i];
+                }
                 logdet += diagonal_product - qab[i * n + i] * inv_diagonal;
                 dab += 2.0 * uab * work.w[i] + 2.0 * work.v[a * n + i] * work.dv[b * n + i];
                 for (std::size_t j = 0; j < n; ++j) {
@@ -175,8 +215,8 @@ void derivatives(const Layout& layout, const double* q, const double* first, con
             }
             work.h[a * d + b] += 0.5 * logdet + ld * dab + ldd * work.tmp[a] * work.tmp[b];
         }
-        if (layout.student) work.h[a * d + k] += 0.5 * (static_cast<double>(n) + 2.0 - distance)
-            / std::pow(1.0 - 2.0 * eta + eta * distance, 2) * work.tmp[a];
+        if (layout.student) work.h[a * d + k] += 0.5 * (static_cast<double>(n) - distance)
+            / std::pow(1.0 + eta * distance, 2) * work.tmp[a] * (a == k ? 2.0 : 1.0);
     }
 }
 
@@ -187,15 +227,44 @@ JetResult evaluate(const Layout& layout, const CorrelationSample& sample, const 
     const std::size_t k = layout.coefficients, d = layout.dimension, slots = layout.q + 1;
     const int order = (request & hessian) ? 2 : (request & (gradient | scores)) ? 1 : 0;
     const double eta = layout.student ? theta[k] : 0.0;
+    const int ready = eta == *work.cached_eta ? static_cast<int>(*work.cached_order) : -1;
+    if (!layout.student || ready < order) {
+        *work.cached_order = -1.0;
+        const Status transformed = dc::copula_scores(sample, layout.student, eta, order, work.x,
+                                                     work.x_first, work.x_second, ready, false);
+        if (transformed != Status::ok) return {transformed, 0};
+        *work.cached_eta = eta;
+        *work.cached_order = order;
+    }
+    if (layout.student && order >= 1) std::fill_n(work.target_first, m, 0.0);
+    if (layout.student && order >= 2) std::fill_n(work.target_second, m, 0.0);
+    // A common scale cancels from R and from the copula density ratio.
+    // Work with w = x / sqrt(1 - 2 eta), avoiding singular scale derivatives.
+    const double scale = layout.student ? 1.0 - 2.0 * eta : 1.0;
+    if (sample.fixed_target || !layout.student) {
+        for (std::size_t i = 0; i < m; ++i) {
+            work.target[i] = sample.target[i] / scale;
+            if (layout.student && order >= 1) work.target_first[i] = 2.0 * work.target[i] / scale;
+            if (layout.student && order >= 2) work.target_second[i] = 8.0 * work.target[i] / (scale * scale);
+        }
+    } else dc::score_target(work.x, rows, n, work.target,
+                            order >= 1 ? work.x_first : nullptr, work.target_first,
+                            order >= 2 ? work.x_second : nullptr, work.target_second);
+    for (std::size_t i = 0; i < m; ++i)
+        work.reported_target[i] = sample.fixed_target ? sample.target[i] : scale * work.target[i];
     const dc::Constant constant = layout.student ? dc::student_constant(eta, n, order) : dc::Constant{};
-    std::copy_n(sample.target.data(), m, work.ring);
+    std::copy_n(work.target, m, work.ring);
     if (order >= 1) {
-        std::fill_n(work.first, slots * k * m, 0.0);
+        std::fill_n(work.first, slots * d * m, 0.0);
         std::fill_n(work.g, d, 0.0);
     }
     if (order >= 2) {
-        std::fill_n(work.second, slots * packed_size(k) * m, 0.0);
+        std::fill_n(work.second, slots * packed_size(d) * m, 0.0);
         std::fill_n(work.h, d * d, 0.0);
+    }
+    if (layout.student) {
+        if (order >= 1) std::copy_n(work.target_first, m, work.first + k * m);
+        if (order >= 2) std::copy_n(work.target_second, m, work.second + packed(d, k, k) * m);
     }
     detail::CompensatedSum total;
     for (std::size_t t = 0; t < rows; ++t) {
@@ -205,7 +274,7 @@ JetResult evaluate(const Layout& layout, const CorrelationSample& sample, const 
         if (!dc::finite(q, m)) return {Status::numerical_range, 0};
         const Status status = dc::cholesky(q, n, work.chol);
         if (status != Status::ok) return {status, 0};
-        const double* eps = sample.eps.data() + t * n;
+        const double* eps = work.x + t * n;
         double logdet = 0.0, squares = 0.0, distance = 0.0;
         for (std::size_t i = 0; i < n; ++i) {
             work.scale[i] = std::sqrt(q[i * n + i]);
@@ -217,8 +286,8 @@ JetResult evaluate(const Layout& layout, const CorrelationSample& sample, const 
         for (std::size_t i = 0; i < n; ++i) distance += work.scratch[i] * work.scratch[i];
         double term = 0.5 * (logdet + distance - squares);
         if (layout.student) {
-            term = 0.5 * logdet + dc::student_tail(distance, eta, static_cast<double>(n) + 2.0, 0).value;
-            for (std::size_t i = 0; i < n; ++i) term -= dc::student_tail(eps[i] * eps[i], eta, 3.0, 0).value;
+            term = 0.5 * logdet + dc::student_tail(distance, eta, static_cast<double>(n) + 2.0, 0, 0.0).value;
+            for (std::size_t i = 0; i < n; ++i) term -= dc::student_tail(eps[i] * eps[i], eta, 3.0, 0, 0.0).value;
         }
         if (!std::isfinite(term) || !std::isfinite(distance)) return {Status::numerical_range, 0};
         total.add(term);
@@ -229,8 +298,9 @@ JetResult evaluate(const Layout& layout, const CorrelationSample& sample, const 
                     correlations[t * m + i * n + j] = (q[i * n + j] / work.scale[i]) / work.scale[j];
         if (order >= 1) {
             dc::backward(work.chol, work.scratch, n, work.w);
-            derivatives(layout, q, work.first + slot * k * m, work.second + slot * packed_size(k) * m,
-                        eps, distance, eta, n, order, work);
+            derivatives(layout, q, work.first + slot * d * m, work.second + slot * packed_size(d) * m,
+                        eps, work.x_first + (layout.student ? t * n : 0),
+                        work.x_second + (layout.student ? t * n : 0), distance, eta, n, order, work);
             if (request & scores) {
                 std::copy_n(work.row, d, out.scores.data() + t * d);
                 if (layout.student) out.scores[t * d + k] += constant.first;
@@ -275,24 +345,45 @@ CorrelationModel::CorrelationModel(const CorrelationSpec& spec) : spec_(spec)
 }
 
 CorrelationSample CorrelationModel::prepare(std::span<const double> eps, std::size_t series,
-                                          std::span<const double> target) const
+                                          std::span<const double> target, std::span<const InnovationDensity> marginals) const
 {
     require(series > 0 && eps.size() % series == 0 && eps.size() / series >= 2,
             "standardized residuals must have at least two complete rows and one series");
     require(dc::finite(eps.data(), eps.size()), "standardized residuals must be finite");
     const std::size_t m = dc::product(series, series), rows = eps.size() / series;
     require(target.empty() || target.size() == m, "the correlation target must be series x series");
-    CorrelationSample sample{eps, series, std::vector<double>(m)};
-    if (!target.empty()) std::copy(target.begin(), target.end(), sample.target.begin());
-    else {
-        for (std::size_t i = 0; i < series; ++i)
-            for (std::size_t j = 0; j <= i; ++j) {
-                detail::CompensatedSum sum;
-                for (std::size_t t = 0; t < rows; ++t)
-                    sum.add((eps[t * series + i] / static_cast<double>(rows)) * eps[t * series + j]);
-                sample.target[i * series + j] = sample.target[j * series + i] = sum.total();
-            }
+    require(marginals.empty() || marginals.size() == series, "one marginal density per series is required");
+    CorrelationSample sample;
+    sample.eps = eps;
+    sample.series = series;
+    sample.fixed_target = !target.empty();
+    sample.target.resize(m);
+    sample.probability.resize(eps.size());
+    sample.normal.resize(eps.size());
+    sample.identity_eta.assign(series, std::numeric_limits<double>::quiet_NaN());
+    if (marginals.empty()) sample.marginals.assign(series, InnovationDensity{DensityKind::normal, {}});
+    else sample.marginals.assign(marginals.begin(), marginals.end());
+    for (std::size_t i = 0; i < series; ++i) {
+        const auto& marginal = sample.marginals[i];
+        require(marginal.shape.size() == detail::shape_domains(marginal.density).size(),
+                "each marginal needs its density's shape parameters");
+        if (marginal.density == DensityKind::student_t) sample.identity_eta[i] = marginal.shape[0];
+        for (std::size_t t = 0; t < rows; ++t) {
+            const std::size_t a = t * series + i;
+            double lower, upper;
+            require(detail::distribution(marginal.density, marginal.shape.data(), eps[a], lower, upper)
+                        == detail::ExpectationStatus::ok,
+                    "a marginal probability could not be computed accurately");
+            require(lower > 0.0 && lower < 1.0 && upper > 0.0,
+                    "a marginal probability rounded to zero or one");
+            sample.probability[a] = lower;
+            if (dc::identity(marginal, CorrelationDensity::normal)) sample.normal[a] = eps[a];
+            else require(detail::quantile(DensityKind::normal, nullptr, lower, sample.normal[a])
+                             == detail::ExpectationStatus::ok, "a Gaussian copula score is not representable");
+        }
     }
+    if (!target.empty()) std::copy(target.begin(), target.end(), sample.target.begin());
+    else dc::score_target(sample.normal.data(), rows, series, sample.target.data());
     validate_sample(sample);
     return sample;
 }
@@ -378,7 +469,17 @@ CorrelationJet::CorrelationJet(const CorrelationModel& model, const CorrelationS
     (void)dc::product(sample.rows(), dc::product(sample.series, sample.series));
     (void)dc::product(sample.rows(), layout.dimension);
     Work work{};
-    work_.assign(dc::workspace(layout, sample.series, nullptr, work), 0.0);
+    work_.assign(dc::workspace(layout, sample.series, sample.rows(), nullptr, work), 0.0);
+    dc::workspace(layout, sample.series, sample.rows(), work_.data(), work);
+    *work.cached_order = -1.0;
+    std::copy(sample.target.begin(), sample.target.end(), work.reported_target);
+}
+
+std::span<const double> CorrelationJet::target() const noexcept
+{
+    Work work{};
+    dc::workspace(Layout(model_.spec()), sample_.series, sample_.rows(), const_cast<double*>(work_.data()), work);
+    return {work.reported_target, sample_.series * sample_.series};
 }
 
 JetResult CorrelationJet::theta(std::span<const double> theta, unsigned request, JetOutput& out,
@@ -390,7 +491,7 @@ JetResult CorrelationJet::theta(std::span<const double> theta, unsigned request,
                         sample_.rows() * sample_.series * sample_.series)) return {};
     if (!model_.evaluable(theta)) return {Status::not_evaluable, 0};
     Work work{};
-    dc::workspace(layout, sample_.series, work_.data(), work);
+    dc::workspace(layout, sample_.series, sample_.rows(), work_.data(), work);
     return evaluate(layout, sample_, theta.data(), request, out, correlations, work);
 }
 
@@ -401,7 +502,7 @@ JetResult CorrelationJet::z(std::span<const double> z, unsigned request, JetOutp
     if (request == 0 || (request & ~all_requests) || (request & (scores | paths)) || z.size() != d
         || !outputs_fit(request, out, {}, d, sample_.rows(), 0) || !dc::finite(z.data(), d)) return {};
     Work work{};
-    dc::workspace(layout, sample_.series, work_.data(), work);
+    dc::workspace(layout, sample_.series, sample_.rows(), work_.data(), work);
     if (!layout.theta(z.data(), work.theta)) return {Status::not_evaluable, 0};
     JetOutput local;
     local.gradient = {work.g, d};

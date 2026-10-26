@@ -1,13 +1,11 @@
 """
 Multivariate correlation models: CCC (constant) and DCC(p, q).
 
-Both are the second stage of a staged estimator: univariate marginal models are
-fitted first; the correlation model is fitted on their standardized residuals
-with the target matrix Qbar = eps'eps / T. The correlation likelihood, its
-derivatives, the qualification of the estimate, its covariance (which treats
-the residuals and Qbar as given), the correlation paths, and simulated
-continuations (copula draws mapped through each marginal's quantile function,
-then every marginal continued natively) come from the native library.
+Both fit a copula to fixed marginal probabilities from standardized residuals.
+The target Qbar is the copula scores' second moment. Native derivatives include
+its dependence on the copula tail parameter; inference treats the marginal
+estimates as given. Simulated copula draws are mapped through each marginal's
+quantile function, then every marginal continues natively.
 """
 
 from __future__ import annotations
@@ -377,6 +375,7 @@ class _CorrelationResultMixin:
     univariate_results: Optional[List["EstimationResult"]]
     distribution: str
     _eps: Optional[NDArray[np.float64]]
+    _marginals: Optional[List[api.InnovationDensity]]
     _index: Optional[Any]
     _columns: Optional[List[Any]]
 
@@ -441,7 +440,7 @@ class _CorrelationResultMixin:
     def Rt(self) -> NDArray[np.float64]:
         if self._Rt_cache is None:
             model, theta = self._correlation()
-            out = api.CorrelationJet(model, self._eps, self.Qbar).theta(theta, api.PATHS)
+            out = api.CorrelationJet(model, self._eps, self.Qbar, self._marginals or []).theta(theta, api.PATHS)
             if out["status"] != "ok":
                 raise ValueError(f"The correlation path is not available ({out['status']}).")
             object.__setattr__(self, "_Rt_cache", np.asarray(out["correlations"]))
@@ -566,6 +565,7 @@ class CCCResult(_CorrelationResultMixin):
     distribution: str = "gaussian"
     univariate_results: Optional[List["EstimationResult"]] = None
     _eps: Optional[NDArray[np.float64]] = field(default=None, repr=False)
+    _marginals: Optional[List[api.InnovationDensity]] = field(default=None, repr=False)
     _index: Optional[Any] = field(default=None, repr=False)
     _columns: Optional[List[Any]] = field(default=None, repr=False)
     _Rt_cache: Optional[NDArray[np.float64]] = field(default=None, repr=False)
@@ -654,6 +654,7 @@ class DCCResult(_CorrelationResultMixin):
     phases: tuple[str, ...] = ()
     univariate_results: Optional[List["EstimationResult"]] = None
     _eps: Optional[NDArray[np.float64]] = field(default=None, repr=False)
+    _marginals: Optional[List[api.InnovationDensity]] = field(default=None, repr=False)
     _index: Optional[Any] = field(default=None, repr=False)
     _columns: Optional[List[Any]] = field(default=None, repr=False)
     _Rt_cache: Optional[NDArray[np.float64]] = field(default=None, repr=False)
@@ -767,19 +768,22 @@ class CCC:
             initial_results=univariate_initial_results, n_jobs=n_jobs, timeout=marginal_timeout,
             fit_kwargs=univariate_fit_kwargs,
         )
-        result = self.fit_from_residuals(std_resid)
+        result = self.fit_from_residuals(std_resid, marginals=[_marginal_density(m) for m in marginals])
         result.univariate_results = marginals
         result._index = None if index is None else index[-result.T:]
         result._columns = columns
         return result
 
-    def fit_from_residuals(self, eps: NDArray[np.float64], Qbar: Optional[NDArray[np.float64]] = None) -> CCCResult:
-        """R = Qbar / sqrt(diag Qbar diag Qbar'), with Qbar = eps'eps / T unless given."""
+    def fit_from_residuals(
+        self, eps: NDArray[np.float64], Qbar: Optional[NDArray[np.float64]] = None,
+        marginals: Optional[Sequence[api.InnovationDensity]] = None,
+    ) -> CCCResult:
+        """Fit constant Gaussian copula correlation; omitted marginals are Normal."""
         eps = _residual_input(eps)
         t_count, n_series = eps.shape
         started = time.perf_counter()
         target = None if Qbar is None else np.ascontiguousarray(Qbar, dtype=np.float64)
-        jet = api.CorrelationJet(correlation_model(1, 1, "gaussian"), eps, target)
+        jet = api.CorrelationJet(correlation_model(1, 1, "gaussian"), eps, target, list(marginals or []))
         out = jet.theta(np.zeros(2), api.VALUE)
         if out["status"] != "ok":
             raise ValueError(f"The constant correlation likelihood is not available ({out['status']}).")
@@ -787,6 +791,7 @@ class CCC:
         return CCCResult(
             params=CCCParams(corr=_normalize_correlation(qbar)), nll=float(out["value"]) / t_count, T=t_count,
             N=n_series, Qbar=qbar, converged=True, nit=0, time_elapsed=time.perf_counter() - started, _eps=eps,
+            _marginals=list(marginals or []),
         )
 
     def __repr__(self) -> str:
@@ -844,7 +849,7 @@ class DCC:
             initial_results=univariate_initial_results, n_jobs=n_jobs, timeout=marginal_timeout,
             fit_kwargs=univariate_fit_kwargs,
         )
-        result = self.fit_from_residuals(std_resid, **kwargs)
+        result = self.fit_from_residuals(std_resid, marginals=[_marginal_density(m) for m in marginals], **kwargs)
         result.univariate_results = marginals
         result._index = None if index is None else index[-result.T:]
         result._columns = columns
@@ -858,8 +863,9 @@ class DCC:
         initial_result: Optional[DCCResult] = None,
         maxiter: Optional[int] = None,
         accuracy: float = 1e-10,
+        marginals: Optional[Sequence[api.InnovationDensity]] = None,
     ) -> DCCResult:
-        """Fit DCC(p, q) on standardized residuals eps (T x N), Qbar = eps'eps / T unless given."""
+        """Fit a copula on residuals, targeting its scores; omitted marginals are Normal."""
         eps = _residual_input(eps)
         if theta0 is not None and initial_result is not None:
             raise ValueError("Pass either theta0 or initial_result, not both.")
@@ -878,11 +884,13 @@ class DCC:
             options.start = [float(v) for v in np.asarray(theta0, dtype=np.float64).ravel()]
         target = None if Qbar is None else np.ascontiguousarray(Qbar, dtype=np.float64)
         started = time.perf_counter()
-        r = api.fit_correlation(model, eps, options, target)
+        r = api.fit_correlation(model, eps, options, target, list(marginals or []))
         elapsed = time.perf_counter() - started
         if not r.estimate_available:
             raise RuntimeError("DCC fit failed: " + "; ".join(r.warnings))
         theta = np.array(r.theta)
+        jet = api.CorrelationJet(model, eps, target, list(marginals or []))
+        jet.theta(theta, api.VALUE)
         return DCCResult(
             params=DCCParams(a=theta[:p].copy(), b=theta[p:p + q].copy(),
                              eta=model.innovation_density(theta).named.get("eta")),
@@ -892,7 +900,7 @@ class DCC:
             q=q,
             T=t_count,
             N=eps.shape[1],
-            Qbar=np.asarray(api.CorrelationJet(model, eps, target).target),
+            Qbar=np.asarray(jet.target),
             converged=r.termination == api.Termination.converged,
             nit=sum(phase.iterations for phase in r.phases),
             time_elapsed=elapsed,
@@ -909,6 +917,7 @@ class DCC:
             warnings=tuple(r.warnings),
             phases=tuple(phase.name for phase in r.phases),
             _eps=eps,
+            _marginals=list(marginals or []),
         )
 
     def fit_rolling(

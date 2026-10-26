@@ -20,12 +20,14 @@ struct Work {
     double *ring, *first, *second, *chol, *inverse, *products;
     double *u, *w, *scratch, *scale, *v, *dv;
     double *g, *h, *row, *theta, *jac, *tmp;
+    double *x, *x_first, *x_second, *target, *target_first, *target_second;
+    double *cached_eta, *cached_order, *reported_target;
 };
 
 // One size/carve definition; every multiplication and accumulated offset is checked.
-inline std::size_t workspace(const Layout& layout, std::size_t n, double* base, Work& out)
+inline std::size_t workspace(const Layout& layout, std::size_t n, std::size_t rows, double* base, Work& out)
 {
-    const std::size_t k = layout.coefficients, d = layout.dimension, m = product(n, n);
+    const std::size_t k = layout.dimension, d = layout.dimension, m = product(n, n);
     const std::size_t slots = layout.q + 1, pairs = packed_size(k);
     std::size_t at = 0;
     auto take = [&](std::size_t count) {
@@ -53,6 +55,15 @@ inline std::size_t workspace(const Layout& layout, std::size_t n, double* base, 
     out.theta = take(d);
     out.jac = take(d * d);
     out.tmp = take(d * d);
+    out.x = take(product(rows, n));
+    out.x_first = take(layout.student ? product(rows, n) : 0);
+    out.x_second = take(layout.student ? product(rows, n) : 0);
+    out.target = take(m);
+    out.target_first = take(layout.student ? m : 0);
+    out.target_second = take(layout.student ? m : 0);
+    out.reported_target = take(m);
+    out.cached_eta = take(1);
+    out.cached_order = take(1);
     return at;
 }
 

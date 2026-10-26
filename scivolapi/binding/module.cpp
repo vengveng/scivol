@@ -97,9 +97,9 @@ struct BoundCorrelationJet {
     CorrelationJet jet;
 
     BoundCorrelationJet(std::shared_ptr<const CorrelationModel> m, const Matrix& residuals,
-                        std::vector<double> target)
+                        std::vector<double> target, const std::vector<InnovationDensity>& marginals)
         : model(std::move(m)), eps(residuals.data(), residuals.data() + residuals.shape(0) * residuals.shape(1)),
-          sample(model->prepare(eps, residuals.shape(1), target)), jet(*model, sample)
+          sample(model->prepare(eps, residuals.shape(1), target, marginals)), jet(*model, sample)
     {
     }
 };
@@ -440,12 +440,13 @@ NB_MODULE(_scivolapi, m)
     nb::class_<BoundCorrelationJet>(m, "CorrelationJet")
         .def("__init__",
              [](BoundCorrelationJet* self, const CorrelationModel& model, const Matrix& eps,
-                const std::optional<Matrix>& target) {
-                 new (self) BoundCorrelationJet(std::make_shared<const CorrelationModel>(model), eps, square(target));
+                const std::optional<Matrix>& target, const std::vector<InnovationDensity>& marginals) {
+                 new (self) BoundCorrelationJet(std::make_shared<const CorrelationModel>(model), eps, square(target), marginals);
              },
-             "model"_a, "eps"_a, "target"_a = nb::none())
+             "model"_a, "eps"_a, "target"_a = nb::none(), "marginals"_a = std::vector<InnovationDensity>{})
         .def_prop_ro("target", [](const BoundCorrelationJet& j) {
-            return owned_matrix(j.sample.target, j.sample.series, j.sample.series);
+            const auto target = j.jet.target();
+            return owned_matrix(std::vector<double>(target.begin(), target.end()), j.sample.series, j.sample.series);
         })
         .def("theta", [](BoundCorrelationJet& j, const Vector& theta, unsigned request) {
             return evaluate_correlation(j, theta, request, false);
@@ -531,14 +532,15 @@ NB_MODULE(_scivolapi, m)
           "model"_a, "theta"_a, "eps"_a, "marginals"_a, "normals"_a, "chi2"_a = nb::none(), "target"_a = nb::none());
     m.def("fit_correlation",
           [](const CorrelationModel& model, const Matrix& eps, const FitOptions& options,
-             const std::optional<Matrix>& target) {
+             const std::optional<Matrix>& target, const std::vector<InnovationDensity>& marginals) {
               const std::vector<double> residuals(eps.data(), eps.data() + eps.shape(0) * eps.shape(1));
               const std::vector<double> qbar = square(target);
               const std::size_t series = eps.shape(1);
               nb::gil_scoped_release release;
-              return fit(model, residuals, series, qbar, options);
+              return fit(model, residuals, series, qbar, options, marginals);
           },
-          "model"_a, "eps"_a, "options"_a = FitOptions(), "target"_a = nb::none());
+          "model"_a, "eps"_a, "options"_a = FitOptions(), "target"_a = nb::none(),
+          "marginals"_a = std::vector<InnovationDensity>{});
 
     nb::class_<BoundJet>(m, "Jet")
         .def("__init__",

@@ -448,11 +448,11 @@ bool tails(const Point& p, double x, double& lower, double& upper) noexcept
     return true;
 }
 
-bool inverse_student(const Point& p, double probability, double& x) noexcept
+bool inverse_student(const Point& p, double probability, double& x, double normal_start = -1.0) noexcept
 {
     if (probability == 0.5) { x = 0.0; return true; }
     const double target = std::log(probability);
-    const double normal = normal_inverse(probability);
+    const double normal = normal_start >= 0.0 ? normal_start : normal_inverse(probability);
     if (p.eta == 0.0) { x = normal; return true; }
     double y;
     if (p.eta < 1.0/512.0) { y = std::log(normal); }
@@ -788,6 +788,75 @@ ExpectationStatus quantiles(DensityKind kind, const double* shape, const double*
         double result;
         if (!invert(p,u[i],false,result)) return Status::numerical_failure;
         out[i] = result;
+    }
+    return Status::ok;
+}
+
+ExpectationStatus student_quantiles(double eta, const double* u, const double* normal,
+                                    std::size_t n, int order, double* x,
+                                    double* first, double* second, int ready,
+                                    const double* original, const double* identity_eta, std::size_t series, bool standardized) noexcept
+{
+    Point p;
+    if (!prepare(DensityKind::student_t, &eta, p)) return Status::numerical_failure;
+    const auto c = t_gamma_ratio(eta, order);
+    const double r = 1.0 - 2.0 * eta, root = std::sqrt(r);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!valid_probability(u[i])) return Status::numerical_failure;
+        if (ready < 0) {
+            if (identity_eta && identity_eta[i % series] == eta) x[i] = original[i];
+            else if (eta == 0.0) x[i] = normal[i];
+            else {
+                const double small = std::min(u[i], 1.0 - u[i]);
+                double absolute;
+                if (small > 0.4) {
+                    if (!inverse_student_area(p, 0.5 - small, absolute)) return Status::numerical_failure;
+                } else if (!inverse_student(p, small, absolute, std::abs(normal[i]))) return Status::numerical_failure;
+                x[i] = u[i] < 0.5 ? -absolute : absolute;
+            }
+            if (!standardized) x[i] /= root;
+        }
+        if (order == 0) continue;
+        const double z = x[i], a = standardized ? std::abs(z) / root : std::abs(z), a2 = a * a;
+        if (eta == 0.0) {
+            first[i] = z * (a2 + (standardized ? -3.0 : 1.0)) / 4.0;
+            if (order >= 2) second[i] = z * ((5.0 * a2 + (standardized ? -8.0 : 16.0)) * a2 + (standardized ? -69.0 : 3.0)) / 48.0;
+            continue;
+        }
+        const auto endpoint = t_kernel(a, eta, order, 1.0, 0.0);
+        const double score = c.d1 - endpoint.eta;
+        // Differentiate the unscaled CDF integral in units of its endpoint density.
+        // Use the central integral near the median, the upper tail farther out.
+        const bool central = a < 1.0;
+        const double scale = central ? a : (1.0 + eta * a2) / ((1.0 + eta) * a);
+        auto integral = [&](int derivative, double& result) {
+            const auto integrand = [&](double t) {
+                const double s = t / (1.0 - t);
+                // The mapped tail and its two derivatives underflow before s = 700.
+                if (!central && s > 700.0) return 0.0;
+                const double v = central ? a * t : a + scale * std::expm1(s);
+                if (eta < 1.0 / 512.0 && !std::isfinite(v * v)) return 0.0;
+                const auto k = t_kernel(v, eta, derivative, 1.0, 0.0);
+                const double weight = std::exp(endpoint.t - k.t + (central ? 0.0 : s)) * scale
+                    / (central ? 1.0 : (1.0 - t) * (1.0 - t));
+                if (weight == 0.0) return 0.0;
+                const double score_eta = c.d1 - k.eta;
+                return weight * (derivative == 1 ? score_eta : score_eta * score_eta + c.d2 - k.etaeta);
+            };
+            return adaptive_integral(integrand, 0.0, 1.0, 2e-13 * std::max(1.0, scale), result);
+        };
+        double d1, d2;
+        if (!integral(1, d1)) return Status::numerical_failure;
+        if (central) d1 = -d1;
+        first[i] = std::copysign(1.0, z) * (standardized ? root * d1 - a / root : d1);
+        if (order >= 2) {
+            if (!integral(2, d2)) return Status::numerical_failure;
+            if (central) d2 = -d2;
+            const double curvature = d2 - 2.0 * score * d1 + endpoint.u * d1 * d1;
+            second[i] = std::copysign(1.0, z) * (standardized ? root * curvature - 2.0 * d1 / root - a / (r * root) : curvature);
+        }
+        if (!std::isfinite(first[i]) || (order >= 2 && !std::isfinite(second[i])))
+            return Status::numerical_failure;
     }
     return Status::ok;
 }
