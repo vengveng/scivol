@@ -118,4 +118,58 @@ int main()
     // The full step requests value and gradient together; 31 backtracks fail.
     assert(r.work.value_requests == 31 && r.work.gradient_requests == 2);
     assert(r.work.rejected_trials == 31 && r.work.hessian_requests == 1);
+
+    // A stationary Newton step below objective resolution needs no backtracking.
+    // The cancelling linear terms expose ordinary objective summation noise.
+    p = {}; p.dimension = 1;
+    p.objective = [](const double* x, double& f, double* g) {
+        f = ((0.2 + x[0]) + (2.0 - x[0])) + 0.1 + 0.5 * x[0] * x[0];
+        if (g) g[0] = x[0]; return true;
+    };
+    p.hessian = [](const double*, double* h) { h[0] = 1; return true; };
+    r = refine_newton(p, std::array{2e-8}, {});
+    assert(r.termination == Termination::converged);
+    assert(r.work.value_requests == 0 && r.work.gradient_requests == 2 && r.work.hessian_requests == 1);
+    current_gradient(p, r.accepted);
+
+    // A small absolute objective can still resolve its entire Newton decrease.
+    p.objective = [](const double* x, double& f, double* g) {
+        f = 0.5 * x[0] * x[0]; if (g) g[0] = x[0]; return true;
+    };
+    r = refine_newton(p, std::array{2e-8}, {});
+    assert(r.termination == Termination::converged && r.accepted.x[0] == 0);
+    assert(r.work.gradient_requests == 2);
+
+    // A sub-resolution local step must not suppress a meaningful face move.
+    p.lower = {0};
+    p.objective = [](const double* x, double& f, double* g) {
+        const double a = x[0], b = a - 1;
+        f = 1 + 2e-8 * a + a * a * b * b;
+        if (g) g[0] = 2e-8 + 2 * a * b * (2 * a - 1);
+        return true;
+    };
+    p.hessian = [](const double* x, double* h) { h[0] = 12 * x[0] * x[0] - 12 * x[0] + 2; return true; };
+    r = refine_newton(p, std::array{1.0}, {});
+    assert(r.termination == Termination::converged && r.accepted.x[0] == 0);
+    p.lower.clear();
+
+    // A small gradient along a flat direction can still yield a real improvement.
+    p.objective = [](const double* x, double& f, double* g) {
+        f = 1 + 0.5e-8 * x[0] * x[0]; if (g) g[0] = 1e-8 * x[0]; return true;
+    };
+    p.hessian = [](const double*, double* h) { h[0] = 1e-8; return true; };
+    r = refine_newton(p, std::array{2.0}, {});
+    assert(r.termination == Termination::converged);
+    close(r.accepted.x[0], 0);
+    assert(r.work.gradient_requests == 2);
+
+    // Even a tiny Newton decrement cannot certify a failed KKT check.
+    p.objective = [](const double* x, double& f, double* g) {
+        f = 1 + 0.5e16 * x[0] * x[0]; if (g) g[0] = 1e16 * x[0]; return true;
+    };
+    p.hessian = [](const double*, double* h) { h[0] = 1e16; return true; };
+    r = refine_newton(p, std::array{1e-16}, {});
+    assert(r.termination == Termination::converged);
+    close(r.accepted.x[0], 0, 1e-30);
+    assert(r.work.gradient_requests == 2);
 }

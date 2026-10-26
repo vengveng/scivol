@@ -156,10 +156,10 @@ bool accept_trial(const Problem& p, detail::SolverWorkspace& w, detail::Evaluati
 }
 
 bool take_step(const Problem& p, detail::SolverWorkspace& w, detail::Evaluation& evaluate,
-    detail::Points& points, double& value)
+    detail::Points& points, double& value, bool backtrack)
 {
     double step = 1;
-    for (int line = 0; line < 32; ++line, step *= 0.5) {
+    for (int line = 0; line < (backtrack ? 32 : 1); ++line, step *= 0.5) {
         for (std::size_t i = 0; i < p.dimension; ++i) w.trial[i] = w.x[i] + step * w.direction[i];
         detail::project_bounds(p, w.trial);
         if (std::equal(w.trial, w.trial + p.dimension, w.x)) break;
@@ -270,8 +270,13 @@ Record refine_newton(const Problem& problem, std::span<const double> start, cons
         for (std::size_t i = 0; i < problem.dimension; ++i) descent += w.gradient[i] * w.direction[i];
         if (!(descent < 0) || !std::isfinite(descent))
             std::copy_n(w.projected, problem.dimension, w.direction);
+        // The full step may improve the gradient even at objective resolution.
+        // If it fails once KKT passes and the Newton decrement is below that
+        // resolution, backtracking would only search summation noise.
+        const bool backtrack = !(stationary_within(tolerance) && descent < 0
+            && -descent <= 2 * std::numeric_limits<double>::epsilon() * std::abs(value));
         const double previous = value;
-        if (!take_step(problem, w, evaluate, points, value)) {
+        if (!take_step(problem, w, evaluate, points, value, backtrack)) {
             if (stationary_within(tolerance)) {
                 if (take_face_step(problem, w, evaluate, points, value)) continue;
                 converge();
