@@ -787,7 +787,7 @@ class CCC:
         out = jet.theta(np.zeros(2), api.VALUE)
         if out["status"] != "ok":
             raise ValueError(f"The constant correlation likelihood is not available ({out['status']}).")
-        qbar = np.asarray(jet.target)
+        qbar = np.asarray(jet.target(np.zeros(2)))
         return CCCResult(
             params=CCCParams(corr=_normalize_correlation(qbar)), nll=float(out["value"]) / t_count, T=t_count,
             N=n_series, Qbar=qbar, converged=True, nit=0, time_elapsed=time.perf_counter() - started, _eps=eps,
@@ -890,7 +890,6 @@ class DCC:
             raise RuntimeError("DCC fit failed: " + "; ".join(r.warnings))
         theta = np.array(r.theta)
         jet = api.CorrelationJet(model, eps, target, list(marginals or []))
-        jet.theta(theta, api.VALUE)
         return DCCResult(
             params=DCCParams(a=theta[:p].copy(), b=theta[p:p + q].copy(),
                              eta=model.innovation_density(theta).named.get("eta")),
@@ -900,7 +899,7 @@ class DCC:
             q=q,
             T=t_count,
             N=eps.shape[1],
-            Qbar=np.asarray(jet.target),
+            Qbar=np.asarray(jet.target(theta)),
             converged=r.termination == api.Termination.converged,
             nit=sum(phase.iterations for phase in r.phases),
             time_elapsed=elapsed,

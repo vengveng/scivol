@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <limits>
 #include <new>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -2506,23 +2507,82 @@ void quantiles_test()
         double normal, x, first, second;
         check(detail::quantile(DensityKind::normal, nullptr, ref.u, normal) == detail::ExpectationStatus::ok,
               "quantile Normal start");
+        detail::StudentProbabilities data;
+        data.u = {ref.u}; data.normal = {normal}; data.permutation = {0};
+        data.identity_eta = {std::numeric_limits<double>::quiet_NaN()};
+        double iterate, area;
+        detail::StudentQuantileCache cache;
+        cache.x = {&x, 1}; cache.first = {&first, 1}; cache.second = {&second, 1};
+        cache.iterate = {&iterate, 1}; cache.area = {&area, 1};
         watching = true;
-        const auto status = detail::student_quantiles(ref.eta, &ref.u, &normal, 1, 2, &x, &first, &second);
+        const auto status = detail::student_quantiles(data, ref.eta, 2, cache);
         watching = false;
         check(status == detail::ExpectationStatus::ok, "implicit t quantile derivatives");
+        const double r = 1.0 - 2.0 * ref.eta, root = std::sqrt(r);
+        second = root * second - 2.0 * first / root - x / (r * root);
+        first = root * first - x / root;
+        x *= root;
         close(x, ref.x, 4e-12, "quantile mpmath value");
         close(first, ref.first, 5e-11, "quantile mpmath first");
         close(second, ref.second, 5e-11, "quantile mpmath second");
         for (int order : {0, 1}) {
             double sparse, sparse_first = sentinel, sparse_second = sentinel;
+            cache.eta = std::numeric_limits<double>::quiet_NaN(); cache.order = -1;
+            cache.x = {&sparse, 1}; cache.first = {&sparse_first, 1}; cache.second = {&sparse_second, 1};
             watching = true;
-            const auto r = detail::student_quantiles(ref.eta, &ref.u, &normal, 1, order,
-                                                     &sparse, &sparse_first, &sparse_second);
+            const auto status = detail::student_quantiles(data, ref.eta, order, cache);
             watching = false;
-            check(r == detail::ExpectationStatus::ok, "sparse quantile request");
+            check(status == detail::ExpectationStatus::ok, "sparse quantile request");
+            if (order >= 1) sparse_first = root * sparse_first - sparse / root;
+            sparse *= root;
             close(sparse, x, 0.0, "sparse quantile bitwise value");
             close(sparse_first, order == 1 ? first : sentinel, 0.0, "sparse quantile first");
             close(sparse_second, sentinel, 0.0, "sparse quantile skips second");
+        }
+    }
+}
+
+void cumulative_quantiles_test()
+{
+    detail::StudentProbabilities data;
+    data.identity_eta = {std::numeric_limits<double>::quiet_NaN()};
+    for (const auto& ref : quantile_references)
+        if (ref.eta == .1) data.u.push_back(ref.u);
+    const std::size_t references = data.u.size();
+    for (std::size_t i = 0; i < 4096; ++i) data.u.push_back((i + .5) / 4096.0);
+    data.u.push_back(.5);
+    data.u.push_back(.5);
+    const std::size_t n = data.u.size();
+    data.normal.resize(n);
+    data.permutation.resize(n);
+    std::iota(data.permutation.begin(), data.permutation.end(), 0);
+    std::sort(data.permutation.begin(), data.permutation.end(), [&](std::size_t a, std::size_t b) {
+        return std::min(data.u[a], 1.0 - data.u[a]) > std::min(data.u[b], 1.0 - data.u[b]);
+    });
+    for (std::size_t i = 0; i < n; ++i)
+        check(detail::quantile(DensityKind::normal, nullptr, data.u[i], data.normal[i])
+                  == detail::ExpectationStatus::ok, "batch Gaussian scores");
+    std::vector<double> work(5 * n);
+    detail::StudentQuantileCache cache;
+    cache.x = {work.data(), n}; cache.first = {work.data() + n, n};
+    cache.second = {work.data() + 2 * n, n}; cache.iterate = {work.data() + 3 * n, n};
+    cache.area = {work.data() + 4 * n, n};
+    for (double eta : {.1, .10001, .49, .4999, 1e-16, 0., 1e-6, .1}) {
+        watching = true;
+        const auto status = detail::student_quantiles(data, eta, 2, cache);
+        watching = false;
+        check(status == detail::ExpectationStatus::ok, "cumulative quantile correction");
+        if (status != detail::ExpectationStatus::ok) continue;
+        const double r = 1.0 - 2.0 * eta, root = std::sqrt(r);
+        std::size_t i = 0;
+        for (const auto& ref : quantile_references) {
+            if (ref.eta != eta) continue;
+            check(i < references, "batch reference index");
+            close(root * cache.x[i], ref.x, 4e-12, "cumulative mpmath value");
+            close(root * cache.first[i] - cache.x[i] / root, ref.first, 5e-11, "cumulative mpmath first");
+            close(root * cache.second[i] - 2.0 * cache.first[i] / root - cache.x[i] / (r * root),
+                  ref.second, 5e-11, "cumulative mpmath second");
+            ++i;
         }
     }
 }
@@ -2687,6 +2747,7 @@ int main(int argc,char** argv)
         domain_test();
         normal_limit_test();
         quantiles_test();
+        cumulative_quantiles_test();
         conditioning_test();
         size_test();
         check(allocations==0,"evaluations allocate nothing");

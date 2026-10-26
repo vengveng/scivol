@@ -19,16 +19,14 @@ inline bool identity(const InnovationDensity& marginal, CorrelationDensity copul
 }
 
 inline Status copula_scores(const CorrelationSample& sample, bool student, double eta, int order,
-                            double* x, double* first = nullptr, double* second = nullptr, int ready = -1, bool standardized = true)
+                            StudentQuantileCache& cache)
 {
     const std::size_t count = sample.eps.size();
     if (!student) {
-        std::copy_n(sample.normal.data(), count, x);
+        std::copy_n(sample.probabilities.normal.data(), count, cache.x.data());
         return Status::ok;
     }
-    const auto status = student_quantiles(eta, sample.probability.data(), sample.normal.data(),
-                                          count, order, x, first, second, ready, sample.eps.data(),
-                                          sample.identity_eta.data(), sample.series, standardized);
+    const auto status = student_quantiles(sample.probabilities, eta, order, cache);
     if (status != ExpectationStatus::ok) return Status::numerical_range;
     return Status::ok;
 }

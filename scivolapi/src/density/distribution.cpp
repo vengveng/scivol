@@ -792,72 +792,259 @@ ExpectationStatus quantiles(DensityKind kind, const double* shape, const double*
     return Status::ok;
 }
 
-ExpectationStatus student_quantiles(double eta, const double* u, const double* normal,
-                                    std::size_t n, int order, double* x,
-                                    double* first, double* second, int ready,
-                                    const double* original, const double* identity_eta, std::size_t series, bool standardized) noexcept
-{
-    Point p;
-    if (!prepare(DensityKind::student_t, &eta, p)) return Status::numerical_failure;
-    const auto c = t_gamma_ratio(eta, order);
-    const double r = 1.0 - 2.0 * eta, root = std::sqrt(r);
-    for (std::size_t i = 0; i < n; ++i) {
-        if (!valid_probability(u[i])) return Status::numerical_failure;
-        if (ready < 0) {
-            if (identity_eta && identity_eta[i % series] == eta) x[i] = original[i];
-            else if (eta == 0.0) x[i] = normal[i];
-            else {
-                const double small = std::min(u[i], 1.0 - u[i]);
-                double absolute;
-                if (small > 0.4) {
-                    if (!inverse_student_area(p, 0.5 - small, absolute)) return Status::numerical_failure;
-                } else if (!inverse_student(p, small, absolute, std::abs(normal[i]))) return Status::numerical_failure;
-                x[i] = u[i] < 0.5 ? -absolute : absolute;
-            }
-            if (!standardized) x[i] /= root;
-        }
-        if (order == 0) continue;
-        const double z = x[i], a = standardized ? std::abs(z) / root : std::abs(z), a2 = a * a;
-        if (eta == 0.0) {
-            first[i] = z * (a2 + (standardized ? -3.0 : 1.0)) / 4.0;
-            if (order >= 2) second[i] = z * ((5.0 * a2 + (standardized ? -8.0 : 16.0)) * a2 + (standardized ? -69.0 : 3.0)) / 48.0;
-            continue;
-        }
-        const auto endpoint = t_kernel(a, eta, order, 1.0, 0.0);
-        const double score = c.d1 - endpoint.eta;
-        // Differentiate the unscaled CDF integral in units of its endpoint density.
-        // Use the central integral near the median, the upper tail farther out.
-        const bool central = a < 1.0;
-        const double scale = central ? a : (1.0 + eta * a2) / ((1.0 + eta) * a);
-        auto integral = [&](int derivative, double& result) {
-            const auto integrand = [&](double t) {
-                const double s = t / (1.0 - t);
-                // The mapped tail and its two derivatives underflow before s = 700.
-                if (!central && s > 700.0) return 0.0;
-                const double v = central ? a * t : a + scale * std::expm1(s);
-                if (eta < 1.0 / 512.0 && !std::isfinite(v * v)) return 0.0;
-                const auto k = t_kernel(v, eta, derivative, 1.0, 0.0);
-                const double weight = std::exp(endpoint.t - k.t + (central ? 0.0 : s)) * scale
-                    / (central ? 1.0 : (1.0 - t) * (1.0 - t));
-                if (weight == 0.0) return 0.0;
-                const double score_eta = c.d1 - k.eta;
-                return weight * (derivative == 1 ? score_eta : score_eta * score_eta + c.d2 - k.etaeta);
-            };
-            return adaptive_integral(integrand, 0.0, 1.0, 2e-13 * std::max(1.0, scale), result);
-        };
-        double d1, d2;
-        if (!integral(1, d1)) return Status::numerical_failure;
-        if (central) d1 = -d1;
-        first[i] = std::copysign(1.0, z) * (standardized ? root * d1 - a / root : d1);
-        if (order >= 2) {
-            if (!integral(2, d2)) return Status::numerical_failure;
-            if (central) d2 = -d2;
-            const double curvature = d2 - 2.0 * score * d1 + endpoint.u * d1 * d1;
-            second[i] = std::copysign(1.0, z) * (standardized ? root * curvature - 2.0 * d1 / root - a / (r * root) : curvature);
-        }
-        if (!std::isfinite(first[i]) || (order >= 2 && !std::isfinite(second[i])))
-            return Status::numerical_failure;
+namespace {
+
+struct StudentIntegral {
+    double value = 0.0, first = 0.0, second = 0.0;
+};
+
+struct StudentSum {
+    CompensatedSum value, first, second;
+    void add(const StudentIntegral& v) noexcept
+    {
+        value.add(v.value); first.add(v.first); second.add(v.second);
     }
+    StudentIntegral total() const noexcept { return {value.total(), first.total(), second.total()}; }
+};
+
+StudentIntegral student_node(double x, double eta, const LogNormalizer& c, int order,
+                             double log_weight = 0.0) noexcept
+{
+    if (!std::isfinite(x * x)) return {};
+    const auto k = t_square_kernel(x * x, eta, order, 1.0, 0.0);
+    StudentIntegral v;
+    v.value = std::exp(c.value - 0.5 * log_2pi - k.t + log_weight);
+    if (v.value == 0.0) return v;
+    if (order >= 1) v.first = v.value * (c.d1 - k.eta);
+    if (order >= 2) v.second = v.value * ((c.d1 - k.eta) * (c.d1 - k.eta) + c.d2 - k.etaeta);
+    return v;
+}
+
+template<class Function, std::size_t N>
+StudentIntegral student_gauss(const Function& f, double left, double right,
+                              const double (&nodes)[N], const double (&weights)[N]) noexcept
+{
+    const double half = 0.5 * (right - left), middle = left + half;
+    StudentSum sum;
+    for (std::size_t i = 0; i < N; ++i) {
+        const auto a = f(std::fma(-half, nodes[i], middle));
+        const auto b = f(std::fma(half, nodes[i], middle));
+        sum.add({weights[i] * (a.value + b.value), weights[i] * (a.first + b.first),
+                 weights[i] * (a.second + b.second)});
+    }
+    auto v = sum.total();
+    return {half * v.value, half * v.first, half * v.second};
+}
+
+template<class Function>
+bool student_tail_integral(const Function& f, double left, double right, double budget, StudentIntegral& out,
+                            int depth = 0) noexcept
+{
+    const auto low = student_gauss(f, left, right, nodes16, weights16);
+    const auto high = student_gauss(f, left, right, nodes32, weights32);
+    // The partition depends only on g, so sparse derivative requests agree bitwise.
+    if (!std::isfinite(high.value)) return false;
+    if (std::abs(high.value - low.value) <= std::max(budget, 2e-14 * std::abs(high.value))) {
+        out = high;
+        return std::isfinite(high.first) && std::isfinite(high.second);
+    }
+    if (depth == 18) return false;
+    const double middle = left + 0.5 * (right - left);
+    StudentIntegral a, b;
+    if (!student_tail_integral(f, left, middle, budget * 0.5, a, depth + 1)
+        || !student_tail_integral(f, middle, right, budget * 0.5, b, depth + 1)) return false;
+    out = {a.value + b.value, a.first + b.first, a.second + b.second};
+    return true;
+}
+
+bool student_tail_anchor(double a, double eta, const LogNormalizer& c, int order,
+                         StudentIntegral& out) noexcept
+{
+    const auto endpoint = t_kernel(a, eta, 0, 1.0, 0.0);
+    const double scale = (1.0 + eta * a * a) / ((1.0 + eta) * a);
+    LogNormalizer relative = c;
+    relative.value = endpoint.t + 0.5 * log_2pi;
+    const auto integrand = [&](double t) {
+        const double s = t / (1.0 - t);
+        if (s > 700.0) return StudentIntegral{};
+        return student_node(a + scale * std::expm1(s), eta, relative, order,
+                            s + std::log(scale) - 2.0 * std::log1p(-t));
+    };
+    if (!student_tail_integral(integrand, 0.0, 1.0, 2e-14 * std::max(1.0, scale), out)) return false;
+    const double density = std::exp(c.value - 0.5 * log_2pi - endpoint.t);
+    out = {out.value * density, out.first * density, out.second * density};
+    return out.value > 0.0 && std::isfinite(out.value);
+}
+
+StudentIntegral student_gap(double left, double right, double eta, const LogNormalizer& c,
+                            int order) noexcept
+{
+    if (left == right) return {};
+    // Sparse gaps subdivide on the local decay scale.
+    const double scale = (1.0 + eta * left * left) / std::max(1.0, (1.0 + eta) * left);
+    const auto integrand = [&](double x) { return student_node(x, eta, c, order); };
+    constexpr double nodes2[] = {.57735026918962576451};
+    constexpr double weights2[] = {1.0};
+    constexpr double nodes4[] = {.33998104358485626480, .86113631159405257522};
+    constexpr double weights4[] = {.65214515486254614263, .34785484513745385737};
+    constexpr double nodes8[] = {.18343464249564980494, .52553240991632898582,
+                                 .79666647741362673959, .96028985649753623168};
+    constexpr double weights8[] = {.36268378337836198297, .31370664587788728734,
+                                   .22238103445337447054, .10122853629037625915};
+    if (right - left <= .0005 * scale)
+        return student_gauss(integrand, left, right, nodes2, weights2);
+    if (right - left <= .01 * scale)
+        return student_gauss(integrand, left, right, nodes4, weights4);
+    if (right - left <= .25 * scale)
+        return student_gauss(integrand, left, right, nodes8, weights8);
+    const double middle = left + 0.5 * (right - left);
+    const auto a = student_gap(left, middle, eta, c, order);
+    const auto b = student_gap(middle, right, eta, c, order);
+    return {a.value + b.value, a.first + b.first, a.second + b.second};
+}
+
+bool student_sweep(const StudentProbabilities& data, double eta, const LogNormalizer& c, int order,
+                    StudentQuantileCache& cache) noexcept
+{
+    const std::size_t n = data.u.size();
+    std::size_t central = 0;
+    auto write = [&](std::size_t i, const StudentIntegral& v) {
+        cache.area[i] = v.value;
+        if (order >= 1) cache.first[i] = v.first;
+        if (order >= 2) cache.second[i] = v.second;
+    };
+    StudentSum center;
+    double previous = 0.0;
+    for (; central < n; ++central) {
+        const std::size_t i = data.permutation[central];
+        const double a = cache.iterate[i];
+        if (a >= 1.0) break;
+        center.add(student_gap(previous, a, eta, c, order));
+        write(i, center.total());
+        previous = a;
+    }
+    if (central == n) return true;
+    const std::size_t last = data.permutation.back();
+    StudentIntegral anchor;
+    if (!student_tail_anchor(cache.iterate[last], eta, c, order, anchor)) return false;
+    StudentSum tail;
+    tail.add(anchor);
+    previous = cache.iterate[last];
+    for (std::size_t j = n; j-- > central;) {
+        const std::size_t i = data.permutation[j];
+        const double a = cache.iterate[i];
+        tail.add(student_gap(a, previous, eta, c, order));
+        write(i, tail.total());
+        previous = a;
+    }
+    return true;
+}
+
+bool student_correct(const StudentProbabilities& data, double eta, const LogNormalizer& c,
+                      StudentQuantileCache& cache) noexcept
+{
+    const std::size_t n = data.u.size();
+    for (int iteration = 0; iteration < 100; ++iteration) {
+        if (!student_sweep(data, eta, c, 0, cache)) return false;
+        bool converged = true;
+        double damping = 1.0, previous = 0.0, previous_step = 0.0;
+        for (std::size_t j = 0; j < n; ++j) {
+            const std::size_t i = data.permutation[j];
+            const double a = cache.iterate[i], small = std::min(data.u[i], 1.0 - data.u[i]);
+            const bool central = a < 1.0;
+            const double target = central ? 0.5 - small : small;
+            const double residual = cache.area[i] - target;
+            double step = 0.0;
+            if (std::abs(residual) > (central ? 1e-14 : 5e-14) * target) {
+                converged = false;
+                const double density = student_node(a, eta, c, 0).value;
+                step = central ? -residual / density
+                    : a * std::expm1(std::log(cache.area[i] / target) * cache.area[i] / (a * density));
+                if (!std::isfinite(step)) return false;
+            }
+            // A shared safeguarded Newton step preserves the fixed score order.
+            if (step < 0.0) damping = std::min(damping, -0.9 * a / step);
+            if (step < previous_step && a > previous)
+                damping = std::min(damping, 0.9 * (a - previous) / (previous_step - step));
+            cache.area[i] = step;
+            previous = a; previous_step = step;
+        }
+        if (converged) return true;
+        for (std::size_t i = 0; i < n; ++i) cache.iterate[i] += damping * cache.area[i];
+    }
+    return false;
+}
+
+}  // namespace
+
+ExpectationStatus student_quantiles(const StudentProbabilities& data, double eta, int order,
+                                    StudentQuantileCache& cache) noexcept
+{
+    if (!(eta >= 0.0 && eta < 0.5) || order < 0 || order > 2) return Status::numerical_failure;
+    const std::size_t n = data.u.size();
+    if (cache.eta == eta && cache.order >= order) return Status::ok;
+    const auto c = t_gamma_ratio(eta, order);
+    const double root = std::sqrt(1.0 - 2.0 * eta);
+    const bool same = cache.eta == eta && cache.order >= 0;
+    if (!same) {
+        bool ordered = true;
+        double previous = 0.0;
+        for (std::size_t j = 0; j < n; ++j) {
+            const std::size_t i = data.permutation[j];
+            double x = data.normal[i];
+            if (cache.order >= 0) {
+                const double delta = eta - cache.eta;
+                x = cache.x[i];
+                if (cache.order >= 1) x += delta * cache.first[i];
+                if (cache.order >= 2) x += 0.5 * delta * delta * cache.second[i];
+            }
+            if (data.identity_eta[i % data.series] == eta) x = data.original[i] / root;
+            if (eta == 0.0) x = data.normal[i];
+            else if (data.u[i] == 0.5) x = 0.0;
+            const double a = std::copysign(1.0, data.normal[i]) * x;
+            ordered = ordered && std::isfinite(a) && a >= previous;
+            cache.iterate[i] = a;
+            previous = a;
+        }
+        if (!ordered)
+            for (std::size_t i = 0; i < n; ++i) cache.iterate[i] = data.u[i] == 0.5 ? 0.0 : std::abs(data.normal[i]);
+        cache.order = -1;
+        if (eta != 0.0 && !student_correct(data, eta, c, cache)) {
+            for (std::size_t i = 0; i < n; ++i)
+                cache.iterate[i] = data.u[i] == 0.5 ? 0.0 : std::abs(data.normal[i]);
+            if (!student_correct(data, eta, c, cache)) return Status::numerical_failure;
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            cache.x[i] = std::copysign(cache.iterate[i], data.normal[i]);
+            if (data.identity_eta[i % data.series] == eta) cache.x[i] = data.original[i] / root;
+            cache.iterate[i] = std::abs(cache.x[i]);
+        }
+    }
+    if (eta == 0.0) {
+        for (std::size_t i = 0; i < n; ++i) {
+            const double x = cache.x[i], a2 = x * x;
+            if (order >= 1) cache.first[i] = x * (a2 + 1.0) / 4.0;
+            if (order >= 2) cache.second[i] = x * ((5.0 * a2 + 16.0) * a2 + 3.0) / 48.0;
+        }
+    } else if (order >= 1) {
+        cache.order = -1;
+        if (!student_sweep(data, eta, c, order, cache)) return Status::numerical_failure;
+        for (std::size_t i = 0; i < n; ++i) {
+            const double a = cache.iterate[i];
+            const auto endpoint = t_kernel(a, eta, order, 1.0, 0.0);
+            const double density = std::exp(c.value - 0.5 * log_2pi - endpoint.t);
+            const double sign = a < 1.0 ? -1.0 : 1.0;
+            const double first = sign * cache.first[i] / density;
+            if (order >= 2) cache.second[i] = std::copysign(1.0, cache.x[i])
+                * (sign * cache.second[i] / density - 2.0 * (c.d1 - endpoint.eta) * first
+                   + endpoint.u * first * first);
+            cache.first[i] = std::copysign(1.0, cache.x[i]) * first;
+            if (!std::isfinite(cache.first[i]) || (order >= 2 && !std::isfinite(cache.second[i])))
+                return Status::numerical_failure;
+        }
+    }
+    cache.eta = eta;
+    cache.order = order;
     return Status::ok;
 }
 }  // namespace scivolapi::detail

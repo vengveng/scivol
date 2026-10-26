@@ -128,7 +128,10 @@ def test_correlation_jet_matches_the_oracle(p, q, density, theta):
     eps = simulate(40, 3, seed=1)
     model = correlation_model(p, q, density)
     jet = api.CorrelationJet(model, eps)
-    target = np.asarray(jet.target)
+    target_theta = np.array(theta)
+    if density == "student_t":
+        target_theta[-1] = 0.0
+    target = np.asarray(jet.target(target_theta))
     np.testing.assert_allclose(target, eps.T @ eps / len(eps), rtol=1e-14)
     theta = np.array(theta)
     out = jet.theta(theta, api.VALUE | api.GRADIENT | api.HESSIAN | api.SCORES | api.TERMS)
@@ -148,7 +151,7 @@ def test_correlation_paths_are_correlation_matrices():
     assert r.shape == (200, 4, 4)
     np.testing.assert_allclose(np.diagonal(r, axis1=1, axis2=2), 1.0, rtol=1e-14)
     np.testing.assert_allclose(r, np.transpose(r, (0, 2, 1)), rtol=1e-14)
-    target = np.asarray(jet.target)
+    target = np.asarray(jet.target(np.array([.05, .9])))
     d = 1 / np.sqrt(np.diag(target))
     np.testing.assert_allclose(r[0], target * np.outer(d, d), rtol=1e-14)  # Q_0 is the target
     assert np.all(np.linalg.eigvalsh(r) > 0)
@@ -362,7 +365,7 @@ def test_copula_non_normal_marginals_and_sparse_requests(density, fixed_target):
     if density == "normal":
         scores = ndtri(u)
         expected = target if fixed_target else scores.T @ scores / len(scores)
-        np.testing.assert_allclose(jet.target, expected, rtol=2e-14, atol=2e-14)
+        np.testing.assert_allclose(jet.target(theta), expected, rtol=2e-14, atol=2e-14)
         ccc = CCC().fit_from_residuals(eps, Qbar=target, marginals=marginals)
         np.testing.assert_allclose(ccc.Qbar, expected, rtol=2e-14, atol=2e-14)
         np.testing.assert_allclose(ccc.Rt, np.broadcast_to(ccc.params.corr, ccc.Rt.shape), rtol=2e-14)
@@ -447,7 +450,7 @@ def test_student_target_is_checked_at_the_evaluated_eta():
     jet = api.CorrelationJet(correlation_model(density="student_t"), eps)
     out = jet.theta(np.array([.05, .9, .2]), 7)
     assert out["status"] == "ok"
-    assert np.linalg.det(np.asarray(jet.target)) > 0
+    assert np.linalg.det(np.asarray(jet.target(np.array([.05, .9, .2])))) > 0
 
 
 def test_matching_student_marginals_preserve_the_shape_derivatives():
@@ -460,6 +463,19 @@ def test_matching_student_marginals_preserve_the_shape_derivatives():
     out = jet.theta(theta, 7)
     f, g, h = oracle(theta, eps, None, 1, 1, "student_t", probabilities=u)
     assert out["value"] == pytest.approx(f, abs=3e-12)
-    np.testing.assert_allclose(jet.target, eps.T @ eps / len(eps), rtol=2e-14, atol=2e-14)
+    np.testing.assert_allclose(jet.target(theta), eps.T @ eps / len(eps), rtol=2e-14, atol=2e-14)
     np.testing.assert_allclose(out["gradient"], g, rtol=2e-10, atol=2e-10)
     np.testing.assert_allclose(out["hessian"], h, rtol=2e-10, atol=2e-9)
+
+
+def test_target_is_a_function_of_theta_before_and_after_evaluation():
+    eps = simulate(300, 3, seed=41)
+    model = correlation_model(density="student_t")
+    jet = api.CorrelationJet(model, eps)
+    theta = np.array([.04, .9, .12])
+    expected = jet.target(theta)
+    for eta in [.121, .4999, 0., 1e-16, .3]:
+        assert jet.theta(np.array([.04, .9, eta]), 7)["status"] == "ok"
+        np.testing.assert_allclose(jet.target(theta), expected, rtol=2e-13, atol=2e-14)
+    with pytest.raises(ValueError, match="target"):
+        jet.target(np.array([.04, .9, .5]))

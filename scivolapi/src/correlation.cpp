@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 
 #include "correlation/density.hpp"
@@ -44,8 +45,9 @@ void validate_sample(const CorrelationSample& sample)
     require(n > 0 && sample.eps.size() % n == 0 && sample.rows() >= 2,
             "standardized residuals must have at least two complete rows and one series");
     require(sample.target.size() == m, "the correlation target must be series x series");
-    require(sample.probability.size() == sample.eps.size() && sample.normal.size() == sample.eps.size()
-                && sample.marginals.size() == n && sample.identity_eta.size() == n,
+    require(sample.probabilities.u.size() == sample.eps.size() && sample.probabilities.normal.size() == sample.eps.size()
+                && sample.probabilities.permutation.size() == sample.eps.size()
+                && sample.marginals.size() == n && sample.probabilities.identity_eta.size() == n,
             "the correlation sample needs prepared marginal probabilities and scores");
     require(dc::finite(sample.eps.data(), sample.eps.size()), "standardized residuals must be finite");
     require(dc::finite(sample.target.data(), m), "the correlation target must be finite");
@@ -221,21 +223,14 @@ void derivatives(const Layout& layout, const double* q, const double* first, con
 }
 
 JetResult evaluate(const Layout& layout, const CorrelationSample& sample, const double* theta,
-                   unsigned request, JetOutput& out, std::span<double> correlations, Work& work)
+                   unsigned request, JetOutput& out, std::span<double> correlations, Work& work, detail::StudentQuantileCache& cache)
 {
     const std::size_t n = sample.series, rows = sample.rows(), m = n * n;
     const std::size_t k = layout.coefficients, d = layout.dimension, slots = layout.q + 1;
     const int order = (request & hessian) ? 2 : (request & (gradient | scores)) ? 1 : 0;
     const double eta = layout.student ? theta[k] : 0.0;
-    const int ready = eta == *work.cached_eta ? static_cast<int>(*work.cached_order) : -1;
-    if (!layout.student || ready < order) {
-        *work.cached_order = -1.0;
-        const Status transformed = dc::copula_scores(sample, layout.student, eta, order, work.x,
-                                                     work.x_first, work.x_second, ready, false);
-        if (transformed != Status::ok) return {transformed, 0};
-        *work.cached_eta = eta;
-        *work.cached_order = order;
-    }
+    const Status transformed = dc::copula_scores(sample, layout.student, eta, order, cache);
+    if (transformed != Status::ok) return {transformed, 0};
     if (layout.student && order >= 1) std::fill_n(work.target_first, m, 0.0);
     if (layout.student && order >= 2) std::fill_n(work.target_second, m, 0.0);
     // A common scale cancels from R and from the copula density ratio.
@@ -250,8 +245,6 @@ JetResult evaluate(const Layout& layout, const CorrelationSample& sample, const 
     } else dc::score_target(work.x, rows, n, work.target,
                             order >= 1 ? work.x_first : nullptr, work.target_first,
                             order >= 2 ? work.x_second : nullptr, work.target_second);
-    for (std::size_t i = 0; i < m; ++i)
-        work.reported_target[i] = sample.fixed_target ? sample.target[i] : scale * work.target[i];
     const dc::Constant constant = layout.student ? dc::student_constant(eta, n, order) : dc::Constant{};
     std::copy_n(work.target, m, work.ring);
     if (order >= 1) {
@@ -356,18 +349,20 @@ CorrelationSample CorrelationModel::prepare(std::span<const double> eps, std::si
     CorrelationSample sample;
     sample.eps = eps;
     sample.series = series;
+    sample.probabilities.series = series;
+    sample.probabilities.original = eps;
     sample.fixed_target = !target.empty();
     sample.target.resize(m);
-    sample.probability.resize(eps.size());
-    sample.normal.resize(eps.size());
-    sample.identity_eta.assign(series, std::numeric_limits<double>::quiet_NaN());
+    sample.probabilities.u.resize(eps.size());
+    sample.probabilities.normal.resize(eps.size());
+    sample.probabilities.identity_eta.assign(series, std::numeric_limits<double>::quiet_NaN());
     if (marginals.empty()) sample.marginals.assign(series, InnovationDensity{DensityKind::normal, {}});
     else sample.marginals.assign(marginals.begin(), marginals.end());
     for (std::size_t i = 0; i < series; ++i) {
         const auto& marginal = sample.marginals[i];
         require(marginal.shape.size() == detail::shape_domains(marginal.density).size(),
                 "each marginal needs its density's shape parameters");
-        if (marginal.density == DensityKind::student_t) sample.identity_eta[i] = marginal.shape[0];
+        if (marginal.density == DensityKind::student_t) sample.probabilities.identity_eta[i] = marginal.shape[0];
         for (std::size_t t = 0; t < rows; ++t) {
             const std::size_t a = t * series + i;
             double lower, upper;
@@ -376,14 +371,23 @@ CorrelationSample CorrelationModel::prepare(std::span<const double> eps, std::si
                     "a marginal probability could not be computed accurately");
             require(lower > 0.0 && lower < 1.0 && upper > 0.0,
                     "a marginal probability rounded to zero or one");
-            sample.probability[a] = lower;
-            if (dc::identity(marginal, CorrelationDensity::normal)) sample.normal[a] = eps[a];
-            else require(detail::quantile(DensityKind::normal, nullptr, lower, sample.normal[a])
+            sample.probabilities.u[a] = lower;
+            if (dc::identity(marginal, CorrelationDensity::normal)) sample.probabilities.normal[a] = eps[a];
+            else require(detail::quantile(DensityKind::normal, nullptr, lower, sample.probabilities.normal[a])
                              == detail::ExpectationStatus::ok, "a Gaussian copula score is not representable");
         }
     }
+    auto& permutation = sample.probabilities.permutation;
+    permutation.resize(eps.size());
+    std::iota(permutation.begin(), permutation.end(), 0);
+    const auto& u = sample.probabilities.u;
+    std::sort(permutation.begin(), permutation.end(), [&](std::size_t a, std::size_t b) {
+        const double left = std::min(u[a], 1.0 - u[a]), right = std::min(u[b], 1.0 - u[b]);
+        return left != right ? left > right
+                             : std::abs(sample.probabilities.normal[a]) < std::abs(sample.probabilities.normal[b]);
+    });
     if (!target.empty()) std::copy(target.begin(), target.end(), sample.target.begin());
-    else dc::score_target(sample.normal.data(), rows, series, sample.target.data());
+    else dc::score_target(sample.probabilities.normal.data(), rows, series, sample.target.data());
     validate_sample(sample);
     return sample;
 }
@@ -470,16 +474,27 @@ CorrelationJet::CorrelationJet(const CorrelationModel& model, const CorrelationS
     (void)dc::product(sample.rows(), layout.dimension);
     Work work{};
     work_.assign(dc::workspace(layout, sample.series, sample.rows(), nullptr, work), 0.0);
-    dc::workspace(layout, sample.series, sample.rows(), work_.data(), work);
-    *work.cached_order = -1.0;
-    std::copy(sample.target.begin(), sample.target.end(), work.reported_target);
+    dc::workspace(layout, sample.series, sample.rows(), work_.data(), work, &quantiles_);
 }
 
-std::span<const double> CorrelationJet::target() const noexcept
+Status CorrelationJet::target(std::span<const double> theta, std::span<double> out)
 {
+    const Layout layout(model_.spec());
+    const std::size_t n = sample_.series, m = n * n;
+    if (theta.size() != layout.dimension || out.size() != m) return Status::invalid_argument;
+    if (!model_.evaluable(theta)) return Status::not_evaluable;
+    if (sample_.fixed_target || !layout.student) {
+        std::copy(sample_.target.begin(), sample_.target.end(), out.begin());
+        return Status::ok;
+    }
     Work work{};
-    dc::workspace(Layout(model_.spec()), sample_.series, sample_.rows(), const_cast<double*>(work_.data()), work);
-    return {work.reported_target, sample_.series * sample_.series};
+    dc::workspace(layout, n, sample_.rows(), work_.data(), work, &quantiles_);
+    const double eta = theta[layout.coefficients];
+    const Status status = dc::copula_scores(sample_, true, eta, 0, quantiles_);
+    if (status != Status::ok) return status;
+    dc::score_target(quantiles_.x.data(), sample_.rows(), n, out.data());
+    for (double& v : out) v *= 1.0 - 2.0 * eta;
+    return Status::ok;
 }
 
 JetResult CorrelationJet::theta(std::span<const double> theta, unsigned request, JetOutput& out,
@@ -491,8 +506,8 @@ JetResult CorrelationJet::theta(std::span<const double> theta, unsigned request,
                         sample_.rows() * sample_.series * sample_.series)) return {};
     if (!model_.evaluable(theta)) return {Status::not_evaluable, 0};
     Work work{};
-    dc::workspace(layout, sample_.series, sample_.rows(), work_.data(), work);
-    return evaluate(layout, sample_, theta.data(), request, out, correlations, work);
+    dc::workspace(layout, sample_.series, sample_.rows(), work_.data(), work, &quantiles_);
+    return evaluate(layout, sample_, theta.data(), request, out, correlations, work, quantiles_);
 }
 
 JetResult CorrelationJet::z(std::span<const double> z, unsigned request, JetOutput& out)
@@ -502,14 +517,14 @@ JetResult CorrelationJet::z(std::span<const double> z, unsigned request, JetOutp
     if (request == 0 || (request & ~all_requests) || (request & (scores | paths)) || z.size() != d
         || !outputs_fit(request, out, {}, d, sample_.rows(), 0) || !dc::finite(z.data(), d)) return {};
     Work work{};
-    dc::workspace(layout, sample_.series, sample_.rows(), work_.data(), work);
+    dc::workspace(layout, sample_.series, sample_.rows(), work_.data(), work, &quantiles_);
     if (!layout.theta(z.data(), work.theta)) return {Status::not_evaluable, 0};
     JetOutput local;
     local.gradient = {work.g, d};
     local.hessian = {work.h, d * d};
     local.terms = out.terms;
     const unsigned internal = request | ((request & hessian) ? gradient : 0u);
-    const JetResult result = evaluate(layout, sample_, work.theta, internal, local, {}, work);
+    const JetResult result = evaluate(layout, sample_, work.theta, internal, local, {}, work, quantiles_);
     if (result.status != Status::ok) {
         if ((request & value) && (result.valid & value)) out.value = local.value;
         return {result.status, result.valid & request & (value | terms)};

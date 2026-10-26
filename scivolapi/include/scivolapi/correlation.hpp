@@ -7,6 +7,7 @@
 
 #include "jet.hpp"
 #include "model.hpp"
+#include "detail/student_quantiles.hpp"
 
 namespace scivolapi {
 
@@ -22,9 +23,8 @@ struct CorrelationSample {
     std::span<const double> eps;
     std::size_t series = 0;
     std::vector<double> target;
-    std::vector<double> probability, normal;
+    detail::StudentProbabilities probabilities;
     std::vector<InnovationDensity> marginals;
-    std::vector<double> identity_eta;
     bool fixed_target = false;
 
     [[nodiscard]] std::size_t rows() const noexcept { return series ? eps.size() / series : 0; }
@@ -69,8 +69,8 @@ public:
 
     [[nodiscard]] const CorrelationModel& model() const noexcept { return model_; }
     [[nodiscard]] const CorrelationSample& sample() const noexcept { return sample_; }
-    // Target at the last evaluated point; Gaussian scores before the first call.
-    [[nodiscard]] std::span<const double> target() const noexcept;
+    // Qbar(theta), independent of previous evaluations.
+    [[nodiscard]] Status target(std::span<const double> theta, std::span<double> out);
 
     // `paths` writes correlations (rows x series x series). JetOutput.paths is unused.
     JetResult theta(std::span<const double> theta, unsigned request, JetOutput& out,
@@ -82,6 +82,7 @@ private:
     const CorrelationModel& model_;
     const CorrelationSample& sample_;
     std::vector<double> work_;
+    detail::StudentQuantileCache quantiles_;
 };
 
 // Generated innovations and correlations: paths x horizon x series and

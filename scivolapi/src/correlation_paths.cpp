@@ -61,8 +61,18 @@ CorrelationPaths simulate_correlation(const CorrelationModel& model, std::span<c
     const DensityKind copula = student ? DensityKind::student_t : DensityKind::normal;
     const double* copula_shape = student ? &eta : nullptr;
     std::vector<double> scores(eps.size()), qbar(sample.target);
-    require(dc::copula_scores(sample, student, eta, 0, scores.data()) == Status::ok,
+    std::vector<double> iterate(student ? eps.size() : 0), area(iterate.size());
+    detail::StudentQuantileCache cache;
+    cache.x = scores;
+    cache.iterate = iterate;
+    cache.area = area;
+    require(dc::copula_scores(sample, student, eta, 0, cache) == Status::ok,
             "the observed copula scores could not be computed accurately");
+    if (student) {
+        const double root = std::sqrt(1.0 - 2.0 * eta);
+        for (std::size_t i = 0; i < scores.size(); ++i)
+            scores[i] = sample.probabilities.identity_eta[i % n] == eta ? eps[i] : root * scores[i];
+    }
     if (!sample.fixed_target) dc::score_target(scores.data(), rows, n, qbar.data());
 
     // Filter the observed rows: Q of the last q + 1 rows, slot r % (q + 1).

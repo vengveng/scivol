@@ -444,10 +444,12 @@ NB_MODULE(_scivolapi, m)
                  new (self) BoundCorrelationJet(std::make_shared<const CorrelationModel>(model), eps, square(target), marginals);
              },
              "model"_a, "eps"_a, "target"_a = nb::none(), "marginals"_a = std::vector<InnovationDensity>{})
-        .def_prop_ro("target", [](const BoundCorrelationJet& j) {
-            const auto target = j.jet.target();
-            return owned_matrix(std::vector<double>(target.begin(), target.end()), j.sample.series, j.sample.series);
-        })
+        .def("target", [](BoundCorrelationJet& j, const Vector& theta) {
+            std::vector<double> target(j.sample.series * j.sample.series);
+            if (j.jet.target(view(theta), target) != Status::ok)
+                throw std::domain_error("the correlation target could not be computed at theta");
+            return owned_matrix(std::move(target), j.sample.series, j.sample.series);
+        }, "theta"_a)
         .def("theta", [](BoundCorrelationJet& j, const Vector& theta, unsigned request) {
             return evaluate_correlation(j, theta, request, false);
         }, "theta"_a, "request"_a)

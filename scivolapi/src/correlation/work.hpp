@@ -21,11 +21,12 @@ struct Work {
     double *u, *w, *scratch, *scale, *v, *dv;
     double *g, *h, *row, *theta, *jac, *tmp;
     double *x, *x_first, *x_second, *target, *target_first, *target_second;
-    double *cached_eta, *cached_order, *reported_target;
+    double *quantile_iterate, *quantile_area;
 };
 
 // One size/carve definition; every multiplication and accumulated offset is checked.
-inline std::size_t workspace(const Layout& layout, std::size_t n, std::size_t rows, double* base, Work& out)
+inline std::size_t workspace(const Layout& layout, std::size_t n, std::size_t rows, double* base, Work& out,
+                             detail::StudentQuantileCache* cache = nullptr)
 {
     const std::size_t k = layout.dimension, d = layout.dimension, m = product(n, n);
     const std::size_t slots = layout.q + 1, pairs = packed_size(k);
@@ -61,9 +62,16 @@ inline std::size_t workspace(const Layout& layout, std::size_t n, std::size_t ro
     out.target = take(m);
     out.target_first = take(layout.student ? m : 0);
     out.target_second = take(layout.student ? m : 0);
-    out.reported_target = take(m);
-    out.cached_eta = take(1);
-    out.cached_order = take(1);
+    out.quantile_iterate = take(layout.student ? product(rows, n) : 0);
+    out.quantile_area = take(layout.student ? product(rows, n) : 0);
+    if (base && cache) {
+        const std::size_t count = product(rows, n), student_count = layout.student ? count : 0;
+        cache->x = {out.x, count};
+        cache->first = {out.x_first, student_count};
+        cache->second = {out.x_second, student_count};
+        cache->iterate = {out.quantile_iterate, student_count};
+        cache->area = {out.quantile_area, student_count};
+    }
     return at;
 }
 
