@@ -108,25 +108,15 @@ memoizes fits. Terminals rank by free parameters, then BIC; set
 reduction, encompassing and diagnostics. `method="qmle"` raises because robust
 LR calibration is unavailable.
 
-**GETS currently cannot certify adequacy.** The native in-sample Berkowitz PIT
-diagnostic has a fixed-parameter reference without estimation calibration.
-Non-rejection therefore returns `adequacy_unresolved`, with `selected=None`.
-Boundary and unavailable fourth-moment diagnostics also remain unresolved.
-The native graph currently omits APARCH power/asymmetry faces, skew-Gaussian
-faces and finite GH restrictions. Those missing restrictions are listed in
-`SelectionResult.limitations`. Cross-terminal union tests and equivalence
-deduplication beyond native specification identity are also unavailable. No
-default has been calibrated for the whole adaptive procedure.
-
-Constant variance is an independent root. Its encompassing test against a
-volatility GUM is unavailable, and the auxiliary one-sided no-ARCH score test
-still needs native implementation and calibration. It cannot be certified by
-substituting a GARCH boundary LR test.
+Adequacy requires residual Ljung-Box, estimation-corrected Li-Mak and joint
+Engle-Ng checks, combined with Holm at the diagnostic level. Constant variance
+also requires an ARCH-LM auxiliary-regression check. In-sample Berkowitz and
+DGT are reported without constraining adequacy. See [MODELS.md](MODELS.md#automatic-selection)
+for assumptions and current limits.
 
 `Auto().fit(y, x=None)` declares AR(1) with a selectable intercept crossed with
 GJR(1,1), EGARCH(1,1), APARCH(1,1), and skew-t, plus a constant-variance root.
-It uses the same `GeneralToSpecific` procedure and reports the same calibration
-limits. Its default search has not been reduced to meet a timing target.
+It uses the same `GeneralToSpecific` procedure.
 
 An IC search must explicitly enable or disable adequacy. Disabling it gives an
 IC ranking of certified fits without an adequacy claim.
@@ -158,7 +148,7 @@ Independent fits use a thread pool and deterministic node ordering.
 
 `ConfidenceSet` freezes the training procedure's terminal specifications and
 compares one-step predictive losses on a chronological holdout. GETS training
-requires its adequacy calibration; explicit IC training can disable adequacy.
+requires the adequacy checks; explicit IC training can disable adequacy.
 The holdout must contain at least 500 observations.
 
 ```python

@@ -245,6 +245,23 @@ SignBias sign_bias(std::span<const double> standardized, std::span<const double>
     return out;
 }
 
+TestStatistic arch_lm(std::span<const double> standardized, std::size_t lags)
+{
+    finite(standardized);
+    check_lags(standardized.size(), lags);
+    const std::size_t n = standardized.size() - lags;
+    std::vector<double> squared(standardized.size()), design(n * lags);
+    for (std::size_t t = 0; t < squared.size(); ++t) squared[t] = standardized[t] * standardized[t];
+    finite(squared);
+    for (std::size_t t = 0; t < n; ++t)
+        for (std::size_t k = 1; k <= lags; ++k) design[t * lags + k - 1] = squared[t + lags - k];
+    const auto fit = regress(std::span(squared).subspan(lags), design, lags);
+    if (fit.valid) return chi_test(n * (1.0 - fit.sse / fit.total), lags);
+    TestStatistic out;
+    out.df = lags;
+    return out;
+}
+
 Berkowitz berkowitz(std::span<const double> pit)
 {
     require(pit.size() >= 5, "Berkowitz requires at least five PIT observations");
@@ -262,64 +279,128 @@ Berkowitz berkowitz(std::span<const double> pit)
     return out;
 }
 
-LiMak li_mak(Jet& jet, std::span<const double> theta, std::size_t lags, Estimator estimator, bool estimated)
+namespace {
+
+// Orthonormal tangent directions of the active face, as rows. Open boundaries
+// cannot occur at a feasible point. Reorthogonalization handles redundant faces.
+std::vector<double> face_basis(const Model& model, std::span<const double> theta)
+{
+    const std::size_t d = model.dimension();
+    const auto faces = model.closed_face_normals(theta);
+    std::vector<double> normals, basis, direction(d);
+    auto append = [&](std::vector<double>& rows) {
+        for (int pass = 0; pass < 2; ++pass)
+            for (std::size_t row = 0; row < rows.size() / d; ++row) {
+                double dot = 0.0;
+                for (std::size_t j = 0; j < d; ++j) dot += direction[j] * rows[row * d + j];
+                for (std::size_t j = 0; j < d; ++j) direction[j] -= dot * rows[row * d + j];
+            }
+        double length = 0.0;
+        for (double x : direction) length = std::hypot(length, x);
+        if (length <= 64.0 * std::numeric_limits<double>::epsilon()) return;
+        for (double x : direction) rows.push_back(x / length);
+    };
+    for (std::size_t row = 0; row < faces.size() / d; ++row) {
+        std::copy_n(faces.begin() + row * d, d, direction.begin());
+        append(normals);
+    }
+    for (std::size_t j = 0; j < d; ++j) {
+        std::fill(direction.begin(), direction.end(), 0.0);
+        direction[j] = 1.0;
+        for (int pass = 0; pass < 2; ++pass)
+            for (std::size_t row = 0; row < normals.size() / d; ++row) {
+                double dot = 0.0;
+                for (std::size_t k = 0; k < d; ++k) dot += direction[k] * normals[row * d + k];
+                for (std::size_t k = 0; k < d; ++k) direction[k] -= dot * normals[row * d + k];
+            }
+        append(basis);
+    }
+    return basis;
+}
+
+struct DiagnosticEvaluation {
+    std::vector<double> e, h, z, sensitivity, score, information;
+    std::size_t parameters = 0;
+    TestStatus status = TestStatus::ok;
+    bool fourth_moment = false;
+};
+
+DiagnosticEvaluation evaluate_diagnostics(Jet& jet, std::span<const double> theta,
+                                          Estimator estimator, bool estimated)
 {
     const Model& model = jet.model();
     const std::size_t n = jet.sample().scored(), d = model.dimension();
     require(theta.size() == d, "parameter vector has the wrong length");
     finite(theta);
-    check_lags(n, lags);
+    DiagnosticEvaluation out;
+    out.parameters = d;
+    if (!model.feasible(theta)) { out.status = TestStatus::infeasible_parameters; return out; }
+    out.fourth_moment = std::isfinite(model.innovation_power_moment(theta, 0.0, 4.0));
+    const bool moments = out.fourth_moment;
+    out.e.resize(n); out.h.resize(n); out.z.resize(n);
+    out.sensitivity.resize(n * d); out.score.resize(n * d); out.information.resize(d * d);
+    JetOutput evaluated;
+    evaluated.paths = {out.e, out.h, out.z};
+    evaluated.log_variance_sensitivities = out.sensitivity;
+    evaluated.scores = out.score;
+    evaluated.hessian = out.information;
+    const unsigned request = paths | (estimated && moments ? log_variance_sensitivities | scores | hessian : 0u);
+    const auto result = jet.theta(theta, request, evaluated);
+    if ((result.valid & request) != request) out.status = TestStatus::invalid_derivatives;
+    if (!(result.valid & paths)) { out.e.clear(); out.h.clear(); out.z.clear(); }
+    if (!moments) out.status = TestStatus::fourth_moment_unavailable;
+    if (out.status != TestStatus::ok || !estimated) return out;
+    if (estimator == Estimator::qmle) {
+        const Model gaussian = model.gaussian_model();
+        require(model.capabilities().density_free_recursion || gaussian.dimension() == d,
+                "QMLE diagnostics need a density-free recursion");
+        out.parameters = gaussian.dimension();
+        out.score.resize(n * out.parameters);
+        out.information.resize(out.parameters * out.parameters);
+        Jet gaussian_jet(gaussian, jet.sample());
+        JetOutput gaussian_out;
+        gaussian_out.scores = out.score;
+        gaussian_out.hessian = out.information;
+        if ((gaussian_jet.theta(theta.first(out.parameters), scores | hessian, gaussian_out).valid & (scores | hessian)) != (scores | hessian))
+            out.status = TestStatus::invalid_qmle_derivatives;
+    }
+    return out;
+}
+
+LiMak li_mak_evaluated(Jet& jet, std::span<const double> theta, std::size_t lags,
+                       Estimator estimator, bool estimated, const DiagnosticEvaluation& evaluated)
+{
+    const Model& model = jet.model();
+    const std::size_t n = jet.sample().scored(), d = model.dimension(), parameters = evaluated.parameters;
+    const auto& z = evaluated.z;
+    const auto& sensitivity = evaluated.sensitivity;
+    const auto& score = evaluated.score;
     LiMak out;
     out.test.df = lags;
-    if (!model.feasible(theta)) { out.test.status = TestStatus::infeasible_parameters; return out; }
-    if (!std::isfinite(model.innovation_power_moment(theta, 0.0, 4.0))) {
-        out.test.status = TestStatus::fourth_moment_unavailable;
-        return out;
-    }
-    std::vector<double> e(n), h(n), z(n), sensitivity(n * d), score(n * d), information(d * d);
-    JetOutput evaluated;
-    evaluated.paths = {e, h, z};
-    evaluated.log_variance_sensitivities = sensitivity;
-    evaluated.scores = score;
-    evaluated.hessian = information;
-    const unsigned request = paths | (estimated ? log_variance_sensitivities | scores | hessian : 0u);
-    if ((jet.theta(theta, request, evaluated).valid & request) != request) {
-        out.test.status = TestStatus::invalid_derivatives;
-        return out;
-    }
-    // Gaussian QMLE shape estimates have no effect on a density-free recursion.
-    std::size_t parameters = d;
-    std::vector<double> inverse;
+    if (evaluated.status != TestStatus::ok) { out.test.status = evaluated.status; return out; }
+    std::vector<double> inverse(parameters * parameters, 0.0);
     if (estimated) {
-        std::vector<double> lower(d), upper(d), constraints(model.constraint_count()), jacobian(constraints.size() * d);
-        model.bounds(lower, upper);
-        model.constraints(theta, constraints, jacobian);
-        for (std::size_t j = 0; j < d; ++j)
-            if ((std::isfinite(lower[j]) && theta[j] == lower[j]) || (std::isfinite(upper[j]) && theta[j] == upper[j])) {
-                out.test.status = TestStatus::at_boundary;
-                return out;
-            }
-        for (double c : constraints) if (c <= 0.0) { out.test.status = TestStatus::at_boundary; return out; }
-        if (estimator == Estimator::qmle) {
-            const Model gaussian = model.gaussian_model();
-            require(model.capabilities().density_free_recursion || gaussian.dimension() == d,
-                    "QMLE diagnostics need a density-free recursion");
-            parameters = gaussian.dimension();
-            score.resize(n * parameters);
-            information.resize(parameters * parameters);
-            Jet gaussian_jet(gaussian, jet.sample());
-            JetOutput gaussian_out;
-            gaussian_out.scores = score;
-            gaussian_out.hessian = information;
-            if ((gaussian_jet.theta(theta.first(parameters), scores | hessian, gaussian_out).valid & (scores | hessian)) != (scores | hessian)) {
-                out.test.status = TestStatus::invalid_qmle_derivatives;
-                return out;
-            }
-        }
-        if (detail::invert_information(information, parameters, inverse) != Inference::available) {
+        const Model estimation_model = estimator == Estimator::qmle ? model.gaussian_model() : model;
+        const auto basis = face_basis(estimation_model, theta.first(parameters));
+        const std::size_t free = basis.size() / parameters;
+        std::vector<double> information(free * free, 0.0), conditional_inverse;
+        // Condition on the active closed face: fix its normal coordinates and
+        // drop them from both score and Hessian blocks. The restricted child is
+        // precisely this model; GJR one-sign faces retain the alpha=-gamma tangent.
+        for (std::size_t i = 0; i < free; ++i)
+            for (std::size_t j = 0; j < free; ++j)
+                for (std::size_t a = 0; a < parameters; ++a)
+                    for (std::size_t b = 0; b < parameters; ++b)
+                        information[i * free + j] += basis[i * parameters + a] * evaluated.information[a * parameters + b] * basis[j * parameters + b];
+        if (free && detail::invert_information(information, free, conditional_inverse) != Inference::available) {
             out.test.status = TestStatus::singular_information;
             return out;
         }
+        for (std::size_t a = 0; a < parameters; ++a)
+            for (std::size_t b = 0; b < parameters; ++b)
+                for (std::size_t i = 0; i < free; ++i)
+                    for (std::size_t j = 0; j < free; ++j)
+                        inverse[a * parameters + b] += basis[i * parameters + a] * conditional_inverse[i * free + j] * basis[j * parameters + b];
     }
     std::vector<double> v(n), moments(n * lags, 0.0), means(lags, 0.0), projection(lags * parameters, 0.0);
     out.derivative.assign(lags * d, 0.0);
@@ -349,6 +430,10 @@ LiMak li_mak(Jet& jet, std::span<const double> theta, std::size_t lags, Estimato
         for (std::size_t i = 0; i < lags; ++i)
             for (std::size_t j = 0; j < lags; ++j)
                 covariance[i * lags + j] += (moments[t * lags + i] - influence_mean[i]) * (moments[t * lags + j] - influence_mean[j]) / n;
+    out.autocorrelations.resize(lags);
+    for (std::size_t k = 0; k < lags; ++k) out.autocorrelations[k] = means[k] / gamma0;
+    out.covariance.resize(lags * lags);
+    for (std::size_t j = 0; j < covariance.size(); ++j) out.covariance[j] = covariance[j] / (gamma0 * gamma0);
     if (detail::invert_information(covariance, lags, covariance_inverse) != Inference::available) {
         out.test.status = TestStatus::singular_moment_covariance;
         return out;
@@ -357,10 +442,126 @@ LiMak li_mak(Jet& jet, std::span<const double> theta, std::size_t lags, Estimato
     for (std::size_t i = 0; i < lags; ++i)
         for (std::size_t j = 0; j < lags; ++j) statistic += n * means[i] * covariance_inverse[i * lags + j] * means[j];
     out.test = chi_test(statistic, lags);
-    out.autocorrelations.resize(lags);
-    for (std::size_t k = 0; k < lags; ++k) out.autocorrelations[k] = means[k] / gamma0;
-    out.covariance.resize(lags * lags);
-    for (std::size_t j = 0; j < covariance.size(); ++j) out.covariance[j] = covariance[j] / (gamma0 * gamma0);
+    return out;
+}
+
+// Prefix horizons share the same correlations and covariance, including the
+// estimation correction. Only the small leading covariance block is inverted.
+TestStatistic li_mak_prefix(const LiMak& full, std::size_t n, std::size_t lags)
+{
+    if (lags == full.test.df) return full.test;
+    TestStatistic out;
+    out.df = lags;
+    if (full.covariance.empty()) { out.status = full.test.status; return out; }
+    const std::size_t maximum = full.autocorrelations.size();
+    std::vector<double> covariance(lags * lags), inverse;
+    for (std::size_t i = 0; i < lags; ++i)
+        for (std::size_t j = 0; j < lags; ++j) covariance[i * lags + j] = full.covariance[i * maximum + j];
+    if (detail::invert_information(covariance, lags, inverse) != Inference::available) {
+        out.status = TestStatus::singular_moment_covariance;
+        return out;
+    }
+    double statistic = 0.0;
+    for (std::size_t i = 0; i < lags; ++i)
+        for (std::size_t j = 0; j < lags; ++j) statistic += n * full.autocorrelations[i] * inverse[i * lags + j] * full.autocorrelations[j];
+    return chi_test(statistic, lags);
+}
+
+} // namespace
+
+LiMak li_mak(Jet& jet, std::span<const double> theta, std::size_t lags, Estimator estimator, bool estimated)
+{
+    check_lags(jet.sample().scored(), lags);
+    const auto evaluated = evaluate_diagnostics(jet, theta, estimator, estimated);
+    return li_mak_evaluated(jet, theta, lags, estimator, estimated, evaluated);
+}
+
+Adequacy adequacy(Jet& jet, std::span<const double> theta, double level, Estimator estimator)
+{
+    require(level > 0.0 && level < 1.0, "diagnostic level must be between zero and one");
+    const std::size_t n = jet.sample().scored(), maximum = std::min<std::size_t>(20, n / 5);
+    Adequacy out;
+    out.level = level;
+    const bool constant_variance = jet.model().spec().volatility == VolatilityKind::constant;
+    if (constant_variance) out.volatility_gum = "unavailable";
+    auto add = [&](std::string name, TestStatistic test, bool required = true) {
+        out.checks.push_back({std::move(name), test, required, required, false});
+    };
+    const auto evaluated = evaluate_diagnostics(jet, theta, estimator, true);
+    const bool paths_valid = !evaluated.z.empty();
+    Portmanteau residual;
+    LiMak squared;
+    if (maximum) {
+        if (paths_valid) residual = portmanteau(evaluated.z, maximum, jet.model().residual_degrees_of_freedom());
+        squared = li_mak_evaluated(jet, theta, maximum, estimator, true, evaluated);
+    }
+    std::size_t previous = 0;
+    for (const std::size_t requested : {10u, 20u}) {
+        const std::size_t lag = std::min(requested, maximum);
+        if (lag && lag == previous) continue;
+        previous = lag;
+        TestStatistic lb, lm;
+        if (lag && paths_valid) {
+            double sum = 0.0;
+            for (std::size_t k = 1; k <= lag; ++k) sum += std::pow(residual.autocorrelations[k - 1], 2) / (n - k);
+            const std::size_t adjustment = jet.model().residual_degrees_of_freedom();
+            lb = chi_test(double(n) * (n + 2.0) * sum, lag > adjustment ? lag - adjustment : 0);
+            lm = li_mak_prefix(squared, n, lag);
+        } else if (!paths_valid) lb.status = lm.status = evaluated.status;
+        add("residual_ljung_box[" + std::to_string(lag) + "]", lb);
+        add("li_mak[" + std::to_string(lag) + "]", lm);
+        if (!lag) break;
+    }
+    const bool fourth_moment = evaluated.fourth_moment;
+    TestStatistic sign;
+    if (!paths_valid) sign.status = evaluated.status;
+    else if (!fourth_moment) sign.status = TestStatus::fourth_moment_unavailable;
+    else if (n >= 6) sign = sign_bias(evaluated.z, evaluated.e).joint;
+    add("sign_bias", sign);
+    if (constant_variance) {
+        TestStatistic arch;
+        if (!paths_valid) arch.status = evaluated.status;
+        else if (!fourth_moment) arch.status = TestStatus::fourth_moment_unavailable;
+        else if (maximum) arch = arch_lm(evaluated.z, std::min<std::size_t>(10, maximum));
+        add("arch_lm", arch);
+    }
+    TestStatistic berk, cell;
+    if (paths_valid) {
+        std::vector<double> pit(n);
+        const auto law = jet.model().innovation_density(theta);
+        bool valid = true, interior = true;
+        for (std::size_t t = 0; t < n; ++t) {
+            double upper;
+            valid = valid && detail::distribution(law.density, law.shape.data(), evaluated.z[t], pit[t], upper) == detail::ExpectationStatus::ok;
+            interior = interior && pit[t] > 0.0 && pit[t] < 1.0;
+        }
+        if (valid) {
+            cell = dgt(pit, 40);
+            if (interior && n >= 5) berk = berkowitz(pit).test;
+            else if (!interior) berk.status = TestStatus::pit_endpoint;
+        } else berk.status = cell.status = TestStatus::numerical_range;
+    } else berk.status = cell.status = evaluated.status;
+    add("berkowitz", berk, false);
+    add("dgt", cell, false);
+    std::vector<std::size_t> family;
+    bool unresolved = false, rejected = false;
+    for (std::size_t i = 0; i < out.checks.size(); ++i) {
+        const auto& check = out.checks[i];
+        if (!check.required) continue;
+        family.push_back(i);
+        unresolved = unresolved || (check.test.status != TestStatus::ok && check.test.status != TestStatus::probability_underflow);
+    }
+    auto log_p = [&](std::size_t i) {
+        const auto& test = out.checks[i].test;
+        return (test.status == TestStatus::ok || test.status == TestStatus::probability_underflow) ? test.log_p_value : 0.0;
+    };
+    std::stable_sort(family.begin(), family.end(), [&](auto a, auto b) { return log_p(a) < log_p(b); });
+    for (std::size_t i = 0; i < family.size(); ++i) {
+        if (log_p(family[i]) > std::log(level / double(family.size() - i))) break;
+        out.checks[family[i]].holm_reject = true;
+        rejected = true;
+    }
+    out.status = unresolved ? AdequacyStatus::adequacy_unresolved : (rejected ? AdequacyStatus::rejected : AdequacyStatus::adequate);
     return out;
 }
 

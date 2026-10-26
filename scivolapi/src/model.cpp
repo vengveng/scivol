@@ -281,6 +281,34 @@ void Model::bounds(std::span<double> lower, std::span<double> upper) const
         }
 }
 
+std::vector<double> Model::closed_face_normals(std::span<const double> theta) const
+{
+    check_size(theta, dimension());
+    const Layout layout(spec_);
+    const std::size_t d = dimension();
+    std::vector<double> normals;
+    auto coordinate = [&](std::size_t j) {
+        const std::size_t at = normals.size();
+        normals.resize(at + d, 0.0);
+        normals[at + j] = 1.0;
+    };
+    for (std::size_t k = 0; k < layout.simplex_count; ++k) {
+        const std::size_t j = layout.simplex_index[k];
+        const bool leverage = spec_.volatility == VolatilityKind::gjr && j >= layout.gamma && j < layout.beta;
+        if (!leverage && theta[j] == 0.0) coordinate(j);
+    }
+    for (std::size_t k = 0; k < layout.shape_count; ++k)
+        if (layout.shape_domain[k].closed_lower && theta[layout.shapes + k] == layout.shape_domain[k].lower)
+            coordinate(layout.shapes + k);
+    if (spec_.volatility == VolatilityKind::gjr)
+        for (std::size_t k = 0; k < spec_.p; ++k)
+            if (theta[layout.alpha + k] + theta[layout.gamma + k] == 0.0) {
+                coordinate(layout.alpha + k);
+                normals[normals.size() - d + layout.gamma + k] = 1.0;
+            }
+    return normals;
+}
+
 std::size_t Model::constraint_count() const noexcept
 {
     const Layout layout(spec_);

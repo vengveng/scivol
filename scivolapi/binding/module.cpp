@@ -278,6 +278,11 @@ NB_MODULE(_scivolapi, m)
 {
     m.doc() = "scivolapi: native volatility-model mathematics";
 
+    nb::enum_<AdequacyStatus>(m, "AdequacyStatus")
+        .value("adequate", AdequacyStatus::adequate)
+        .value("rejected", AdequacyStatus::rejected)
+        .value("adequacy_unresolved", AdequacyStatus::adequacy_unresolved);
+
     nb::enum_<TestStatus>(m, "TestStatus")
         .value("ok", TestStatus::ok)
         .value("not_estimable", TestStatus::not_estimable)
@@ -797,6 +802,9 @@ NB_MODULE(_scivolapi, m)
         out["chi2_stat"] = out["statistic"];
         return out;
     }, "pit"_a, "cells"_a = 40);
+    m.def("arch_lm", [](const Vector& z, std::size_t lags) {
+        return test_dictionary(arch_lm(view(z), lags));
+    }, "standardized"_a, "lags"_a = 10);
     m.def("sign_bias", [](const Vector& z, const Vector& e) { return sign_bias_dictionary(sign_bias(view(z), view(e))); },
           "standardized"_a, "residual"_a);
     m.def("berkowitz", [](const Vector& u) { return berkowitz_dictionary(berkowitz(view(u))); }, "pit"_a);
@@ -829,59 +837,26 @@ NB_MODULE(_scivolapi, m)
     }, "jet"_a, "theta"_a, "cells"_a = 40, "lags"_a = 10, "df_adjustment"_a = nb::none(),
        "estimator"_a = Estimator::mle, "estimated"_a = true, "alpha"_a = 0.05);
     m.def("selection_diagnostics", [](BoundJet& jet, const Vector& theta, double alpha, Estimator estimator) {
-        if (!(alpha > 0.0 && alpha < 1.0)) throw std::invalid_argument("diagnostic level must be between zero and one");
-        const std::size_t maximum = std::min<std::size_t>(20, jet.sample.scored()/5);
+        Adequacy tests;
+        {
+            nb::gil_scoped_release release;
+            tests = adequacy(jet.jet, view(theta), alpha, estimator);
+        }
         nb::list checks;
-        std::vector<TestStatistic> family;
-        std::vector<bool> calibrated_tests;
-        auto add = [&](std::string name, const TestStatistic& test, bool calibrated) {
-            nb::dict record = test_dictionary(test, alpha);
-            record["name"] = name;
-            record["calibrated"] = calibrated;
+        for (const auto& check : tests.checks) {
+            nb::dict record = test_dictionary(check.test, tests.level);
+            record["name"] = check.name;
+            record["required"] = check.required;
+            record["calibrated"] = check.calibrated;
+            record["holm_reject"] = check.holm_reject;
             checks.append(record);
-            family.push_back(test);
-            calibrated_tests.push_back(calibrated);
-        };
-        bool first = true;
-        std::size_t previous = 0;
-        for (const std::size_t requested : {10u, 20u}) {
-            const std::size_t lag = std::min(requested, maximum);
-            if (!lag || lag == previous) continue;
-            previous = lag;
-            auto tests = diagnostics(jet.jet, view(theta), 40, lag,
-                                     jet.model->residual_degrees_of_freedom(), estimator);
-            add("residual_ljung_box[" + std::to_string(lag) + "]", tests.residual.ljung_box, true);
-            add("li_mak[" + std::to_string(lag) + "]", tests.squared_residual.test, true);
-            if (first) {
-                const bool moments = tests.squared_residual.test.status != TestStatus::fourth_moment_unavailable;
-                add("sign_bias", tests.asymmetry.joint, moments);
-                add("berkowitz", tests.density.test, false);
-                first = false;
-            }
         }
-        bool unresolved = first;
-        std::vector<double> p;
-        for (std::size_t i = 0; i < family.size(); ++i) {
-            const auto& t = family[i];
-            if (!calibrated_tests[i]) { unresolved = true; p.push_back(1.0); }
-            else if (t.status == TestStatus::ok && std::isfinite(t.p_value)) p.push_back(t.p_value);
-            else if (t.status == TestStatus::probability_underflow && std::isfinite(t.log_p_value)) p.push_back(0.0);
-            else { unresolved = true; p.push_back(1.0); }
-        }
-        std::sort(p.begin(), p.end());
-        bool rejected = false;
-        for (std::size_t i = 0; i < p.size(); ++i) {
-            if (p[i] <= alpha/static_cast<double>(p.size()-i)) rejected = true;
-            else break;
-        }
-        nb::dict out;
+        nb::dict out, encompassing;
         out["checks"] = checks;
-        out["status"] = rejected ? "rejected" : (unresolved ? "adequacy_unresolved" : "adequate");
-        out["reason"] = "In-sample Berkowitz estimation calibration is unavailable; boundary and moment failures remain unresolved.";
-        out["holm_level"] = alpha;
-        out["no_arch_status"] = jet.model->spec().volatility == VolatilityKind::constant
-            ? "unavailable: identified auxiliary one-sided score calibration is not implemented" : "not_applicable";
-        out["no_arch_lags"] = std::min<std::size_t>(10, maximum);
+        out["status"] = nb::cast(tests.status).attr("name");
+        out["holm_level"] = tests.level;
+        if (!tests.volatility_gum.empty()) encompassing["volatility_gum"] = tests.volatility_gum;
+        out["encompassing"] = encompassing;
         return out;
     }, "jet"_a, "theta"_a, "alpha"_a = 0.01, "estimator"_a = Estimator::mle);
     m.def("predictive_losses", [](BoundJet& jet, const Vector& theta, const std::string& loss) {

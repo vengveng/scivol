@@ -18,14 +18,7 @@ def search(**kwargs):
 
 @pytest.fixture
 def garch_data():
-    return (GARCH()+Normal()).simulate(1800, [.1, .15, .7], seed=17).data
-
-
-@pytest.fixture
-def adequate_verdict(monkeypatch):
-    """Exercise traversal independently of the unavailable diagnostic calibration."""
-    monkeypatch.setattr(api, 'selection_diagnostics',
-                        lambda *args: dict(status='adequate', no_arch_status='ok'))
+    return (GARCH()+Normal()).simulate(3000, [.1, .15, .7], seed=17).data
 
 
 def test_templates_declare_generators_and_native_closure():
@@ -40,7 +33,7 @@ def test_templates_declare_generators_and_native_closure():
         GARCH('auto')
 
 
-def test_gets_reduces_native_graph_and_records_joint_tests(garch_data, adequate_verdict):
+def test_gets_reduces_native_graph_and_records_joint_tests(garch_data):
     result = search(constant_variance=False).fit(garch_data, n_jobs=2)
     assert isinstance(result.selected, EstimationResult)
     assert str(result.selected_model) == 'GARCH(1,1)+Normal'
@@ -59,17 +52,19 @@ def test_gets_reduces_native_graph_and_records_joint_tests(garch_data, adequate_
     assert not result.table().empty
 
 
-def test_real_diagnostics_do_not_certify_uncalibrated_pits(garch_data):
+def test_in_sample_pits_are_reported_without_blocking_adequacy(garch_data):
     result = search(constant_variance=False).fit(garch_data)
-    assert result.selected is None and not result.terminals
-    assert result.status in ('adequacy_unresolved', 'no_adequate_model')
-    assert all(not c.adequate for c in result.candidates)
-    assert any(c.diagnostics['status'] == 'adequacy_unresolved' for c in result.candidates)
-    assert all(t['decision'] != 'accepted' for t in result.tests)
-    assert 'not been calibrated' in result.summary()
+    assert result.status == 'selected'
+    for candidate in result.candidates:
+        if not candidate.certified:
+            continue
+        reported = [c for c in candidate.diagnostics['checks'] if c['name'] in ('berkowitz', 'dgt')]
+        assert len(reported) == 2
+        assert all(not c['required'] and not c['calibrated'] for c in reported)
+    assert not hasattr(result, 'limitations')
 
 
-def test_thread_scheduling_does_not_change_paths_or_decisions(garch_data, adequate_verdict):
+def test_thread_scheduling_does_not_change_paths_or_decisions(garch_data):
     serial = search(constant_variance=False).fit(garch_data, n_jobs=1)
     parallel = search(constant_variance=False).fit(garch_data, n_jobs=4)
     assert serial.paths == parallel.paths
@@ -79,7 +74,7 @@ def test_thread_scheduling_does_not_change_paths_or_decisions(garch_data, adequa
     np.testing.assert_array_equal(serial.selected.params, parallel.selected.params)
 
 
-def test_budget_returns_best_certified_candidate_and_frontier(garch_data, adequate_verdict):
+def test_budget_returns_best_certified_candidate_and_frontier(garch_data):
     result = search(constant_variance=False).fit(garch_data,
                                                procedure=GeneralToSpecific(max_fits=1))
     assert result.status == 'budget_exhausted'
@@ -129,7 +124,8 @@ def test_constant_root_is_independent_and_encompassing_unavailable(garch_data):
     constant = result.candidates[0]
     assert constant.model.constant_variance
     assert constant.encompassing['volatility_gum'] == 'unavailable'
-    assert constant.diagnostics['no_arch_status'].startswith('unavailable')
+    arch = next(c for c in constant.diagnostics['checks'] if c['name'] == 'arch_lm')
+    assert arch['status'] == 'ok' and arch['required'] and arch['holm_reject']
     assert result.selected is None
 
 
@@ -170,23 +166,45 @@ def test_native_predictive_losses(garch_data, loss):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize('density,truth', [(Normal(), [.1, .15, .7]), (StudentT(), [.1, .15, .7, 1/5])])
-def test_density_dgp_ic_recovery_with_adequacy_explicitly_disabled(density, truth):
-    y = (GARCH()+density).simulate(5000, truth, seed=51).data
-    result = Search(volatility=[GARCH()], density=[SkewT()],
-                    constant_variance=False).fit(y, procedure=InformationCriterion('bic', adequacy=False))
-    fitted = result.selected._native()[0].innovation_density(result.selected.params)
-    assert fitted.density == (api.DensityKind.normal if isinstance(density, Normal) else api.DensityKind.student_t)
-    if fitted.shape:
-        assert fitted.shape[0] > 0
+def test_auto_garch_normal_dgp():
+    y = (GARCH()+Normal()).simulate(5000, [.1, .15, .7], seed=51).data
+    result = Auto().fit(y)
+    assert result.status == 'selected', result.summary()
+    volatility = result.selected_model.get_component(Role.VOLATILITY)
+    assert type(volatility) is GARCH and (volatility.p, volatility.q) == (1, 1), result.summary()
+    law = result.selected._native()[0].innovation_density(result.selected.params)
+    assert law.density == api.DensityKind.normal or (law.density == api.DensityKind.student_t and law.shape[0] == 0), result.summary()
 
 
 @pytest.mark.slow
-def test_gjr_dgp_keeps_asymmetry_when_reduction_rejects_or_is_unresolved(adequate_verdict):
-    y = (GJRGARCH()+Normal()).simulate(5000, [.05, .025, .22, .82], seed=81).data
+def test_gjr_dgp_keeps_real_leverage():
+    y = (GJRGARCH()+Normal()).simulate(5000, [.05, .04, .1, .85], seed=81).data
     result = search(constant_variance=False).fit(y)
-    assert isinstance(result.selected_model.get_component(Role.VOLATILITY), GJRGARCH)
-    assert any(t['restriction'] == 'volatility.symmetry' and t['decision'] != 'accepted' for t in result.tests)
+    assert result.status == 'selected', result.summary()
+    assert isinstance(result.selected_model.get_component(Role.VOLATILITY), GJRGARCH), result.summary()
+    assert result.selected.params[2] > 0
+    assert any(t['restriction'] == 'volatility.symmetry' and t['decision'] == 'rejected' for t in result.tests)
+
+
+@pytest.mark.slow
+def test_student_dgp_keeps_tail_parameter():
+    y = (GARCH()+StudentT()).simulate(5000, [.1, .15, .7, 1/6], seed=51).data
+    result = search(constant_variance=False).fit(y)
+    assert result.status == 'selected', result.summary()
+    law = result.selected._native()[0].innovation_density(result.selected.params)
+    assert law.density in (api.DensityKind.student_t, api.DensityKind.skew_t)
+    assert law.shape[0] > 0
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('phi', [0., .3])
+def test_mean_dgp_keeps_only_real_ar_term(phi):
+    y = (ARX(1, constant=False)+GARCH()+Normal()).simulate(
+        4000, [phi, .1, .15, .7], seed=92).data
+    result = Search(mean=[ARX(1, constant=False)], volatility=[GJRGARCH()],
+                    density=[SkewT()], constant_variance=False).fit(y)
+    assert result.status == 'selected', result.summary()
+    assert result.selected._native()[0].spec.mean.ar == int(phi != 0), result.summary()
 
 
 @pytest.mark.slow
@@ -206,13 +224,12 @@ def test_predictive_confidence_set_is_aligned_and_reproducible():
 
 
 @pytest.mark.slow
-def test_iid_dgp_selects_independent_constant_root_by_ic():
+def test_auto_iid_dgp_selects_constant_variance():
     y = np.random.default_rng(74).normal(size=5000)
-    result = Search(volatility=[GARCH()], density=[Normal()], closure=False).fit(
-        y, procedure=InformationCriterion('bic', adequacy=False))
-    assert result.selected._native()[0].constant_variance
+    result = Auto().fit(y)
+    assert result.status == 'selected', result.summary()
+    assert result.selected._native()[0].constant_variance, result.summary()
     assert result.selected.converged
-    assert len(result.selected.params) == 1
 
 
 def test_selected_model_supports_threaded_batches(garch_data):
@@ -234,7 +251,7 @@ def test_budget_includes_full_sample_deployment_refit(garch_data):
     assert result.fit_counts['full_sample_refits'] == 1
 
 
-def test_budget_does_not_promote_a_rejected_child(adequate_verdict):
+def test_budget_does_not_promote_a_rejected_child():
     y = (GJRGARCH()+Normal()).simulate(3000, [.05, .025, .22, .82], seed=81).data
     result = Search(volatility=[GJRGARCH()], density=[Normal()],
                     constant_variance=False).fit(y,

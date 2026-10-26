@@ -3,6 +3,7 @@
 #include <array>
 #include <limits>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "fit.hpp"
@@ -53,6 +54,9 @@ struct SignBias {
 };
 // Regress z_t^2 on lagged I(e<0), I(e<0)e and I(e>=0)e (Engle-Ng).
 SignBias sign_bias(std::span<const double> standardized, std::span<const double> residual);
+// Engle (1982): auxiliary OLS of z_t^2 on an intercept and q lagged squares.
+// Uses n_aux R^2 ~ chi-square(q), with n_aux = rows - q.
+TestStatistic arch_lm(std::span<const double> standardized, std::size_t lags);
 
 struct Berkowitz {
     TestStatistic test;
@@ -85,9 +89,29 @@ struct LiMak {
 // sandwich, including moment-score cross terms, for BOTH MLE and QMLE.
 // QMLE uses the Gaussian stage only, valid when density_free_recursion is true.
 // This is exactly the first stage used by staged QMLE fits; shapes do not affect z.
-// Requires interior, regular estimates and a finite innovation fourth moment.
+// Requires regular information conditional on the active face and a finite
+// innovation fourth moment. Closed-face normals are held fixed in the correction.
 LiMak li_mak(Jet& jet, std::span<const double> theta, std::size_t lags,
              Estimator estimator = Estimator::mle, bool estimated = true);
+
+enum class AdequacyStatus { adequate, rejected, adequacy_unresolved };
+struct AdequacyCheck {
+    std::string name;
+    TestStatistic test;
+    bool required = true, calibrated = true, holm_reject = false;
+};
+struct Adequacy {
+    std::vector<AdequacyCheck> checks;
+    AdequacyStatus status = AdequacyStatus::adequacy_unresolved;
+    double level = 0.01;
+    std::string volatility_gum; // empty when inapplicable
+};
+// Required: residual Ljung-Box and corrected Li-Mak at min(10,n/5),
+// min(20,n/5), deduplicated; joint Engle-Ng; ARCH-LM for constant variance.
+// Holm applies only to required checks. In-sample Berkowitz/DGT are reported
+// with calibrated=false and never constrain adequacy.
+Adequacy adequacy(Jet&, std::span<const double> theta, double level = 0.01,
+                  Estimator = Estimator::mle);
 
 struct Diagnostics {
     std::vector<double> pit;

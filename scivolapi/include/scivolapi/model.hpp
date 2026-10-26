@@ -168,6 +168,10 @@ public:
     void constraints(std::span<const double> theta, std::span<double> values,
                      std::span<double> jacobian) const;
 
+    // Active closed-domain face normals, row-major with dimension() columns.
+    // Excludes representational chart margins at genuinely open boundaries.
+    [[nodiscard]] std::vector<double> closed_face_normals(std::span<const double> theta) const;
+
     [[nodiscard]] std::vector<double> start(const Sample& sample) const;
 
     // Exact data scaling: theta for data y maps to `scaled` for data y * factor

@@ -15,7 +15,8 @@ from statsmodels.stats.diagnostic import acorr_ljungbox
 from statsmodels.regression.linear_model import OLS
 from statsmodels.stats.sandwich_covariance import cov_hac
 
-from scivol import ARMA, GARCH, Normal, SkewT
+from scivol import ARMA, GARCH, GJRGARCH, Normal, SkewT, StudentT
+from scivol._fit import native_spec
 from scivol import _scivolapi as api
 from tests._oracle import _jax_modules
 from tests.test_scivolapi_mean import mean_spec, mean_point, model_for, row_terms, volatility_point
@@ -375,12 +376,10 @@ def test_li_mak_joint_influence_reference_including_skew_and_qmle():
         np.testing.assert_allclose(actual['covariance'], covariance/np.mean(v*v)**2, rtol=2e-10, atol=2e-10)
 
 
-def test_li_mak_reports_invalid_fourth_moment_and_boundary():
+def test_li_mak_reports_invalid_fourth_moment():
     y = np.random.default_rng(781).normal(size=300)
     model = model_for(mean_spec(constant=False), 'garch', 'student_t')
     assert api.li_mak(api.Jet(model, y), np.array([.1, .1, .8, 1/3]), 5)['status'] == 'fourth_moment_unavailable'
-    model = model_for(mean_spec(constant=False), 'garch', 'normal')
-    assert api.li_mak(api.Jet(model, y), np.array([.1, 0., .8]), 5)['status'] == 'at_boundary'
 
 
 @pytest.mark.slow
@@ -417,3 +416,107 @@ def test_li_mak_monte_carlo_size(joint_mean):
     assert .02 <= corrected_size <= .085
     assert uncorrected_size < .025
     assert corrected_size-uncorrected_size >= .02
+
+
+@pytest.mark.parametrize('lags', [1, 10])
+def test_arch_lm_against_auxiliary_ols(lags):
+    z = np.random.default_rng(250).normal(size=2000)
+    squared = z*z
+    design = np.column_stack([np.ones(len(z)-lags)] +
+                             [squared[lags-k:-k] for k in range(1, lags+1)])
+    fit = OLS(squared[lags:], design).fit()
+    expected = (len(z)-lags)*fit.rsquared
+    actual = api.arch_lm(z, lags)
+    assert actual['status'] == 'ok' and actual['df'] == lags
+    assert actual['statistic'] == pytest.approx(expected, rel=2e-11)
+    assert actual['p_value'] == pytest.approx(stats.chi2.sf(expected, lags), rel=2e-11)
+    assert api.arch_lm(np.ones(100), lags)['status'] == 'not_estimable'
+
+
+@pytest.mark.parametrize('rows,horizons', [(500, [10, 20]), (75, [10, 15]), (40, [8])])
+def test_adequacy_reuses_horizons_and_holm_required_family(rows, horizons):
+    y = (GARCH()+Normal()).simulate(rows, [.1, .15, .7], seed=351).data
+    fitted = GARCH().fit(y)
+    model = model_for(mean_spec(constant=False), 'garch', 'normal')
+    jet = api.Jet(model, y)
+    theta = np.ascontiguousarray(fitted.params)
+    tests = api.selection_diagnostics(jet, theta, .01)
+    checks = {c['name']: c for c in tests['checks']}
+    point = jet.theta(theta, api.PATHS)
+    assert len(checks) == 2*len(horizons)+3
+    for lag in horizons:
+        for name, expected in [('residual_ljung_box', api.portmanteau(point['innovation'], lag)),
+                               ('li_mak', api.li_mak(jet, theta, lag))]:
+            actual = checks[f'{name}[{lag}]']
+            assert actual['status'] == expected['status']
+            np.testing.assert_allclose(actual['statistic'], expected['statistic'], rtol=2e-10, equal_nan=True)
+    def log_p(check):
+        return check['log_p_value'] if check['status'] in ('ok', 'probability_underflow') else 0.
+    family = sorted((c for c in checks.values() if c['required']), key=log_p)
+    rejected = []
+    for i, check in enumerate(family):
+        if log_p(check) > np.log(.01/(len(family)-i)):
+            break
+        rejected.append(check['name'])
+    assert {c['name'] for c in family if c['holm_reject']} == set(rejected)
+    assert all(not checks[name]['calibrated'] and not checks[name]['required']
+               for name in ['berkowitz', 'dgt'])
+
+
+@pytest.mark.parametrize('kind,theta,basis', [
+    ('garch', [.1, .15, 0.], np.eye(3)[:, :2]),
+    ('student', [.1, .15, .7, 0.], np.eye(4)[:, :3]),
+    ('gjr', [.1, 0., .1, .7], np.eye(4)[:, [0, 2, 3]]),
+    ('gjr', [.1, .1, -.1, .7], np.array([[1., 0., 0.], [0., 1., 0.], [0., -1., 0.], [0., 0., 1.]])),
+])
+def test_li_mak_conditions_score_and_hessian_on_closed_face(kind, theta, basis):
+    spec = GJRGARCH()+Normal() if kind == 'gjr' else GARCH()+(StudentT() if kind == 'student' else Normal())
+    theta = np.array(theta)
+    y = spec.simulate(4000, theta, seed=533).data
+    model = api.Model(native_spec(spec))
+    jet = api.Jet(model, y)
+    point = jet.theta(theta, api.PATHS | api.SCORES | api.HESSIAN | api.LOG_VARIANCE_SENSITIVITIES)
+    v = point['innovation']**2-1
+    n, lags = len(v), 5
+    moments = np.zeros((n, lags))
+    derivative = np.zeros((lags, len(theta)))
+    for k in range(1, lags+1):
+        moments[k:, k-1] = v[k:]*v[:-k]
+        derivative[k-1] = -(v[:-k, None]*point['log_variance_sensitivities'][k:]).sum(axis=0)/n
+    means = moments.mean(axis=0)
+    bread = basis.T @ point['hessian'] @ basis / n
+    influence = moments - (point['scores'] @ basis) @ np.linalg.solve(bread.T, (derivative @ basis).T)
+    covariance = np.cov(influence, rowvar=False, ddof=0)
+    expected = n*means @ np.linalg.solve(covariance, means)
+    actual = api.li_mak(jet, theta, lags)
+    assert actual['status'] == 'ok'
+    assert actual['statistic'] == pytest.approx(expected, rel=2e-10)
+    np.testing.assert_allclose(actual['covariance'], covariance/np.mean(v*v)**2, rtol=2e-10, atol=1e-12)
+
+
+def test_adequacy_records_unavailable_moment_tests():
+    model = model_for(mean_spec(constant=False), 'garch', 'student_t')
+    y = np.random.default_rng(402).normal(size=1000)
+    checks = api.selection_diagnostics(api.Jet(model, y), np.array([.1, .1, .8, .25]))
+    assert checks['status'] == 'adequacy_unresolved'
+    unavailable = [c for c in checks['checks'] if c['required'] and c['status'] == 'fourth_moment_unavailable']
+    assert {c['name'] for c in unavailable} == {'li_mak[10]', 'li_mak[20]', 'sign_bias'}
+
+
+def test_rejected_in_sample_pit_reference_never_blocks_adequacy():
+    from scivol import Search
+    y = np.random.default_rng(402).uniform(-np.sqrt(3), np.sqrt(3), size=5000)
+    result = Search(density=[Normal()], closure=False).fit(y)
+    assert result.status == 'selected'
+    checks = {c['name']: c for c in result.candidates[0].diagnostics['checks']}
+    assert checks['dgt']['p_value'] < .0001
+    assert not checks['dgt']['required'] and not checks['dgt']['holm_reject']
+    assert all(not c['holm_reject'] for c in checks.values() if c['required'])
+
+
+def test_adequacy_preserves_infeasible_parameter_reason():
+    model = model_for(mean_spec(constant=False), 'garch', 'normal')
+    y = np.random.default_rng(402).normal(size=1000)
+    tests = api.selection_diagnostics(api.Jet(model, y), np.array([-.1, .1, .8]))
+    assert tests['status'] == 'adequacy_unresolved'
+    assert all(c['status'] == 'infeasible_parameters' for c in tests['checks'])

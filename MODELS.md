@@ -214,14 +214,27 @@ chi-bar-square weights after nuisance profiling. Unidentified, singular,
 retained-boundary and unresolved edges cannot authorize a reduction. QMLE LR
 selection is rejected pending its own calibration.
 
-The defaults are not yet calibrated. In particular, the current native
-in-sample Berkowitz reference lacks estimation calibration, so GETS returns
-`adequacy_unresolved` instead of certifying a non-rejected fit. Constant variance
-is an independent root with unavailable volatility-GUM encompassing and
-auxiliary no-ARCH score calibration. The graph currently lacks APARCH
+The adequacy family contains standardized-residual Ljung-Box at lags
+`min(10, floor(n_eff/5))` and `min(20, floor(n_eff/5))`, with the mean model's
+residual degrees of freedom; estimation-corrected Li-Mak at the same deduplicated
+lags; and joint Engle-Ng sign/size bias. Holm combines these at
+`diagnostic_level`. Li-Mak conditions its score/Hessian correction on the active
+closed face, holding its normal coordinates fixed. Singular conditional
+information or unavailable fourth moments leave adequacy unresolved. In
+particular, t/skew-t at `eta >= 1/4` cannot pass the squared-residual and sign-bias
+checks. Berkowitz and DGT on fitted in-sample PITs are reported with
+`calibrated=False`; their conservative, uncalibrated references do not constrain
+adequacy.
+
+Constant variance is an independent root. It also requires Engle's (1982)
+ARCH-LM auxiliary regression of squared standardized residuals on an intercept
+and `q = min(10, floor(n_eff/5))` lagged squares. The statistic is
+`(n_eff-q) R^2`, with a chi-square(q) reference, included in Holm. Its
+volatility-GUM encompassing test remains unavailable because variance-lag
+parameters are unidentified under no ARCH. The graph currently lacks APARCH
 fixed-power/asymmetry, skew-Gaussian and finite GH restrictions. Cross-terminal
 union tests and equivalence deduplication beyond native spec identity are not
-implemented.
+implemented. The defaults and the adaptive procedure have not been calibrated.
 
 `InformationCriterion` requires an explicit adequacy choice. `ConfidenceSet`
 compares frozen training candidates using chronological predictive losses and

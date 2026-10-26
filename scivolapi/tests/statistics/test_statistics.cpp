@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <new>
+#include <random>
 #include <vector>
 
 namespace { bool watching = false; std::size_t allocations = 0; }
@@ -67,6 +68,46 @@ int main()
     assert(allocations == 0 && mapped.valid == request);
     out.log_variance_sensitivities = {};
     assert(jet.theta(theta, request, out).status == Status::invalid_argument);
+
+    const Model face_model(ModelSpec{});
+    assert(face_model.closed_face_normals(std::vector<double>{0.1, 0.2, 0.0}).size() == 3);
+    // A representational persistence margin is not a closed model face.
+    assert(face_model.closed_face_normals(std::vector<double>{0.1, 0.2, std::nextafter(0.8, 0.0)}).empty());
+
+    ModelSpec constant_spec;
+    constant_spec.volatility = VolatilityKind::constant;
+    constant_spec.p = constant_spec.q = 0;
+    Model constant(constant_spec);
+    std::mt19937_64 generator(402);
+    std::normal_distribution<double> normal;
+    std::vector<double> arch_series(600);
+    double variance_now = 1.0, previous_error = 0.0;
+    for (double& x : arch_series) {
+        variance_now = 0.2 + 0.6 * previous_error * previous_error;
+        x = previous_error = std::sqrt(variance_now) * normal(generator);
+    }
+    const Sample constant_sample = constant.prepare(arch_series);
+    Jet constant_jet(constant, constant_sample);
+    double sigma2 = 0.0;
+    for (double x : arch_series) sigma2 += x*x / arch_series.size();
+    const std::vector<double> constant_theta{sigma2};
+    const auto battery = adequacy(constant_jet, constant_theta);
+    assert(battery.checks.size() == 8 && battery.volatility_gum == "unavailable");
+    assert(battery.status == AdequacyStatus::rejected);
+    std::vector<double> standardized(arch_series);
+    for (double& x : standardized) x /= std::sqrt(sigma2);
+    const auto arch = arch_lm(standardized, 10);
+    bool found_arch = false;
+    for (const auto& check : battery.checks) {
+        if (check.name == "arch_lm") {
+            found_arch = true;
+            assert(check.required && check.calibrated && check.test.status == TestStatus::ok);
+            assert(std::abs(check.test.statistic - arch.statistic) < 1e-10);
+        }
+        if (check.name == "berkowitz" || check.name == "dgt")
+            assert(!check.required && !check.calibrated && !check.holm_reject);
+    }
+    assert(found_arch);
 
     std::vector<double> losses(80*3, 0.0), uniforms(199*20, 0.5);
     for (std::size_t t = 0; t < 80; ++t) losses[t*3+2] = 0.5;

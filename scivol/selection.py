@@ -1,9 +1,4 @@
-"""Model search on the native restriction graph and one comparison sample.
-
-GETS requires calibrated adequacy checks. The current in-sample PIT reference
-is uncalibrated, so a non-rejected fit remains ``adequacy_unresolved``. Explicit
-IC searches with ``adequacy=False`` and predictive comparisons remain available.
-"""
+"""Model search on the native restriction graph and one comparison sample."""
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -136,13 +131,6 @@ class SelectionResult:
     frontier: tuple[tuple, ...] = ()
     fit_counts: dict = field(default_factory=dict)
     predictive: dict = field(default_factory=dict)
-    limitations: tuple[str, ...] = (
-        "In-sample Berkowitz and boundary diagnostic calibration are unavailable.",
-        "The native graph omits APARCH fixed-power/asymmetry, skew-Gaussian, and GH finite restrictions.",
-        "Constant variance is an independent root; its GUM encompassing and auxiliary no-ARCH calibration are unavailable.",
-        "Cross-terminal union tests and equivalence deduplication beyond native specification identity are unavailable.",
-        "Defaults and the adaptive search have not been calibrated.",
-    )
 
     def table(self):
         """Candidate rows as a pandas DataFrame, or records without pandas."""
@@ -166,8 +154,7 @@ class SelectionResult:
         choice = str(self.selected_model) if self.selected_model is not None else "none"
         return (f"Selection: {self.status}; selected: {choice}\n"
                 f"Search complete: {self.search_complete}; terminals: {len(self.terminals)}; "
-                f"optimizer invocations: {self.fit_counts.get('optimizer_invocations', 0)}\n"
-                + "\n".join(self.limitations))
+                f"optimizer invocations: {self.fit_counts.get('optimizer_invocations', 0)}")
 
 
 class Search:
@@ -240,7 +227,7 @@ class Search:
         def predict(candidate):
             counts = dict(optimizer_invocations=0, warm_started_fits=0, predictive_refits=0)
             try:
-                losses = self._predict_candidate(candidate, y, x, first, procedure, options, counts)
+                losses = self._predict_candidate(candidate, y, x, first, procedure, options, counts, engine.plan)
                 return losses, counts, None
             except (ValueError, RuntimeError) as exc:
                 return None, counts, str(exc)
@@ -281,7 +268,7 @@ class Search:
         return result
 
     @staticmethod
-    def _predict_candidate(candidate, y, x, first, procedure, options, counts):
+    def _predict_candidate(candidate, y, x, first, procedure, options, counts, training_plan):
         losses = []
         theta = np.array(candidate.fit.theta)
         # Freeze the training initialization. Each block filters observed returns
@@ -289,9 +276,9 @@ class Search:
         for start in range(first, len(y), procedure.refit_every):
             stop = min(start+procedure.refit_every, len(y))
             if start != first:
-                train = api.ComparisonPlan(y[:start], candidate._first_scored,
+                train = api.ComparisonPlan(y[:start], training_plan.first_scored,
                                           None if x is None else x[:start],
-                                          variance_seed=candidate._variance_seed)
+                                          variance_seed=training_plan.variance_seed)
                 counts["predictive_refits"] = counts.get("predictive_refits", 0) + 1
                 counts["optimizer_invocations"] += 1
                 counts["warm_started_fits"] += 1
@@ -299,11 +286,11 @@ class Search:
                 if not fitted.success:
                     raise RuntimeError("uncertified predictive refit")
                 theta = np.array(fitted.theta)
-            plan = api.ComparisonPlan(y[:stop], candidate._first_scored,
+            plan = api.ComparisonPlan(y[:stop], training_plan.first_scored,
                                       None if x is None else x[:stop],
-                                      variance_seed=candidate._variance_seed)
+                                      variance_seed=training_plan.variance_seed)
             values = api.predictive_losses(api.Jet(candidate.model, plan), theta, procedure.loss)
-            losses.extend(values[start-candidate._first_scored:stop-candidate._first_scored])
+            losses.extend(values[start-training_plan.first_scored:stop-training_plan.first_scored])
         return np.array(losses)
 
 
@@ -485,8 +472,6 @@ class _Reduction:
             return node, None, time.perf_counter()-started, str(exc)
 
     def _diagnose(self, node, required):
-        node._first_scored = self.first
-        node._variance_seed = self.plan.variance_seed
         if not node.certified:
             node.diagnostics = dict(status="uncertified")
             return
@@ -498,10 +483,7 @@ class _Reduction:
                 node.diagnostics = dict(status="adequacy_unresolved", reason=str(exc))
         else:
             node.diagnostics = dict(status="disabled")
-        if node.model.constant_variance:
-            node.encompassing["volatility_gum"] = "unavailable"
-            if required and node.diagnostics.get("status") == "adequate" and node.diagnostics.get("no_arch_status", "unavailable") != "ok":
-                node.diagnostics["status"] = "adequacy_unresolved"
+        node.encompassing = node.diagnostics.pop("encompassing", {})
 
     def _reduce(self, root, key, joint):
         state = root, key
