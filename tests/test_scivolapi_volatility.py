@@ -153,6 +153,10 @@ def test_gjr_chart_differentiates_the_skewed_persistence_weight(series):
     assert_close(out["gradient"], jac.T @ full["gradient"], 1e-9)
     assert_close(out["hessian"], jac.T @ full["hessian"] @ jac + curvature, 1e-8)
 
+    theta_rows = jet.theta(theta, api.LOG_VARIANCE_SENSITIVITIES)["log_variance_sensitivities"]
+    z_rows = jet.z(z, api.LOG_VARIANCE_SENSITIVITIES)["log_variance_sensitivities"]
+    assert_close(z_rows, theta_rows @ jac, 1e-9)
+
 
 def test_gjr_domain_admits_negative_leverage_down_to_minus_alpha(series):
     model = gjr_model("normal")
@@ -241,6 +245,10 @@ def test_egarch_z_jet_includes_reflection_chart_curvature(series):
     out = jet.z(z, api.GRADIENT | api.HESSIAN)
     assert_close(out["gradient"], jac.T @ full["gradient"], 1e-12)
     assert_close(out["hessian"], jac.T @ full["hessian"] @ jac + curvature, 1e-11)
+
+    theta_rows = jet.theta(theta, api.LOG_VARIANCE_SENSITIVITIES)["log_variance_sensitivities"]
+    z_rows = jet.z(z, api.LOG_VARIANCE_SENSITIVITIES)["log_variance_sensitivities"]
+    assert_close(z_rows, theta_rows @ jac, 1e-9)
 
 
 # --------------------------------------------------------------------------- #
@@ -344,6 +352,10 @@ def test_aparch_chart_differentiates_the_power_moment_weights(series):
     assert out["status"] == "ok"
     assert_close(out["gradient"], jac.T @ full["gradient"], 1e-11)
     assert_close(out["hessian"], jac.T @ full["hessian"] @ jac + curvature, 1e-10)
+
+    theta_rows = jet.theta(theta, api.LOG_VARIANCE_SENSITIVITIES)["log_variance_sensitivities"]
+    z_rows = jet.z(z, api.LOG_VARIANCE_SENSITIVITIES)["log_variance_sensitivities"]
+    assert_close(z_rows, theta_rows @ jac, 1e-9)
 
 
 def test_aparch_domain_needs_the_power_moment():

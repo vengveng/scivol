@@ -132,6 +132,13 @@ public:
     [[nodiscard]] double persistence(std::span<const double> theta) const;
     // The innovation density at theta.
     [[nodiscard]] InnovationDensity innovation_density(std::span<const double> theta) const;
+    // Same mean/variance equation with Gaussian innovations, for QMLE scores.
+    // Callers must check density_free_recursion before substituting its paths.
+    [[nodiscard]] Model gaussian_model() const;
+    // Conventional dynamic-mean df adjustment for residual portmanteau tests.
+    [[nodiscard]] std::size_t residual_degrees_of_freedom() const noexcept;
+    // E[(|z|-gamma*z)^power]; NaN if the moment does not exist or cannot be evaluated.
+    [[nodiscard]] double innovation_power_moment(std::span<const double> theta, double gamma, double power) const;
 
 private:
     ModelSpec spec_;

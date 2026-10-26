@@ -5,3 +5,4 @@
 #include "jet.hpp"
 #include "model.hpp"
 #include "simulate.hpp"
+#include "statistics.hpp"

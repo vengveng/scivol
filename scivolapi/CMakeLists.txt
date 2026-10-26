@@ -17,6 +17,7 @@ add_library(scivolapi
     ${SCIVOLAPI_JET_SOURCES}
     src/fit.cpp
     src/finalize.cpp
+    src/statistics.cpp
     src/simulate.cpp
     src/correlation.cpp
     src/correlation_paths.cpp

@@ -7,6 +7,13 @@
 
 namespace scivolapi::detail {
 
+// Unstandardized reference laws for statistical tests, using the same gamma/beta
+// evaluations as the innovation distributions. Positive underflow is a failure.
+[[nodiscard]] bool chi_square_upper(double x, double df, double& probability) noexcept;
+[[nodiscard]] bool student_upper(double x, double df, double& probability) noexcept;
+[[nodiscard]] bool chi_square_log_upper(double x, double df, double& log_probability) noexcept;
+[[nodiscard]] bool student_log_upper(double x, double df, double& log_probability) noexcept;
+
 // Both tails of the likelihood's zero-mean, unit-variance innovation law.
 // Scalar failures leave outputs untouched. Inputs and shapes must be finite.
 [[nodiscard]] ExpectationStatus distribution(DensityKind, const double* shape, double z,

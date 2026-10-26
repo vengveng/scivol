@@ -17,6 +17,8 @@ enum Request : unsigned {
     paths = 8u,     // residuals, variances, standardized innovations
     scores = 16u,   // each scored row's contribution to G (theta coordinates only)
     terms = 32u,    // each scored row's term of F, its share of the constants included
+    log_variance_sensitivities = 64u, // d log h_t / d theta, scored rows x dimension
+    residual_sensitivities = 128u,    // d e_t / d theta, scored rows x dimension
 };
 
 enum class Status {
@@ -40,6 +42,10 @@ struct JetOutput {
     Paths paths;                 // sample size each
     std::span<double> scores;    // scored rows * dimension, row-major
     std::span<double> terms;     // scored rows
+    // Row-major, including zero columns for parameters a path does not depend on.
+    // In z these are first derivatives at the original z, multiplied by d theta/dz.
+    std::span<double> log_variance_sensitivities;
+    std::span<double> residual_sensitivities;
 };
 
 struct JetResult {

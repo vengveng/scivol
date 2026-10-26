@@ -116,11 +116,15 @@ struct AssembleInput {
     int order;       // 0 value, 1 + gradient, 2 + Hessian
     double* scores;  // per-row gradients (rows x dimension, theta order), or null; needs order >= 1
     double* terms;   // per-row terms of F, or null
+    double* log_variance_sensitivities = nullptr;
+    double* residual_sensitivities = nullptr;
+    bool sensitivity_only = false;
 };
 
 struct ThetaResult {
     Status status = Status::ok;
     bool value_ok = false, gradient_ok = false, hessian_ok = false;
+    bool log_variance_ok = false, residual_ok = false;
 };
 
 inline bool all_finite(const double* x, std::size_t n) noexcept
@@ -160,20 +164,21 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
     }();
     const double* theta = in.theta;
     const int order = Order < 0 ? in.order : Order;
+    const int density_order = in.sensitivity_only ? 0 : order;
     const std::size_t n = in.sample.scored();
     const std::size_t own = volatility.own(), w = volatility.width();
     const std::size_t dim = in.layout.dimension;
     const std::size_t sh = own + m + shapes > dim ? own - shapes : own + m;  // first shape, local order
 
     typename Density::Prepared density;
-    if (!volatility.evaluable(theta + m) || !Density::prepare(theta + in.layout.shapes, order, density)
+    if (!volatility.evaluable(theta + m) || !Density::prepare(theta + in.layout.shapes, density_order, density)
         || !volatility.prepare(theta + m, order)) {
         result.status = Status::not_evaluable;
         return result;
     }
     double* g = coupled ? work.lg : work.g;
     double* hp = coupled ? work.lhp : work.hp;
-    if (order >= 1) std::fill_n(g, dim, 0.0);
+    if (density_order >= 1) std::fill_n(g, dim, 0.0);
     if (order >= 2) std::fill_n(hp, packed_size(dim), 0.0);
     if constexpr (coupled) work.vol.dde = mean.linear() ? nullptr : work.mean.dde;
 
@@ -185,6 +190,7 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
     const Constant<shapes>& c = density.constant;
 
     int defined = 2;
+    bool variance_defined = true, residual_defined = true;
     CompensatedSum total;
     VolatilityStep step;
     const double* l1 = work.vol.l1;
@@ -203,8 +209,8 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
         }
 
         const double inv_sigma = 1.0 / std::sqrt(step.h), x = work.e[t] * inv_sigma;
-        const Local<shapes> l = local<coupled>(Density::template observe<coupled>(density, x, order), x,
-                                               step.lambda, inv_sigma, order);
+        const Local<shapes> l = local<coupled>(Density::template observe<coupled>(density, x, density_order), x,
+                                               step.lambda, inv_sigma, density_order);
         defined = std::min({defined, l.defined, step.defined});
         total.add(l.value);
         if (in.terms != nullptr) in.terms[t] = l.value + c.value;
@@ -215,7 +221,19 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
             de = work.mean.de + slot * m;
             if (!mean.linear()) dde = work.mean.dde + slot * packed_size(m);
         }
-        if (order >= 1) {
+        if (in.log_variance_sensitivities != nullptr) {
+            double* row = in.log_variance_sensitivities + t * dim;
+            std::fill_n(row, dim, 0.0);
+            for (std::size_t a = 0; a < w; ++a) row[index(a)] = l1[a];
+            variance_defined = variance_defined && step.defined >= 1 && all_finite(row, dim);
+        }
+        if (in.residual_sensitivities != nullptr) {
+            double* row = in.residual_sensitivities + t * dim;
+            std::fill_n(row, dim, 0.0);
+            if constexpr (coupled) std::copy_n(de, m, row);
+            residual_defined = residual_defined && all_finite(row, dim);
+        }
+        if (density_order >= 1) {
             for (std::size_t a = 0; a < w; ++a) g[a] += l.lam * l1[a];
             if constexpr (coupled)
                 for (std::size_t a = 0; a < m; ++a) g[own + a] += l.e * de[a];
@@ -255,14 +273,14 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
 
     const double scored = static_cast<double>(n);
     value = total.total() + scored * c.value;
-    if (order >= 1)
+    if (density_order >= 1)
         for (std::size_t i = 0; i < shapes; ++i) g[sh + i] += scored * c.s[i];
     if (order >= 2)
         for (std::size_t i = 0; i < shapes; ++i)
             for (std::size_t j = i; j < shapes; ++j) hp[packed(dim, sh + i, sh + j)] += scored * c.ss[packed(shapes, i, j)];
 
     if constexpr (coupled) {
-        if (order >= 1)
+        if (density_order >= 1)
             for (std::size_t a = 0; a < dim; ++a) work.g[index(a)] = g[a];
         if (order >= 2)
             for (std::size_t a = 0; a < dim; ++a)
@@ -273,8 +291,10 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
     }
 
     result.value_ok = std::isfinite(value);
-    result.gradient_ok = order >= 1 && defined >= 1 && all_finite(work.g, dim);
+    result.gradient_ok = density_order >= 1 && defined >= 1 && all_finite(work.g, dim);
     result.hessian_ok = order >= 2 && defined >= 2 && all_finite(work.hp, packed_size(dim));
+    result.log_variance_ok = in.log_variance_sensitivities && variance_defined;
+    result.residual_ok = in.residual_sensitivities && residual_defined;
     return result;
 }
 

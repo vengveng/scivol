@@ -16,7 +16,8 @@ using detail::packed_size;
 using detail::ThetaResult;
 using detail::Work;
 
-constexpr unsigned all_requests = value | gradient | hessian | paths | scores | terms;
+constexpr unsigned sensitivities = log_variance_sensitivities | residual_sensitivities;
+constexpr unsigned all_requests = value | gradient | hessian | paths | scores | terms | sensitivities;
 
 void expand(const double* packed_matrix, std::size_t n, double* dense) noexcept
 {
@@ -36,6 +37,8 @@ bool outputs_fit(unsigned request, const JetOutput& out, std::size_t dim, std::s
         return false;
     if ((request & scores) && !sized(out.scores, n * dim)) return false;
     if ((request & terms) && !sized(out.terms, n)) return false;
+    if ((request & log_variance_sensitivities) && !sized(out.log_variance_sensitivities, n * dim)) return false;
+    if ((request & residual_sensitivities) && !sized(out.residual_sensitivities, n * dim)) return false;
     return true;
 }
 
@@ -61,11 +64,23 @@ JetResult finish(unsigned request, const ThetaResult& r, bool paths_ok)
     if ((request & hessian) && r.hessian_ok) out.valid |= hessian;
     if ((request & paths) && paths_ok) out.valid |= paths;
     if ((request & terms) && r.value_ok) out.valid |= terms;
+    if ((request & log_variance_sensitivities) && r.log_variance_ok) out.valid |= log_variance_sensitivities;
+    if ((request & residual_sensitivities) && r.residual_ok) out.valid |= residual_sensitivities;
     out.status = out.valid == request ? Status::ok : Status::numerical_range;
     return out;
 }
 
-int order_for(unsigned request) { return (request & hessian) ? 2 : (request & (gradient | scores)) ? 1 : 0; }
+int order_for(unsigned request) { return (request & hessian) ? 2 : (request & (gradient | scores | sensitivities)) ? 1 : 0; }
+
+detail::AssembleInput input(const Model& model, const detail::Layout& layout, const Sample& sample,
+                            const double* theta, unsigned request, JetOutput& out)
+{
+    return {model.spec(), layout, sample, theta, order_for(request),
+            (request & scores) ? out.scores.data() : nullptr, (request & terms) ? out.terms.data() : nullptr,
+            (request & log_variance_sensitivities) ? out.log_variance_sensitivities.data() : nullptr,
+            (request & residual_sensitivities) ? out.residual_sensitivities.data() : nullptr,
+            !(request & (gradient | hessian | scores))};
+}
 
 }  // namespace
 
@@ -97,8 +112,7 @@ JetResult Jet::theta(std::span<const double> theta, unsigned request, JetOutput&
 
     double v = 0.0;
     const ThetaResult r = detail::assembler_for(model_.spec())(
-        {model_.spec(), layout, sample_, theta.data(), order_for(request),
-         (request & scores) ? out.scores.data() : nullptr, (request & terms) ? out.terms.data() : nullptr},
+        input(model_, layout, sample_, theta.data(), request, out),
         work, v);
     if (r.status == Status::ok) {
         if (request & value) out.value = v;
@@ -121,7 +135,7 @@ JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
 
     // One chart point serves theta(z), the Jacobian and the curvature.
     detail::Layout::ChartPoint point;
-    const int chart_order = (request & hessian) ? 2 : (request & gradient) ? 1 : 0;
+    const int chart_order = (request & hessian) ? 2 : (request & (gradient | sensitivities)) ? 1 : 0;
     if ((layout.simplex_count && !layout.prepare(z.data(), chart_order, point))
         || !layout.theta(z.data(), point, work.theta)) {  // a moment the chart needs does not exist here
         JetResult failed;
@@ -130,12 +144,11 @@ JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
     }
     double v = 0.0;
     const ThetaResult r = detail::assembler_for(model_.spec())(
-        {model_.spec(), layout, sample_, work.theta, order_for(request), nullptr,
-         (request & terms) ? out.terms.data() : nullptr},
+        input(model_, layout, sample_, work.theta, request, out),
         work, v);
     if (r.status != Status::ok) return finish(request, r, false);
 
-    const bool chart_ok = !(request & (gradient | hessian)) || layout.jacobian(z.data(), point, work.jac);
+    const bool chart_ok = !(request & (gradient | hessian | sensitivities)) || layout.jacobian(z.data(), point, work.jac);
     if ((request & gradient) && r.gradient_ok && chart_ok) {
         for (std::size_t j = 0; j < dim; ++j) {
             double s = 0.0;
@@ -164,9 +177,26 @@ JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
     if (request & value) out.value = v;
     if (request & paths) write_paths(work, n, out.paths);
 
+    auto transform_rows = [&](std::span<double> rows) {
+        if (!chart_ok) return false;
+        for (std::size_t t = 0; t < n; ++t) {
+            for (std::size_t j = 0; j < dim; ++j) {
+                double s = 0.0;
+                for (std::size_t i = 0; i < dim; ++i) s += rows[t * dim + i] * work.jac[i * dim + j];
+                work.tmp[j] = s;
+            }
+            std::copy_n(work.tmp, dim, rows.data() + t * dim);
+        }
+        return detail::all_finite(rows.data(), rows.size());
+    };
+
     ThetaResult zr = r;
     zr.gradient_ok = r.gradient_ok && chart_ok && (!(request & gradient) || detail::all_finite(out.gradient.data(), dim));
     zr.hessian_ok = hessian_ok;
+    if (request & log_variance_sensitivities)
+        zr.log_variance_ok = r.log_variance_ok && transform_rows(out.log_variance_sensitivities);
+    if (request & residual_sensitivities)
+        zr.residual_ok = r.residual_ok && transform_rows(out.residual_sensitivities);
     return finish(request, zr, true);
 }
 

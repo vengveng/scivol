@@ -49,7 +49,7 @@ class FilteredState:
 
     @property
     def std_resid(self) -> NDArray[np.float64]:
-        return self.residuals / np.sqrt(self.sigma2)
+        return api.standardized_residuals(np.ascontiguousarray(self.residuals), np.ascontiguousarray(self.sigma2))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -109,22 +109,25 @@ class ForecastResult(Mapping[str, NDArray[np.float64]]):
 
     @property
     def volatility(self) -> NDArray[np.float64]:
-        return np.sqrt(self.variance)
+        return api.square_roots(np.ascontiguousarray(self.variance).ravel()).reshape(self.variance.shape)
 
     @property
     def residual_volatility(self) -> NDArray[np.float64]:
-        return np.sqrt(self.residual_variance)
+        return api.square_roots(np.ascontiguousarray(self.residual_variance).ravel()).reshape(self.residual_variance.shape)
 
     def quantile(self, level: float | NDArray[np.float64]) -> NDArray[np.float64]:
         levels = np.asarray(level, dtype=np.float64)
         flat = np.atleast_1d(levels)
         if np.any((flat <= 0.0) | (flat >= 1.0)):
             raise ValueError("Quantile levels must lie strictly between 0 and 1.")
-        z = api.quantiles(self.density.density, self.density.shape, np.ascontiguousarray(flat))
         out = np.empty((len(self.mean), flat.size))
-        out[0] = self.mean[0] + np.sqrt(self.residual_variance[0]) * z
+        out[0] = api.location_scale_quantiles(float(self.mean[0]), float(self.residual_variance[0]),
+                                              self.density, np.ascontiguousarray(flat))
         if len(self.mean) > 1:
-            out[1:] = np.quantile(self.simulated_paths()[:, 1:], flat, axis=0).T
+            paths = self.simulated_paths()
+            for horizon in range(1, len(self.mean)):
+                out[horizon] = api.empirical_quantiles(np.ascontiguousarray(paths[:, horizon]),
+                                                      np.ascontiguousarray(flat))
         return out[:, 0] if levels.ndim == 0 else out
 
     def var(self, level: float | NDArray[np.float64]) -> NDArray[np.float64]:
@@ -484,9 +487,7 @@ def oos_losses(result: "EstimationResult", full_data: Any, *, full_x: Any, start
     key = loss.lower()
     if key == "logscore":
         return np.ascontiguousarray(out["terms"][rows])
-    e2, h = out["residual"][rows] ** 2, out["variance"][rows]
-    if key == "qlike":
-        return np.log(h) + e2 / h
-    if key == "mse":
-        return (e2 - h) ** 2
+    if key in {"qlike", "mse"}:
+        return api.variance_losses(np.ascontiguousarray(out["residual"][rows]),
+                                  np.ascontiguousarray(out["variance"][rows]), key == "qlike")
     raise ValueError("oos_loss must be 'logscore', 'qlike', or 'mse'.")

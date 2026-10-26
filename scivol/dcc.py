@@ -28,8 +28,7 @@ if TYPE_CHECKING:
 
 
 def _normalize_correlation(matrix: NDArray[np.float64]) -> NDArray[np.float64]:
-    diag = np.sqrt(np.diag(matrix))
-    return matrix / np.outer(diag, diag)
+    return api.correlation_from_covariance(np.ascontiguousarray(matrix, dtype=np.float64))
 
 
 def _extract_multivariate_input(
@@ -190,11 +189,11 @@ class MultivariateForecastResult(Mapping[str, NDArray[np.float64]]):
 
     @property
     def volatility(self) -> NDArray[np.float64]:
-        return np.sqrt(self.variance)
+        return api.square_roots(np.ascontiguousarray(self.variance).ravel()).reshape(self.variance.shape)
 
     @property
     def residual_volatility(self) -> NDArray[np.float64]:
-        return np.sqrt(self.residual_variance)
+        return api.square_roots(np.ascontiguousarray(self.residual_variance).ravel()).reshape(self.residual_variance.shape)
 
     def _resolve_pair(self, series_i: Union[int, str], series_j: Union[int, str]) -> Tuple[int, int]:
         def _resolve(key: Union[int, str]) -> int:
@@ -325,7 +324,7 @@ class DCCParams:
 
     @property
     def persistence(self) -> float:
-        return float(np.sum(self.a) + np.sum(self.b))
+        return api.sample_sum(np.ascontiguousarray(np.r_[self.a, self.b], dtype=np.float64))
 
     def __repr__(self) -> str:
         a_str = ", ".join(f"{x:.6f}" for x in self.a)
@@ -348,7 +347,7 @@ class CCCParams:
         if self.corr.shape[0] <= 1:
             return 1.0
         upper = self.corr[np.triu_indices_from(self.corr, k=1)]
-        return float(np.mean(upper))
+        return api.sample_mean(np.ascontiguousarray(upper))
 
     def __repr__(self) -> str:
         n_series = self.corr.shape[0]
@@ -476,7 +475,8 @@ class _CorrelationResultMixin:
         if horizon <= 0:
             raise ValueError("horizon must be positive")
         paths = 1 if horizon == 1 else int(simulations)
-        return self._joint_paths(paths, horizon, seed, None, "forecast_correlation")["correlation"].mean(axis=0)
+        correlation = self._joint_paths(paths, horizon, seed, None, "forecast_correlation")["correlation"]
+        return api.column_means(np.ascontiguousarray(correlation).reshape(paths, -1)).reshape(correlation.shape[1:])
 
     def forecast(self, horizon: int = 10, *, x: Any = None, simulations: int = 10_000,
                  seed: Any = 0) -> MultivariateForecastResult:
@@ -490,8 +490,8 @@ class _CorrelationResultMixin:
         e = paths["residual"]
         return MultivariateForecastResult(
             mean=mean, variance=variance, residual_variance=residual_variance,
-            correlation=paths["correlation"].mean(axis=0),
-            residual_covariance=np.einsum("phi,phj->hij", e, e) / e.shape[0],
+            correlation=api.column_means(np.ascontiguousarray(paths["correlation"]).reshape(len(e), -1)).reshape(paths["correlation"].shape[1:]),
+            residual_covariance=api.path_second_moments(np.ascontiguousarray(e)).reshape(horizon, e.shape[2], e.shape[2]),
             marginals=tuple(forecasts), columns=self._columns,
         )
 
@@ -500,7 +500,7 @@ class _CorrelationResultMixin:
         if n_obs <= 0:
             raise ValueError("n_obs must be positive")
         paths = self._joint_paths(1, n_obs, seed, x, "simulate")
-        sigma = np.sqrt(paths["variance"][0])
+        sigma = api.square_roots(np.ascontiguousarray(paths["variance"][0]).ravel()).reshape(paths["variance"][0].shape)
         return MultivariateSimulationResult(
             data=paths["y"][0], mean=paths["mean"][0], residuals=paths["residual"][0], sigma2=paths["variance"][0],
             innovations=paths["innovation"][0], correlation=paths["correlation"][0],
@@ -525,7 +525,7 @@ class _CorrelationResultMixin:
         z = paths["innovation"][:, 0]
         if innovations == "empirical":
             z = self._empirical_innovations(z)
-        sigma = np.sqrt(variance)
+        sigma = api.square_roots(np.ascontiguousarray(variance).ravel()).reshape(variance.shape)
         residuals = z * sigma
         return MultivariateScenarioResult(
             data=mean + residuals, mean=mean, residuals=residuals, residual_variance=variance, innovations=z,
@@ -542,11 +542,9 @@ class _CorrelationResultMixin:
             density = _marginal_density(marginal)
             u, _ = api.distribution(density.density, density.shape, np.ascontiguousarray(parametric[:, i]))
             empirical = np.asarray(marginal.std_resid, dtype=np.float64)
-            empirical = empirical[np.isfinite(empirical)]
             if empirical.size < 10:
                 raise ValueError(f"Series {i} has fewer than 10 finite standardized residuals.")
-            empirical = (empirical - empirical.mean()) / empirical.std(ddof=0)
-            out[:, i] = np.quantile(empirical, u, method="linear")
+            out[:, i] = api.empirical_quantiles(np.ascontiguousarray(empirical), np.ascontiguousarray(u), True)
         return out
 
 
@@ -584,11 +582,11 @@ class CCCResult(_CorrelationResultMixin):
 
     @property
     def aic(self) -> float:
-        return -2.0 * self.log_likelihood
+        return api.information_criteria(self.log_likelihood, 0, self.T)[0]
 
     @property
     def bic(self) -> float:
-        return -2.0 * self.log_likelihood
+        return api.information_criteria(self.log_likelihood, 0, self.T)[0]
 
     @property
     def std_errors(self) -> NDArray[np.float64]:
@@ -669,22 +667,22 @@ class DCCResult(_CorrelationResultMixin):
 
     @property
     def aic(self) -> float:
-        return 2.0 * self.K - 2.0 * self.log_likelihood
+        return api.information_criteria(self.log_likelihood, self.K, self.T)[0]
 
     @property
     def bic(self) -> float:
-        return self.K * np.log(self.T) - 2.0 * self.log_likelihood
+        return api.information_criteria(self.log_likelihood, self.K, self.T)[1]
 
     @property
     def std_errors(self) -> NDArray[np.float64]:
         if self.cov_mle is not None:
-            return np.sqrt(np.diag(self.cov_mle))
+            return api.covariance_standard_errors(np.ascontiguousarray(self.cov_mle))
         return np.full(self.K, np.nan)
 
     @property
     def std_errors_robust(self) -> NDArray[np.float64]:
         if self.cov_robust is not None:
-            return np.sqrt(np.diag(self.cov_robust))
+            return api.covariance_standard_errors(np.ascontiguousarray(self.cov_robust))
         return np.full(self.K, np.nan)
 
     def _correlation(self) -> tuple["api.CorrelationModel", NDArray[np.float64]]:
@@ -720,7 +718,7 @@ class DCCResult(_CorrelationResultMixin):
         lines.append(f"{'Param':<8} {'Estimate':>10} {'MLE SE':>10} {'Rob SE':>10} {'t-stat':>10}")
         lines.append("-" * 72)
         for i, name in enumerate(names):
-            t_stat = self.theta[i] / se[i] if se[i] > 0 else np.nan
+            t_stat = api.coefficient_test(float(self.theta[i]), float(se[i]), self.T-self.K)["statistic"] if se[i] > 0 else np.nan
             lines.append(
                 f"{name:<8} {self.theta[i]:>10.6f} {se[i]:>10.6f} "
                 f"{se_r[i]:>10.6f} {t_stat:>10.2f}"

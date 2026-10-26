@@ -78,20 +78,26 @@ void compare(DensityKind density, std::size_t n, bool boundary)
             a.e2[t] = b.e2[t] = a.e[t] * a.e[t];
         }
     std::vector<double> score_a(rows * d), score_b(rows * d), terms_a(rows), terms_b(rows);
+    std::vector<double> lv_a(rows * d), lv_b(rows * d), re_a(rows * d), re_b(rows * d);
     double fa, fb;
     ThetaResult reference;
     for (int order = 0; order <= 2; ++order) {
-        for (unsigned outputs = 0; outputs < 4; ++outputs) {
-            if (order == 0 && (outputs & 1u)) continue;
+        for (unsigned outputs = 0; outputs < 16; ++outputs) {
+            if (order == 0 && (outputs & 13u)) continue;
             const auto ra = runtime({spec, layout, sample, theta.data(), order,
                                      outputs & 1u ? score_a.data() : nullptr,
-                                     outputs & 2u ? terms_a.data() : nullptr}, a, fa);
+                                     outputs & 2u ? terms_a.data() : nullptr,
+                                     outputs & 4u ? lv_a.data() : nullptr,
+                                     outputs & 8u ? re_a.data() : nullptr}, a, fa);
             const auto rb = fixed({spec, layout, sample, theta.data(), order,
                                    outputs & 1u ? score_b.data() : nullptr,
-                                   outputs & 2u ? terms_b.data() : nullptr}, b, fb);
+                                   outputs & 2u ? terms_b.data() : nullptr,
+                                   outputs & 4u ? lv_b.data() : nullptr,
+                                   outputs & 8u ? re_b.data() : nullptr}, b, fb);
             reference = ra;
             assert(ra.status == rb.status && ra.value_ok == rb.value_ok
-                   && ra.gradient_ok == rb.gradient_ok && ra.hessian_ok == rb.hessian_ok);
+                   && ra.gradient_ok == rb.gradient_ok && ra.hessian_ok == rb.hessian_ok
+                   && ra.log_variance_ok == rb.log_variance_ok && ra.residual_ok == rb.residual_ok);
             identical(fa, fb);
             identical(a.e, b.e, rows);
             identical(a.vol.h, b.vol.h, rows);
@@ -99,6 +105,8 @@ void compare(DensityKind density, std::size_t n, bool boundary)
             if (order >= 2) identical(a.hp, b.hp, packed_size(d));
             if (outputs & 1u) identical(score_a.data(), score_b.data(), rows * d);
             if (outputs & 2u) identical(terms_a.data(), terms_b.data(), rows);
+            if (outputs & 4u) identical(lv_a.data(), lv_b.data(), rows * d);
+            if (outputs & 8u) identical(re_a.data(), re_b.data(), rows * d);
         }
     }
 

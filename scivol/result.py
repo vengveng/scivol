@@ -7,7 +7,7 @@ import warnings
 import numpy as np
 from numpy.typing import NDArray
 from datetime import datetime
-from scipy.stats import chi2, norm
+from . import _scivolapi as api
 
 from .roles import Role
 from ._settings import settings
@@ -58,7 +58,7 @@ class GARCHParams:
         """Long-run variance (only valid if stationary)."""
         if not self.is_stationary:
             return np.inf
-        return self.omega / (1.0 - self.persistence)
+        return api.stationary_variance_state(self.omega, self.persistence)
     
     def to_array(self) -> NDArray[np.float64]:
         """Flatten to 1D array.
@@ -100,12 +100,12 @@ class EGARCHParams:
     def unconditional_log_variance(self) -> float:
         if not self.is_stationary:
             return np.inf
-        return self.omega / (1.0 - self.persistence)
+        return api.stationary_variance_state(self.omega, self.persistence, log_state=True)
 
     @property
     def unconditional_variance(self) -> float:
-        log_var = self.unconditional_log_variance
-        return np.inf if not np.isfinite(log_var) else float(np.exp(log_var))
+        """Geometric variance, exp(E[log h]); this is not E[h]."""
+        return api.stationary_variance_state(self.omega, self.persistence, log_state=True, geometric=True)
 
     def to_array(self) -> NDArray[np.float64]:
         return np.concatenate([[self.omega], self.alpha, self.gamma, self.beta])
@@ -181,16 +181,13 @@ class ARMAParams:
     @property
     def unconditional_mean(self) -> float:
         """Long-run mean (only valid if AR polynomial has roots outside unit circle)."""
-        ar_sum = np.sum(self.phi)
-        if abs(ar_sum) >= 1.0:
-            return np.inf
-        return self.c / (1.0 - ar_sum)
-    
+        return api.autoregressive_mean(float(self.c), np.ascontiguousarray(self.phi, dtype=np.float64))[1]
+
     @property
     def is_stationary(self) -> bool:
-        """Check if AR polynomial has roots outside unit circle (simplified check)."""
-        return abs(np.sum(self.phi)) < 1.0
-    
+        """Whether all AR roots lie outside the unit circle."""
+        return api.autoregressive_mean(float(self.c), np.ascontiguousarray(self.phi, dtype=np.float64))[0]
+
     def to_array(self) -> NDArray[np.float64]:
         """Flatten to 1D array [c, phi_1, ..., phi_p, theta_1, ..., theta_q]."""
         return np.concatenate([[self.c], self.phi, self.theta])
@@ -425,20 +422,18 @@ class EstimationResult:
     # --------------------------------------------------------------------- #
     @property
     def aic(self) -> float:
-        k = len(self.params)
-        return 2 * k - 2 * self.log_likelihood
+        return api.information_criteria(self.log_likelihood, len(self.params),
+                                        self.fit_info.likelihood_n_obs or self.n_obs)[0]
 
     @property
     def bic(self) -> float:
-        k = len(self.params)
-        n = self.fit_info.likelihood_n_obs or self.n_obs
-        return k * np.log(n) - 2 * self.log_likelihood
+        return api.information_criteria(self.log_likelihood, len(self.params),
+                                        self.fit_info.likelihood_n_obs or self.n_obs)[1]
 
     @property
     def hqic(self) -> float:
-        k = len(self.params)
-        n = self.fit_info.likelihood_n_obs or self.n_obs
-        return 2 * k * np.log(np.log(n)) - 2 * self.log_likelihood
+        return api.information_criteria(self.log_likelihood, len(self.params),
+                                        self.fit_info.likelihood_n_obs or self.n_obs)[2]
 
     # Component shorthands
     # --------------------------------------------------------------------- #
@@ -588,12 +583,12 @@ class EstimationResult:
         resid = self.resid
         if sigma2 is None or resid is None:
             return None
+        z = api.standardized_residuals(np.ascontiguousarray(resid, dtype=np.float64),
+                                       np.ascontiguousarray(sigma2, dtype=np.float64))
         if self._index is not None:
-            resid_arr = np.asarray(resid)
-            sigma2_arr = np.asarray(sigma2)
-            return _to_pandas_series(resid_arr / np.sqrt(sigma2_arr), self._index, self._name, "std_resid")
-        return np.asarray(resid) / np.sqrt(np.asarray(sigma2))
-    
+            return _to_pandas_series(z, self._index, self._name, "std_resid")
+        return z
+
     @property
     def index(self) -> Optional[Any]:
         """Original pandas index if input was pandas, else None."""
@@ -683,9 +678,7 @@ class EstimationResult:
         """Standard errors from covariance matrix."""
         if self._cov_matrix is None:
             return None
-        diag = np.diag(self._cov_matrix)
-        # Handle negative diagonal elements (numerical issues)
-        return np.sqrt(np.maximum(diag, 0.0))
+        return api.covariance_standard_errors(np.ascontiguousarray(self._cov_matrix, dtype=np.float64))
     
     @property
     def opg(self) -> Optional[NDArray[np.float64]]:
@@ -702,8 +695,7 @@ class EstimationResult:
         """Robust standard errors from sandwich covariance."""
         if self._cov_robust is None:
             return None
-        diag = np.diag(self._cov_robust)
-        return np.sqrt(np.maximum(diag, 0.0))
+        return api.covariance_standard_errors(np.ascontiguousarray(self._cov_robust, dtype=np.float64))
     
     
     # Pretty printer
@@ -718,7 +710,6 @@ class EstimationResult:
             If True and robust standard errors are available, use them for
             t-statistics and p-values. Default is False.
         """
-        from scipy import stats
         
         WIDTH = 70
         
@@ -788,11 +779,13 @@ class EstimationResult:
             
             if se_val is not None and se_val > 0 and np.isfinite(se_val):
                 se_str = self._format_value(se_val)
-                t_stat = coef / se_val
+                coefficient = api.coefficient_test(float(coef), float(se_val),
+                                                   (self.fit_info.likelihood_n_obs or self.n_obs) - len(self.params))
+                t_stat = coefficient["statistic"]
                 t_str = f"{t_stat:>10.3f}"
                 # Two-tailed p-value
-                p_val = 2 * (1 - stats.t.cdf(abs(t_stat), self.n_obs - len(self.params)))
-                p_str = self._format_pvalue(p_val)
+                p_val = coefficient["p_value"]
+                p_str = self._format_pvalue(p_val, coefficient["status"])
             else:
                 se_str = f"{'N/A':>12}"
                 t_str = f"{'N/A':>10}"
@@ -848,8 +841,10 @@ class EstimationResult:
         else:
             return f"{val:>{width}.4f}"
     
-    def _format_pvalue(self, p: float) -> str:
+    def _format_pvalue(self, p: float, status: str = "ok") -> str:
         """Format p-value with appropriate precision."""
+        if status == "probability_underflow":
+            return f"{'<0.001':>10}"
         if not np.isfinite(p):
             return f"{'N/A':>10}"
         elif p < 0.001:
@@ -881,12 +876,12 @@ class EstimationResult:
                     log_var = gp.unconditional_log_variance
                     print(f"{'Unconditional Log Variance:':<35} {log_var:.6f}")
                     uncond_var = gp.unconditional_variance
-                    print(f"{'Unconditional Variance:':<35} {uncond_var:.6e}")
-                    print(f"{'Unconditional Volatility:':<35} {np.sqrt(uncond_var):.6f}")
+                    print(f"{'Geometric Variance:':<35} {uncond_var:.6e}")
+                    print(f"{'Geometric Volatility:':<35} {api.square_roots(np.array([uncond_var]))[0]:.6f}")
                 else:
                     print(f"{'Stationary:':<35} No (non-stationary log-variance recursion)")
                 if 0.0 < abs(persistence) < 1.0:
-                    half_life = np.log(0.5) / np.log(abs(persistence))
+                    half_life = api.persistence_half_life(persistence)
                     print(f"{'Half-life (periods):':<35} {half_life:.1f}")
                 return
 
@@ -896,7 +891,7 @@ class EstimationResult:
                 print(f"{'Power (delta):':<35} {gp.delta:.6f}")
                 print(f"{'Power-state stationary:':<35} {'Yes' if gp.is_stationary else 'No'}")
                 if 0.0 < persistence < 1.0:
-                    half_life = np.log(0.5) / np.log(persistence)
+                    half_life = api.persistence_half_life(persistence)
                     print(f"{'Half-life proxy (periods):':<35} {half_life:.1f}")
                 return
 
@@ -915,12 +910,12 @@ class EstimationResult:
                 if gp.omega > 0:
                     uncond_var = gp.unconditional_variance
                     print(f"{'Unconditional Variance:':<35} {uncond_var:.6e}")
-                    print(f"{'Unconditional Volatility:':<35} {np.sqrt(uncond_var):.6f}")
+                    print(f"{'Unconditional Volatility:':<35} {api.square_roots(np.array([uncond_var]))[0]:.6f}")
             else:
                 print(f"{'Stationary:':<35} No (IGARCH or explosive)")
         
         if gp is not None and gp.persistence < 1.0 and gp.persistence > 0:
-            half_life = np.log(0.5) / np.log(gp.persistence)
+            half_life = api.persistence_half_life(gp.persistence)
             print(f"{'Half-life (periods):':<35} {half_life:.1f}")
     
     def _collect_warnings(self) -> List[str]:
@@ -1064,149 +1059,37 @@ class EstimationResult:
         lags: int = 10,
         alpha: float = 0.05,
         print_results: bool = True,
+        *,
+        df_adjustment: Optional[int] = None,
     ) -> Dict[str, Any]:
+        """Native residual and density diagnostics on the scored sample.
+
+        Includes PIT cell and moment Ljung-Box tests, residual and normal-PIT
+        portmanteau tests, Li-Mak squared-residual tests, Engle-Ng sign/size bias,
+        and a conditional-likelihood Berkowitz test.
+
+        ``df_adjustment`` overrides the portmanteau reference degrees of freedom.
+        Residual tests default to the model's dynamic mean parameter count for
+        estimated parameters and zero for supplied parameters. PIT tests default
+        to no count adjustment. Their reference p-values treat the density as
+        fixed, so in-sample use needs estimation-aware calibration rather than
+        a parameter-count subtraction. Li-Mak uses the full joint score-influence
+        sandwich and requires interior estimates and a finite fourth moment.
+        Unidentified tests include an explicit status and NaN p-value.
         """
-        Run DGT (Diebold-Gunther-Tay) and Ljung-Box tests on PIT residuals.
-        
-        The Probability Integral Transform (PIT) converts standardized residuals
-        to uniform(0,1) using the fitted distribution's CDF. Under correct
-        specification, u_t = F(z_t) should be i.i.d. U(0,1). The DGT cell test
-        checks marginal uniformity; the Ljung-Box tests probe serial dependence.
-        
-        Tests performed:
-        1. DGT (Diebold-Gunther-Tay) cell test: Pearson chi-square test for uniformity of PIT
-        2. Ljung-Box tests on PIT moments: Tests for serial correlation in
-           (u - 0.5)^p for p = 1, 2, 3, 4 to detect misspecification in
-           location, dispersion, asymmetry, and tail shape.
-        
-        Parameters
-        ----------
-        n_cells : int, default 40
-            Number of cells for the DGT (Diebold-Gunther-Tay) chi-square test.
-        lags : int, default 10
-            Number of lags for Ljung-Box tests.
-        alpha : float, default 0.05
-            Significance level for hypothesis tests.
-        print_results : bool, default True
-            If True, print formatted test results.
-            
-        Returns
-        -------
-        dict
-            Dictionary containing:
-            - 'distribution': str, name of fitted distribution
-            - 'dist_params': dict, fitted distribution parameters
-            - 'n_obs': int, number of observations
-            - 'dgt': dict, DGT test results
-            - 'ljung_box': dict, Ljung-Box test results for each moment
-            - 'pit': np.ndarray, PIT values for further analysis
-            
-        Raises
-        ------
-        ValueError
-            If standardized residuals are not available.
-
-        References
-        ----------
-        Diebold, F. X., Gunther, T. A., and Tay, A. S. (1998). Evaluating
-        density forecasts, with applications to financial risk management.
-        International Economic Review, 39, 863-883.
-        https://doi.org/10.2307/2527342
-
-        Ljung, G. M., and Box, G. E. P. (1978). On a measure of lack of fit in
-        time series models. Biometrika, 65, 297-303.
-        https://doi.org/10.1093/biomet/65.2.297
-
-        Pearson, K. (1900). On the criterion that a given system of deviations
-        from the probable in the case of a correlated system of variables is
-        such that it can be reasonably supposed to have arisen from random
-        sampling. Philosophical Magazine, 50, 157-175.
-        https://doi.org/10.1080/14786440009463897
-        """
-        # Get standardized residuals
-        z = self.std_resid
-        if z is None:
-            raise ValueError("Standardized residuals not available. "
-                           "Model may not have volatility component or sigma2 not computed.")
-        
-        # Remove any NaN values
-        z = z[~np.isnan(z)]
-        T = len(z)
-        
-        # PIT u = F(z) under the fitted innovation density (native distribution function)
-        from . import _scivolapi as api
-
-        density = self._native()[0].innovation_density(np.ascontiguousarray(self.params, dtype=np.float64))
-        u, _ = api.distribution(density.density, density.shape, np.ascontiguousarray(z, dtype=np.float64))
+        model, y, x = self._native()
+        estimated = self.parameter_source != "supplied"
+        estimator = api.Estimator.qmle if str(self.method).lower() == "qmle" else api.Estimator.mle
+        result = api.diagnostics(api.Jet(model, y, x), np.ascontiguousarray(self.params, dtype=np.float64),
+                                 n_cells, lags, df_adjustment, estimator, estimated, alpha)
         dp = self.dist_params
-        dist_params_dict = {"eta": dp.eta, "nu": dp.nu, "lam": dp.lam, "rho": dp.rho, "zeta": dp.zeta, "lambda": dp.shape_lambda}
-        dist_name = self.density.signature if self.density is not None else "Normal"
-
-        # =====================================================================
-        # DGT Test (Pearson chi-square for uniformity)
-        # =====================================================================
-        edges = np.linspace(0.0, 1.0, n_cells + 1)
-        counts, _ = np.histogram(u, bins=edges)
-        expected = T / n_cells
-        
-        chi2_stat = float(np.sum((counts - expected) ** 2 / expected))
-        df = n_cells - 1
-        p_value_dgt = float(chi2.sf(chi2_stat, df=df))
-        reject_dgt = p_value_dgt < alpha
-        
-        dgt_result = {
-            "n_cells": n_cells,
-            "chi2_stat": chi2_stat,
-            "df": df,
-            "p_value": p_value_dgt,
-            "reject": reject_dgt,
-        }
-        
-        # =====================================================================
-        # Ljung-Box Tests on PIT Moments
-        # =====================================================================
-        u_centered = u - 0.5
-        lb_results: Dict[int, Dict[str, Any]] = {}
-        
-        for power in (1, 2, 3, 4):
-            m = u_centered ** power
-            
-            # Compute autocorrelations
-            acf = np.array([
-                np.corrcoef(m[lag:], m[:-lag])[0, 1] if len(m) > lag else 0.0
-                for lag in range(1, lags + 1)
-            ])
-            
-            # Ljung-Box Q statistic
-            lag_array = np.arange(1, lags + 1)
-            q_stat = float(T * (T + 2) * np.sum((acf ** 2) / (T - lag_array)))
-            p_value_lb = float(chi2.sf(q_stat, df=lags))
-            reject_lb = p_value_lb < alpha
-            
-            lb_results[power] = {
-                "lags": lags,
-                "q_stat": q_stat,
-                "p_value": p_value_lb,
-                "reject": reject_lb,
-            }
-        
-        # Build result dictionary
-        result = {
-            "distribution": dist_name,
-            "dist_params": dist_params_dict,
-            "n_obs": T,
-            "alpha": alpha,
-            "dgt": dgt_result,
-            "ljung_box": lb_results,
-            "pit": u,
-        }
-        
-        # Print formatted results if requested
+        result["dist_params"] = {"eta": dp.eta, "nu": dp.nu, "lam": dp.lam, "rho": dp.rho,
+                                 "zeta": dp.zeta, "lambda": dp.shape_lambda}
+        result["distribution"] = self.density.signature if self.density is not None else "Normal"
         if print_results:
             self._print_diagnostic_tests(result)
-        
         return result
-    
+
     def _print_diagnostic_tests(self, results: Dict[str, Any]) -> None:
         """Print nicely formatted diagnostic test results."""
         WIDTH = 70
@@ -1250,6 +1133,8 @@ class EstimationResult:
         print(f"  {'Chi2 stat:':<12} {dgt['chi2_stat']:<10.2f} {'p-value:':<12} {dgt['p_value']:.4f}")
         reject_str = "Yes (reject uniformity)" if dgt["reject"] else "No (uniform PIT)"
         print(f"  {'Reject H0:':<12} {reject_str}")
+        if dgt["status"] != "ok":
+            print(f"  {'Status:':<12} {dgt['status']}")
         
         # Ljung-Box Tests
         print()
@@ -1266,6 +1151,14 @@ class EstimationResult:
             print(f"  {moment_labels[power]:<10} {lb['lags']:>6} {lb['q_stat']:>12.2f} "
                   f"{lb['p_value']:>12.4f} {reject_str:>10}")
         
+        print()
+        print("Residual and density adequacy")
+        print("-" * WIDTH)
+        for label, test in (("Li-Mak", results["li_mak"]),
+                            ("Engle-Ng joint", results["sign_bias"]["joint"]),
+                            ("Berkowitz", results["berkowitz"])):
+            print(f"  {label:<24} {test['statistic']:>12.3f} {test['p_value']:>12.4f}  {test['status']}")
+        print("PIT p-values use a fixed-parameter reference distribution.")
         print("=" * WIDTH)
         print()
     

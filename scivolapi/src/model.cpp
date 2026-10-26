@@ -409,6 +409,26 @@ double Model::persistence(std::span<const double> theta) const
     return layout.persistence(theta.data(), 0, value, nullptr) ? value : std::numeric_limits<double>::quiet_NaN();
 }
 
+Model Model::gaussian_model() const
+{
+    ModelSpec gaussian = spec_;
+    gaussian.density = DensityKind::normal;
+    return Model(gaussian);
+}
+
+std::size_t Model::residual_degrees_of_freedom() const noexcept
+{
+    return spec_.mean.ar + spec_.mean.har.size() + spec_.mean.ma;
+}
+
+double Model::innovation_power_moment(std::span<const double> theta, double gamma, double power) const
+{
+    const InnovationDensity law = innovation_density(theta);
+    detail::MomentResult out;
+    return detail::power_moment(law.density, law.shape.data(), gamma, power, 0, out)
+        ? out.value : std::numeric_limits<double>::quiet_NaN();
+}
+
 InnovationDensity Model::innovation_density(std::span<const double> theta) const
 {
     check_size(theta, dimension());

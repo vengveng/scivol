@@ -361,6 +361,29 @@ bool integrated_tail(const Point& p, double z, bool upper, double& logarithm) no
     return logarithm <= 4e-13;
 }
 
+bool student_beta_log_tail(double nu, double scale, double log_beta, double x,
+                           double& result, double* area = nullptr) noexcept
+{
+    if (x == 0.0) { result = -log_two; if (area) *area = 0.0; return true; }
+    const double l = 2.0*std::log(x)-std::log(scale);
+    const double lx = l > 0.0 ? -l-std::log1p(std::exp(-l)) : -std::log1p(std::exp(l));
+    const double ly = l+lx;
+    const double a = 0.5*nu, b = 0.5;
+    double fraction;
+    if (std::exp(ly) < (b+1.0)/(a+b+2.0)) {
+        if (!beta_fraction(b,a,std::exp(ly),fraction)) return false;
+        const double complement = std::exp(b*ly+a*lx-log_beta+std::log(fraction/b));
+        if (!(complement < 1.0)) return false;
+        result = -log_two+std::log1p(-complement);
+        if (area) *area = 0.5*complement;
+    } else {
+        if (!beta_fraction(a,b,std::exp(lx),fraction)) return false;
+        result = -log_two+a*lx+b*ly-log_beta+std::log(fraction/a);
+        if (area) *area = 0.5-std::exp(result);
+    }
+    return std::isfinite(result);
+}
+
 bool student_log_tail(const Point& p, double x, double& result, double* area = nullptr) noexcept
 {
     if (x == 0.0) { result = -log_two; if (area) *area = 0.0; return true; }
@@ -381,23 +404,7 @@ bool student_log_tail(const Point& p, double x, double& result, double* area = n
         }
         return true;
     }
-    const double l = 2.0*std::log(x)-std::log(p.tail_scale);
-    const double lx = l > 0.0 ? -l-std::log1p(std::exp(-l)) : -std::log1p(std::exp(l));
-    const double ly = l+lx;
-    const double a = 0.5*p.nu, b = 0.5;
-    double fraction;
-    if (std::exp(ly) < (b+1.0)/(a+b+2.0)) {
-        if (!beta_fraction(b,a,std::exp(ly),fraction)) return false;
-        const double complement = std::exp(b*ly+a*lx-p.log_beta+std::log(fraction/b));
-        if (!(complement < 1.0)) return false;
-        result = -log_two+std::log1p(-complement);
-        if (area) *area = 0.5*complement;
-    } else {
-        if (!beta_fraction(a,b,std::exp(lx),fraction)) return false;
-        result = -log_two+a*lx+b*ly-p.log_beta+std::log(fraction/a);
-        if (area) *area = 0.5-std::exp(result);
-    }
-    return std::isfinite(result);
+    return student_beta_log_tail(p.nu,p.tail_scale,p.log_beta,x,result,area);
 }
 
 bool tails(const Point& p, double x, double& lower, double& upper) noexcept
@@ -749,6 +756,44 @@ bool invert_many(const Point& p, const double* u, std::size_t n, double* out) no
 
 bool valid_probability(double p) noexcept { return p > 0.0 && p < 1.0 && std::isfinite(p); }
 }  // namespace
+
+bool chi_square_log_upper(double x, double df, double& log_probability) noexcept
+{
+    if (!(df > 0.0) || !(x >= 0.0) || !std::isfinite(df) || !std::isfinite(x)) return false;
+    if (x == 0.0) { log_probability = 0.0; return true; }
+    const double a = 0.5*df, t = 0.5*x;
+    return log_gamma_q(a,t,a*std::log(t),log_gamma(a),log_gamma_one_plus(a),log_probability);
+}
+
+bool chi_square_upper(double x, double df, double& probability) noexcept
+{
+    double log_tail;
+    if (!chi_square_log_upper(x,df,log_tail)) return false;
+    const double p = std::exp(log_tail);
+    if (!(p > 0.0 && p <= 1.0) || std::numeric_limits<double>::denorm_min()/p > 2e-13) return false;
+    probability = p;
+    return true;
+}
+
+bool student_log_upper(double x, double df, double& log_probability) noexcept
+{
+    if (!(df > 0.0) || !std::isfinite(df) || !std::isfinite(x)) return false;
+    double log_tail;
+    const double log_beta = 0.5*1.1447298858494001741434273513531-half_step(0.5*df).d0;
+    if (!student_beta_log_tail(df,df,log_beta,std::abs(x),log_tail)) return false;
+    log_probability = x < 0.0 ? std::log(-std::expm1(log_tail)) : log_tail;
+    return std::isfinite(log_probability);
+}
+
+bool student_upper(double x, double df, double& probability) noexcept
+{
+    double log_tail;
+    if (!student_log_upper(x,df,log_tail)) return false;
+    const double p = std::exp(log_tail);
+    if (!(p > 0.0 && p <= 1.0) || std::numeric_limits<double>::denorm_min()/p > 2e-13) return false;
+    probability = p;
+    return true;
+}
 
 ExpectationStatus distribution(DensityKind kind, const double* shape, double z,
                                double& lower, double& upper) noexcept
