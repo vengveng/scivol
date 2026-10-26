@@ -35,32 +35,33 @@ struct MeanWork {
     double* dde;         // slots * packed(width), used with MA terms only
 };
 
+template<std::size_t K = std::dynamic_extent, std::size_t Q = std::dynamic_extent>
 class ArmaxMean {
 public:
     static constexpr bool present = true;
 
     explicit ArmaxMean(const MeanSpec& spec) noexcept : k_(spec.regressors()), q_(spec.ma) {}
 
-    [[nodiscard]] std::size_t width() const noexcept { return k_ + q_; }
-    [[nodiscard]] bool linear() const noexcept { return q_ == 0; }
+    [[nodiscard]] std::size_t width() const noexcept { return regressors() + lags(); }
+    [[nodiscard]] bool linear() const noexcept { return lags() == 0; }
 
     // Residual of scored row s, with E_s (order >= 1) and F_s (order >= 2) in the rings.
     void step(const double* theta, const Sample& sample, std::size_t s, int order, MeanWork& w) const noexcept
     {
-        const double* r = sample.design.data() + s * k_;
-        const double* ma = theta + k_;
+        const double* r = sample.design.data() + s * regressors();
+        const double* ma = theta + regressors();
         double e = sample.y[sample.first_scored + s];
-        for (std::size_t k = 0; k < k_; ++k) e -= r[k] * theta[k];
-        for (std::size_t j = 1, n = std::min(q_, s); j <= n; ++j) e -= ma[j - 1] * w.e[s - j];
+        for (std::size_t k = 0; k < regressors(); ++k) e -= r[k] * theta[k];
+        for (std::size_t j = 1, n = std::min(lags(), s); j <= n; ++j) e -= ma[j - 1] * w.e[s - j];
         w.e[s] = e;
         w.e2[s] = e * e;
         if (order < 1) return;
 
         const std::size_t m = width(), pm = packed_size(m);
         double* de = w.de + (s % w.slots) * m;
-        for (std::size_t k = 0; k < k_; ++k) de[k] = -r[k];
-        for (std::size_t j = 1; j <= q_; ++j) de[k_ + j - 1] = j <= s ? -w.e[s - j] : 0.0;
-        for (std::size_t j = 1, n = std::min(q_, s); j <= n; ++j) {
+        for (std::size_t k = 0; k < regressors(); ++k) de[k] = -r[k];
+        for (std::size_t j = 1; j <= lags(); ++j) de[regressors() + j - 1] = j <= s ? -w.e[s - j] : 0.0;
+        for (std::size_t j = 1, n = std::min(lags(), s); j <= n; ++j) {
             const double* previous = w.de + ((s - j) % w.slots) * m;
             for (std::size_t a = 0; a < m; ++a) de[a] -= ma[j - 1] * previous[a];
         }
@@ -68,8 +69,8 @@ public:
 
         double* dde = w.dde + (s % w.slots) * pm;
         std::fill_n(dde, pm, 0.0);
-        for (std::size_t j = 1, n = std::min(q_, s); j <= n; ++j) {
-            const std::size_t slot = (s - j) % w.slots, t = k_ + j - 1;
+        for (std::size_t j = 1, n = std::min(lags(), s); j <= n; ++j) {
+            const std::size_t slot = (s - j) % w.slots, t = regressors() + j - 1;
             const double* previous = w.dde + slot * pm;
             const double* first = w.de + slot * m;
             for (std::size_t k = 0; k < pm; ++k) dde[k] -= ma[j - 1] * previous[k];
@@ -79,6 +80,9 @@ public:
     }
 
 private:
+    [[nodiscard]] std::size_t regressors() const noexcept { return K == std::dynamic_extent ? k_ : K; }
+    [[nodiscard]] std::size_t lags() const noexcept { return Q == std::dynamic_extent ? q_ : Q; }
+
     std::size_t k_, q_;
 };
 

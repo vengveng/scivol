@@ -4,9 +4,9 @@
 
 namespace scivolapi::detail {
 
-Assembler assembler_ged(VolatilityKind kind, bool mean)
+Assembler assembler_ged(const ModelSpec& spec)
 {
-    return assembler_with<GedDensity>(kind, mean);
+    return assembler_with<GedDensity>(spec);
 }
 
 PathRunner path_runner_ged(VolatilityKind kind)
