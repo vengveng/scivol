@@ -189,13 +189,16 @@ nb::dict evaluate(BoundJet& self, const Vector& point, unsigned request, bool in
     const std::size_t d = self.model->dimension(), n = self.sample.scored();
     std::vector<double> g((request & gradient) ? d : 0), h((request & hessian) ? d * d : 0);
     std::vector<double> e((request & paths) ? n : 0), v(e.size()), z(e.size()), s((request & scores) ? n * d : 0),
-        terms_((request & terms) ? n : 0);
+        terms_((request & terms) ? n : 0), lv((request & log_variance_sensitivities) ? n * d : 0),
+        re((request & residual_sensitivities) ? n * d : 0);
     JetOutput out;
     out.gradient = g;
     out.hessian = h;
     out.paths = {e, v, z};
     out.scores = s;
     out.terms = terms_;
+    out.log_variance_sensitivities = lv;
+    out.residual_sensitivities = re;
     const JetResult r = in_z ? self.jet.z(view(point), request, out) : self.jet.theta(view(point), request, out);
 
     nb::dict result;
@@ -211,7 +214,62 @@ nb::dict evaluate(BoundJet& self, const Vector& point, unsigned request, bool in
     }
     if (r.valid & scores) result["scores"] = owned_matrix(std::move(s), n, d);
     if (r.valid & terms) result["terms"] = owned_vector(std::move(terms_));
+    if (r.valid & log_variance_sensitivities) result["log_variance_sensitivities"] = owned_matrix(std::move(lv), n, d);
+    if (r.valid & residual_sensitivities) result["residual_sensitivities"] = owned_matrix(std::move(re), n, d);
     return result;
+}
+
+nb::dict test_dictionary(const TestStatistic& test, double alpha = 0.05)
+{
+    nb::dict out;
+    out["statistic"] = test.statistic;
+    out["p_value"] = test.p_value;
+    out["df"] = test.df;
+    out["status"] = nb::cast(test.status).attr("name");
+    out["log_p_value"] = test.log_p_value;
+    out["reject"] = test.rejects(alpha);
+    return out;
+}
+
+nb::dict portmanteau_dictionary(Portmanteau test, std::size_t lags, double alpha = 0.05)
+{
+    nb::dict out = test_dictionary(test.ljung_box, alpha);
+    out["q_stat"] = test.ljung_box.statistic;
+    out["lags"] = lags;
+    out["box_pierce"] = test_dictionary(test.box_pierce, alpha);
+    out["autocorrelations"] = owned_vector(std::move(test.autocorrelations));
+    return out;
+}
+
+nb::dict sign_bias_dictionary(const SignBias& test, double alpha = 0.05)
+{
+    nb::dict out;
+    out["sign"] = test_dictionary(test.individual[0], alpha);
+    out["negative_size"] = test_dictionary(test.individual[1], alpha);
+    out["positive_size"] = test_dictionary(test.individual[2], alpha);
+    out["joint"] = test_dictionary(test.joint, alpha);
+    return out;
+}
+
+nb::dict berkowitz_dictionary(const Berkowitz& test, double alpha = 0.05)
+{
+    nb::dict out = test_dictionary(test.test, alpha);
+    out["intercept"] = test.mean;
+    out["variance"] = test.variance;
+    out["ar1"] = test.ar1;
+    out["likelihood"] = "conditional_on_first_observation";
+    return out;
+}
+
+nb::dict li_mak_dictionary(LiMak test, std::size_t lags, std::size_t parameters, double alpha = 0.05)
+{
+    nb::dict out = test_dictionary(test.test, alpha);
+    out["lags"] = lags;
+    out["autocorrelations"] = owned_vector(std::move(test.autocorrelations));
+    if (!test.covariance.empty()) out["covariance"] = owned_matrix(std::move(test.covariance), lags, lags);
+    if (!test.derivative.empty()) out["derivative"] = owned_matrix(std::move(test.derivative), lags, parameters);
+    out["calibration"] = "joint_score_influence_sandwich";
+    return out;
 }
 
 }  // namespace
@@ -219,6 +277,20 @@ nb::dict evaluate(BoundJet& self, const Vector& point, unsigned request, bool in
 NB_MODULE(_scivolapi, m)
 {
     m.doc() = "scivolapi: native volatility-model mathematics";
+
+    nb::enum_<TestStatus>(m, "TestStatus")
+        .value("ok", TestStatus::ok)
+        .value("not_estimable", TestStatus::not_estimable)
+        .value("probability_underflow", TestStatus::probability_underflow)
+        .value("numerical_range", TestStatus::numerical_range)
+        .value("infeasible_parameters", TestStatus::infeasible_parameters)
+        .value("fourth_moment_unavailable", TestStatus::fourth_moment_unavailable)
+        .value("invalid_derivatives", TestStatus::invalid_derivatives)
+        .value("invalid_qmle_derivatives", TestStatus::invalid_qmle_derivatives)
+        .value("at_boundary", TestStatus::at_boundary)
+        .value("singular_information", TestStatus::singular_information)
+        .value("singular_moment_covariance", TestStatus::singular_moment_covariance)
+        .value("pit_endpoint", TestStatus::pit_endpoint);
 
     nb::enum_<VolatilityKind>(m, "VolatilityKind")
         .value("garch", VolatilityKind::garch)
@@ -242,6 +314,8 @@ NB_MODULE(_scivolapi, m)
     m.attr("PATHS") = static_cast<unsigned>(paths);
     m.attr("SCORES") = static_cast<unsigned>(scores);
     m.attr("TERMS") = static_cast<unsigned>(terms);
+    m.attr("LOG_VARIANCE_SENSITIVITIES") = static_cast<unsigned>(log_variance_sensitivities);
+    m.attr("RESIDUAL_SENSITIVITIES") = static_cast<unsigned>(residual_sensitivities);
 
     nb::class_<MeanSpec>(m, "MeanSpec")
         .def(nb::init<>())
@@ -266,6 +340,7 @@ NB_MODULE(_scivolapi, m)
         .def("__setstate__", [](Model& self, const SpecState& state) { new (&self) Model(spec_from(state)); })
         .def_prop_ro("dimension", &Model::dimension)
         .def_prop_ro("parameter_names", &Model::parameter_names)
+        .def_prop_ro("residual_degrees_of_freedom", &Model::residual_degrees_of_freedom)
         .def("feasible", [](const Model& m, const Vector& theta) { return m.feasible(view(theta)); })
         .def("bounds", [](const Model& m) {
             std::vector<double> lower(m.dimension()), upper(m.dimension());
@@ -274,6 +349,11 @@ NB_MODULE(_scivolapi, m)
         })
         .def_prop_ro("capabilities", &Model::capabilities)
         .def("persistence", [](const Model& m, const Vector& theta) { return m.persistence(view(theta)); }, "theta"_a)
+        .def("unconditional_variance", [](const Model& m, const Vector& theta) { return m.unconditional_variance(view(theta)); }, "theta"_a)
+        .def("unconditional_mean", [](const Model& m, const Vector& theta) { return m.unconditional_mean(view(theta)); }, "theta"_a)
+        .def("innovation_power_moment", [](const Model& m, const Vector& theta, double gamma, double power) {
+            return m.innovation_power_moment(view(theta), gamma, power);
+        }, "theta"_a, "gamma"_a, "power"_a)
         .def("innovation_density", [](const Model& m, const Vector& theta) { return m.innovation_density(view(theta)); },
              "theta"_a)
         .def("constraints", [](const Model& m, const Vector& theta) {
@@ -660,6 +740,79 @@ NB_MODULE(_scivolapi, m)
         nb::gil_scoped_release release;
         return chi_bar_weights(view(h), h.shape(0), tolerance, cells);
     }, "information"_a, "tolerance"_a = 1e-6, "maximum_cells"_a = 32768);
-    m.def("chi_square_survival", &chi_square_survival, "statistic"_a, "degrees"_a);
 
+    m.def("normal_survival", &normal_survival, "x"_a);
+    m.def("student_survival", &student_survival, "x"_a, "df"_a);
+    m.def("chi_square_survival", &chi_square_survival, "x"_a, "df"_a);
+    m.def("coefficient_test", [](double coefficient, double se, std::size_t df) {
+        return test_dictionary(coefficient_test(coefficient, se, df));
+    }, "coefficient"_a, "standard_error"_a, "df"_a);
+    m.def("portmanteau", [](const Vector& x, std::size_t lags, std::size_t df) {
+        return portmanteau_dictionary(portmanteau(view(x), lags, df), lags);
+    }, "series"_a, "lags"_a, "df_adjustment"_a = 0);
+    m.def("dgt", [](const Vector& u, std::size_t cells) {
+        nb::dict out = test_dictionary(dgt(view(u), cells));
+        out["n_cells"] = cells;
+        out["chi2_stat"] = out["statistic"];
+        return out;
+    }, "pit"_a, "cells"_a = 40);
+    m.def("sign_bias", [](const Vector& z, const Vector& e) { return sign_bias_dictionary(sign_bias(view(z), view(e))); },
+          "standardized"_a, "residual"_a);
+    m.def("berkowitz", [](const Vector& u) { return berkowitz_dictionary(berkowitz(view(u))); }, "pit"_a);
+    m.def("li_mak", [](BoundJet& jet, const Vector& theta, std::size_t lags, Estimator estimator, bool estimated) {
+        return li_mak_dictionary(li_mak(jet.jet, view(theta), lags, estimator, estimated), lags, jet.model->dimension());
+    }, "jet"_a, "theta"_a, "lags"_a = 10, "estimator"_a = Estimator::mle, "estimated"_a = true);
+    m.def("diagnostics", [](BoundJet& jet, const Vector& theta, std::size_t cells, std::size_t lags,
+                            const std::optional<std::size_t>& df, Estimator estimator, bool estimated, double alpha) {
+        if (!(alpha > 0.0 && alpha < 1.0)) throw std::invalid_argument("alpha must be between zero and one");
+        const std::size_t adjustment = df.value_or(estimated ? jet.model->residual_degrees_of_freedom() : 0);
+        Diagnostics tests = diagnostics(jet.jet, view(theta), cells, lags, adjustment, estimator, estimated, df.value_or(0));
+        nb::dict out, moments, cell = test_dictionary(tests.cell, alpha);
+        cell["n_cells"] = cells;
+        cell["chi2_stat"] = tests.cell.statistic;
+        out["dgt"] = cell;
+        for (std::size_t j = 0; j < 4; ++j) moments[nb::int_(j + 1)] = portmanteau_dictionary(std::move(tests.pit_moments[j]), lags, alpha);
+        out["ljung_box"] = moments;
+        out["residual_ljung_box"] = portmanteau_dictionary(std::move(tests.residual), lags, alpha);
+        out["pit_normal_ljung_box"] = portmanteau_dictionary(std::move(tests.pit_normal), lags, alpha);
+        out["li_mak"] = li_mak_dictionary(std::move(tests.squared_residual), lags, jet.model->dimension(), alpha);
+        out["sign_bias"] = sign_bias_dictionary(tests.asymmetry, alpha);
+        out["berkowitz"] = berkowitz_dictionary(tests.density, alpha);
+        out["pit"] = owned_vector(std::move(tests.pit));
+        out["n_obs"] = jet.sample.scored();
+        out["alpha"] = alpha;
+        out["df_adjustment"] = adjustment;
+        out["pit_df_adjustment"] = df.value_or(0);
+        out["pit_calibration"] = "fixed_parameter_reference; in-sample parameter estimation is not calibrated";
+        return out;
+    }, "jet"_a, "theta"_a, "cells"_a = 40, "lags"_a = 10, "df_adjustment"_a = nb::none(),
+       "estimator"_a = Estimator::mle, "estimated"_a = true, "alpha"_a = 0.05);
+    m.def("diebold_mariano", [](const Vector& a, const Vector& b, std::size_t horizon, int bandwidth) {
+        const DieboldMariano test = diebold_mariano(view(a), view(b), horizon, bandwidth);
+        nb::dict out = test_dictionary(test.test);
+        out["long_run_variance"] = test.long_run_variance;
+        out["bandwidth"] = test.bandwidth;
+        return out;
+    }, "loss_a"_a, "loss_b"_a, "horizon"_a = 1, "bandwidth"_a = -1);
+    m.def("mcs_block_length", &mcs_block_length, "rows"_a, "requested"_a = -1);
+    m.def("model_confidence_set", [](const Matrix& losses, const Matrix& uniforms, std::size_t block_length,
+                                    double alpha, const std::string& statistic) {
+        if (statistic != "max" && statistic != "R") throw std::invalid_argument("MCS statistic must be 'max' or 'R'");
+        const auto test = model_confidence_set({losses.data(), losses.size()}, losses.shape(0), losses.shape(1),
+                                               {uniforms.data(), uniforms.size()}, uniforms.shape(0), block_length, alpha,
+                                               statistic == "max" ? MCSStatistic::maximum : MCSStatistic::range);
+        nb::dict out;
+        out["included"] = test.included;
+        out["eliminated"] = test.eliminated;
+        out["p_values"] = owned_vector(test.p_values);
+        out["final_p_value"] = test.final_p_value;
+        return out;
+    }, "losses"_a, "uniforms"_a, "block_length"_a, "alpha"_a = 0.05, "statistic"_a = "max");
+    m.def("information_criteria", [](double log_likelihood, std::size_t parameters, std::size_t rows) {
+        const auto ic = information_criteria(log_likelihood, parameters, rows);
+        return nb::make_tuple(ic.aic, ic.bic, ic.hqic);
+    }, "log_likelihood"_a, "parameters"_a, "rows"_a);
+    m.def("location_scale_quantiles", [](double mean, double variance, const InnovationDensity& law, const Vector& u) {
+        return owned_vector(location_scale_quantiles(mean, variance, law, view(u)));
+    });
 }

@@ -145,6 +145,38 @@ their workspaces can be used by independent Python threads.
 | APARCH variance | one step | beyond one step |
 | Quantiles | one step | beyond one step |
 
+## Unconditional moments
+
+`Model::unconditional_mean(theta)` returns `intercept / (1 - sum AR - sum HAR)`
+for a stable implied AR polynomial, including zero-mean and constant-only models.
+MA coefficients do not affect this mean. Exogenous-regressor means are not
+specified, so models with exogenous regressors return NaN.
+
+`Model::unconditional_variance(theta)` returns exact stationary `E[h]`:
+
+- Constant variance: `sigma2`.
+- GARCH/GJR: `omega / (1 - persistence)`, with GJR's density-weighted persistence.
+- APARCH: the same expression at exactly `delta = 2`, with weights
+  `E[(|z| - gamma_i z)^2]`. This is the GJR-equivalent variance. At other
+  powers the exact variance is unavailable and the method returns NaN.
+- EGARCH: let `a_k` and `b_k` be the coefficients of
+  `(sum alpha_i L^i)/(1-sum beta_j L^j)` and
+  `(sum gamma_i L^i)/(1-sum beta_j L^j)`, and `m = E|z|`. Then
+  `E[h] = exp(omega/(1-sum beta)) * product_k exp(-a_k*m) M(a_k,b_k)`,
+  where `M(a,b) = E exp(a|z|+bz)` is the native exponential moment.
+  The omitted log product is bounded by `2e-12`, using a contracting power
+  of the beta companion matrix and a finite exponential envelope moment.
+  When `a_k + |b_k| <= 0` is preserved by nonnegative beta, a one-sided Taylor
+  bound also permits polynomial tails. A divergent factor returns infinity.
+  Student-t and skew-t with `eta > 0` have an infinite variance whenever a
+  filtered shock has a positive tail slope, including the usual positive
+  magnitude response. `exp(E[log h])` is not the unconditional variance.
+
+NaN also reports an invalid or nonstationary recursion, failure to establish
+the truncation bound within the numerical work budget, or a finite moment
+outside double precision's range. The Python summary asks the common Model
+interface for long-run variance for every family.
+
 ## DCC
 
 `DCC(p, q)` uses a Gaussian or Student-t copula. For each marginal's

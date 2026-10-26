@@ -12,6 +12,8 @@ import sys
 from typing import Callable, Dict, List, Tuple, Any, Optional
 import numpy as np
 
+from . import _scivolapi as api
+
 # Spawn avoids forking a process after BLAS or a development AD oracle has
 # initialized native worker threads.
 from joblib import Parallel, delayed

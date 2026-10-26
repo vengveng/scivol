@@ -56,7 +56,7 @@ def mean_point(mean) -> list[float]:
 def volatility_point(volatility, p, q, density) -> list[float]:
     shape = SHAPES[density]
     if volatility == "garch":
-        return [0.08] + [0.10 / p] * p + [0.80 / q] * q + shape
+        return [0.08] + [0.10 / p for _ in range(p)] + [0.80 / q for _ in range(q)] + shape
     if volatility == "gjr":
         return [0.08] + [0.05 / p] * p + [0.10 / p] * p + [0.80 / q] * q + shape
     if volatility == "egarch":
@@ -94,7 +94,7 @@ def design(y, x, mean):
     return lags, np.array(rows).reshape(len(y) - lags, -1)
 
 
-def row_terms(y, x, mean, volatility, p, q, density):
+def row_terms(y, x, mean, volatility, p, q, density, *, return_paths=False):
     """Each scored row's negative log-likelihood as a JAX function of theta.
 
     Scored rows start after the mean's largest y lag; the variance of the first
@@ -168,6 +168,8 @@ def row_terms(y, x, mean, volatility, p, q, density):
             history = jnp.concatenate([seed[None],jnp.zeros(max(1,p,q)-1)])
             _,tail = jax.lax.scan(variance_step,history,jnp.arange(1,n))
             variance = jnp.concatenate([jnp.asarray(h0)[None],tail])
+        if return_paths:
+            return jnp.stack([jnp.log(variance), residuals])
         z = residuals / jnp.sqrt(variance)
         one = np.zeros(1, dtype=bool)
         density_terms = jax.vmap(lambda value: _density_nll(jnp,jsp,value[None],shape,d,one))(z)

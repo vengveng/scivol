@@ -7,6 +7,7 @@
 #include <numeric>
 #include <queue>
 
+#include "density/distribution.hpp"
 #include "finalize.hpp"
 
 namespace scivolapi {
@@ -191,6 +192,15 @@ LRResult invalid(LRResult result, LRStatus status, std::string message)
     return result;
 }
 
+// One term of the chi-bar tail: chi^2_0 is the atom at zero; a chi-square tail
+// too small to represent counts as zero.
+double chi_bar_term(double statistic, std::size_t degrees)
+{
+    if (degrees == 0) return statistic > 0.0 ? 0.0 : 1.0;
+    double upper;
+    return detail::chi_square_upper(statistic, static_cast<double>(degrees), upper) ? upper : 0.0;
+}
+
 }  // namespace
 
 LRWeights chi_bar_weights(std::span<const double> information, std::size_t m, double tolerance,
@@ -263,18 +273,6 @@ LRWeights chi_bar_weights(std::span<const double> information, std::size_t m, do
     return out;
 }
 
-double chi_square_survival(double statistic, std::size_t degrees)
-{
-    if (!(statistic >= 0.0)) return std::numeric_limits<double>::quiet_NaN();
-    if (statistic == 0.0) return 1.0;
-    if (degrees == 0 || std::isinf(statistic)) return 0.0;
-    const double x = 0.5 * statistic;
-    double a = degrees % 2 ? 0.5 : 1.0;
-    double q = degrees % 2 ? std::erfc(std::sqrt(x)) : std::exp(-x);
-    for (; a < 0.5 * degrees; a += 1.0) q += std::exp(a * std::log(x) - x - std::lgamma(a + 1.0));
-    return q;
-}
-
 LRResult restriction_test(const Model& parent, const Model& child, const Restriction& r,
                           const FitResult& pf, const FitResult& cf, std::span<const double> information,
                           double level, double tolerance, std::size_t maximum_cells)
@@ -344,7 +342,7 @@ LRResult restriction_test(const Model& parent, const Model& child, const Restric
     }
     out.p_value = 0.0;
     for (std::size_t k = 0; k < out.weights.size(); ++k)
-        out.p_value += out.weights[k] * chi_square_survival(out.statistic, out.interior_df + k);
+        out.p_value += out.weights[k] * chi_bar_term(out.statistic, out.interior_df + k);
     if (!weights_resolved || out.numerical_error > tolerance
         || (out.p_value - out.numerical_error <= level && level <= out.p_value + out.numerical_error))
         return invalid(out, LRStatus::unresolved, "The cubature accuracy or decision interval is unresolved.");

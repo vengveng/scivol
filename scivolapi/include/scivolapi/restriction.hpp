@@ -39,7 +39,6 @@ struct LRWeights {
 // cubature for blocks larger than three, with a bounded subdivision budget.
 LRWeights chi_bar_weights(std::span<const double> information, std::size_t boundaries,
                          double tolerance = 1e-6, std::size_t maximum_cells = 32768);
-double chi_square_survival(double statistic, std::size_t degrees);
 LRResult restriction_test(const Model& parent, const Model& child, const Restriction& restriction,
                           const FitResult& parent_fit, const FitResult& child_fit,
                           std::span<const double> parent_information, double level = 0.01,

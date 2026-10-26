@@ -15,10 +15,12 @@ add_library(scivolapi
     src/model.cpp
     src/restriction.cpp
     src/restriction_test.cpp
+    src/model_moments.cpp
     src/jet.cpp
     ${SCIVOLAPI_JET_SOURCES}
     src/fit.cpp
     src/finalize.cpp
+    src/statistics.cpp
     src/simulate.cpp
     src/correlation.cpp
     src/correlation_paths.cpp

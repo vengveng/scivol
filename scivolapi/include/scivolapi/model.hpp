@@ -184,8 +184,24 @@ public:
     // weighted by the density's moments (GJR, APARCH), sum beta for EGARCH, zero
     // for constant variance. NaN where a moment it needs does not exist.
     [[nodiscard]] double persistence(std::span<const double> theta) const;
+    // Exact stationary E[h]: omega/(1-persistence) for GARCH/GJR and APARCH
+    // at delta=2; sigma2 for constant variance. EGARCH uses its stationary
+    // exponential-moment product, with log truncation error <= 2e-12.
+    // Infinity means a divergent moment; NaN means unavailable (APARCH delta
+    // != 2), nonstationary, invalid, or not representable in double precision.
+    [[nodiscard]] double unconditional_variance(std::span<const double> theta) const;
+    // Stationary E[y] = intercept/(1-sum AR-sum HAR). NaN for an unstable
+    // implied AR polynomial or exogenous regressors whose means are unknown.
+    [[nodiscard]] double unconditional_mean(std::span<const double> theta) const;
     // The innovation density at theta.
     [[nodiscard]] InnovationDensity innovation_density(std::span<const double> theta) const;
+    // Same mean/variance equation with Gaussian innovations, for QMLE scores.
+    // Callers must check density_free_recursion before substituting its paths.
+    [[nodiscard]] Model gaussian_model() const;
+    // Conventional dynamic-mean df adjustment for residual portmanteau tests.
+    [[nodiscard]] std::size_t residual_degrees_of_freedom() const noexcept;
+    // E[(|z|-gamma*z)^power]; NaN if the moment does not exist or cannot be evaluated.
+    [[nodiscard]] double innovation_power_moment(std::span<const double> theta, double gamma, double power) const;
 
 private:
     ModelSpec spec_;

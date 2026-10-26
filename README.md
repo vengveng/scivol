@@ -887,7 +887,29 @@ result.diagnostic_tests(alpha=0.01, n_cells=50, lags=20)
 diag = result.diagnostic_tests(print_results=False)
 diag['dgt']['p_value']
 diag['ljung_box'][2]['reject']
+diag['li_mak']['p_value']
+diag['sign_bias']['joint']['p_value']
+diag['berkowitz']['p_value']
 ```
+
+All statistics run in the native library. Li-Mak uses a joint score-influence
+sandwich correction for estimated mean and volatility parameters and requires a
+finite fourth innovation moment. Engle-Ng reports separate sign, negative-size
+and positive-size bias tests and their joint test. Berkowitz uses a conditional
+Gaussian AR(1) likelihood on normal PIT scores, conditioning both hypotheses on
+the first observation. Tests that cannot be estimated return an explicit status.
+
+`df_adjustment` overrides the portmanteau reference degrees of freedom. By
+default, residual tests subtract the model's dynamic mean parameter count for
+estimated parameters and zero for supplied parameters. PIT tests use the
+fixed-parameter reference without a count subtraction; their in-sample
+parameter-estimation correction cannot be reduced to a parameter count.
+
+OOS Diebold-Mariano comparisons use Bartlett Newey-West variance estimates with
+bandwidth `floor(n**(1/3))` and the Harvey-Leybourne-Newbold correction. Model
+confidence sets support `statistic="max"` and `statistic="R"`, with monotone
+p-values for every model. Circular bootstrap blocks use uniforms drawn by NumPy
+`Generator(PCG64(random_state))`; native code reuses those draws at every stage.
 
 Auto-selection uses these tests internally to penalize poorly fitting candidates.
 
@@ -981,9 +1003,10 @@ g = GARCH(auto={'max_p': 2, 'max_q': 2})
 
 g.p, g.q, g.n_params, g.signature
 g.fitted_params   # {'omega': ..., 'alpha': [...], 'beta': [...]}
-g.persistence()
-g.is_stationary()
-g.unconditional_variance()
+result = g.fit(data)
+result.garch_params.persistence
+result.garch_params.is_stationary
+result.unconditional_variance  # exact E[h], through the common native Model interface
 ```
 
 ### GJRGARCH

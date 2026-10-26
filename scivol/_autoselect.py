@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Callable, List, Tuple, Optional, Dict, Any, TYPE_CHECKING
 import numpy as np
 import warnings
-from scipy.special import gammaln, ndtr
+from . import _scivolapi as api
 
 
 if TYPE_CHECKING:
@@ -179,6 +179,7 @@ class SelectionResult:
         n_bootstrap: int = 1000,
         block_length: Optional[int] = None,
         random_state: Optional[int] = 0,
+        statistic: str = "max",
     ) -> ModelConfidenceSet:
         """Estimate a block-bootstrap model confidence set from OOS losses."""
         if self.select_by != "oos":
@@ -189,6 +190,7 @@ class SelectionResult:
             n_bootstrap=n_bootstrap,
             block_length=block_length,
             random_state=random_state,
+            statistic=statistic,
         )
 
 
@@ -529,22 +531,10 @@ def _assess_candidate_quality(
 
 
 def _diebold_mariano(loss_a: np.ndarray, loss_b: np.ndarray) -> tuple[float, float]:
-    """Return a two-sided HAC Diebold-Mariano statistic for equal mean loss."""
-    difference = np.asarray(loss_a, dtype=np.float64) - np.asarray(loss_b, dtype=np.float64)
-    difference = difference[np.isfinite(difference)]
-    n_obs = difference.size
-    if n_obs < 3:
-        return np.nan, np.nan
-    centered = difference - float(np.mean(difference))
-    max_lag = min(int(np.floor(n_obs ** (1.0 / 3.0))), n_obs - 1)
-    long_run_variance = float(np.dot(centered, centered) / n_obs)
-    for lag in range(1, max_lag + 1):
-        covariance = float(np.dot(centered[lag:], centered[:-lag]) / n_obs)
-        long_run_variance += 2.0 * (1.0 - lag / (max_lag + 1.0)) * covariance
-    if not np.isfinite(long_run_variance) or long_run_variance <= 0.0:
-        return np.nan, np.nan
-    statistic = float(np.mean(difference) / np.sqrt(long_run_variance / n_obs))
-    return statistic, float(2.0 * ndtr(-abs(statistic)))
+    """Native Bartlett HAC and HLN-corrected two-sided DM comparison."""
+    test = api.diebold_mariano(np.ascontiguousarray(loss_a, dtype=np.float64),
+                              np.ascontiguousarray(loss_b, dtype=np.float64))
+    return test["statistic"], test["p_value"]
 
 
 def _finalize_oos_comparisons(candidates: List[ModelCandidate]) -> None:
@@ -708,17 +698,6 @@ def _refit_rolling_window(
     )
 
 
-def _circular_block_indices(
-    rng: np.random.Generator,
-    n_obs: int,
-    block_length: int,
-) -> np.ndarray:
-    n_blocks = int(np.ceil(n_obs / block_length))
-    starts = rng.integers(0, n_obs, size=n_blocks)
-    offsets = np.arange(block_length)
-    return ((starts[:, None] + offsets[None, :]) % n_obs).ravel()[:n_obs]
-
-
 def _model_confidence_set(
     candidates: List[ModelCandidate],
     *,
@@ -726,8 +705,9 @@ def _model_confidence_set(
     n_bootstrap: int,
     block_length: Optional[int],
     random_state: Optional[int],
+    statistic: str = "max",
 ) -> ModelConfidenceSet:
-    """Run a Hansen-style Tmax elimination on aligned OOS loss paths."""
+    """Run native Hansen-Lunde-Nason max or range elimination on OOS losses."""
     if not 0.0 < alpha < 1.0:
         raise ValueError("alpha must be between 0 and 1.")
     if not isinstance(n_bootstrap, (int, np.integer)) or int(n_bootstrap) < 100:
@@ -735,58 +715,29 @@ def _model_confidence_set(
     usable = [
         candidate for candidate in candidates
         if candidate.oos_losses is not None
-        and np.all(np.isfinite(candidate.oos_losses))
     ]
     if not usable:
-        raise ValueError("No finite aligned OOS loss vectors are available.")
+        raise ValueError("No aligned OOS loss vectors are available.")
     lengths = {candidate.oos_losses.size for candidate in usable}
     if len(lengths) != 1:
         raise ValueError("MCS requires equal-length OOS loss vectors.")
     n_obs = lengths.pop()
     if n_obs < 20:
         raise ValueError("MCS requires at least 20 OOS observations.")
-    if block_length is None:
-        block_length = max(2, int(round(n_obs ** (1.0 / 3.0))))
-    if not isinstance(block_length, (int, np.integer)) or not 1 <= int(block_length) <= n_obs:
-        raise ValueError("block_length must be between 1 and the OOS sample size.")
-
-    losses = np.column_stack([candidate.oos_losses for candidate in usable])
-    rng = np.random.default_rng(random_state)
-    active = list(range(len(usable)))
-    eliminated = []
-    elimination_pvalues: Dict[str, float] = {}
-    final_pvalue = 1.0
-    while len(active) > 1:
-        active_losses = losses[:, active]
-        relative = active_losses - np.mean(active_losses, axis=1, keepdims=True)
-        means = np.mean(relative, axis=0)
-        centered = relative - means
-        bootstrap_means = np.empty(
-            (int(n_bootstrap), len(active)), dtype=np.float64
-        )
-        for draw in range(int(n_bootstrap)):
-            indices = _circular_block_indices(rng, n_obs, int(block_length))
-            bootstrap_means[draw] = np.mean(centered[indices], axis=0)
-        standard_errors = np.std(bootstrap_means, axis=0, ddof=1)
-        standard_errors = np.maximum(standard_errors, np.finfo(np.float64).eps)
-        observed = float(np.max(means / standard_errors))
-        bootstrap_max = np.max(bootstrap_means / standard_errors, axis=1)
-        final_pvalue = float((1 + np.sum(bootstrap_max >= observed)) / (n_bootstrap + 1))
-        if final_pvalue >= alpha:
-            break
-        worst_position = int(np.argmax(means / standard_errors))
-        worst_index = active.pop(worst_position)
-        worst_candidate = usable[worst_index]
-        eliminated.append(worst_candidate)
-        elimination_pvalues[str(worst_candidate.spec)] = final_pvalue
-
-    survivors = tuple(usable[index] for index in active)
+    if block_length is not None and not isinstance(block_length, (int, np.integer)):
+        raise ValueError("block_length must be an integer.")
+    block_length = api.mcs_block_length(n_obs, -1 if block_length is None else int(block_length))
+    losses = np.ascontiguousarray(np.column_stack([candidate.oos_losses for candidate in usable]), dtype=np.float64)
+    rng = np.random.Generator(np.random.PCG64(random_state))
+    uniforms = rng.random((int(n_bootstrap), (n_obs - 1) // block_length + 1))
+    test = api.model_confidence_set(losses, uniforms, block_length, alpha, statistic)
     return ModelConfidenceSet(
-        candidates=survivors,
-        eliminated=tuple(eliminated),
+        candidates=tuple(usable[index] for index in test["included"]),
+        eliminated=tuple(usable[index] for index in test["eliminated"]),
         alpha=float(alpha),
-        final_pvalue=final_pvalue,
-        elimination_pvalues=elimination_pvalues,
+        final_pvalue=test["final_p_value"],
+        elimination_pvalues={str(candidate.spec): float(value)
+                             for candidate, value in zip(usable, test["p_values"])},
     )
 
 
@@ -818,14 +769,14 @@ def _finalize_candidate_ranking(candidates: List[ModelCandidate]) -> None:
     if not finite:
         return
     best = min(finite)
-    weights_raw = []
-    for candidate in candidates:
+    scores = np.array([candidate.score for candidate in candidates], dtype=np.float64)
+    weights = np.zeros(len(scores))
+    valid = np.isfinite(scores)
+    weights[valid] = np.exp(-0.5 * (scores[valid] - best))
+    weights /= weights.sum()
+    for candidate, weight in zip(candidates, weights):
         candidate.delta_score = float(candidate.score - best) if np.isfinite(candidate.score) else np.inf
-        weights_raw.append(np.exp(-0.5 * candidate.delta_score) if np.isfinite(candidate.delta_score) else 0.0)
-    total = float(np.sum(weights_raw))
-    if total > 0.0:
-        for candidate, weight in zip(candidates, weights_raw):
-            candidate.weight = float(weight / total)
+        candidate.weight = float(weight)
 
 
 def _print_selection_summary(

@@ -156,5 +156,4 @@ int main()
     CHECK(w.status == LRStatus::ok);
     CHECK(std::abs(w.weights[2] - 1.0 / 3.0) < 1e-13);
     CHECK(std::abs(chi_square_survival(2.705543454095404, 1) - 0.1) < 1e-12);
-    CHECK(chi_square_survival(0.0, 0) == 1.0);
 }

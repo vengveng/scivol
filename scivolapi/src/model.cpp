@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "detail/numeric.hpp"
 #include "mean/regressors.hpp"
 #include "model_layout.hpp"
 #include "volatility/garch.hpp"
@@ -453,6 +454,47 @@ double Model::persistence(std::span<const double> theta) const
     }
     double value = 0.0;
     return layout.persistence(theta.data(), 0, value, nullptr) ? value : std::numeric_limits<double>::quiet_NaN();
+}
+
+double Model::unconditional_mean(std::span<const double> theta) const
+{
+    check_size(theta, dimension());
+    const MeanSpec& mean = spec_.mean;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    if (!evaluable(theta)) return nan;
+    if (mean.exog != 0) return nan;
+    const Layout layout(spec_);
+    const std::size_t order = std::max(mean.ar, mean.har.empty() ? 0 : mean.har.back());
+    std::vector<double> coefficients(order, 0.0);
+    for (std::size_t i = 0; i < mean.ar; ++i) coefficients[i] = theta[layout.ar + i];
+    for (std::size_t k = 0; k < mean.har.size(); ++k)
+        for (std::size_t i = 0; i < mean.har[k]; ++i)
+            coefficients[i] += theta[layout.har + k] / double(mean.har[k]);
+    if (!stationary(coefficients.data(), order)) return nan;
+    detail::CompensatedSum sum;
+    for (double coefficient : coefficients) sum.add(coefficient);
+    const double value = (mean.constant ? theta[0] : 0.0) / (1.0 - sum.total());
+    return std::isfinite(value) ? value : nan;
+}
+
+Model Model::gaussian_model() const
+{
+    ModelSpec gaussian = spec_;
+    gaussian.density = DensityKind::normal;
+    return Model(gaussian);
+}
+
+std::size_t Model::residual_degrees_of_freedom() const noexcept
+{
+    return spec_.mean.ar + spec_.mean.har.size() + spec_.mean.ma;
+}
+
+double Model::innovation_power_moment(std::span<const double> theta, double gamma, double power) const
+{
+    const InnovationDensity law = innovation_density(theta);
+    detail::MomentResult out;
+    return detail::power_moment(law.density, law.shape.data(), gamma, power, 0, out)
+        ? out.value : std::numeric_limits<double>::quiet_NaN();
 }
 
 InnovationDensity Model::innovation_density(std::span<const double> theta) const

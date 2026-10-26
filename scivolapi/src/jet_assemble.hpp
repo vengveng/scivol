@@ -117,11 +117,14 @@ struct AssembleInput {
     int order;       // 0 value, 1 + gradient, 2 + Hessian
     double* scores;  // per-row gradients (rows x dimension, theta order), or null; needs order >= 1
     double* terms;   // per-row terms of F, or null
+    double* log_variance_sensitivities = nullptr;
+    double* residual_sensitivities = nullptr;
 };
 
 struct ThetaResult {
     Status status = Status::ok;
     bool value_ok = false, gradient_ok = false, hessian_ok = false;
+    bool log_variance_ok = false, residual_ok = false;
 };
 
 inline bool all_finite(const double* x, std::size_t n) noexcept
@@ -147,7 +150,9 @@ inline void add_packed(double* hp, std::size_t dim, std::size_t i, std::size_t j
 //   g += l_lambda L1 + l_e E + l_s,
 //   H += l_lambda,lambda L1 L1' + l_lambda L2 + l_ee E E' + l_e F + l_e,lambda (E L1' + L1 E')
 //        + shape rows l_lambda,s L1 + l_e,s E + l_ss.
-template<class Mean, class Volatility, class Density, int Order = -1>
+// Sensitive: also write per-row d log h / d theta and d e / d theta (diagnostics only;
+// a compile-time choice, so the fitting loops carry no per-row branch for them).
+template<class Mean, class Volatility, class Density, int Order = -1, bool Sensitive = false>
 ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
 {
     constexpr bool coupled = Mean::present;
@@ -186,6 +191,7 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
     const Constant<shapes>& c = density.constant;
 
     int defined = 2;
+    bool variance_defined = true, residual_defined = true;
     CompensatedSum total;
     VolatilityStep step;
     const double* l1 = work.vol.l1;
@@ -215,6 +221,18 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
             const std::size_t slot = t % work.mean.slots;
             de = work.mean.de + slot * m;
             if (!mean.linear()) dde = work.mean.dde + slot * packed_size(m);
+        }
+        if (Sensitive && in.log_variance_sensitivities != nullptr) {
+            double* row = in.log_variance_sensitivities + t * dim;
+            std::fill_n(row, dim, 0.0);
+            for (std::size_t a = 0; a < w; ++a) row[index(a)] = l1[a];
+            variance_defined = variance_defined && step.defined >= 1 && all_finite(row, dim);
+        }
+        if (Sensitive && in.residual_sensitivities != nullptr) {
+            double* row = in.residual_sensitivities + t * dim;
+            std::fill_n(row, dim, 0.0);
+            if constexpr (coupled) std::copy_n(de, m, row);
+            residual_defined = residual_defined && all_finite(row, dim);
         }
         if (order >= 1) {
             for (std::size_t a = 0; a < w; ++a) g[a] += l.lam * l1[a];
@@ -276,6 +294,8 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
     result.value_ok = std::isfinite(value);
     result.gradient_ok = order >= 1 && defined >= 1 && all_finite(work.g, dim);
     result.hessian_ok = order >= 2 && defined >= 2 && all_finite(work.hp, packed_size(dim));
+    result.log_variance_ok = Sensitive && in.log_variance_sensitivities && variance_defined;
+    result.residual_ok = Sensitive && in.residual_sensitivities && residual_defined;
     return result;
 }
 
@@ -284,6 +304,8 @@ using Assembler = ThetaResult (*)(const AssembleInput&, Work&, double&);
 template<class Mean, class Volatility, class Density>
 ThetaResult assemble_requested(const AssembleInput& in, Work& work, double& value)
 {
+    if (in.log_variance_sensitivities != nullptr || in.residual_sensitivities != nullptr)
+        return assemble<Mean, Volatility, Density, -1, true>(in, work, value);
     switch (in.order) {
     case 0: return assemble<Mean, Volatility, Density, 0>(in, work, value);
     case 1: return assemble<Mean, Volatility, Density, 1>(in, work, value);

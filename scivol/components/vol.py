@@ -222,7 +222,6 @@ class EGARCH(Component):
         }
         return self.fitted_params
 
-
 class GARCH(Component):
     """
     GARCH(p, q) volatility component.

@@ -211,8 +211,10 @@ def test_egarch_summary_prints_egarch_diagnostics(capsys):
     res.summary()
     captured = capsys.readouterr().out
 
-    assert "Persistence (beta)" in captured
-    assert "Unconditional E[log h]" in captured
+    assert "Persistence:" in captured
+    assert "Unconditional Variance:" in captured
+    assert "Geometric Variance" not in captured
+    assert res.garch_params.unconditional_variance == res.unconditional_variance
     assert "non-stationary log-variance recursion" not in captured
 
 

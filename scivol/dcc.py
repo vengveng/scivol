@@ -28,8 +28,8 @@ if TYPE_CHECKING:
 
 
 def _normalize_correlation(matrix: NDArray[np.float64]) -> NDArray[np.float64]:
-    diag = np.sqrt(np.diag(matrix))
-    return matrix / np.outer(diag, diag)
+    scale = np.sqrt(np.diag(matrix))
+    return matrix / np.outer(scale, scale)
 
 
 def _extract_multivariate_input(
@@ -476,7 +476,8 @@ class _CorrelationResultMixin:
         if horizon <= 0:
             raise ValueError("horizon must be positive")
         paths = 1 if horizon == 1 else int(simulations)
-        return self._joint_paths(paths, horizon, seed, None, "forecast_correlation")["correlation"].mean(axis=0)
+        correlation = self._joint_paths(paths, horizon, seed, None, "forecast_correlation")["correlation"]
+        return np.mean(correlation, axis=0)
 
     def forecast(self, horizon: int = 10, *, x: Any = None, simulations: int = 10_000,
                  seed: Any = 0) -> MultivariateForecastResult:
@@ -490,8 +491,8 @@ class _CorrelationResultMixin:
         e = paths["residual"]
         return MultivariateForecastResult(
             mean=mean, variance=variance, residual_variance=residual_variance,
-            correlation=paths["correlation"].mean(axis=0),
-            residual_covariance=np.einsum("phi,phj->hij", e, e) / e.shape[0],
+            correlation=np.mean(paths["correlation"], axis=0),
+            residual_covariance=np.einsum("phi,phj->hij", e, e) / len(e),
             marginals=tuple(forecasts), columns=self._columns,
         )
 
@@ -542,11 +543,9 @@ class _CorrelationResultMixin:
             density = _marginal_density(marginal)
             u, _ = api.distribution(density.density, density.shape, np.ascontiguousarray(parametric[:, i]))
             empirical = np.asarray(marginal.std_resid, dtype=np.float64)
-            empirical = empirical[np.isfinite(empirical)]
             if empirical.size < 10:
                 raise ValueError(f"Series {i} has fewer than 10 finite standardized residuals.")
-            empirical = (empirical - empirical.mean()) / empirical.std(ddof=0)
-            out[:, i] = np.quantile(empirical, u, method="linear")
+            out[:, i] = np.quantile((empirical - empirical.mean()) / empirical.std(), u)
         return out
 
 
@@ -584,11 +583,11 @@ class CCCResult(_CorrelationResultMixin):
 
     @property
     def aic(self) -> float:
-        return -2.0 * self.log_likelihood
+        return api.information_criteria(self.log_likelihood, 0, self.T)[0]
 
     @property
     def bic(self) -> float:
-        return -2.0 * self.log_likelihood
+        return api.information_criteria(self.log_likelihood, 0, self.T)[0]
 
     @property
     def std_errors(self) -> NDArray[np.float64]:
@@ -669,11 +668,11 @@ class DCCResult(_CorrelationResultMixin):
 
     @property
     def aic(self) -> float:
-        return 2.0 * self.K - 2.0 * self.log_likelihood
+        return api.information_criteria(self.log_likelihood, self.K, self.T)[0]
 
     @property
     def bic(self) -> float:
-        return self.K * np.log(self.T) - 2.0 * self.log_likelihood
+        return api.information_criteria(self.log_likelihood, self.K, self.T)[1]
 
     @property
     def std_errors(self) -> NDArray[np.float64]:
@@ -720,7 +719,7 @@ class DCCResult(_CorrelationResultMixin):
         lines.append(f"{'Param':<8} {'Estimate':>10} {'MLE SE':>10} {'Rob SE':>10} {'t-stat':>10}")
         lines.append("-" * 72)
         for i, name in enumerate(names):
-            t_stat = self.theta[i] / se[i] if se[i] > 0 else np.nan
+            t_stat = api.coefficient_test(float(self.theta[i]), float(se[i]), self.T-self.K)["statistic"] if se[i] > 0 else np.nan
             lines.append(
                 f"{name:<8} {self.theta[i]:>10.6f} {se[i]:>10.6f} "
                 f"{se_r[i]:>10.6f} {t_stat:>10.2f}"
