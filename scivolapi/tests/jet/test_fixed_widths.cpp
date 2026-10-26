@@ -28,10 +28,11 @@ void identical(const double* a, const double* b, std::size_t n)
     for (std::size_t i = 0; i < n; ++i) identical(a[i], b[i]);
 }
 
-template<class Density, bool Leverage, bool Coupled>
+template<class Density, bool Leverage, bool Coupled, std::size_t Q = 1>
 void compare(DensityKind density, std::size_t n, bool boundary)
 {
     ModelSpec spec;
+    spec.q = Q;
     spec.density = density;
     spec.volatility = Leverage ? VolatilityKind::gjr : VolatilityKind::garch;
     if constexpr (Coupled) {
@@ -55,8 +56,8 @@ void compare(DensityKind density, std::size_t n, bool boundary)
     theta[m + 1] = boundary ? 0.0 : 0.1;
     if constexpr (Leverage) {
         theta[m + 2] = boundary ? 0.0 : -0.04;
-        theta[m + 3] = boundary ? 0.999999 : 0.8;
-    } else theta[m + 2] = boundary ? 0.999999 : 0.8;
+        if constexpr (Q) theta[m + 3] = boundary ? 0.999999 : 0.8;
+    } else if constexpr (Q) theta[m + 2] = boundary ? 0.999999 : 0.8;
     if (density == DensityKind::student_t) theta[layout.shapes] = boundary ? 0.0 : 1.0 / 7.0;
     if (density == DensityKind::skew_t) { theta[layout.shapes] = 1.0 / 7.0; theta[layout.shapes + 1] = -0.2; }
     if (density == DensityKind::ged) theta[layout.shapes] = 1.7;
@@ -64,8 +65,8 @@ void compare(DensityKind density, std::size_t n, bool boundary)
     using RuntimeMean = std::conditional_t<Coupled, ArmaxMean<>, NoMean>;
     using FixedMean = std::conditional_t<Coupled, ArmaxMean<2, 1>, NoMean>;
     using RuntimeVol = GarchVolatility<Leverage, Coupled>;
-    using FixedVol = std::conditional_t<Coupled, GarchVolatility<Leverage, true, 1, 1, 3>,
-                                       GarchVolatility<Leverage, false, 1, 1>>;
+    using FixedVol = std::conditional_t<Coupled, GarchVolatility<Leverage, true, 1, Q, 3>,
+                                       GarchVolatility<Leverage, false, 1, Q>>;
     const Assembler runtime = assemble<RuntimeMean, RuntimeVol, Density>;
     const Assembler fixed = assemble_requested<FixedMean, FixedVol, Density>;
     assert(assembler_for(spec) == fixed);
@@ -150,6 +151,8 @@ void compare_density(DensityKind density)
 
 int main()
 {
+    for (std::size_t n : {2u, 9u, 20000u})
+        for (bool boundary : {false, true}) compare<NormalDensity, false, false, 0>(DensityKind::normal, n, boundary);
     compare_density<NormalDensity>(DensityKind::normal);
     compare_density<StudentTDensity>(DensityKind::student_t);
     compare_density<SkewTDensity>(DensityKind::skew_t);
