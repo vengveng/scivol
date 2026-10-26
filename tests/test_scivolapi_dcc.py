@@ -143,6 +143,29 @@ def test_correlation_jet_matches_the_oracle(p, q, density, theta):
     assert out["terms"].sum() == pytest.approx(out["value"], rel=1e-13)
 
 
+@pytest.mark.parametrize("density", ["normal", "student_t"])
+@pytest.mark.parametrize("fixed_target", [False, True])
+def test_symmetric_dcc_derivatives_match_ad_and_sparse_requests(density, fixed_target):
+    eps = simulate(10, 7, seed=31)
+    target = .6 * np.eye(7) + .4 * np.ones((7, 7)) if fixed_target else None
+    theta = np.array([.0, .04, .6, .359] + ([.12] if density == "student_t" else []))
+    model = correlation_model(2, 2, density)
+    jet = api.CorrelationJet(model, eps, target)
+    full = jet.theta(theta, 63)
+    f, g, h = oracle(theta, eps, target, 2, 2, density)
+    assert full["status"] == "ok"
+    assert full["value"] == pytest.approx(f, rel=1e-11, abs=1e-12)
+    np.testing.assert_allclose(full["gradient"], g, rtol=1e-9, atol=1e-10)
+    np.testing.assert_allclose(full["hessian"], h, rtol=1e-9, atol=1e-9)
+    for mask in range(1, 64):
+        sparse = api.CorrelationJet(model, eps, target).theta(theta, mask)
+        assert sparse["status"] == "ok" and sparse["valid"] == mask
+        for bit, key in [(1, "value"), (2, "gradient"), (4, "hessian"),
+                         (8, "correlations"), (16, "scores"), (32, "terms")]:
+            if mask & bit:
+                np.testing.assert_array_equal(sparse[key], full[key])
+
+
 def test_correlation_paths_are_correlation_matrices():
     eps = simulate(200, 4, seed=2)
     model = correlation_model()
@@ -392,16 +415,16 @@ def test_unrepresentable_marginal_probabilities_are_rejected():
                            [api.InnovationDensity(api.DensityKind.normal)])
 
 
-def test_gaussian_normal_marginals_preserve_head_values_bitwise():
+def test_gaussian_normal_marginals_preserve_likelihood_and_derivatives():
     eps = np.array([[1., .7], [-.3, .4], [.6, -1.1], [1.3, .2], [-.8, .9], [.1, -.4]])
     out = api.CorrelationJet(correlation_model(), eps).theta(np.array([.04, .9]), 7)
-    # Offline output from e61fbb4, compiled with the same IEEE-safe flags.
+    # Offline Gaussian reference; symmetric contractions change derivative rounding.
     assert out["value"] == float.fromhex('-0x1.01af2e798f468p-5')
-    np.testing.assert_array_equal(out["gradient"], [float.fromhex(v) for v in
-                                  ['0x1.820e3ce7e2d9ap+0', '0x1.5a89399a9e286p-4']])
-    np.testing.assert_array_equal(out["hessian"].ravel(), [float.fromhex(v) for v in
+    np.testing.assert_allclose(out["gradient"], [float.fromhex(v) for v in
+                                  ['0x1.820e3ce7e2d9ap+0', '0x1.5a89399a9e286p-4']], rtol=2e-14, atol=2e-14)
+    np.testing.assert_allclose(out["hessian"].ravel(), [float.fromhex(v) for v in
                                   ['-0x1.93e1c41114508p+0', '0x1.114b6b343ef09p+1',
-                                   '0x1.114b6b343ef09p+1', '0x1.02eb21336e829p-2']])
+                                   '0x1.114b6b343ef09p+1', '0x1.02eb21336e829p-2']], rtol=2e-14, atol=2e-14)
 
 
 @pytest.mark.parametrize("density", ["normal", "student_t"])

@@ -16,8 +16,18 @@ inline std::size_t product(std::size_t a, std::size_t b)
     return a * b;
 }
 
+inline std::size_t symmetric_size(std::size_t n)
+{
+    return product(n, n) / 2 + n / 2 + n % 2;
+}
+
+inline std::size_t lower(std::size_t i, std::size_t j) noexcept
+{
+    return i * (i + 1) / 2 + j;
+}
+
 struct Work {
-    double *ring, *first, *second, *chol, *inverse, *products;
+    double *ring, *first, *second, *chol, *sensitivity, *whitened;
     double *u, *w, *scratch, *scale, *v, *dv;
     double *g, *h, *row, *theta, *jac, *tmp;
     double *x, *x_first, *x_second, *target, *target_first, *target_second;
@@ -28,7 +38,7 @@ struct Work {
 inline std::size_t workspace(const Layout& layout, std::size_t n, std::size_t rows, double* base, Work& out,
                              detail::StudentQuantileCache* cache = nullptr)
 {
-    const std::size_t k = layout.dimension, d = layout.dimension, m = product(n, n);
+    const std::size_t k = layout.dimension, d = layout.dimension, m = product(n, n), s = symmetric_size(n);
     const std::size_t slots = layout.q + 1, pairs = packed_size(k);
     std::size_t at = 0;
     auto take = [&](std::size_t count) {
@@ -39,11 +49,11 @@ inline std::size_t workspace(const Layout& layout, std::size_t n, std::size_t ro
         return p;
     };
     out.ring = take(product(slots, m));
-    out.first = take(product(product(slots, k), m));
-    out.second = take(product(product(slots, pairs), m));
+    out.first = take(product(product(slots, k), s));
+    out.second = take(product(product(slots, pairs), s));
     out.chol = take(m);
-    out.inverse = take(m);
-    out.products = take(product(k, m));
+    out.sensitivity = take(s);
+    out.whitened = take(product(k, s));
     out.u = take(n);
     out.w = take(n);
     out.scratch = take(n);
@@ -114,14 +124,44 @@ inline void backward(const double* l, const double* b, std::size_t n, double* x)
     }
 }
 
-inline void inverse(const double* l, std::size_t n, double* a, double* scratch) noexcept
+// Invert L, then form L^{-T} L^{-1} in place, storing only the lower triangle.
+inline void inverse(const double* l, std::size_t n, double* a) noexcept
 {
-    for (std::size_t j = 0; j < n; ++j) {
-        std::fill_n(scratch, n, 0.0);
-        scratch[j] = 1.0;
-        forward(l, scratch, n, scratch);
-        backward(l, scratch, n, scratch);
-        for (std::size_t i = j; i < n; ++i) a[i * n + j] = a[j * n + i] = scratch[i];
+    for (std::size_t i = 0; i < n; ++i) {
+        double* row = a + lower(i, 0);
+        std::fill_n(row, i, 0.0);
+        for (std::size_t h = 0; h < i; ++h) {
+            const double v = l[i * n + h];
+            const double* previous = a + lower(h, 0);
+            for (std::size_t j = 0; j <= h; ++j) row[j] -= v * previous[j];
+        }
+        for (std::size_t j = 0; j < i; ++j) row[j] /= l[i * n + i];
+        row[i] = 1.0 / l[i * n + i];
+    }
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t j = 0; j <= i; ++j) {
+            double v = a[lower(i, i)] * a[lower(i, j)];
+            for (std::size_t h = i + 1; h < n; ++h) v += a[lower(h, i)] * a[lower(h, j)];
+            a[lower(i, j)] = v;
+        }
+}
+
+// A <- L^{-1} A L^{-T}: symmetric rank-two updates and one solve per column.
+inline void whiten(const double* l, std::size_t n, double* a, double* scratch) noexcept
+{
+    for (std::size_t k = 0; k < n; ++k) {
+        a[lower(k, k)] = (a[lower(k, k)] / l[k * n + k]) / l[k * n + k];
+        const double half = 0.5 * a[lower(k, k)];
+        for (std::size_t i = k + 1; i < n; ++i)
+            scratch[i] = a[lower(i, k)] / l[k * n + k] - half * l[i * n + k];
+        for (std::size_t i = k + 1; i < n; ++i)
+            for (std::size_t j = k + 1; j <= i; ++j)
+                a[lower(i, j)] -= l[i * n + k] * scratch[j] + scratch[i] * l[j * n + k];
+        for (std::size_t i = k + 1; i < n; ++i) {
+            double v = scratch[i] - half * l[i * n + k];
+            for (std::size_t j = k + 1; j < i; ++j) v -= l[i * n + j] * a[lower(j, k)];
+            a[lower(i, k)] = v / l[i * n + i];
+        }
     }
 }
 
