@@ -165,7 +165,9 @@ bool integrate_piece_impl(const Function& function, double left, double right, i
             return true;
         };
         skip = complete;
-        const bool refine = whole_line && level > 0;
+        // Nested refinement on every interval: T(h/2) = T(h)/2 + (h/2) sum over the
+        // new odd nodes, so each level samples only the points it adds.
+        const bool refine = level > 0;
         if (refine) {
             for (std::size_t j = 0; j < count; ++j) if (!complete[j]) {
                 sum[j].add(0.5 * previous[j]);
