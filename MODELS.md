@@ -133,7 +133,10 @@ their workspaces can be used by independent Python threads.
   sandwich. Not offered for EGARCH with a shaped density.
 - A fit is certified (`result.success`) when the estimate is finite and
   feasible, the solver converged, and the projected-gradient (KKT) residual is
-  at most `max(sqrt(accuracy), sqrt(eps))`.
+  at most `max(sqrt(accuracy), sqrt(eps))`. An estimate within `64 eps`
+  (relative) of a nonzero open bound, or at the smallest normal number above a
+  zero open bound, is a supremum on the excluded boundary: it is uncertified
+  with `inference_status="at_open_bound"`.
 
 The model capability `likelihood_can_have_gradient_kinks` tells optimizers whether
 moving residuals can cross a face with a nondifferentiable first derivative.
@@ -181,8 +184,17 @@ can hold for nonsmooth likelihoods under additional local asymptotic normality
 conditions. Those conditions and a calibration for these joint recursive models
 are not established by the library's current information/cone calculation.
 
-The automatic z-first path gives its first theta refinement at most 100 steps.
-If the resulting estimate is uncertified, it restarts theta-space SLSQP and
+The automatic path first solves in z with exact-Hessian trust-region Newton:
+each step minimizes the quadratic model within `||D p|| <= radius` exactly
+through the eigendecomposition of `D^-1 H D^-1` (More and Sorensen 1983), with
+the nondecreasing scaling `D_i = max(D_i, sqrt|H_ii|)` (More 1978), starting
+from radius 0.1. Trials request value, gradient and Hessian together. Where the
+model declares gradient kinks, a region collapsed below 1% of its peak stops the
+phase; SLSQP then continues in z from that point, since its line search reaches
+a kink surface that the quadratic model cannot. It stops at a z gradient of
+`0.01 * max(sqrt(accuracy), sqrt(eps))`, and the theta Newton refinement then
+certifies, with at most 100 steps. An explicit `coordinates="z"` fit remains
+SLSQP over the whole budget. If the resulting estimate is uncertified, it restarts theta-space SLSQP and
 Newton from the model's own start, within the original total iteration budget.
 Every restart is named in `fit_info.optimizer_phases`. Explicit theta and z
 paths retain their separate formulations. Zero-order starts set the intercept

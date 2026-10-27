@@ -23,6 +23,7 @@ using detail::offer;
 using detail::run_phase;
 using detail::select;
 using detail::solved;
+using detail::Solver;
 using detail::invert_information;
 using detail::make_problem;
 using detail::make_tail_problem;
@@ -89,10 +90,10 @@ void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, s
     const bool theta_path = options.coordinates == Coordinates::theta
         || (options.coordinates == Coordinates::automatic && !model.capabilities().chart_covers_domain);
     if (theta_path) {
-        const optimize::Record slsqp = run_phase("theta:slsqp", in_theta, false, start, budget, options.accuracy, phases);
+        const optimize::Record slsqp = run_phase("theta:slsqp", in_theta, Solver::slsqp, start, budget, options.accuracy, phases);
         offer(slsqp, d, 0, same, candidates);
         if (iterations(phases) < budget) {
-            const optimize::Record newton = run_phase("theta:newton", in_theta, true, solved(slsqp, start),
+            const optimize::Record newton = run_phase("theta:newton", in_theta, Solver::newton, solved(slsqp, start),
                                                       budget - iterations(phases), options.accuracy, phases);
             offer(newton, d, 1, same, candidates);
         }
@@ -100,18 +101,33 @@ void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, s
         std::vector<double> z(d);
         if (!interior_z(model, start, inside, z))
             throw std::invalid_argument("z coordinates need a starting point strictly inside the domain");
-        // The automatic path keeps a refinement reserve so the exact-curvature
-        // phase always runs; an explicit z fit uses the whole budget in z.
+        // The automatic path solves in z with exact-Hessian trust-region
+        // Newton, then refines and certifies in theta, keeping a reserve so
+        // that phase always runs. An explicit z fit is its own formulation:
+        // SLSQP with the whole budget in z.
         const bool hybrid = options.coordinates == Coordinates::automatic;
         const int reserve = hybrid ? std::min(100, std::max(1, budget / 4)) : 0;
-        const optimize::Record slsqp = run_phase("z:slsqp", make_problem(model, unit_jet, true), false, z,
-                                                 std::max(1, budget - reserve), options.accuracy, phases);
-        offer(slsqp, d, 0, from_z, candidates);
+        const optimize::Problem z_problem = make_problem(model, unit_jet, true);
+        optimize::Record in_z = hybrid
+            ? run_phase("z:trust", z_problem, Solver::trust_region, z, std::max(1, budget - reserve),
+                        options.accuracy, phases)
+            : run_phase("z:slsqp", z_problem, Solver::slsqp, z, std::max(1, budget - reserve),
+                        options.accuracy, phases);
+        offer(in_z, d, phases.size() - 1, from_z, candidates);
+        // A stalled trust region sits against a likelihood kink, where the
+        // quadratic model fails. SLSQP's line search tolerates the kink and
+        // brings the iterate onto it, where the theta refinement certifies.
+        if (hybrid && in_z.termination == optimize::Termination::stalled
+            && iterations(phases) < budget - reserve) {
+            in_z = run_phase("z:slsqp", z_problem, Solver::slsqp, solved(in_z, z),
+                             budget - reserve - iterations(phases), options.accuracy, phases);
+            offer(in_z, d, phases.size() - 1, from_z, candidates);
+        }
         if (hybrid) {
-            const optimize::Record newton = run_phase("theta:newton", in_theta, true, from_z(solved(slsqp, z)),
+            const optimize::Record newton = run_phase("theta:newton", in_theta, Solver::newton, from_z(solved(in_z, z)),
                                                       std::min(reserve, std::max(1, budget - iterations(phases))), options.accuracy,
                                                       phases);
-            offer(newton, d, 1, same, candidates);
+            offer(newton, d, phases.size() - 1, same, candidates);
         }
     }
 
@@ -160,11 +176,11 @@ FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const
         const auto same = [](const std::vector<double>& t) { return t; };
         const int remaining = options.maximum_iterations-iterations(phases);
         const int reserve = std::min(100, std::max(1, remaining/4));
-        const auto retry = run_phase("theta:slsqp:restart", problem, false, inside,
+        const auto retry = run_phase("theta:slsqp:restart", problem, Solver::slsqp, inside,
                                      std::max(1, remaining-reserve), options.accuracy, phases);
         offer(retry, model.dimension(), phases.size()-1, same, candidates);
         if (iterations(phases) < options.maximum_iterations) {
-            const auto refine = run_phase("theta:newton:restart", problem, true, solved(retry, inside),
+            const auto refine = run_phase("theta:newton:restart", problem, Solver::newton, solved(retry, inside),
                 options.maximum_iterations-iterations(phases), options.accuracy, phases);
             offer(refine, model.dimension(), phases.size()-1, same, candidates);
         }
@@ -205,10 +221,10 @@ FitResult fit_shapes(const Model& model, const Model& gaussian, std::span<const 
     std::vector<Candidate> candidates;
     const auto same = [](const std::vector<double>& s) { return s; };
     const int budget = options.maximum_iterations;
-    const optimize::Record slsqp = run_phase("theta:slsqp:shapes", problem, false, start,
+    const optimize::Record slsqp = run_phase("theta:slsqp:shapes", problem, Solver::slsqp, start,
                                              std::max(1, budget - iterations(phases)), options.accuracy, phases);
     offer(slsqp, k2, phases.size() - 1, same, candidates);
-    const optimize::Record newton = run_phase("theta:newton:shapes", problem, true, solved(slsqp, start),
+    const optimize::Record newton = run_phase("theta:newton:shapes", problem, Solver::newton, solved(slsqp, start),
                                               std::max(1, budget - iterations(phases)), options.accuracy, phases);
     offer(newton, k2, phases.size() - 1, same, candidates);
     if (candidates.empty())

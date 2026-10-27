@@ -409,7 +409,7 @@ class TestDefaultOptimizationPathVisibility:
         data = generate_garch_data(600, omega=1e-6, alpha=0.08, beta=0.88, seed=2024)
         for spec in (GARCH(1, 1) + SkewT(), GJRGARCH(1, 1) + Normal(), EGARCH(2, 1) + Normal(), ARMA(1, 1) + Normal()):
             result = spec.fit(data)
-            assert result.fit_info.solver == "z:slsqp+theta:newton"
+            assert result.fit_info.solver == "z:trust+theta:newton"
             assert result.fit_info.optimization_space == "z+theta"
         theta = (GARCH(1, 1) + Normal()).fit(data, coordinates="theta")
         assert theta.fit_info.solver == "theta:slsqp+theta:newton"

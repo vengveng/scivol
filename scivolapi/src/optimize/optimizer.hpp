@@ -19,6 +19,8 @@ namespace scivolapi::optimize {
 using Objective = std::function<bool(const double* x, double& value, double* gradient)>;
 // Exact Hessian of the objective at x (dense, row-major). Optional.
 using Hessian = std::function<bool(const double* x, double* hessian)>;
+// Value, gradient and exact Hessian in one evaluation. Optional.
+using SecondOrder = std::function<bool(const double* x, double& value, double* gradient, double* hessian)>;
 // Constraint values (count) and Jacobian (count x dimension, row-major), c(x) >= 0.
 using Constraints = std::function<bool(const double* x, double* values, double* jacobian)>;
 
@@ -26,6 +28,7 @@ struct Problem {
     std::size_t dimension = 0;
     Objective objective;
     Hessian hessian;                  // may be empty
+    SecondOrder second_order;         // may be empty
     bool objective_can_have_gradient_kinks = false;
     std::size_t kink_capacity = 0;
     // radius > 0 proposes faces, 0 requests the roundoff-active decomposition,
@@ -79,6 +82,11 @@ struct Record {
 
 // Sequential least-squares quadratic programming (Kraft / SciPy SLSQP).
 Record minimize_slsqp(const Problem& problem, std::span<const double> start, const Options& options);
+
+// Exact-Hessian trust-region Newton for unconstrained problems (no bounds or
+// constraints); requires `second_order`. Stops well inside the stationarity
+// tolerance max(sqrt(accuracy), sqrt(eps)), where a refinement certifies.
+Record minimize_trust_region(const Problem& problem, std::span<const double> start, const Options& options);
 
 // Newton refinement with the exact Hessian from a starting point, respecting
 // bounds and constraints (active-set projected Newton). Only strictly

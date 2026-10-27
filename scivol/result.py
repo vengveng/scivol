@@ -193,7 +193,7 @@ class OptimizeResultLike(Protocol):
 class FitMetadata:
     """What a fit did: the optimizer phases and coordinate path, the sample it
     scored, and how the estimate qualified."""
-    solver: Optional[str] = None                # optimizer phases joined, e.g. "z:slsqp+theta:newton"
+    solver: Optional[str] = None                # optimizer phases joined, e.g. "z:trust+theta:newton"
     optimization_space: Optional[str] = None    # coordinate path, e.g. "z+theta"
     optimizer_phases: Optional[tuple[str, ...]] = None
     optimizer_terminated: Optional[bool] = None

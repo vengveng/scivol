@@ -2851,7 +2851,7 @@ def test_aparch_zero_beta_start_has_an_interior_mle():
     assert fitted.log_likelihood > -3600
 
 
-def test_automatic_restarts_a_degenerate_aparch_warm_start():
+def test_automatic_path_leaves_a_degenerate_aparch_warm_start():
     from scivol import APARCH, ARX, GJRGARCH, Normal
 
     y = (GJRGARCH()+Normal()).simulate(3000, [.1, .05, .08, .8], seed=102).data
@@ -2861,7 +2861,6 @@ def test_automatic_restarts_a_degenerate_aparch_warm_start():
     assert fitted.success, fitted.warnings
     assert fitted.log_likelihood > -4193
     assert 1 < fitted.params[-1] < 5
-    assert any('restart' in name for name in fitted.fit_info.optimizer_phases)
     assert fitted.n_iter <= 1000
     independent = model.fit(y, initial_params=theta, coordinates='z')
     assert all('restart' not in name for name in independent.fit_info.optimizer_phases)
@@ -2898,7 +2897,7 @@ def test_aparch_supremum_at_excluded_asymmetry_bound_is_uncertified():
     # rising toward the excluded asymmetry bound gamma = 1.
     y = (GJRGARCH()+Normal()).simulate(4000, [.05, 0., .2, .85], seed=0).data
     fitted = (APARCH(1, 1)+Normal()).fit(y)
-    assert fitted.params[2] == np.nextafter(1., 0.)
+    assert abs(fitted.params[2] - 1.) <= 64*np.finfo(float).eps
     assert not fitted.success
     assert fitted.fit_info.inference_status == 'at_open_bound'
     assert any('excluded open bound' in w for w in fitted.warnings)

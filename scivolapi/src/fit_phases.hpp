@@ -25,19 +25,22 @@ inline Termination termination_of(optimize::Termination t)
     }
 }
 
+enum class Solver { slsqp, trust_region, newton };
+
 // Runs one phase of `problem` and records it.
-inline optimize::Record run_phase(const char* name, const optimize::Problem& problem, bool newton,
+inline optimize::Record run_phase(const char* name, const optimize::Problem& problem, Solver solver,
                                   std::span<const double> start, int budget, double accuracy,
                                   std::vector<FitPhase>& phases)
 {
     // SLSQP stops on the change in the objective, which only bounds the
     // gradient by about 2 sqrt(accuracy); asking for 1e-4 x accuracy places its
     // gradient well inside the certification tolerance sqrt(accuracy) at the
-    // cost of a step or two. Newton stops on the stationarity residual itself.
-    const double solver_accuracy = newton ? accuracy : std::max(accuracy * 1e-4, 1e-30);
+    // cost of a step or two. Newton and the trust region stop on the gradient.
+    const double solver_accuracy = solver == Solver::slsqp ? std::max(accuracy * 1e-4, 1e-30) : accuracy;
     const optimize::Options options{solver_accuracy, budget};
-    optimize::Record record =
-        newton ? optimize::refine_newton(problem, start, options) : optimize::minimize_slsqp(problem, start, options);
+    optimize::Record record = solver == Solver::newton ? optimize::refine_newton(problem, start, options)
+        : solver == Solver::trust_region ? optimize::minimize_trust_region(problem, start, options)
+        : optimize::minimize_slsqp(problem, start, options);
 
     FitPhase phase;
     phase.name = name;

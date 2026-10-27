@@ -63,6 +63,19 @@ optimize::Problem make_problem(const ModelT& model, JetT& jet, bool in_z)
             for (std::size_t i = 0; i < d; ++i) g[i] *= scale;
         return true;
     };
+    problem.second_order = [&jet, d, scale, in_z](const double* x, double& f, double* g, double* h) {
+        JetOutput out;
+        out.gradient = {g, d};
+        out.hessian = {h, d * d};
+        const std::span<const double> point{x, d};
+        const unsigned request = value | gradient | hessian;
+        const JetResult r = in_z ? jet.z(point, request, out) : jet.theta(point, request, out);
+        if (r.status != Status::ok) return false;
+        f = out.value * scale;
+        for (std::size_t i = 0; i < d; ++i) g[i] *= scale;
+        for (std::size_t i = 0; i < d * d; ++i) h[i] *= scale;
+        return true;
+    };
     problem.hessian = [&jet, d, scale, in_z](const double* x, double* h) {
         JetOutput out;
         out.hessian = {h, d * d};

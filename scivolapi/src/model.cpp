@@ -312,15 +312,23 @@ std::vector<double> Model::closed_face_normals(std::span<const double> theta) co
 bool Model::at_open_bound(std::span<const double> theta) const
 {
     check_size(theta, dimension());
+    // A saturated chart stops within roundoff of a nonzero open endpoint (the
+    // optimizer's 64 eps feasibility allowance). Zero endpoints are reached
+    // only at the smallest normal number, so small positive estimates in data
+    // units are never mistaken for the bound.
+    const auto at = [](double value, double endpoint) {
+        return value == endpoint || (std::abs(endpoint) > std::numeric_limits<double>::min()
+            && std::abs(value - endpoint) <= 64 * std::numeric_limits<double>::epsilon() * std::abs(endpoint));
+    };
     const Layout layout(spec_);
     for (std::size_t j = 0; j < dimension(); ++j) {
         if (!layout.scalar_entry[j]) continue;
         const auto& chart = layout.scalar(j);
-        if ((!chart.closed_lower && theta[j] == chart.lower_bound()) || theta[j] == chart.upper_bound())
+        if ((!chart.closed_lower && at(theta[j], chart.lower_bound())) || at(theta[j], chart.upper_bound()))
             return true;
     }
     for (std::size_t b = 0; b < layout.stable_blocks; ++b)
-        if (layout.stable[b].count == 1 && std::abs(theta[layout.stable[b].at]) == detail::StableChart::bound())
+        if (layout.stable[b].count == 1 && at(std::abs(theta[layout.stable[b].at]), detail::StableChart::bound()))
             return true;
     return false;
 }

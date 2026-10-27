@@ -199,7 +199,7 @@ def test_fit_recovers_the_simulation_and_is_certified():
 
     eps = simulate(2000, 5)
     native = DCC(1, 1).fit_from_residuals(eps)
-    assert native.success and native.inference == "available" and native.phases == ("z:slsqp", "theta:newton")
+    assert native.success and native.inference == "available" and native.phases == ("z:trust", "theta:newton")
     for estimate, se, truth in zip(native.theta, native.std_errors, (0.04, 0.93)):
         assert abs(estimate - truth) < 4.0 * se
     jet = api.CorrelationJet(native._correlation()[0], eps)

@@ -13,8 +13,9 @@
 namespace scivolapi {
 
 // Which formulation the optimizer solves. `theta` and `z` are independent
-// paths; `automatic` is the named hybrid: a z-space solve, then exact-Newton
-// refinement in theta, except where the z charts do not cover the model's domain
+// paths; `automatic` is the named hybrid: an exact-Hessian trust-region solve
+// in z, then exact-Newton refinement in theta, except where the z charts do
+// not cover the model's domain
 // (ModelCapabilities::chart_covers_domain): there it is the theta path. Every
 // phase a fit ran is listed in FitResult::phases. An uncertified automatic
 // solve restarts in theta from the model start within the same total budget.
