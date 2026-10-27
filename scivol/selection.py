@@ -51,6 +51,7 @@ class GeneralToSpecific:
     prefer: str = "fewest_parameters"
     tie_break: InformationCriterion = field(default_factory=InformationCriterion)
     max_fits: int = 96
+    max_mean_order: int = 5
 
     def __post_init__(self):
         for name in ("reduction_level", "encompassing_level", "diagnostic_level"):
@@ -60,6 +61,7 @@ class GeneralToSpecific:
         if not isinstance(self.tie_break, InformationCriterion):
             raise TypeError("tie_break must be an InformationCriterion")
         _validate_budget(self.max_fits)
+        _validate_mean_cap(self.max_mean_order)
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,11 @@ class ConfidenceSet:
 def _validate_budget(value, name="max_fits"):
     if type(value) is not int or value < 1:
         raise ValueError(f"{name} must be a positive integer")
+
+
+def _validate_mean_cap(value):
+    if type(value) is not int or not 1 <= value <= 8:
+        raise ValueError("max_mean_order must be an integer between 1 and 8")
 
 
 @dataclass
@@ -131,6 +138,7 @@ class SelectionResult:
     frontier: tuple[tuple, ...] = ()
     fit_counts: dict = field(default_factory=dict)
     predictive: dict = field(default_factory=dict)
+    widenings: list[dict] = field(default_factory=list)
 
     def table(self):
         """Candidate rows as a pandas DataFrame, or records without pandas."""
@@ -152,9 +160,15 @@ class SelectionResult:
 
     def summary(self) -> str:
         choice = str(self.selected_model) if self.selected_model is not None else "none"
+        widening = ""
+        for record in self.widenings:
+            probability = (f"p={record['p_value']:.4g}" if np.isfinite(record['p_value'])
+                           else f"log(p)={record['log_p_value']:.4g}")
+            action = "Mean widened" if record['completed'] else "Mean widening pending"
+            widening += f"\n{action} to AR({record['order']}): {record['triggering_test']} {probability}"
         return (f"Selection: {self.status}; selected: {choice}\n"
                 f"Search complete: {self.search_complete}; terminals: {len(self.terminals)}; "
-                f"optimizer invocations: {self.fit_counts.get('optimizer_invocations', 0)}")
+                f"optimizer invocations: {self.fit_counts.get('optimizer_invocations', 0)}{widening}")
 
 
 class Search:
@@ -296,10 +310,14 @@ class Search:
 
 class Auto:
     """AR(1)+intercept x {GJR, EGARCH, APARCH}(1,1) x SkewT, plus constant variance."""
+    def __init__(self, *, max_mean_order: int = 5):
+        _validate_mean_cap(max_mean_order)
+        self.max_mean_order = max_mean_order
+
     def fit(self, y, x=None, **options):
         return Search(mean=[ARX.up_to(1)], volatility=[GJRGARCH.up_to(1, 1),
                       EGARCH.up_to(1, 1), APARCH.up_to(1, 1)], density=[SkewT()]).fit(
-                          y, x, procedure=GeneralToSpecific(), **options)
+                          y, x, procedure=GeneralToSpecific(max_mean_order=self.max_mean_order), **options)
 
 
 def _options(values, start=None):
@@ -319,8 +337,20 @@ class _Reduction:
         self.search, self.y, self.x = search, y, x
         self.procedure, self.workers, self.options = procedure, workers, options
         self.nodes, self.edges = {}, {}
+        self.hold_back = validate_hold_back(hold_back)
+        self._declare(search)
+        self.counts = dict(optimizer_invocations=0, unique_fits=0, free_children=0,
+                           warm_started_fits=0, parent_refits=0, full_sample_refits=0,
+                           mean_widening_fits=0)
+        self.tests, self.frontier = [], set()
+        self.widenings, self.widening_status = [], None
+        self.deployment_reserve = 0
+        self.visited, self.terminals, self.accepted = set(), set(), {}
+        self.started = time.perf_counter()
+
+    def _declare(self, search):
         declared = []
-        for definition in search._definitions(0 if x is None else x.shape[1]):
+        for definition in search._definitions(0 if self.x is None else self.x.shape[1]):
             model = api.Model(definition)
             declared.append(model.key)
             self._compile(model)
@@ -331,15 +361,9 @@ class _Reduction:
         self.allowed = set(self.nodes) if search.closure else set(declared)
         descendants = {child for key in declared for child in self._reachable(key)}
         self.roots = tuple(sorted(set(declared)-descendants))
-        first = max(validate_hold_back(hold_back), *(self.nodes[k].model.spec.mean.conditioning for k in declared))
-        self.plan = api.ComparisonPlan(y, first, x)
+        first = max(self.hold_back, *(self.nodes[k].model.spec.mean.conditioning for k in declared))
+        self.plan = api.ComparisonPlan(self.y, first, self.x)
         self.first = first
-        self.counts = dict(optimizer_invocations=0, unique_fits=0, free_children=0,
-                           warm_started_fits=0, parent_refits=0, full_sample_refits=0)
-        self.tests, self.frontier = [], set()
-        self.deployment_reserve = 0
-        self.visited, self.terminals, self.accepted = set(), set(), {}
-        self.started = time.perf_counter()
 
     def _compile(self, model):
         key = model.key
@@ -382,6 +406,7 @@ class _Reduction:
                 self.terminals.update(eligible)
             else:
                 self._fit_nodes([(k, None, None) for k in self.roots], True)
+                self._widen_rejected_means()
                 while True:
                     retries = self.counts["parent_refits"]
                     self.visited.clear()
@@ -412,15 +437,60 @@ class _Reduction:
         result = SelectionResult(terminals=terminals, tests=self.tests,
                                  candidates=tuple(sorted(available, key=lambda c: c.key)),
                                  paths=self._paths(), search_complete=not self.frontier,
-                                 frontier=tuple(sorted(self.frontier)), fit_counts=self.counts)
+                                 frontier=tuple(sorted(self.frontier)), fit_counts=self.counts,
+                                 widenings=self.widenings)
         if choices:
             result.selected_model = choices[0].specification
             result.status = "selected" if result.search_complete else "budget_exhausted"
         elif self.frontier:
             result.status = "budget_exhausted"
+        elif self.widening_status:
+            result.status = self.widening_status
         elif any(c.diagnostics.get("status") == "adequacy_unresolved" for c in available):
             result.status = "adequacy_unresolved"
         return result
+
+    def _widen_rejected_means(self):
+        while not self.frontier:
+            roots = [self.nodes[k] for k in self.roots]
+            diagnosed = [c for c in roots if c.certified]
+            # Uncertified fits supply no diagnostic evidence. Every diagnosed
+            # root must reject, and a Holm rejection of the mean is essential.
+            if not diagnosed or any(c.diagnostics.get("status") != "rejected" for c in diagnosed):
+                return
+            triggers = [dict(root=c.key, test=t['name'], p_value=t['p_value'],
+                             log_p_value=t['log_p_value'], status=t['status'])
+                        for c in diagnosed for t in c.diagnostics['checks']
+                        if t['name'].startswith('residual_ljung_box[') and t['holm_reject']]
+            if not triggers:
+                return
+            means = tuple(None if m is None else m.widen(self.procedure.max_mean_order)
+                          for m in self.search.mean)
+            if all(m is None for m in means):
+                orders = [m.autoregressive_order for m in self.search.mean if m is not None]
+                self.widening_status = ("mean_order_cap_reached" if any(
+                    p is not None and p >= self.procedure.max_mean_order for p in orders)
+                    else "mean_widening_unavailable")
+                return
+            means = tuple(new if new is not None else old for new, old in zip(means, self.search.mean))
+            trigger = min(triggers, key=lambda t: t['log_p_value'])
+            self.widenings.append(dict(order=max(m.autoregressive_order for m in means
+                                                if m is not None and m.autoregressive_order is not None),
+                                       triggering_test=trigger['test'], p_value=trigger['p_value'],
+                                       log_p_value=trigger['log_p_value'],
+                                       triggers=triggers))
+            self.search = Search(mean=means, volatility=self.search.volatility, density=self.search.density,
+                                 constant_variance=self.search.constant_variance, closure=self.search.closure)
+            # Widening changes conditioning. All descendants must be fitted on
+            # the new common plan; old likelihoods cannot be used for LR tests.
+            self.nodes = {k: Candidate(k, c.model, c.specification) for k, c in self.nodes.items()}
+            self._declare(self.search)
+            self.deployment_reserve = 0
+            before = self.counts['optimizer_invocations']
+            self._fit_nodes([(k, None, None) for k in self.roots], True)
+            fitted = self.counts['optimizer_invocations'] - before
+            self.counts['mean_widening_fits'] += fitted
+            self.widenings[-1].update(fit_count=fitted, completed=not self.frontier)
 
     def _rank(self, candidate):
         ic = self.procedure if isinstance(self.procedure, InformationCriterion) else self.procedure.tie_break

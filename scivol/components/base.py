@@ -33,6 +33,15 @@ class Component(FitsMixin, ABC):
     @abstractmethod
     def unpack(self, flat_params: np.ndarray) -> Dict[str, Any]: ...
 
+    @property
+    def autoregressive_order(self) -> int | None:
+        """AR order for a widenable mean generator; None for fixed templates."""
+        return None
+
+    def widen(self, max_order: int) -> Component | None:
+        """Return the next mean generator within the cap, or None if unavailable."""
+        return None
+
     def link(self, *others: Union[Component, CompositeSpec]) -> CompositeSpec:
         from ..spec.composite import CompositeSpec
         return CompositeSpec(self, *others)

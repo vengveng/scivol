@@ -229,27 +229,106 @@ chi-bar-square weights after nuisance profiling. Unidentified, singular,
 retained-boundary and unresolved edges cannot authorize a reduction. QMLE LR
 selection is rejected pending its own calibration.
 
-The adequacy family contains standardized-residual Ljung-Box at lags
+The required adequacy family contains standardized-residual Ljung-Box at
 `min(10, floor(n_eff/5))` and `min(20, floor(n_eff/5))`, with the mean model's
-residual degrees of freedom; estimation-corrected Li-Mak at the same deduplicated
-lags; and joint Engle-Ng sign/size bias. Holm combines these at
-`diagnostic_level`. Li-Mak conditions its score/Hessian correction on the active
-closed face, holding its normal coordinates fixed. Singular conditional
-information or unavailable fourth moments leave adequacy unresolved. In
-particular, t/skew-t at `eta >= 1/4` cannot pass the squared-residual and sign-bias
-checks. Berkowitz and DGT on fitted in-sample PITs are reported with
-`calibrated=False`; their conservative, uncalibrated references do not constrain
-adequacy.
+residual degrees of freedom; `absolute_li_mak` at the same deduplicated lags;
+and `absolute_sign_bias`, the joint sign/size-bias test on absolute standardized
+residuals. These absolute tests always apply, independently of the fitted
+innovation shape. Holm combines the five checks at `diagnostic_level`. A known
+Holm rejection establishes inadequacy even if another check is unavailable;
+unavailable required checks otherwise leave adequacy unresolved. Berkowitz and
+DGT on fitted in-sample PITs are reported with `calibrated=False` and do not
+constrain adequacy.
 
-Constant variance is an independent root. It also requires Engle's (1982)
-ARCH-LM auxiliary regression of squared standardized residuals on an intercept
-and `q = min(10, floor(n_eff/5))` lagged squares. The statistic is
-`(n_eff-q) R^2`, with a chi-square(q) reference, included in Holm. Its
-volatility-GUM encompassing test remains unavailable because variance-lag
-parameters are unidentified under no ARCH. The graph currently lacks APARCH
-fixed-power/asymmetry, skew-Gaussian and finite GH restrictions. Cross-terminal
-union tests and equivalence deduplication beyond native spec identity are not
-implemented. The defaults and the adaptive procedure have not been calibrated.
+For the absolute tests, let $\mu=E|z|$, $u_t=|z_t|-\mu$,
+$s=E[\operatorname{sign}(z)]$, $a_t=(\partial e_t/\partial\theta)/\sqrt{h_t}$
+and $b_t=\partial\log h_t/\partial\theta$. The predictable instruments $r_t$
+are the centered lagged absolute residuals, or the centered Engle-Ng vector
+$(I(z_{t-1}<0),z_{t-1}I(z_{t-1}<0),z_{t-1}I(z_{t-1}\ge0))$. Under the iid null,
+
+$$
+D=E\!\left[r_t\{s a_t-\tfrac12\mu b_t\}^{\mathsf T}\right],\qquad
+w_t=u_t r_t-D A^{-1}\psi_t,\qquad
+Q=n\bar m^{\mathsf T}\widehat\Sigma^{-1}\bar m\ \Rightarrow\ \chi^2_q,
+$$
+
+where $\bar m=n^{-1}\sum_t u_t r_t$, $\psi_t$ is the full joint negative-log
+likelihood score, $A=E[\partial\psi_t/\partial\theta^{\mathsf T}]$, and
+$\widehat\Sigma$ is the centered empirical covariance of $w_t$. The observed
+mean Hessian estimates $A$; active closed-face normal coordinates are held
+fixed. The estimator expansion is $\sqrt n(\hat\theta-\theta_0)
+=-A^{-1}n^{-1/2}\sum_t\psi_t+o_p(1)$. Differentiating the lagged instrument
+contributes zero because the current $u_t$ has conditional mean zero. Sample
+centering likewise contributes zero to the population derivative. In
+particular, skew innovations require the $s a_t$ mean term. Shape scores stay
+in the joint information even when the residual path has no shape sensitivity.
+The covariance retains the moment-score cross terms rather than treating fitted
+residuals as observed innovations.
+
+Only $E z^2=1$ is needed for these innovation moments: $\mu\le1$,
+$\operatorname{Var}|z|=1-\mu^2$, $|\operatorname{sign}(z)|\le1$, and every
+sign/size instrument has finite second moment. Independence gives
+$E[(u_t u_{t-k})^2]=(1-\mu^2)^2$, and $E[u_t^2r_t r_t^{\mathsf T}]
+=(1-\mu^2)E[r_t r_t^{\mathsf T}]$. The sample covariance therefore estimates
+finite quantities without requiring $E z^4$. The model supplies $\mu$ through
+`innovation_power_moment(theta, 0, 1)` and $s$ through its innovation CDF at
+zero. These moments exist for Student-t and Skew-t throughout $\nu>2$, including
+$2<\nu\le4$. Normal and GED have all polynomial moments; the declared interior
+GH, NIG, Hyperbolic and Variance-Gamma domains have exponentially decreasing
+tails and also have all polynomial moments. Regular identification, finite
+square-integrable joint scores and path sensitivities, and an invertible
+conditional information matrix remain estimator assumptions. They do not
+follow from the innovation second moment alone. Gaussian QMLE still needs a
+finite fourth moment for its own estimator influence function.
+
+The absolute-residual precedent is [Li and Li (2005)](https://doi.org/10.1093/biomet/92.3.691),
+which uses LAD estimation. The correction above uses scivol's joint MLE or
+Gaussian QMLE influence function. Asymmetric power-model portmanteau theory is
+discussed by [Carbon and Francq (2011)](https://www.stat.tugraz.at/AJS/ausg111%2B2/111%2B2Francq.pdf);
+their squared-residual QMLE assumptions include a fourth innovation moment.
+Finite-second-moment asymptotics can converge slowly near $\nu=2$, so these laws
+do not establish accurate finite-sample size uniformly over the density domain.
+
+The standalone squared `li_mak`, `sign_bias` and `arch_lm` statistics remain
+available. Model-backed squared diagnostics report `fourth_moment_unavailable`
+where necessary; array-only auxiliary regressions require their caller to
+justify the innovation moments. Constant variance uses the same absolute
+adequacy family. Its absolute ARCH-LM auxiliary regression has the same lagged
+moments and limiting Wald test as `absolute_li_mak`, so adding it to Holm would
+repeat a test. Its volatility-GUM encompassing test remains unavailable because
+variance-lag parameters are unidentified under no ARCH.
+
+`Model.at_open_bound(theta)` identifies floating-point endpoints of open
+scalar and order-one stability bounds. Ordinary estimated-residual diagnostic
+laws return `at_boundary` there. For example, APARCH at
+$\gamma=\operatorname{nextafter}(1,0)$ approaches the excluded leverage endpoint.
+For powers below one, derivatives of $(1-\gamma)^\delta$ diverge there; an
+indefinite observed Hessian is not evidence of weak identification of $\delta$.
+A generalized inverse cannot give this excluded endpoint an interior MLE law.
+Genuine singular conditional information elsewhere remains explicit.
+
+When every diagnostically evaluated root rejects and at least one residual
+Ljung-Box check rejects after Holm, GETS asks each mean generator to `widen` its
+AR order by one. ARX preserves its intercept and exogenous columns; ARMA
+preserves its MA order. Uncertified roots supply no diagnostic evidence, and an
+adequate or unresolved evaluated root prevents widening. Volatility and density
+failures alone never trigger widening. Each wider root is refitted and counts
+against `max_fits`. The new roots and all descendants share a new comparison
+sample; likelihoods from different conditioning spans are never compared.
+Native highest-AR-lag restrictions then reduce the wider model in the usual way.
+`GeneralToSpecific(max_mean_order=5)` and `Auto(max_mean_order=5)` set the default
+cap, configurable from 1 through the native limit of 8. `SelectionResult.widenings`
+records each new order, triggering test, p-value and root triggers; `summary()`
+reports the widening. Records also state its fit count and whether the root
+batch completed; an unfitted budget frontier is reported as pending widening.
+Persistent mean rejection at the cap returns
+`mean_order_cap_reached`; an unavailable template returns
+`mean_widening_unavailable`; an exhausted fit budget remains `budget_exhausted`.
+
+The graph currently lacks APARCH fixed-power/asymmetry, skew-Gaussian and finite
+GH restrictions. Cross-terminal union tests and equivalence deduplication beyond
+native spec identity are not implemented. The defaults and the adaptive
+procedure have not been calibrated.
 
 `InformationCriterion` requires an explicit adequacy choice. `ConfidenceSet`
 compares frozen training candidates using chronological predictive losses and

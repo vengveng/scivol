@@ -124,7 +124,7 @@ def test_constant_root_is_independent_and_encompassing_unavailable(garch_data):
     constant = result.candidates[0]
     assert constant.model.constant_variance
     assert constant.encompassing['volatility_gum'] == 'unavailable'
-    arch = next(c for c in constant.diagnostics['checks'] if c['name'] == 'arch_lm')
+    arch = next(c for c in constant.diagnostics['checks'] if c['name'] == 'absolute_li_mak[10]')
     assert arch['status'] == 'ok' and arch['required'] and arch['holm_reject']
     assert result.selected is None
 
@@ -304,3 +304,66 @@ def test_auto_boundary_tests_and_kink_stopping():
     left[0], right[0] = root-1e-8, root+1e-8
     assert jet.theta(left, api.GRADIENT)['gradient'][0] < 0
     assert jet.theta(right, api.GRADIENT)['gradient'][0] > 0
+
+
+@pytest.mark.parametrize('template', [ARX.up_to(1), ARMA.up_to(1, 0)])
+def test_mean_widening_refits_roots_then_reduces_on_common_sample(template):
+    y = np.random.default_rng(680).normal(size=5000)
+    for t in range(2, len(y)):
+        y[t] += .35*y[t-2]
+    result = Search(mean=[template], density=[Normal()]).fit(y, n_jobs=1)
+    assert result.status == 'selected'
+    assert result.selected_model.get_component(Role.MEAN).autoregressive_order == 2
+    assert [w['order'] for w in result.widenings] == [2]
+    widening = result.widenings[0]
+    assert widening['triggering_test'].startswith('residual_ljung_box[')
+    assert widening['p_value'] < .01
+    assert result.fit_counts['mean_widening_fits'] == 1
+    assert {c.fit.scored for c in result.candidates if c.fit} == {len(y)-2}
+    assert 'Mean widened to AR(2)' in result.summary()
+    assert any(t['restriction'] == 'mean.ar' for t in result.tests)
+
+
+def test_mean_widening_cap_budget_and_nonmean_rejections(garch_data):
+    y = np.random.default_rng(680).normal(size=5000)
+    for t in range(2, len(y)):
+        y[t] += .35*y[t-2]
+    search = Search(mean=[ARX.up_to(1)], density=[Normal()])
+    capped = search.fit(y, procedure=GeneralToSpecific(max_mean_order=1))
+    assert capped.status == 'mean_order_cap_reached' and capped.selected is None
+    assert not capped.widenings
+    budget = search.fit(y, procedure=GeneralToSpecific(max_fits=1))
+    assert budget.status == 'budget_exhausted' and not budget.search_complete
+    assert budget.fit_counts['optimizer_invocations'] == 1
+    assert budget.frontier and budget.widenings[0]['order'] == 2
+    assert budget.widenings[0]['fit_count'] == 0 and not budget.widenings[0]['completed']
+    assert 'Mean widening pending' in budget.summary()
+    volatility = search.fit(garch_data)
+    assert volatility.selected is None and not volatility.widenings
+    assert not any(c['holm_reject'] for candidate in volatility.candidates
+                   for c in candidate.diagnostics.get('checks', [])
+                   if c['name'].startswith('residual_ljung_box['))
+
+
+def test_mean_widening_template_preserves_structure_and_nested_lag_restrictions():
+    arx = ARX(2, constant=False)
+    arx.set_n_exog(2)
+    wider = arx.widen(5)
+    assert wider.lags == 3 and wider.n_exog == 2 and not wider.constant
+    arma = ARMA(2, 1, constant=False).widen(5)
+    assert (arma.p, arma.q, arma.constant) == (3, 1, False)
+    assert arx.widen(2) is None and Normal().widen(5) is None
+    parent = api.Model(native_spec(wider.spec, 2))
+    edge = next(r for r in parent.restrictions() if r.name == 'mean.ar')
+    child = api.Model(edge.child)
+    assert child.spec.mean.ar == 2 and child.spec.mean.exog == 2
+    # Mean coefficients, two exogenous coefficients, then sigma2.
+    theta = child.start(api.ComparisonPlan(np.random.default_rng(8).normal(size=100), 3,
+                                         np.random.default_rng(9).normal(size=(100, 2))))
+    embedded = edge.embed(theta)
+    assert embedded[2] == 0
+    np.testing.assert_array_equal(edge.map_start(embedded), theta)
+    with pytest.raises(ValueError, match='max_mean_order'):
+        GeneralToSpecific(max_mean_order=9)
+    with pytest.raises(ValueError, match='max_mean_order'):
+        Auto(max_mean_order=0)

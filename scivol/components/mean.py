@@ -25,6 +25,13 @@ class ARMA(Component):
         return cls(p, q)
 
     @property
+    def autoregressive_order(self) -> int:
+        return self.p
+
+    def widen(self, max_order: int) -> ARMA | None:
+        return type(self)(self.p + 1, self.q, constant=self.constant) if self.p < max_order else None
+
+    @property
     def signature(self): return f"ARMA({self.p},{self.q})" if self.constant else f"ARMA({self.p},{self.q},constant=False)"
 
     @property
@@ -64,6 +71,17 @@ class ARX(Component):
     def up_to(cls, k: int):
         """Declare a maximal generator; native restrictions supply descendants."""
         return cls(k)
+
+    @property
+    def autoregressive_order(self) -> int:
+        return self.lags
+
+    def widen(self, max_order: int) -> ARX | None:
+        if self.lags >= max_order:
+            return None
+        wider = type(self)(self.lags + 1, constant=self.constant)
+        wider.set_n_exog(self.n_exog)
+        return wider
 
     @property
     def signature(self):
