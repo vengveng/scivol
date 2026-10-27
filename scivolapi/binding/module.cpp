@@ -349,6 +349,7 @@ NB_MODULE(_scivolapi, m)
         .def_prop_ro("parameter_names", &Model::parameter_names)
         .def_prop_ro("residual_degrees_of_freedom", &Model::residual_degrees_of_freedom)
         .def("feasible", [](const Model& m, const Vector& theta) { return m.feasible(view(theta)); })
+        .def("at_open_bound", [](const Model& m, const Vector& theta) { return m.at_open_bound(view(theta)); })
         .def("bounds", [](const Model& m) {
             std::vector<double> lower(m.dimension()), upper(m.dimension());
             m.bounds(lower, upper);
@@ -704,7 +705,7 @@ NB_MODULE(_scivolapi, m)
                                   s.mean.exog, s.mean.ma, static_cast<int>(s.volatility), s.p, s.q,
                                   static_cast<int>(s.density));
         })
-        .def_prop_ro("constant_variance", [](const Model& m) { return m.spec().volatility == VolatilityKind::constant; })
+        .def_prop_ro("constant_variance", &Model::constant_variance)
         .def_prop_ro("components", [](const Model& m) {
             const auto& s = m.spec();
             nb::list out;
@@ -828,6 +829,12 @@ NB_MODULE(_scivolapi, m)
     m.def("li_mak", [](BoundJet& jet, const Vector& theta, std::size_t lags, Estimator estimator, bool estimated) {
         return li_mak_dictionary(li_mak(jet.jet, view(theta), lags, estimator, estimated), lags, jet.model->dimension());
     }, "jet"_a, "theta"_a, "lags"_a = 10, "estimator"_a = Estimator::mle, "estimated"_a = true);
+    m.def("absolute_li_mak", [](BoundJet& jet, const Vector& theta, std::size_t lags, Estimator estimator, bool estimated) {
+        return li_mak_dictionary(absolute_li_mak(jet.jet, view(theta), lags, estimator, estimated), lags, jet.model->dimension());
+    }, "jet"_a, "theta"_a, "lags"_a = 10, "estimator"_a = Estimator::mle, "estimated"_a = true);
+    m.def("absolute_sign_bias", [](BoundJet& jet, const Vector& theta, Estimator estimator, bool estimated) {
+        return test_dictionary(absolute_sign_bias(jet.jet, view(theta), estimator, estimated));
+    }, "jet"_a, "theta"_a, "estimator"_a = Estimator::mle, "estimated"_a = true);
     m.def("diagnostics", [](BoundJet& jet, const Vector& theta, std::size_t cells, std::size_t lags,
                             const std::optional<std::size_t>& df, Estimator estimator, bool estimated, double alpha) {
         if (!(alpha > 0.0 && alpha < 1.0)) throw std::invalid_argument("alpha must be between zero and one");

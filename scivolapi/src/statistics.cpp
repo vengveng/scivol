@@ -319,14 +319,13 @@ std::vector<double> face_basis(const Model& model, std::span<const double> theta
 }
 
 struct DiagnosticEvaluation {
-    std::vector<double> e, h, z, sensitivity, score, information;
+    std::vector<double> e, h, z, sensitivity, residual_sensitivity, score, information;
     std::size_t parameters = 0;
     TestStatus status = TestStatus::ok;
-    bool fourth_moment = false;
 };
 
 DiagnosticEvaluation evaluate_diagnostics(Jet& jet, std::span<const double> theta,
-                                          Estimator estimator, bool estimated)
+                                          Estimator estimator, bool estimated, bool absolute = false)
 {
     const Model& model = jet.model();
     const std::size_t n = jet.sample().scored(), d = model.dimension();
@@ -335,20 +334,26 @@ DiagnosticEvaluation evaluate_diagnostics(Jet& jet, std::span<const double> thet
     DiagnosticEvaluation out;
     out.parameters = d;
     if (!model.feasible(theta)) { out.status = TestStatus::infeasible_parameters; return out; }
-    out.fourth_moment = std::isfinite(model.innovation_power_moment(theta, 0.0, 4.0));
-    const bool moments = out.fourth_moment;
+    // Absolute moments need only E z^2. Gaussian QMLE still needs E z^4
+    // for its estimator influence function, independently of the diagnostic.
+    const bool moments = (absolute && estimator == Estimator::mle)
+        || std::isfinite(model.innovation_power_moment(theta, 0.0, 4.0));
     out.e.resize(n); out.h.resize(n); out.z.resize(n);
     out.sensitivity.resize(n * d); out.score.resize(n * d); out.information.resize(d * d);
+    if (absolute) out.residual_sensitivity.resize(n * d);
     JetOutput evaluated;
     evaluated.paths = {out.e, out.h, out.z};
     evaluated.log_variance_sensitivities = out.sensitivity;
+    evaluated.residual_sensitivities = out.residual_sensitivity;
     evaluated.scores = out.score;
     evaluated.hessian = out.information;
-    const unsigned request = paths | (estimated && moments ? log_variance_sensitivities | scores | hessian : 0u);
+    const unsigned request = paths | (estimated && moments ? log_variance_sensitivities | scores | hessian
+        | (absolute ? residual_sensitivities : 0u) : 0u);
     const auto result = jet.theta(theta, request, evaluated);
     if ((result.valid & request) != request) out.status = TestStatus::invalid_derivatives;
     if (!(result.valid & paths)) { out.e.clear(); out.h.clear(); out.z.clear(); }
     if (!moments) out.status = TestStatus::fourth_moment_unavailable;
+    if (estimated && out.status == TestStatus::ok && model.at_open_bound(theta)) out.status = TestStatus::at_boundary;
     if (out.status != TestStatus::ok || !estimated) return out;
     if (estimator == Estimator::qmle) {
         const Model gaussian = model.gaussian_model();
@@ -367,6 +372,33 @@ DiagnosticEvaluation evaluate_diagnostics(Jet& jet, std::span<const double> thet
     return out;
 }
 
+// Inverse of the SUM Hessian, restricted to the model's active closed face.
+// An excluded open endpoint has no regular face-conditioned estimator law.
+TestStatus diagnostic_inverse(const Model& model, std::span<const double> theta,
+                              const DiagnosticEvaluation& evaluated, Estimator estimator,
+                              std::vector<double>& inverse)
+{
+    const std::size_t parameters = evaluated.parameters;
+    inverse.assign(parameters * parameters, 0.0);
+    const Model estimation_model = estimator == Estimator::qmle ? model.gaussian_model() : model;
+    const auto basis = face_basis(estimation_model, theta.first(parameters));
+    const std::size_t free = basis.size() / parameters;
+    std::vector<double> information(free * free, 0.0), conditional_inverse;
+    for (std::size_t i = 0; i < free; ++i)
+        for (std::size_t j = 0; j < free; ++j)
+            for (std::size_t a = 0; a < parameters; ++a)
+                for (std::size_t b = 0; b < parameters; ++b)
+                    information[i * free + j] += basis[i * parameters + a] * evaluated.information[a * parameters + b] * basis[j * parameters + b];
+    if (free && detail::invert_information(information, free, conditional_inverse) != Inference::available)
+        return TestStatus::singular_information;
+    for (std::size_t a = 0; a < parameters; ++a)
+        for (std::size_t b = 0; b < parameters; ++b)
+            for (std::size_t i = 0; i < free; ++i)
+                for (std::size_t j = 0; j < free; ++j)
+                    inverse[a * parameters + b] += basis[i * parameters + a] * conditional_inverse[i * free + j] * basis[j * parameters + b];
+    return TestStatus::ok;
+}
+
 LiMak li_mak_evaluated(Jet& jet, std::span<const double> theta, std::size_t lags,
                        Estimator estimator, bool estimated, const DiagnosticEvaluation& evaluated)
 {
@@ -380,27 +412,8 @@ LiMak li_mak_evaluated(Jet& jet, std::span<const double> theta, std::size_t lags
     if (evaluated.status != TestStatus::ok) { out.test.status = evaluated.status; return out; }
     std::vector<double> inverse(parameters * parameters, 0.0);
     if (estimated) {
-        const Model estimation_model = estimator == Estimator::qmle ? model.gaussian_model() : model;
-        const auto basis = face_basis(estimation_model, theta.first(parameters));
-        const std::size_t free = basis.size() / parameters;
-        std::vector<double> information(free * free, 0.0), conditional_inverse;
-        // Condition on the active closed face: fix its normal coordinates and
-        // drop them from both score and Hessian blocks. The restricted child is
-        // precisely this model; GJR one-sign faces retain the alpha=-gamma tangent.
-        for (std::size_t i = 0; i < free; ++i)
-            for (std::size_t j = 0; j < free; ++j)
-                for (std::size_t a = 0; a < parameters; ++a)
-                    for (std::size_t b = 0; b < parameters; ++b)
-                        information[i * free + j] += basis[i * parameters + a] * evaluated.information[a * parameters + b] * basis[j * parameters + b];
-        if (free && detail::invert_information(information, free, conditional_inverse) != Inference::available) {
-            out.test.status = TestStatus::singular_information;
-            return out;
-        }
-        for (std::size_t a = 0; a < parameters; ++a)
-            for (std::size_t b = 0; b < parameters; ++b)
-                for (std::size_t i = 0; i < free; ++i)
-                    for (std::size_t j = 0; j < free; ++j)
-                        inverse[a * parameters + b] += basis[i * parameters + a] * conditional_inverse[i * free + j] * basis[j * parameters + b];
+        out.test.status = diagnostic_inverse(model, theta, evaluated, estimator, inverse);
+        if (out.test.status != TestStatus::ok) return out;
     }
     std::vector<double> v(n), moments(n * lags, 0.0), means(lags, 0.0), projection(lags * parameters, 0.0);
     out.derivative.assign(lags * d, 0.0);
@@ -445,6 +458,96 @@ LiMak li_mak_evaluated(Jet& jet, std::span<const double> theta, std::size_t lags
     return out;
 }
 
+// One moment test for predictable instruments. Centering removes the nuisance
+// absolute mean without estimating its shape derivatives. Every product here
+// has finite expectation under E z^2 and the stated regular score/path law.
+LiMak absolute_moments(Jet& jet, std::span<const double> theta, std::size_t columns,
+                       bool sign, Estimator estimator, bool estimated,
+                       const DiagnosticEvaluation& evaluated)
+{
+    LiMak out;
+    out.test.df = columns;
+    if (evaluated.status != TestStatus::ok) { out.test.status = evaluated.status; return out; }
+    const auto& model = jet.model();
+    const std::size_t n = evaluated.z.size(), d = model.dimension(), p = evaluated.parameters;
+    const double mu = model.innovation_power_moment(theta, 0.0, 1.0), variance = 1.0 - mu * mu;
+    double below, above;
+    const auto law = model.innovation_density(theta);
+    if (!(variance > 0.0) || !std::isfinite(variance)
+        || detail::distribution(law.density, law.shape.data(), 0.0, below, above) != detail::ExpectationStatus::ok) {
+        out.test.status = TestStatus::numerical_range;
+        return out;
+    }
+    const double mean_sign = above - below;
+    std::vector<double> inverse;
+    if (estimated) {
+        out.test.status = diagnostic_inverse(model, theta, evaluated, estimator, inverse);
+        if (out.test.status != TestStatus::ok) return out;
+    }
+    std::vector<double> u(n), instruments(n * columns, 0.0), means(columns, 0.0);
+    double absolute_mean = 0.0;
+    for (double z : evaluated.z) absolute_mean += std::abs(z) / n;
+    for (std::size_t t = 0; t < n; ++t) u[t] = std::abs(evaluated.z[t]) - absolute_mean;
+    for (std::size_t j = 0; j < columns; ++j) {
+        const std::size_t first = sign ? 1 : j + 1;
+        double mean = 0.0;
+        for (std::size_t t = first; t < n; ++t) {
+            const double lag = evaluated.z[t - first];
+            const double r = sign ? (j == 0 ? double(lag < 0.0) : (j == 1 ? std::min(lag, 0.0) : std::max(lag, 0.0)))
+                                  : std::abs(lag);
+            instruments[t * columns + j] = r;
+            mean += r / (n - first);
+        }
+        for (std::size_t t = first; t < n; ++t) instruments[t * columns + j] -= mean;
+    }
+    out.derivative.assign(columns * d, 0.0);
+    std::vector<double> moments(n * columns), projection(columns * p, 0.0);
+    for (std::size_t t = 0; t < n; ++t)
+        for (std::size_t j = 0; j < columns; ++j) {
+            const double r = instruments[t * columns + j];
+            moments[t * columns + j] = u[t] * r;
+            means[j] += moments[t * columns + j] / n;
+            if (estimated)
+                for (std::size_t a = 0; a < d; ++a)
+                    out.derivative[j * d + a] += r * (mean_sign * evaluated.residual_sensitivity[t * d + a] / std::sqrt(evaluated.h[t])
+                        - 0.5 * mu * evaluated.sensitivity[t * d + a]) / n;
+        }
+    if (estimated)
+        for (std::size_t j = 0; j < columns; ++j)
+            for (std::size_t a = 0; a < p; ++a)
+                for (std::size_t b = 0; b < p; ++b)
+                    projection[j * p + a] += n * out.derivative[j * d + b] * inverse[b * p + a];
+    std::vector<double> influence_mean(columns, 0.0);
+    for (std::size_t t = 0; t < n; ++t)
+        for (std::size_t j = 0; j < columns; ++j) {
+            if (estimated)
+                for (std::size_t a = 0; a < p; ++a)
+                    moments[t * columns + j] -= projection[j * p + a] * evaluated.score[t * p + a];
+            influence_mean[j] += moments[t * columns + j] / n;
+        }
+    std::vector<double> covariance(columns * columns, 0.0), covariance_inverse;
+    for (std::size_t t = 0; t < n; ++t)
+        for (std::size_t i = 0; i < columns; ++i)
+            for (std::size_t j = 0; j <= i; ++j)
+                covariance[i * columns + j] += (moments[t * columns + i] - influence_mean[i])
+                    * (moments[t * columns + j] - influence_mean[j]) / n;
+    for (std::size_t i = 0; i < columns; ++i)
+        for (std::size_t j = 0; j < i; ++j) covariance[j * columns + i] = covariance[i * columns + j];
+    out.autocorrelations.resize(columns);
+    for (std::size_t j = 0; j < columns; ++j) out.autocorrelations[j] = means[j] / variance;
+    out.covariance.resize(columns * columns);
+    for (std::size_t j = 0; j < covariance.size(); ++j) out.covariance[j] = covariance[j] / (variance * variance);
+    if (detail::invert_information(covariance, columns, covariance_inverse) != Inference::available) {
+        out.test.status = TestStatus::singular_moment_covariance;
+        return out;
+    }
+    double statistic = 0.0;
+    for (std::size_t i = 0; i < columns; ++i)
+        for (std::size_t j = 0; j < columns; ++j) statistic += n * means[i] * covariance_inverse[i * columns + j] * means[j];
+    out.test = chi_test(statistic, columns);
+    return out;
+}
+
 // Prefix horizons share the same correlations and covariance, including the
 // estimation correction. Only the small leading covariance block is inverted.
 TestStatistic li_mak_prefix(const LiMak& full, std::size_t n, std::size_t lags)
@@ -476,24 +579,39 @@ LiMak li_mak(Jet& jet, std::span<const double> theta, std::size_t lags, Estimato
     return li_mak_evaluated(jet, theta, lags, estimator, estimated, evaluated);
 }
 
+LiMak absolute_li_mak(Jet& jet, std::span<const double> theta, std::size_t lags, Estimator estimator, bool estimated)
+{
+    check_lags(jet.sample().scored(), lags);
+    const auto evaluated = evaluate_diagnostics(jet, theta, estimator, estimated, true);
+    return absolute_moments(jet, theta, lags, false, estimator, estimated, evaluated);
+}
+
+TestStatistic absolute_sign_bias(Jet& jet, std::span<const double> theta, Estimator estimator, bool estimated)
+{
+    const auto evaluated = evaluate_diagnostics(jet, theta, estimator, estimated, true);
+    if (evaluated.status != TestStatus::ok) { TestStatistic out; out.status = evaluated.status; return out; }
+    if (evaluated.z.size() < 6) return {};
+    return absolute_moments(jet, theta, 3, true, estimator, estimated, evaluated).test;
+}
+
 Adequacy adequacy(Jet& jet, std::span<const double> theta, double level, Estimator estimator)
 {
     require(level > 0.0 && level < 1.0, "diagnostic level must be between zero and one");
     const std::size_t n = jet.sample().scored(), maximum = std::min<std::size_t>(20, n / 5);
     Adequacy out;
     out.level = level;
-    const bool constant_variance = jet.model().spec().volatility == VolatilityKind::constant;
+    const bool constant_variance = jet.model().constant_variance();
     if (constant_variance) out.volatility_gum = "unavailable";
     auto add = [&](std::string name, TestStatistic test, bool required = true) {
         out.checks.push_back({std::move(name), test, required, required, false});
     };
-    const auto evaluated = evaluate_diagnostics(jet, theta, estimator, true);
+    const auto evaluated = evaluate_diagnostics(jet, theta, estimator, true, true);
     const bool paths_valid = !evaluated.z.empty();
     Portmanteau residual;
-    LiMak squared;
+    LiMak absolute;
     if (maximum) {
         if (paths_valid) residual = portmanteau(evaluated.z, maximum, jet.model().residual_degrees_of_freedom());
-        squared = li_mak_evaluated(jet, theta, maximum, estimator, true, evaluated);
+        absolute = absolute_moments(jet, theta, maximum, false, estimator, true, evaluated);
     }
     std::size_t previous = 0;
     for (const std::size_t requested : {10u, 20u}) {
@@ -506,25 +624,14 @@ Adequacy adequacy(Jet& jet, std::span<const double> theta, double level, Estimat
             for (std::size_t k = 1; k <= lag; ++k) sum += std::pow(residual.autocorrelations[k - 1], 2) / (n - k);
             const std::size_t adjustment = jet.model().residual_degrees_of_freedom();
             lb = chi_test(double(n) * (n + 2.0) * sum, lag > adjustment ? lag - adjustment : 0);
-            lm = li_mak_prefix(squared, n, lag);
+            lm = li_mak_prefix(absolute, n, lag);
         } else if (!paths_valid) lb.status = lm.status = evaluated.status;
         add("residual_ljung_box[" + std::to_string(lag) + "]", lb);
-        add("li_mak[" + std::to_string(lag) + "]", lm);
+        add("absolute_li_mak[" + std::to_string(lag) + "]", lm);
         if (!lag) break;
     }
-    const bool fourth_moment = evaluated.fourth_moment;
-    TestStatistic sign;
-    if (!paths_valid) sign.status = evaluated.status;
-    else if (!fourth_moment) sign.status = TestStatus::fourth_moment_unavailable;
-    else if (n >= 6) sign = sign_bias(evaluated.z, evaluated.e).joint;
-    add("sign_bias", sign);
-    if (constant_variance) {
-        TestStatistic arch;
-        if (!paths_valid) arch.status = evaluated.status;
-        else if (!fourth_moment) arch.status = TestStatus::fourth_moment_unavailable;
-        else if (maximum) arch = arch_lm(evaluated.z, std::min<std::size_t>(10, maximum));
-        add("arch_lm", arch);
-    }
+    const auto sign = n >= 6 ? absolute_moments(jet, theta, 3, true, estimator, true, evaluated).test : TestStatistic{};
+    add("absolute_sign_bias", sign);
     TestStatistic berk, cell;
     if (paths_valid) {
         std::vector<double> pit(n);
@@ -561,7 +668,9 @@ Adequacy adequacy(Jet& jet, std::span<const double> theta, double level, Estimat
         out.checks[family[i]].holm_reject = true;
         rejected = true;
     }
-    out.status = unresolved ? AdequacyStatus::adequacy_unresolved : (rejected ? AdequacyStatus::rejected : AdequacyStatus::adequate);
+    // A known Holm rejection establishes failure even if another law is
+    // unavailable. Unavailable checks can never turn non-rejection into a pass.
+    out.status = rejected ? AdequacyStatus::rejected : (unresolved ? AdequacyStatus::adequacy_unresolved : AdequacyStatus::adequate);
     return out;
 }
 
@@ -742,7 +851,12 @@ Diagnostics diagnostics(Jet& jet, std::span<const double> theta, std::size_t cel
         out.density.test.status = TestStatus::pit_endpoint;
         out.pit_normal.ljung_box.status = out.pit_normal.box_pierce.status = TestStatus::pit_endpoint;
     }
-    if (n >= 6) out.asymmetry = sign_bias(z, e);
+    if (std::isfinite(jet.model().innovation_power_moment(theta, 0.0, 4.0))) {
+        if (n >= 6) out.asymmetry = sign_bias(z, e);
+    } else {
+        out.asymmetry.joint.status = TestStatus::fourth_moment_unavailable;
+        for (auto& test : out.asymmetry.individual) test.status = TestStatus::fourth_moment_unavailable;
+    }
     out.squared_residual = li_mak(jet, theta, lags, estimator, estimated);
     return out;
 }

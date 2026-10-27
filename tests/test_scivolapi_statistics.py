@@ -446,7 +446,7 @@ def test_adequacy_reuses_horizons_and_holm_required_family(rows, horizons):
     assert len(checks) == 2*len(horizons)+3
     for lag in horizons:
         for name, expected in [('residual_ljung_box', api.portmanteau(point['innovation'], lag)),
-                               ('li_mak', api.li_mak(jet, theta, lag))]:
+                               ('absolute_li_mak', api.absolute_li_mak(jet, theta, lag))]:
             actual = checks[f'{name}[{lag}]']
             assert actual['status'] == expected['status']
             np.testing.assert_allclose(actual['statistic'], expected['statistic'], rtol=2e-10, equal_nan=True)
@@ -494,13 +494,24 @@ def test_li_mak_conditions_score_and_hessian_on_closed_face(kind, theta, basis):
     np.testing.assert_allclose(actual['covariance'], covariance/np.mean(v*v)**2, rtol=2e-10, atol=1e-12)
 
 
-def test_adequacy_records_unavailable_moment_tests():
-    model = model_for(mean_spec(constant=False), 'garch', 'student_t')
-    y = np.random.default_rng(402).normal(size=1000)
-    checks = api.selection_diagnostics(api.Jet(model, y), np.array([.1, .1, .8, .25]))
-    assert checks['status'] == 'adequacy_unresolved'
-    unavailable = [c for c in checks['checks'] if c['required'] and c['status'] == 'fourth_moment_unavailable']
-    assert {c['name'] for c in unavailable} == {'li_mak[10]', 'li_mak[20]', 'sign_bias'}
+@pytest.mark.parametrize('eta', [.25, 1/3, .4])
+def test_absolute_adequacy_needs_no_fourth_moment(eta):
+    spec = GARCH()+StudentT()
+    y = spec.simulate(2000, [.1, .1, .8, eta], seed=402).data
+    result = spec.fit(y)
+    model, sample, x = result._native()
+    jet = api.Jet(model, sample, x)
+    theta = np.ascontiguousarray(result.params)
+    checks = api.selection_diagnostics(jet, theta)
+    required = [c for c in checks['checks'] if c['required']]
+    assert {c['name'] for c in required} == {
+        'residual_ljung_box[10]', 'residual_ljung_box[20]',
+        'absolute_li_mak[10]', 'absolute_li_mak[20]', 'absolute_sign_bias'}
+    assert all(c['status'] == 'ok' for c in required)
+    assert checks['status'] != 'adequacy_unresolved'
+    if theta[-1] >= .25:
+        assert api.li_mak(jet, theta, 10)['status'] == 'fourth_moment_unavailable'
+        assert api.absolute_li_mak(jet, theta, 10, api.Estimator.qmle)['status'] == 'fourth_moment_unavailable'
 
 
 def test_rejected_in_sample_pit_reference_never_blocks_adequacy():
@@ -520,3 +531,150 @@ def test_adequacy_preserves_infeasible_parameter_reason():
     tests = api.selection_diagnostics(api.Jet(model, y), np.array([-.1, .1, .8]))
     assert tests['status'] == 'adequacy_unresolved'
     assert all(c['status'] == 'infeasible_parameters' for c in tests['checks'])
+
+
+@pytest.mark.parametrize('estimator', [api.Estimator.mle, api.Estimator.qmle])
+def test_absolute_joint_score_correction_against_independent_reference(estimator):
+    from scipy.integrate import quad
+    from scipy.special import gammaln
+
+    spec = ARMA(1, 1)+GARCH()+SkewT()
+    y = spec.simulate(2500, [.05, .2, .1, .1, .1, .7, .125, -.3], seed=820).data
+    fit = spec.fit(y, method='qmle' if estimator == api.Estimator.qmle else 'mle')
+    model, sample, x = fit._native()
+    jet = api.Jet(model, sample, x)
+    theta = np.ascontiguousarray(fit.params)
+    point = jet.theta(theta, 255)
+    z, n, d = point['innovation'], len(point['innovation']), len(theta)
+    eta, lam = theta[-2:]
+    nu = 1/eta
+    c = np.exp(gammaln((nu+1)/2)-gammaln(nu/2))/np.sqrt(np.pi*(nu-2))
+    a = 4*lam*c*(nu-2)/(nu-1)
+    b = np.sqrt(1+3*lam*lam-a*a)
+    def density(value):
+        scale = 1+lam*np.sign(b*value+a)
+        return b*c*(1+((b*value+a)/scale)**2/(nu-2))**(-(nu+1)/2)
+    cuts = sorted([-np.inf, -a/b, 0., np.inf])
+    mu = sum(quad(lambda z: abs(z)*density(z), lo, hi, epsabs=2e-12)[0]
+             for lo, hi in zip(cuts[:-1], cuts[1:]))
+    below = sum(quad(density, lo, hi, epsabs=2e-12)[0]
+                for lo, hi in zip(cuts[:-1], cuts[1:]) if hi <= 0)
+    mean_sign, variance = 1-2*below, 1-mu*mu
+    if estimator == api.Estimator.qmle:
+        gaussian = model_for(mean_spec(ar=1, ma=1), 'garch', 'normal')
+        p = gaussian.dimension
+        score_point = api.Jet(gaussian, sample, x).theta(theta[:p], api.SCORES | api.HESSIAN)
+    else:
+        p, score_point = d, point
+    scores = score_point['scores']
+    bread = score_point['hessian']/n
+    expected_derivative = (mean_sign * point['residual_sensitivities']/np.sqrt(point['variance'])[:, None]
+                           - .5*mu*point['log_variance_sensitivities'])
+    u = abs(z)-np.mean(abs(z))
+    for sign in [False, True]:
+        columns = 3 if sign else 10
+        instruments = np.zeros((n, columns))
+        for j in range(columns):
+            first = 1 if sign else j+1
+            lag = z[:-first]
+            r = [lag < 0, np.minimum(lag, 0), np.maximum(lag, 0)][j] if sign else abs(lag)
+            instruments[first:, j] = r-r.mean()
+        moments = u[:, None]*instruments
+        means = moments.mean(axis=0)
+        derivative = instruments.T @ expected_derivative/n
+        projection = np.linalg.solve(bread.T, derivative[:, :p].T).T
+        covariance = np.cov(moments-scores@projection.T, rowvar=False, ddof=0)
+        expected = n*means@np.linalg.solve(covariance, means)
+        actual = api.absolute_sign_bias(jet, theta, estimator) if sign else api.absolute_li_mak(jet, theta, columns, estimator)
+        assert actual['status'] == 'ok'
+        assert actual['statistic'] == pytest.approx(expected, rel=2e-9)
+        if not sign:
+            np.testing.assert_allclose(actual['derivative'], derivative, rtol=2e-9, atol=2e-12)
+            np.testing.assert_allclose(actual['covariance'], covariance/variance**2, rtol=2e-9, atol=2e-12)
+            assert np.linalg.norm(derivative[:, :3]) > 1e-3
+
+
+@pytest.mark.parametrize('eta', [None, 1/8, 1/3, .4])
+def test_absolute_diagnostics_fast_size_check(eta):
+    spec = GARCH()+(Normal() if eta is None else StudentT())
+    theta = [.1, .1, .8]+([] if eta is None else [eta])
+    p_values = []
+    for seed in range(80):
+        y = spec.simulate(2500, theta, seed=20261027+seed, burn=1000).data
+        fit = spec.fit(y, accuracy=1e-9)
+        assert fit.success
+        model, sample, x = fit._native()
+        jet, point = api.Jet(model, sample, x), np.ascontiguousarray(fit.params)
+        tests = [api.absolute_li_mak(jet, point, lag) for lag in [10, 20]]
+        tests.append(api.absolute_sign_bias(jet, point))
+        assert all(t['status'] == 'ok' for t in tests)
+        p_values.append([t['p_value'] for t in tests])
+    p_values = np.array(p_values)
+    # Binomial intervals acknowledge the uncertainty of this small smoke panel.
+    for level in [.05, .01]:
+        low, high = stats.binom.interval(.999, len(p_values), level)
+        assert np.all((p_values < level).sum(axis=0) >= low)
+        assert np.all((p_values < level).sum(axis=0) <= high)
+
+
+def test_absolute_diagnostics_power_against_leverage_and_missing_lags():
+    for dgp, theta, fitted, check in [
+        (GJRGARCH()+Normal(), [.1, .03, .3, .7], GARCH(), api.absolute_sign_bias),
+        (GARCH(2, 1)+Normal(), [.1, .1, .3, .45], GARCH(1, 0), api.absolute_li_mak),
+    ]:
+        y = dgp.simulate(5000, theta, seed=20261027, burn=1000).data
+        fit = fitted.fit(y)
+        assert fit.success
+        model, sample, x = fit._native()
+        test = check(api.Jet(model, sample, x), np.ascontiguousarray(fit.params))
+        assert test['status'] == 'ok' and test['p_value'] < .001
+
+
+def test_aparch_open_endpoint_is_not_singular_power_information():
+    from scivol import APARCH
+    spec = APARCH()+SkewT()
+    y = spec.simulate(1200, [.1, .1, .4, .7, .85, .15, -.2], seed=91).data
+    model = api.Model(native_spec(spec))
+    theta = np.array([.1, .1, np.nextafter(1., 0.), .7, .85, .15, -.2])
+    assert model.feasible(theta) and model.at_open_bound(theta)
+    jet = api.Jet(model, y)
+    for test in [api.li_mak(jet, theta, 10), api.absolute_li_mak(jet, theta, 10),
+                 api.absolute_sign_bias(jet, theta)]:
+        assert test['status'] == 'at_boundary'
+    # A regular interior leverage point has no artificial face removal.
+    theta[2] = .4
+    assert not model.at_open_bound(theta)
+    assert api.absolute_li_mak(jet, theta, 10, estimated=False)['status'] == 'ok'
+
+
+@pytest.mark.parametrize('density,shape', [
+    ('generalized_hyperbolic', [.2, .05, -.7]),
+    ('nig', [-.6, .05]),
+    ('hyperbolic', [.7, .1]),
+    ('variance_gamma', [-.3, 2.5]),
+])
+def test_absolute_moments_exist_for_heavy_gh_interiors(density, shape):
+    spec = api.ModelSpec()
+    spec.density = getattr(api.DensityKind, density)
+    model = api.Model(spec)
+    theta = np.array([.1, .1, .7]+shape)
+    mu = model.innovation_power_moment(theta, 0., 1.)
+    assert 0 < mu < 1 and model.feasible(theta)
+    y = np.random.default_rng(72).standard_normal(500)
+    jet = api.Jet(model, y)
+    assert api.absolute_li_mak(jet, theta, 20, estimated=False)['status'] == 'ok'
+    assert api.absolute_sign_bias(jet, theta, estimated=False)['status'] == 'ok'
+
+
+def test_known_holm_rejection_dominates_an_unavailable_check():
+    from scivol import APARCH
+    y = np.random.default_rng(38).normal(size=1000)
+    for t in range(1, len(y)):
+        y[t] += .8*y[t-1]
+    model = api.Model(native_spec(APARCH()+Normal()))
+    theta = np.array([.1, .1, np.nextafter(1., 0.), .7, .85])
+    tests = api.selection_diagnostics(api.Jet(model, y), theta)
+    assert tests['status'] == 'rejected'
+    assert any(t['holm_reject'] and t['name'].startswith('residual_ljung_box[')
+               for t in tests['checks'])
+    assert any(t['status'] == 'at_boundary' for t in tests['checks'])

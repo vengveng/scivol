@@ -92,14 +92,14 @@ int main()
     for (double x : arch_series) sigma2 += x*x / arch_series.size();
     const std::vector<double> constant_theta{sigma2};
     const auto battery = adequacy(constant_jet, constant_theta);
-    assert(battery.checks.size() == 8 && battery.volatility_gum == "unavailable");
+    assert(battery.checks.size() == 7 && battery.volatility_gum == "unavailable");
     assert(battery.status == AdequacyStatus::rejected);
     std::vector<double> standardized(arch_series);
     for (double& x : standardized) x /= std::sqrt(sigma2);
-    const auto arch = arch_lm(standardized, 10);
+    const auto arch = absolute_li_mak(constant_jet, constant_theta, 10).test;
     bool found_arch = false;
     for (const auto& check : battery.checks) {
-        if (check.name == "arch_lm") {
+        if (check.name == "absolute_li_mak[10]") {
             found_arch = true;
             assert(check.required && check.calibrated && check.test.status == TestStatus::ok);
             assert(std::abs(check.test.statistic - arch.statistic) < 1e-10);

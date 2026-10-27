@@ -94,6 +94,21 @@ struct LiMak {
 LiMak li_mak(Jet& jet, std::span<const double> theta, std::size_t lags,
              Estimator estimator = Estimator::mle, bool estimated = true);
 
+// Absolute-residual analogue. u=|z|-E|z|, Var(u)=1-(E|z|)^2.
+// Instruments r are centered lagged |z|, or (I(z<0), z I(z<0), z I(z>=0))
+// for the joint sign/size test. With a=(d e)/sqrt(h), b=d log(h),
+// D=E[r {E[sign(z)] a-E|z| b/2}']; the derivative of the lagged
+// instrument and of centering has zero expectation under the iid null.
+// Both tests use w=u r-D A^-1 psi and its empirical covariance, with ALL
+// joint mean/volatility/shape scores. Q=n mean(u r)' Cov(w)^-1 mean(u r).
+// Only E z^2 is needed for the innovation/instrument moments. Regular,
+// square-integrable estimator scores and path sensitivities remain necessary.
+// Gaussian QMLE additionally requires E z^4 for its own estimator law.
+LiMak absolute_li_mak(Jet&, std::span<const double> theta, std::size_t lags,
+                      Estimator = Estimator::mle, bool estimated = true);
+TestStatistic absolute_sign_bias(Jet&, std::span<const double> theta,
+                                 Estimator = Estimator::mle, bool estimated = true);
+
 enum class AdequacyStatus { adequate, rejected, adequacy_unresolved };
 struct AdequacyCheck {
     std::string name;
@@ -106,8 +121,10 @@ struct Adequacy {
     double level = 0.01;
     std::string volatility_gum; // empty when inapplicable
 };
-// Required: residual Ljung-Box and corrected Li-Mak at min(10,n/5),
-// min(20,n/5), deduplicated; joint Engle-Ng; ARCH-LM for constant variance.
+// Required: residual Ljung-Box and corrected absolute Li-Mak at min(10,n/5),
+// min(20,n/5), deduplicated; corrected absolute sign/size bias.
+// The absolute ARCH-LM has the same lagged moments and limiting law as
+// absolute Li-Mak, so it is not added again for constant variance.
 // Holm applies only to required checks. In-sample Berkowitz/DGT are reported
 // with calibrated=false and never constrain adequacy.
 Adequacy adequacy(Jet&, std::span<const double> theta, double level = 0.01,

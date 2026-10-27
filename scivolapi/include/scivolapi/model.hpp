@@ -203,6 +203,11 @@ public:
     [[nodiscard]] Model gaussian_model() const;
     // Conventional dynamic-mean df adjustment for residual portmanteau tests.
     [[nodiscard]] std::size_t residual_degrees_of_freedom() const noexcept;
+    // A representational endpoint of an open scalar/stability bound is not
+    // an attained interior estimate. Ordinary information-based diagnostic
+    // laws are unavailable there, even if an optimizer reports convergence.
+    [[nodiscard]] bool at_open_bound(std::span<const double> theta) const;
+    [[nodiscard]] bool constant_variance() const noexcept;
     // E[(|z|-gamma*z)^power]; NaN if the moment does not exist or cannot be evaluated.
     [[nodiscard]] double innovation_power_moment(std::span<const double> theta, double gamma, double power) const;
 

@@ -309,6 +309,27 @@ std::vector<double> Model::closed_face_normals(std::span<const double> theta) co
     return normals;
 }
 
+bool Model::at_open_bound(std::span<const double> theta) const
+{
+    check_size(theta, dimension());
+    const Layout layout(spec_);
+    for (std::size_t j = 0; j < dimension(); ++j) {
+        if (!layout.scalar_entry[j]) continue;
+        const auto& chart = layout.scalar(j);
+        if ((!chart.closed_lower && theta[j] == chart.lower_bound()) || theta[j] == chart.upper_bound())
+            return true;
+    }
+    for (std::size_t b = 0; b < layout.stable_blocks; ++b)
+        if (layout.stable[b].count == 1 && std::abs(theta[layout.stable[b].at]) == detail::StableChart::bound())
+            return true;
+    return false;
+}
+
+bool Model::constant_variance() const noexcept
+{
+    return spec_.volatility == VolatilityKind::constant;
+}
+
 std::size_t Model::constraint_count() const noexcept
 {
     const Layout layout(spec_);
