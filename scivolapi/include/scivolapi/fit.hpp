@@ -45,6 +45,7 @@ enum class Inference {
     not_stationary,        // first-order conditions not met; the fit is uncertified
     at_boundary,           // a bound or constraint is active; Hessian SEs do not apply
     at_kink,               // nonsmooth estimate; ordinary Hessian SEs do not apply
+    at_open_bound,         // the likelihood rises toward an excluded bound; no maximum in the domain
     not_positive_definite, // the observed information is not positive definite
     ill_conditioned,       // positive definite, but too poorly conditioned to invert reliably
 };

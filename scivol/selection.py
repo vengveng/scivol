@@ -455,14 +455,16 @@ class _Reduction:
             roots = [self.nodes[k] for k in self.roots]
             diagnosed = [c for c in roots if c.certified]
             # Uncertified fits supply no diagnostic evidence. Every diagnosed
-            # root must reject, and a Holm rejection of the mean is essential.
+            # root must reject, each with a Holm rejection of the mean check.
             if not diagnosed or any(c.diagnostics.get("status") != "rejected" for c in diagnosed):
                 return
             triggers = [dict(root=c.key, test=t['name'], p_value=t['p_value'],
                              log_p_value=t['log_p_value'], status=t['status'])
                         for c in diagnosed for t in c.diagnostics['checks']
                         if t['name'].startswith('residual_ljung_box[') and t['holm_reject']]
-            if not triggers:
+            # Widen only when every diagnosed root fails the mean check: a root
+            # rejected for volatility or density alone is not cured by more lags.
+            if {t['root'] for t in triggers} != {c.key for c in diagnosed}:
                 return
             means = tuple(None if m is None else m.widen(self.procedure.max_mean_order)
                           for m in self.search.mean)

@@ -345,12 +345,13 @@ indefinite observed Hessian is not evidence of weak identification of $\delta$.
 A generalized inverse cannot give this excluded endpoint an interior MLE law.
 Genuine singular conditional information elsewhere remains explicit.
 
-When every diagnostically evaluated root rejects and at least one residual
-Ljung-Box check rejects after Holm, GETS asks each mean generator to `widen` its
+When every diagnostically evaluated root rejects, each with a residual
+Ljung-Box rejection after Holm, GETS asks each mean generator to `widen` its
 AR order by one. ARX preserves its intercept and exogenous columns; ARMA
 preserves its MA order. Uncertified roots supply no diagnostic evidence, and an
 adequate or unresolved evaluated root prevents widening. Volatility and density
-failures alone never trigger widening. Each wider root is refitted and counts
+failures alone never trigger widening, and neither does a mean failure in some
+roots while another root fails only its volatility or density checks. Each wider root is refitted and counts
 against `max_fits`. The new roots and all descendants share a new comparison
 sample; likelihoods from different conditioning spans are never compared.
 Native highest-AR-lag restrictions then reduce the wider model in the usual way.

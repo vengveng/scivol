@@ -156,6 +156,11 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
     }
     r.kkt_residual = stationarity.residual;
     r.stationary = r.kkt_residual <= r.kkt_tolerance;
+    // The optimizer's chart stops at the last representable value inside an
+    // open bound. A KKT point there is a supremum on the excluded boundary,
+    // not a maximum in the declared domain.
+    bool open_bound = false;
+    if constexpr (univariate) open_bound = model.at_open_bound(unit_theta);
 
     // Reported quantities, evaluated directly on the original data.
     r.theta.resize(d);
@@ -204,7 +209,11 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
         r.warnings.push_back("vanishing steps before KKT certification; a likelihood kink or numerical limit may prevent smooth certification");
     if (!r.stationary) r.warnings.push_back("first-order conditions are not met; the estimate is uncertified");
 
+    if (open_bound)
+        r.warnings.push_back("the likelihood increases toward an excluded open bound of the domain; no maximum exists in the domain");
+
     if (!r.stationary) r.inference = Inference::not_stationary;
+    else if (open_bound) r.inference = Inference::at_open_bound;
     else if (r.kink_point) r.inference = Inference::at_kink;
     else if (stationarity.binding) r.inference = Inference::at_boundary;
     else if (r.hessian.empty()) r.inference = Inference::not_positive_definite;
@@ -218,7 +227,7 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
         }
     } else {
         r.covariance.clear();
-        if (r.stationary) {
+        if (r.stationary && !open_bound) {
             r.warnings.push_back(r.inference == Inference::at_kink
                                      ? "the estimate is a likelihood kink point; ordinary Hessian standard errors are not reported"
                                      : r.inference == Inference::at_boundary
@@ -227,7 +236,8 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
         }
     }
 
-    r.success = r.estimate_available && r.feasible && r.termination == Termination::converged && r.stationary;
+    r.success = r.estimate_available && r.feasible && r.termination == Termination::converged && r.stationary
+                && !open_bound;
     return r;
 }
 

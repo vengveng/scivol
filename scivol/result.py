@@ -851,8 +851,8 @@ class EstimationResult:
             if message not in warnings_list:
                 warnings_list.append(message)
 
-        if not self.success:
-            add("Optimization did not converge")
+        if not self.success and not warnings_list:
+            add("The estimate is uncertified")
         
         if self.vol is not None:
             model, _, _ = self._native()

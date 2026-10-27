@@ -428,6 +428,7 @@ NB_MODULE(_scivolapi, m)
         .value("not_stationary", Inference::not_stationary)
         .value("at_boundary", Inference::at_boundary)
         .value("at_kink", Inference::at_kink)
+        .value("at_open_bound", Inference::at_open_bound)
         .value("not_positive_definite", Inference::not_positive_definite)
         .value("ill_conditioned", Inference::ill_conditioned);
 

@@ -2891,5 +2891,18 @@ def test_arx_egarch_dgp_has_a_reproducible_stationarity_certificate(seed):
         assert not fitted.fit_info.kink_point
 
 
+def test_aparch_supremum_at_excluded_asymmetry_bound_is_uncertified():
+    from scivol import APARCH, GJRGARCH, Normal
+
+    # Only negative shocks drive this GJR variance. APARCH's likelihood keeps
+    # rising toward the excluded asymmetry bound gamma = 1.
+    y = (GJRGARCH()+Normal()).simulate(4000, [.05, 0., .2, .85], seed=0).data
+    fitted = (APARCH(1, 1)+Normal()).fit(y)
+    assert fitted.params[2] == np.nextafter(1., 0.)
+    assert not fitted.success
+    assert fitted.fit_info.inference_status == 'at_open_bound'
+    assert any('excluded open bound' in w for w in fitted.warnings)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

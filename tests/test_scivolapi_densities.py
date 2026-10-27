@@ -348,7 +348,9 @@ def test_gaussian_tail_optimum_is_the_closed_eta_face(coordinates, iid, capsys):
     student = (GJRGARCH(1, 1) + StudentT()).fit(y, coordinates=coordinates)
     assert normal.success and student.success
     assert student.params[-1] == 0.0
-    assert student.fit_info.optimizer_phases[-1] == "theta:newton"
+    # On iid data the first automatic pass can end on the flat GARCH ridge at
+    # the excluded omega = 0 endpoint; the theta restart then ends at the face.
+    assert student.fit_info.optimizer_phases[-1].startswith("theta:newton")
     assert student.log_likelihood == pytest.approx(normal.log_likelihood, rel=0.0, abs=2e-10)
     assert student.dist_params.nu == np.inf
     student.summary()
