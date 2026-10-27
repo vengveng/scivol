@@ -137,11 +137,49 @@ their workspaces can be used by independent Python threads.
 
 The model capability `likelihood_can_have_gradient_kinks` tells optimizers whether
 moving residuals can cross a face with a nondifferentiable first derivative.
-The Newton stall rule applies only to such objectives; smooth constrained models
-retain their full refinement budget. Four consecutive vanishing steps at
-objective resolution before KKT passes produce `stalled`, with a warning rather
-than certification. A finite cusp can be an MLE even though a smooth KKT test
-cannot certify it. Pointwise jets still report derivatives as invalid at a kink.
+`residual_kink_decomposition` exposes those residual faces through the jet.
+`Model::residual_kink_order(theta, future_rows)` distinguishes finite EGARCH
+absolute-value kinks from non-Lipschitz power cusps and ignores unused lag terms.
+The theta-only `KINKS` request returns zero-based sample row indices, residual
+normals and curvatures, and the lifted derivatives for
+`F(theta) = G(theta, {|e_t(theta)|})`. These outputs are computed separately;
+ordinary smooth requests keep their existing observation loops.
+
+A residual is roundoff-active when
+`abs(e_t) <= 64 * eps * (abs(y_t) + sum abs(r_tj*b_j) + sum abs(ma_j*e_(t-j)))`.
+This bounds cancellation in the actual residual subtraction, in its own units.
+It is independent of solver accuracy and sample size. The branch calculations
+take the residual's limiting value zero; the reported likelihood always comes
+from the original parameter point. Ordinary pointwise derivatives are invalid
+at a genuine kink and are withheld when a requested decomposition identifies
+an unresolved residual sign.
+
+After vanishing steps or a failed smooth refinement, Newton proposes faces
+within `sqrt(eps)` on the same scale, retracts onto their equalities, and refines
+the original likelihood there. This identification radius never defines an
+active certificate or modifies the likelihood. With residual normals `a_t`,
+the finalizer minimizes the norm of
+`G_theta + sum mu_t*a_t + domain_normal`, subject to `-g_t <= mu_t <= g_t`,
+where `g_t = dG/d|e_t|`. The equality Newton system includes residual curvature
+in its Lagrangian Hessian. An out-of-interval multiplier releases the face.
+Negative `g_t` cannot certify a minimum. Genuine unresolved cases retain
+`stalled`; smooth constrained models retain their full refinement budget.
+This follows the active-manifold approach of
+[Lewis (2002)](https://people.orie.cornell.edu/aslewis/publications/03-active.pdf).
+
+Certified kink fits report `fit_info.kink_point`, `active_kink_rows`, and
+`inference_status="at_kink"`. Their ordinary gradient, Hessian and standard
+errors are withheld. APARCH with estimated `delta <= 1` and GED with estimated
+`nu <= 1` can reach residual cusps; their finite Clarke/manifold certificate is
+unsupported. Below one, the one-sided slopes diverge. At one, allowing the
+estimated power to vary below one still prevents local Lipschitz continuity.
+Neither case is replaced by a finite artificial slope.
+
+Restriction LR tests involving a kink-point fit return `unsupported`. A finite
+sample kink alone does not prove a nonstandard asymptotic LR law: a Wilks law
+can hold for nonsmooth likelihoods under additional local asymptotic normality
+conditions. Those conditions and a calibration for these joint recursive models
+are not established by the library's current information/cone calculation.
 
 The automatic z-first path gives its first theta refinement at most 100 steps.
 If the resulting estimate is uncertified, it restarts theta-space SLSQP and
