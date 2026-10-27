@@ -443,7 +443,7 @@ def test_adequacy_reuses_horizons_and_holm_required_family(rows, horizons):
     tests = api.selection_diagnostics(jet, theta, .01)
     checks = {c['name']: c for c in tests['checks']}
     point = jet.theta(theta, api.PATHS)
-    assert len(checks) == 2*len(horizons)+3
+    assert len(checks) == 2*len(horizons)+1
     for lag in horizons:
         for name, expected in [('residual_ljung_box', api.portmanteau(point['innovation'], lag)),
                                ('absolute_li_mak', api.absolute_li_mak(jet, theta, lag))]:
@@ -452,15 +452,14 @@ def test_adequacy_reuses_horizons_and_holm_required_family(rows, horizons):
             np.testing.assert_allclose(actual['statistic'], expected['statistic'], rtol=2e-10, equal_nan=True)
     def log_p(check):
         return check['log_p_value'] if check['status'] in ('ok', 'probability_underflow') else 0.
-    family = sorted((c for c in checks.values() if c['required']), key=log_p)
+    family = sorted(checks.values(), key=log_p)
     rejected = []
     for i, check in enumerate(family):
         if log_p(check) > np.log(.01/(len(family)-i)):
             break
         rejected.append(check['name'])
     assert {c['name'] for c in family if c['holm_reject']} == set(rejected)
-    assert all(not checks[name]['calibrated'] and not checks[name]['required']
-               for name in ['berkowitz', 'dgt'])
+    assert not {'berkowitz', 'dgt'} & checks.keys()
 
 
 @pytest.mark.parametrize('kind,theta,basis', [
@@ -503,7 +502,7 @@ def test_absolute_adequacy_needs_no_fourth_moment(eta):
     jet = api.Jet(model, sample, x)
     theta = np.ascontiguousarray(result.params)
     checks = api.selection_diagnostics(jet, theta)
-    required = [c for c in checks['checks'] if c['required']]
+    required = checks['checks']
     assert {c['name'] for c in required} == {
         'residual_ljung_box[10]', 'residual_ljung_box[20]',
         'absolute_li_mak[10]', 'absolute_li_mak[20]', 'absolute_sign_bias'}
@@ -520,9 +519,9 @@ def test_rejected_in_sample_pit_reference_never_blocks_adequacy():
     result = Search(density=[Normal()], closure=False).fit(y)
     assert result.status == 'selected'
     checks = {c['name']: c for c in result.candidates[0].diagnostics['checks']}
-    assert checks['dgt']['p_value'] < .0001
-    assert not checks['dgt']['required'] and not checks['dgt']['holm_reject']
-    assert all(not c['holm_reject'] for c in checks.values() if c['required'])
+    assert not {'berkowitz', 'dgt'} & checks.keys()
+    assert all(not c['holm_reject'] for c in checks.values())
+    assert result.selected.diagnostic_tests(print_results=False)['dgt']['p_value'] < .0001
 
 
 def test_adequacy_preserves_infeasible_parameter_reason():

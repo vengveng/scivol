@@ -75,15 +75,15 @@ def test_gets_reduces_native_graph_and_records_joint_tests(garch_data):
     assert not result.table().empty
 
 
-def test_in_sample_pits_are_reported_without_blocking_adequacy(garch_data):
+def test_adequacy_battery_holds_only_decisive_checks(garch_data):
     result = search(constant_variance=False).fit(garch_data)
     assert result.status == 'selected'
     for candidate in result.candidates:
         if not candidate.certified:
             continue
-        reported = [c for c in candidate.diagnostics['checks'] if c['name'] in ('berkowitz', 'dgt')]
-        assert len(reported) == 2
-        assert all(not c['required'] and not c['calibrated'] for c in reported)
+        names = {c['name'] for c in candidate.diagnostics['checks']}
+        assert names == {'residual_ljung_box[10]', 'residual_ljung_box[20]', 'absolute_li_mak[10]',
+                         'absolute_li_mak[20]', 'absolute_sign_bias'}
     assert not hasattr(result, 'limitations')
 
 
@@ -148,7 +148,7 @@ def test_constant_root_is_independent_and_encompassing_unavailable(garch_data):
     assert constant.model.constant_variance
     assert constant.encompassing['volatility_gum'] == 'unavailable'
     arch = next(c for c in constant.diagnostics['checks'] if c['name'] == 'absolute_li_mak[10]')
-    assert arch['status'] == 'ok' and arch['required'] and arch['holm_reject']
+    assert arch['status'] == 'ok' and arch['holm_reject']
     assert result.selected is None
 
 

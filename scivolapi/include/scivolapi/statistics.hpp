@@ -113,7 +113,7 @@ enum class AdequacyStatus { adequate, rejected, adequacy_unresolved };
 struct AdequacyCheck {
     std::string name;
     TestStatistic test;
-    bool required = true, calibrated = true, holm_reject = false;
+    bool holm_reject = false;
 };
 struct Adequacy {
     std::vector<AdequacyCheck> checks;
@@ -125,8 +125,8 @@ struct Adequacy {
 // min(20,n/5), deduplicated; corrected absolute sign/size bias.
 // The absolute ARCH-LM has the same lagged moments and limiting law as
 // absolute Li-Mak, so it is not added again for constant variance.
-// Holm applies only to required checks. In-sample Berkowitz/DGT are reported
-// with calibrated=false and never constrain adequacy.
+// Every check is decisive and Holm combines them all. Uncalibrated in-sample
+// PIT statistics (Berkowitz, DGT) belong to diagnostics(), not to adequacy.
 Adequacy adequacy(Jet&, std::span<const double> theta, double level = 0.01,
                   Estimator = Estimator::mle);
 

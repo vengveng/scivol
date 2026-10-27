@@ -322,6 +322,11 @@ struct DiagnosticEvaluation {
     std::vector<double> e, h, z, sensitivity, residual_sensitivity, score, information;
     std::size_t parameters = 0;
     TestStatus status = TestStatus::ok;
+    // Point constants of the absolute tests, filled once by the first of them.
+    bool absolute_ready = false;
+    TestStatus absolute_status = TestStatus::ok;
+    double absolute_moment = 0.0, mean_sign = 0.0;  // E|z|, E[sign z]
+    std::vector<double> inverse;                   // estimator bread, face conditioned
 };
 
 DiagnosticEvaluation evaluate_diagnostics(Jet& jet, std::span<const double> theta,
@@ -463,27 +468,29 @@ LiMak li_mak_evaluated(Jet& jet, std::span<const double> theta, std::size_t lags
 // has finite expectation under E z^2 and the stated regular score/path law.
 LiMak absolute_moments(Jet& jet, std::span<const double> theta, std::size_t columns,
                        bool sign, Estimator estimator, bool estimated,
-                       const DiagnosticEvaluation& evaluated)
+                       DiagnosticEvaluation& evaluated)
 {
     LiMak out;
     out.test.df = columns;
     if (evaluated.status != TestStatus::ok) { out.test.status = evaluated.status; return out; }
     const auto& model = jet.model();
     const std::size_t n = evaluated.z.size(), d = model.dimension(), p = evaluated.parameters;
-    const double mu = model.innovation_power_moment(theta, 0.0, 1.0), variance = 1.0 - mu * mu;
-    double below, above;
-    const auto law = model.innovation_density(theta);
-    if (!(variance > 0.0) || !std::isfinite(variance)
-        || detail::distribution(law.density, law.shape.data(), 0.0, below, above) != detail::ExpectationStatus::ok) {
-        out.test.status = TestStatus::numerical_range;
-        return out;
+    if (!evaluated.absolute_ready) {
+        evaluated.absolute_ready = true;
+        double below = 0.0, above = 0.0;
+        const auto law = model.innovation_density(theta);
+        evaluated.absolute_moment = model.innovation_power_moment(theta, 0.0, 1.0);
+        const double variance = 1.0 - evaluated.absolute_moment * evaluated.absolute_moment;
+        if (!(variance > 0.0) || !std::isfinite(variance)
+            || detail::distribution(law.density, law.shape.data(), 0.0, below, above) != detail::ExpectationStatus::ok)
+            evaluated.absolute_status = TestStatus::numerical_range;
+        else if (estimated)
+            evaluated.absolute_status = diagnostic_inverse(model, theta, evaluated, estimator, evaluated.inverse);
+        evaluated.mean_sign = above - below;
     }
-    const double mean_sign = above - below;
-    std::vector<double> inverse;
-    if (estimated) {
-        out.test.status = diagnostic_inverse(model, theta, evaluated, estimator, inverse);
-        if (out.test.status != TestStatus::ok) return out;
-    }
+    if (evaluated.absolute_status != TestStatus::ok) { out.test.status = evaluated.absolute_status; return out; }
+    const double mu = evaluated.absolute_moment, variance = 1.0 - mu * mu, mean_sign = evaluated.mean_sign;
+    const std::vector<double>& inverse = evaluated.inverse;
     std::vector<double> u(n), instruments(n * columns, 0.0), means(columns, 0.0);
     double absolute_mean = 0.0;
     for (double z : evaluated.z) absolute_mean += std::abs(z) / n;
@@ -501,17 +508,22 @@ LiMak absolute_moments(Jet& jet, std::span<const double> theta, std::size_t colu
         for (std::size_t t = first; t < n; ++t) instruments[t * columns + j] -= mean;
     }
     out.derivative.assign(columns * d, 0.0);
-    std::vector<double> moments(n * columns), projection(columns * p, 0.0);
-    for (std::size_t t = 0; t < n; ++t)
+    std::vector<double> moments(n * columns), projection(columns * p, 0.0), slope(d);
+    for (std::size_t t = 0; t < n; ++t) {
+        // d E[u_t | past] / d theta, common to every instrument of row t.
+        if (estimated) {
+            const double scale = mean_sign / std::sqrt(evaluated.h[t]);
+            for (std::size_t a = 0; a < d; ++a)
+                slope[a] = (scale * evaluated.residual_sensitivity[t * d + a] - 0.5 * mu * evaluated.sensitivity[t * d + a]) / n;
+        }
         for (std::size_t j = 0; j < columns; ++j) {
             const double r = instruments[t * columns + j];
             moments[t * columns + j] = u[t] * r;
             means[j] += moments[t * columns + j] / n;
             if (estimated)
-                for (std::size_t a = 0; a < d; ++a)
-                    out.derivative[j * d + a] += r * (mean_sign * evaluated.residual_sensitivity[t * d + a] / std::sqrt(evaluated.h[t])
-                        - 0.5 * mu * evaluated.sensitivity[t * d + a]) / n;
+                for (std::size_t a = 0; a < d; ++a) out.derivative[j * d + a] += r * slope[a];
         }
+    }
     if (estimated)
         for (std::size_t j = 0; j < columns; ++j)
             for (std::size_t a = 0; a < p; ++a)
@@ -582,13 +594,13 @@ LiMak li_mak(Jet& jet, std::span<const double> theta, std::size_t lags, Estimato
 LiMak absolute_li_mak(Jet& jet, std::span<const double> theta, std::size_t lags, Estimator estimator, bool estimated)
 {
     check_lags(jet.sample().scored(), lags);
-    const auto evaluated = evaluate_diagnostics(jet, theta, estimator, estimated, true);
+    auto evaluated = evaluate_diagnostics(jet, theta, estimator, estimated, true);
     return absolute_moments(jet, theta, lags, false, estimator, estimated, evaluated);
 }
 
 TestStatistic absolute_sign_bias(Jet& jet, std::span<const double> theta, Estimator estimator, bool estimated)
 {
-    const auto evaluated = evaluate_diagnostics(jet, theta, estimator, estimated, true);
+    auto evaluated = evaluate_diagnostics(jet, theta, estimator, estimated, true);
     if (evaluated.status != TestStatus::ok) { TestStatistic out; out.status = evaluated.status; return out; }
     if (evaluated.z.size() < 6) return {};
     return absolute_moments(jet, theta, 3, true, estimator, estimated, evaluated).test;
@@ -602,10 +614,8 @@ Adequacy adequacy(Jet& jet, std::span<const double> theta, double level, Estimat
     out.level = level;
     const bool constant_variance = jet.model().constant_variance();
     if (constant_variance) out.volatility_gum = "unavailable";
-    auto add = [&](std::string name, TestStatistic test, bool required = true) {
-        out.checks.push_back({std::move(name), test, required, required, false});
-    };
-    const auto evaluated = evaluate_diagnostics(jet, theta, estimator, true, true);
+    auto add = [&](std::string name, TestStatistic test) { out.checks.push_back({std::move(name), test, false}); };
+    auto evaluated = evaluate_diagnostics(jet, theta, estimator, true, true);
     const bool paths_valid = !evaluated.z.empty();
     Portmanteau residual;
     LiMak absolute;
@@ -632,29 +642,10 @@ Adequacy adequacy(Jet& jet, std::span<const double> theta, double level, Estimat
     }
     const auto sign = n >= 6 ? absolute_moments(jet, theta, 3, true, estimator, true, evaluated).test : TestStatistic{};
     add("absolute_sign_bias", sign);
-    TestStatistic berk, cell;
-    if (paths_valid) {
-        std::vector<double> pit(n);
-        const auto law = jet.model().innovation_density(theta);
-        bool valid = true, interior = true;
-        for (std::size_t t = 0; t < n; ++t) {
-            double upper;
-            valid = valid && detail::distribution(law.density, law.shape.data(), evaluated.z[t], pit[t], upper) == detail::ExpectationStatus::ok;
-            interior = interior && pit[t] > 0.0 && pit[t] < 1.0;
-        }
-        if (valid) {
-            cell = dgt(pit, 40);
-            if (interior && n >= 5) berk = berkowitz(pit).test;
-            else if (!interior) berk.status = TestStatus::pit_endpoint;
-        } else berk.status = cell.status = TestStatus::numerical_range;
-    } else berk.status = cell.status = evaluated.status;
-    add("berkowitz", berk, false);
-    add("dgt", cell, false);
     std::vector<std::size_t> family;
     bool unresolved = false, rejected = false;
     for (std::size_t i = 0; i < out.checks.size(); ++i) {
         const auto& check = out.checks[i];
-        if (!check.required) continue;
         family.push_back(i);
         unresolved = unresolved || (check.test.status != TestStatus::ok && check.test.status != TestStatus::probability_underflow);
     }

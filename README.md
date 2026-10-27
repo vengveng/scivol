@@ -111,10 +111,10 @@ memoizes fits. Terminals rank by free parameters, then BIC; set
 reduction, encompassing and diagnostics. `method="qmle"` raises because robust
 LR calibration is unavailable.
 
-Adequacy requires residual Ljung-Box, estimation-corrected Li-Mak and joint
-Engle-Ng checks, combined with Holm at the diagnostic level. Constant variance
-also requires an ARCH-LM auxiliary-regression check. In-sample Berkowitz and
-DGT are reported without constraining adequacy. See [MODELS.md](MODELS.md#automatic-selection)
+Adequacy requires residual Ljung-Box, estimation-corrected absolute-residual
+Li-Mak and absolute sign/size-bias checks, combined with Holm at the diagnostic
+level; their laws need only a finite innovation variance. In-sample Berkowitz
+and DGT appear in each result's diagnostics and never constrain adequacy. See [MODELS.md](MODELS.md#automatic-selection)
 for assumptions and current limits.
 
 `Auto().fit(y, x=None)` declares AR(1) with a selectable intercept crossed with

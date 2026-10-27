@@ -94,6 +94,12 @@ struct Restriction {
     [[nodiscard]] Restriction then(const Restriction& next) const;
     [[nodiscard]] std::optional<std::vector<double>> embed(std::span<const double> theta) const;
     [[nodiscard]] std::optional<std::vector<double>> map_start(std::span<const double> theta) const;
+    // A start for fitting the child: the projection, with the intercept scaled
+    // by (1 - P_child) / (1 - P_parent) for the models' persistence P, which
+    // keeps the unconditional level omega / (1 - P) of the variance state
+    // (variance, E sigma^delta, or E log h). Removing a lag otherwise leaves an
+    // intercept sized for the parent's persistence.
+    [[nodiscard]] std::optional<std::vector<double>> warm_start(std::span<const double> theta) const;
     [[nodiscard]] bool on_face(std::span<const double> theta) const;
     [[nodiscard]] bool identified(std::span<const double> child_theta) const;
 };

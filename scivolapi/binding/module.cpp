@@ -724,6 +724,10 @@ NB_MODULE(_scivolapi, m)
             auto result = r.map_start(view(t));
             return result ? owned_vector(std::move(*result)) : nb::none();
         })
+        .def("warm_start", [](const Restriction& r, const Vector& t) -> nb::object {
+            auto result = r.warm_start(view(t));
+            return result ? owned_vector(std::move(*result)) : nb::none();
+        })
         .def("on_face", [](const Restriction& r, const Vector& t) { return r.on_face(view(t)); })
         .def("identified", [](const Restriction& r, const Vector& t) { return r.identified(view(t)); });
     model_binding.def_prop_ro("key", [](const Model& m) {
@@ -897,8 +901,6 @@ NB_MODULE(_scivolapi, m)
         for (const auto& check : tests.checks) {
             nb::dict record = test_dictionary(check.test, tests.level);
             record["name"] = check.name;
-            record["required"] = check.required;
-            record["calibrated"] = check.calibrated;
             record["holm_reject"] = check.holm_reject;
             checks.append(record);
         }

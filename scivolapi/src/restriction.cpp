@@ -242,6 +242,19 @@ std::optional<std::vector<double>> Restriction::map_start(std::span<const double
     return out;
 }
 
+std::optional<std::vector<double>> Restriction::warm_start(std::span<const double> theta) const
+{
+    auto start = map_start(theta);
+    if (!start) return start;
+    const Model p(parent), c(child);
+    const double from = p.persistence(theta), to = c.persistence(*start);
+    if (!(from < 1.0) || !(to < 1.0) || from == to) return start;
+    std::vector<double> scaled = *start;
+    scaled[Layout(child).omega] *= (1.0 - to) / (1.0 - from);
+    if (!c.feasible(scaled)) return start;
+    return scaled;
+}
+
 bool Restriction::on_face(std::span<const double> theta) const
 {
     const std::size_t d = Model(parent).dimension();

@@ -286,9 +286,9 @@ and `absolute_sign_bias`, the joint sign/size-bias test on absolute standardized
 residuals. These absolute tests always apply, independently of the fitted
 innovation shape. Holm combines the five checks at `diagnostic_level`. A known
 Holm rejection establishes inadequacy even if another check is unavailable;
-unavailable required checks otherwise leave adequacy unresolved. Berkowitz and
-DGT on fitted in-sample PITs are reported with `calibrated=False` and do not
-constrain adequacy.
+unavailable checks otherwise leave adequacy unresolved. Berkowitz and DGT on
+fitted in-sample PITs have no calibrated reference: they are part of each
+estimation result's diagnostics, not of the adequacy battery.
 
 For the absolute tests, let $\mu=E|z|$, $u_t=|z_t|-\mu$,
 $s=E[\operatorname{sign}(z)]$, $a_t=(\partial e_t/\partial\theta)/\sqrt{h_t}$

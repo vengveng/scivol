@@ -528,7 +528,7 @@ class _Reduction:
                     self.counts["free_children"] += 1
                     self._diagnose(node, diagnostics)
                     continue
-                start = restriction.map_start(np.array(source.fit.theta))
+                start = restriction.warm_start(np.array(source.fit.theta))
             reserve = max(self.deployment_reserve, int(node.model.spec.mean.conditioning != self.first))
             if self.counts["optimizer_invocations"] + 1 + reserve > self.procedure.max_fits:
                 self.frontier.add(key)
@@ -560,17 +560,18 @@ class _Reduction:
         return None
 
     def _complete_fits(self, jobs, diagnostics):
-        for node, output, elapsed, failure in self.pool.map(self._fit_one, jobs):
-            node.fit, node.elapsed, node.failure_reason = output, elapsed, failure
-            self._diagnose(node, diagnostics)
+        # Each worker fits and diagnoses its own node; native calls release the GIL.
+        list(self.pool.map(lambda job: self._fit_one(job, diagnostics), jobs))
 
-    def _fit_one(self, job):
+    def _fit_one(self, job, diagnostics):
         node, options = job
         started = time.perf_counter()
         try:
-            return node, api.fit(node.model, self.plan, options), time.perf_counter()-started, None
+            node.fit, node.failure_reason = api.fit(node.model, self.plan, options), None
         except (ValueError, RuntimeError) as exc:
-            return node, None, time.perf_counter()-started, str(exc)
+            node.fit, node.failure_reason = None, str(exc)
+        node.elapsed = time.perf_counter()-started
+        self._diagnose(node, diagnostics)
 
     def _diagnose(self, node, required):
         if not node.certified:
