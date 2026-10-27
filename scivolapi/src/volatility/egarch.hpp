@@ -49,23 +49,24 @@ namespace scivolapi::detail {
 //   S_t[a,b] += phi (F_ab - (E_a D_b + E_b D_a) / 2),
 //   S_t[alpha_i, a] += sign(z) u E_a,  S_t[gamma_i, a] += u E_a.
 // At e = 0 with alpha_i != 0, |z| has a kink in the mean entries: no derivatives.
-template<class Density, bool Coupled = false, bool Branches = false>
+template<class Density, bool Coupled = false, bool Branches = false, std::size_t P = std::dynamic_extent,
+         std::size_t Q = std::dynamic_extent, std::size_t M = std::dynamic_extent>
 class EgarchVolatility {
 public:
     static constexpr std::size_t shapes = Density::shapes;
 
     explicit EgarchVolatility(const ModelSpec& spec, std::size_t mean = 0) noexcept
-        : p_(spec.p), q_(spec.q), m_(Coupled ? mean : 0), beta_(1u + 2u * spec.p), shape_(1u + 2u * spec.p + spec.q)
+        : p_(spec.p), q_(spec.q), m_(Coupled ? mean : 0)
     {
     }
 
-    [[nodiscard]] std::size_t own() const noexcept { return shape_ + shapes; }
-    [[nodiscard]] std::size_t width() const noexcept { return own() + m_; }
-    [[nodiscard]] std::size_t ring_slots() const noexcept { return std::max({p_, q_, std::size_t{1}}); }
+    [[nodiscard]] std::size_t own() const noexcept { return shape_begin() + shapes; }
+    [[nodiscard]] std::size_t width() const noexcept { return own() + mean(); }
+    [[nodiscard]] std::size_t ring_slots() const noexcept { return std::max({p(), q(), std::size_t{1}}); }
 
     [[nodiscard]] bool evaluable(const double* theta) const noexcept
     {
-        for (std::size_t k = 0; k < shape_; ++k)
+        for (std::size_t k = 0; k < shape_begin(); ++k)
             if (!std::isfinite(theta[k])) return false;
         return true;
     }
@@ -73,7 +74,7 @@ public:
     // m = E|z| and its shape derivatives at this point.
     [[nodiscard]] bool prepare(const double* theta, int order) noexcept
     {
-        return absolute_moment<Density>(shapes ? theta + shape_ : nullptr, order, moment_) && std::isfinite(moment_.v);
+        return absolute_moment<Density>(shapes ? theta + shape_begin() : nullptr, order, moment_) && std::isfinite(moment_.v);
     }
 
     [[nodiscard]] bool step(const double* theta, const Sample& sample, std::size_t t, int order,
@@ -85,12 +86,12 @@ public:
         double value = log_seed;
         if (t > 0) {
             value = theta[0];
-            for (std::size_t i = 1, n = std::min(p_, t); i <= n; ++i) {
+            for (std::size_t i = 1, n = std::min(p(), t); i <= n; ++i) {
                 const double z = shock(w, t - i);
-                value += theta[i] * (std::abs(z) - moment_.v) + theta[p_ + i] * z;
+                value += theta[i] * (std::abs(z) - moment_.v) + theta[p() + i] * z;
             }
-            for (std::size_t j = 1, n = std::min(q_, t); j <= n; ++j) value += theta[beta_ + j - 1] * x[t - j];
-            for (std::size_t j = t + 1; j <= q_; ++j) value += theta[beta_ + j - 1] * log_seed;
+            for (std::size_t j = 1, n = std::min(q(), t); j <= n; ++j) value += theta[beta_begin() + j - 1] * x[t - j];
+            for (std::size_t j = t + 1; j <= q(); ++j) value += theta[beta_begin() + j - 1] * log_seed;
         }
         const double h = std::exp(value);
         if (!std::isfinite(value) || !(h > 0.0) || !std::isfinite(h)) return false;
@@ -104,12 +105,12 @@ public:
         std::fill_n(d, width, 0.0);
         if (t > 0) {
             d[0] = 1.0;
-            for (std::size_t i = 1, n = std::min(p_, t); i <= n; ++i) {
+            for (std::size_t i = 1, n = std::min(p(), t); i <= n; ++i) {
                 const double z = shock(w, t - i), az = std::abs(z);
                 d[i] += az - moment_.v;  // += : earlier lags have already fed back into these entries
-                d[p_ + i] += z;
-                for (std::size_t k = 0; k < shapes; ++k) d[shape_ + k] -= theta[i] * moment_.g[k];
-                const double c = -0.5 * (theta[i] * az + theta[p_ + i] * z);
+                d[p() + i] += z;
+                for (std::size_t k = 0; k < shapes; ++k) d[shape_begin() + k] -= theta[i] * moment_.g[k];
+                const double c = -0.5 * (theta[i] * az + theta[p() + i] * z);
                 const double* previous = w.first_ring + ((t - i) % slots) * width;
                 for (std::size_t a = 0; a < width; ++a) d[a] += c * previous[a];
                 if constexpr (Coupled) {
@@ -120,27 +121,27 @@ public:
                         } else out.defined = 0;
                     }
                     const double phi = response(theta, w, k, i);
-                    const double* de = w.de + (k % w.mean_slots) * m_;
-                    for (std::size_t a = 0; a < m_; ++a) d[own() + a] += phi * de[a];
+                    const double* de = w.de + (k % w.mean_slots) * mean();
+                    for (std::size_t a = 0; a < mean(); ++a) d[own() + a] += phi * de[a];
                 }
             }
-            for (std::size_t j = 1, n = std::min(q_, t); j <= n; ++j) {
-                d[beta_ + j - 1] += x[t - j];
-                const double beta = theta[beta_ + j - 1];
+            for (std::size_t j = 1, n = std::min(q(), t); j <= n; ++j) {
+                d[beta_begin() + j - 1] += x[t - j];
+                const double beta = theta[beta_begin() + j - 1];
                 const double* previous = w.first_ring + ((t - j) % slots) * width;
                 for (std::size_t a = 0; a < width; ++a) d[a] += beta * previous[a];
             }
-            for (std::size_t j = t + 1; j <= q_; ++j) d[beta_ + j - 1] += log_seed;
+            for (std::size_t j = t + 1; j <= q(); ++j) d[beta_begin() + j - 1] += log_seed;
         }
         std::copy_n(d, width, w.l1);
 
         if (order >= 2) {
             double* s = w.s;
             std::fill_n(s, pw, 0.0);
-            for (std::size_t i = 1, n = std::min(p_, t); i <= n; ++i) {
+            for (std::size_t i = 1, n = std::min(p(), t); i <= n; ++i) {
                 const std::size_t slot = (t - i) % slots;
                 const double z = shock(w, t - i), az = std::abs(z);
-                const double alpha = theta[i], gamma = theta[p_ + i];
+                const double alpha = theta[i], gamma = theta[p() + i];
                 const double c = -0.5 * (alpha * az + gamma * z), quarter = 0.25 * (alpha * az + gamma * z);
                 const double* dp = w.first_ring + slot * width;
                 const double* sp = w.second_ring + slot * pw;
@@ -148,21 +149,21 @@ public:
                     for (std::size_t b = a; b < width; ++b)
                         s[packed(width, a, b)] += c * sp[packed(width, a, b)] + quarter * dp[a] * dp[b];
                 add_cross(s, width, i, dp, -0.5 * az);       // alpha_i row
-                add_cross(s, width, p_ + i, dp, -0.5 * z);  // gamma_i row
+                add_cross(s, width, p() + i, dp, -0.5 * z);  // gamma_i row
                 for (std::size_t k = 0; k < shapes; ++k) {
-                    const std::size_t sk = shape_ + k;
+                    const std::size_t sk = shape_begin() + k;
                     s[packed(width, i, sk)] -= moment_.g[k];
-                    for (std::size_t l = k; l < shapes; ++l) s[packed(width, sk, shape_ + l)] -= alpha * moment_.h[packed(shapes, k, l)];
+                    for (std::size_t l = k; l < shapes; ++l) s[packed(width, sk, shape_begin() + l)] -= alpha * moment_.h[packed(shapes, k, l)];
                 }
                 if constexpr (Coupled) couple(theta, w, t - i, i, dp, s);
             }
-            for (std::size_t j = 1, n = std::min(q_, t); j <= n; ++j) {
+            for (std::size_t j = 1, n = std::min(q(), t); j <= n; ++j) {
                 const std::size_t slot = (t - j) % slots;
-                const double beta = theta[beta_ + j - 1];
+                const double beta = theta[beta_begin() + j - 1];
                 const double* dp = w.first_ring + slot * width;
                 const double* sp = w.second_ring + slot * pw;
                 for (std::size_t k = 0; k < pw; ++k) s[k] += beta * sp[k];
-                add_cross(s, width, beta_ + j - 1, dp, 1.0);
+                add_cross(s, width, beta_begin() + j - 1, dp, 1.0);
             }
             std::copy_n(s, pw, w.l2);
             std::copy_n(s, pw, w.second_ring + (t % slots) * pw);
@@ -181,7 +182,7 @@ private:
     double response(const double* theta, const VolatilityWork& w, std::size_t k, std::size_t i) const noexcept
     {
         const double sign = absolute_sign(w, k);
-        return (theta[i] * sign + theta[p_ + i]) * std::exp(-0.5 * w.state[k]);
+        return (theta[i] * sign + theta[p() + i]) * std::exp(-0.5 * w.state[k]);
     }
 
     // Second-order terms of lag i (observation k, sensitivities dp) that involve E or F.
@@ -190,15 +191,15 @@ private:
     {
         const std::size_t width = this->width(), o = own(), slot = k % w.mean_slots;
         const double u = std::exp(-0.5 * w.state[k]), sign = absolute_sign(w, k);
-        const double phi = (theta[i] * sign + theta[p_ + i]) * u;
-        const double* de = w.de + slot * m_;
-        const double* dde = w.dde ? w.dde + slot * packed_size(m_) : nullptr;
-        for (std::size_t a = 0; a < m_; ++a) {
+        const double phi = (theta[i] * sign + theta[p() + i]) * u;
+        const double* de = w.de + slot * mean();
+        const double* dde = w.dde ? w.dde + slot * packed_size(mean()) : nullptr;
+        for (std::size_t a = 0; a < mean(); ++a) {
             add_cross(s, width, o + a, dp, -0.5 * phi * de[a]);
             if (dde)
-                for (std::size_t b = a; b < m_; ++b) s[packed(width, o + a, o + b)] += phi * dde[packed(m_, a, b)];
+                for (std::size_t b = a; b < mean(); ++b) s[packed(width, o + a, o + b)] += phi * dde[packed(mean(), a, b)];
             s[packed(width, i, o + a)] += sign * u * de[a];
-            s[packed(width, p_ + i, o + a)] += u * de[a];
+            s[packed(width, p() + i, o + a)] += u * de[a];
         }
     }
 
@@ -216,7 +217,13 @@ private:
         s[packed(width, r, r)] += f * d[r];
     }
 
-    std::size_t p_, q_, m_, beta_, shape_;
+    [[nodiscard]] std::size_t p() const noexcept { return P == std::dynamic_extent ? p_ : P; }
+    [[nodiscard]] std::size_t q() const noexcept { return Q == std::dynamic_extent ? q_ : Q; }
+    [[nodiscard]] std::size_t mean() const noexcept { return !Coupled ? 0u : M == std::dynamic_extent ? m_ : M; }
+    [[nodiscard]] std::size_t beta_begin() const noexcept { return 1u + 2u * p(); }
+    [[nodiscard]] std::size_t shape_begin() const noexcept { return beta_begin() + q(); }
+
+    std::size_t p_, q_, m_;
     Dual2<shapes> moment_{};
 };
 

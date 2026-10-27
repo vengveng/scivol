@@ -28,6 +28,9 @@ void identical(const double* a, const double* b, std::size_t n)
     for (std::size_t i = 0; i < n; ++i) identical(a[i], b[i]);
 }
 
+void check(const Model& model, const Sample& sample, const std::vector<double>& theta, Assembler runtime,
+           Assembler fixed, std::size_t n);
+
 template<class Density, bool Leverage, bool Coupled, std::size_t Q = 1>
 void compare(DensityKind density, std::size_t n, bool boundary)
 {
@@ -48,9 +51,8 @@ void compare(DensityKind density, std::size_t n, bool boundary)
     if constexpr (Coupled) { y[0] = 0.0; y[1] = 0.03; }
     const Sample sample = model.prepare(y);
     const Layout layout(spec);
-    const VolatilityShape shape = volatility_shape(spec);
     auto theta = model.start(sample);
-    const std::size_t m = layout.mean, d = layout.dimension, rows = sample.scored();
+    const std::size_t m = layout.mean;
     if constexpr (Coupled) { theta[0] = 0.03; theta[1] = 0.1; theta[2] = -0.2; }
     theta[m] = boundary ? 1e-12 : 0.08;
     theta[m + 1] = boundary ? 0.0 : 0.1;
@@ -67,13 +69,26 @@ void compare(DensityKind density, std::size_t n, bool boundary)
     using RuntimeVol = GarchVolatility<Leverage, Coupled>;
     using FixedVol = std::conditional_t<Coupled, GarchVolatility<Leverage, true, 1, Q, 3>,
                                        GarchVolatility<Leverage, false, 1, Q>>;
-    const Assembler runtime = assemble_requested<RuntimeMean, RuntimeVol, Density>;
-    const Assembler fixed = assemble_requested<FixedMean, FixedVol, Density>;
+    check(model, sample, theta, assemble_requested<RuntimeMean, RuntimeVol, Density>,
+          assemble_requested<FixedMean, FixedVol, Density>, n);
+}
+
+// The fixed-width assembler that dispatch selects must reproduce the runtime
+// assembler bit for bit, for every order and output combination, and the jet
+// must agree with it on full and partial requests.
+void check(const Model& model, const Sample& sample, const std::vector<double>& theta, Assembler runtime,
+           Assembler fixed, std::size_t n)
+{
+    const ModelSpec& spec = model.spec();
+    const Layout layout(spec);
+    const VolatilityShape shape = volatility_shape(spec);
+    const std::size_t d = layout.dimension, rows = sample.scored();
+    const bool coupled = spec.mean.width() > 0;
     assert(assembler_for(spec) == fixed);
 
     std::vector<double> storage_a(work_size(layout, shape, rows), 13.0), storage_b(storage_a);
     Work a = carve(storage_a.data(), layout, shape, rows), b = carve(storage_b.data(), layout, shape, rows);
-    if constexpr (!Coupled)
+    if (!coupled)
         for (std::size_t t = 0; t < rows; ++t) {
             a.e[t] = b.e[t] = sample.y[sample.first_scored + t];
             a.e2[t] = b.e2[t] = a.e[t] * a.e[t];
@@ -143,16 +158,67 @@ void compare(DensityKind density, std::size_t n, bool boundary)
         }
 }
 
+// (1,1) recursions of every kind with no mean or a linear mean of K
+// regressors, from the model's own start with nonzero mean coefficients.
+template<class Density, std::size_t K>
+void compare_linear(DensityKind density, VolatilityKind kind, std::size_t n)
+{
+    ModelSpec spec;
+    spec.density = density;
+    spec.volatility = kind;
+    spec.mean.constant = K >= 1;
+    spec.mean.ar = K >= 2 ? 1 : 0;
+    const Model model(spec);
+    std::mt19937_64 rng(29);
+    std::normal_distribution<double> normal;
+    std::vector<double> y(n + spec.mean.conditioning());
+    for (double& v : y) v = normal(rng);
+    const Sample sample = model.prepare(y);
+    auto theta = model.start(sample);
+    if constexpr (K >= 1) theta[0] = 0.03;
+    if constexpr (K >= 2) theta[1] = -0.15;
+    using RuntimeMean = std::conditional_t<(K > 0), ArmaxMean<>, NoMean>;
+    using FixedMean = std::conditional_t<(K > 0), ArmaxMean<K, 0>, NoMean>;
+    constexpr bool coupled = K > 0;
+    constexpr std::size_t M = coupled ? K : std::dynamic_extent;  // the width dispatch names
+    switch (kind) {
+    case VolatilityKind::garch:
+        check(model, sample, theta, assemble_requested<RuntimeMean, GarchVolatility<false, coupled>, Density>,
+              assemble_requested<FixedMean, GarchVolatility<false, coupled, 1, 1, M>, Density>, n);
+        break;
+    case VolatilityKind::gjr:
+        check(model, sample, theta, assemble_requested<RuntimeMean, GarchVolatility<true, coupled>, Density>,
+              assemble_requested<FixedMean, GarchVolatility<true, coupled, 1, 1, M>, Density>, n);
+        break;
+    case VolatilityKind::egarch:
+        check(model, sample, theta, assemble_requested<RuntimeMean, EgarchVolatility<Density, coupled>, Density>,
+              assemble_requested<FixedMean, EgarchVolatility<Density, coupled, false, 1, 1, M>, Density>, n);
+        break;
+    case VolatilityKind::aparch:
+        check(model, sample, theta, assemble_requested<RuntimeMean, AparchVolatility<coupled>, Density>,
+              assemble_requested<FixedMean, AparchVolatility<coupled, 1, 1, M>, Density>, n);
+        break;
+    default: assert(false);
+    }
+}
+
 template<class Density>
 void compare_density(DensityKind density)
 {
-    for (std::size_t n : {2u, 9u, 20000u})
+    for (std::size_t n : {2u, 9u, 20000u}) {
         for (bool boundary : {false, true}) {
             compare<Density, false, false>(density, n, boundary);
             compare<Density, true, false>(density, n, boundary);
             compare<Density, false, true>(density, n, boundary);
             compare<Density, true, true>(density, n, boundary);
         }
+        for (auto kind : {VolatilityKind::garch, VolatilityKind::gjr, VolatilityKind::egarch, VolatilityKind::aparch}) {
+            if (kind == VolatilityKind::egarch || kind == VolatilityKind::aparch)
+                compare_linear<Density, 0>(density, kind, n);
+            compare_linear<Density, 1>(density, kind, n);
+            compare_linear<Density, 2>(density, kind, n);
+        }
+    }
 }
 
 }  // namespace

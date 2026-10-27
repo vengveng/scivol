@@ -38,27 +38,28 @@ namespace scivolapi::detail {
 //   du[alpha_i, a] = P_e E_a,  du[gamma_i, a] = alpha_i P_e,gamma E_a,  du[delta, a] = alpha_i P_e,delta E_a.
 // At e = 0 the first derivatives exist (and vanish) only for delta > 1; the second
 // for delta > 2 (zero) or delta = 2 with gamma = 0 (P = e^2).
-template<bool Coupled = false>
+template<bool Coupled = false, std::size_t P = std::dynamic_extent, std::size_t Q = std::dynamic_extent,
+         std::size_t M = std::dynamic_extent>
 class AparchVolatility {
 public:
     explicit AparchVolatility(const ModelSpec& spec, std::size_t mean = 0) noexcept
-        : p_(spec.p), q_(spec.q), m_(Coupled ? mean : 0), beta_(1u + 2u * spec.p), delta_(1u + 2u * spec.p + spec.q)
+        : p_(spec.p), q_(spec.q), m_(Coupled ? mean : 0)
     {
     }
 
-    [[nodiscard]] std::size_t own() const noexcept { return delta_ + 1u; }
-    [[nodiscard]] std::size_t width() const noexcept { return own() + m_; }
-    [[nodiscard]] std::size_t ring_slots() const noexcept { return std::max<std::size_t>(q_, 1u); }
+    [[nodiscard]] std::size_t own() const noexcept { return delta_index() + 1u; }
+    [[nodiscard]] std::size_t width() const noexcept { return own() + mean(); }
+    [[nodiscard]] std::size_t ring_slots() const noexcept { return std::max<std::size_t>(q(), 1u); }
 
     [[nodiscard]] bool evaluable(const double* theta) const noexcept
     {
         for (std::size_t k = 0; k < own(); ++k)
             if (!std::isfinite(theta[k])) return false;
-        if (!(theta[0] > 0.0) || !(theta[delta_] > 0.0)) return false;
-        for (std::size_t i = 1; i <= p_; ++i)
-            if (!(theta[i] >= 0.0) || !(std::abs(theta[p_ + i]) < 1.0)) return false;
-        for (std::size_t j = 0; j < q_; ++j)
-            if (!(theta[beta_ + j] >= 0.0)) return false;
+        if (!(theta[0] > 0.0) || !(theta[delta_index()] > 0.0)) return false;
+        for (std::size_t i = 1; i <= p(); ++i)
+            if (!(theta[i] >= 0.0) || !(std::abs(theta[p() + i]) < 1.0)) return false;
+        for (std::size_t j = 0; j < q(); ++j)
+            if (!(theta[beta_begin() + j] >= 0.0)) return false;
         return true;
     }
 
@@ -68,14 +69,14 @@ public:
                             VolatilityWork& w, VolatilityStep& out) const noexcept
     {
         const std::size_t width = this->width(), pw = packed_size(width), slots = ring_slots();
-        const double delta = theta[delta_];
+        const double delta = theta[delta_index()];
         double* s = w.state;  // the sigma^delta path
         const double log_seed = std::log(sample.variance_seed);
         double value = std::exp(0.5 * delta * log_seed);
         if (t > 0) {
             value = theta[0];
-            for (std::size_t i = 1, n = std::min(p_, t); i <= n; ++i) value += theta[i] * power(w.e[t - i], theta[p_ + i], delta).p;
-            for (std::size_t j = 1, n = std::min(q_, t); j <= n; ++j) value += theta[beta_ + j - 1] * s[t - j];
+            for (std::size_t i = 1, n = std::min(p(), t); i <= n; ++i) value += theta[i] * power(w.e[t - i], theta[p() + i], delta).p;
+            for (std::size_t j = 1, n = std::min(q(), t); j <= n; ++j) value += theta[beta_begin() + j - 1] * s[t - j];
         }
         if (!(value > 0.0) || !std::isfinite(value)) return false;
         const double log_s = std::log(value);
@@ -91,51 +92,51 @@ public:
         double* d = w.d;
         std::fill_n(d, width, 0.0);
         if (t == 0) {
-            d[delta_] = 0.5 * value * log_seed;
+            d[delta_index()] = 0.5 * value * log_seed;
         } else {
             d[0] = 1.0;
-            for (std::size_t i = 1, n = std::min(p_, t); i <= n; ++i) {
-                const Power pw_ = power(w.e[t - i], theta[p_ + i], delta);
+            for (std::size_t i = 1, n = std::min(p(), t); i <= n; ++i) {
+                const Power pw_ = power(w.e[t - i], theta[p() + i], delta);
                 d[i] += pw_.p;
-                d[p_ + i] += theta[i] * pw_.g;
-                d[delta_] += theta[i] * pw_.d;
+                d[p() + i] += theta[i] * pw_.g;
+                d[delta_index()] += theta[i] * pw_.d;
                 if constexpr (Coupled) {
                     const std::size_t k = t - i;
-                    const Slope sl = slope(w.e[k], theta[p_ + i], delta);
+                    const Slope sl = slope(w.e[k], theta[p() + i], delta);
                     out.defined = std::min(out.defined, sl.defined);
-                    const double* de = w.de + (k % w.mean_slots) * m_;
-                    for (std::size_t a = 0; a < m_; ++a) d[own() + a] += theta[i] * sl.e * de[a];
+                    const double* de = w.de + (k % w.mean_slots) * mean();
+                    for (std::size_t a = 0; a < mean(); ++a) d[own() + a] += theta[i] * sl.e * de[a];
                 }
             }
-            for (std::size_t j = 1, n = std::min(q_, t); j <= n; ++j) {
-                d[beta_ + j - 1] += s[t - j];
-                const double beta = theta[beta_ + j - 1];
+            for (std::size_t j = 1, n = std::min(q(), t); j <= n; ++j) {
+                d[beta_begin() + j - 1] += s[t - j];
+                const double beta = theta[beta_begin() + j - 1];
                 const double* previous = w.first_ring + ((t - j) % slots) * width;
                 for (std::size_t a = 0; a < width; ++a) d[a] += beta * previous[a];
             }
         }
         const double inv = 1.0 / value, two_over = 2.0 / delta;
         for (std::size_t a = 0; a < width; ++a) w.l1[a] = two_over * d[a] * inv;
-        w.l1[delta_] -= two_over / delta * log_s;
+        w.l1[delta_index()] -= two_over / delta * log_s;
 
         if (order >= 2) {
             double* sec = w.s;
             std::fill_n(sec, pw, 0.0);
             if (t == 0) {
-                sec[packed(width, delta_, delta_)] = 0.25 * value * log_seed * log_seed;
+                sec[packed(width, delta_index(), delta_index())] = 0.25 * value * log_seed * log_seed;
             } else {
-                for (std::size_t i = 1, n = std::min(p_, t); i <= n; ++i) {
-                    const Power pw_ = power(w.e[t - i], theta[p_ + i], delta);
-                    const std::size_t g = p_ + i;
+                for (std::size_t i = 1, n = std::min(p(), t); i <= n; ++i) {
+                    const Power pw_ = power(w.e[t - i], theta[p() + i], delta);
+                    const std::size_t g = p() + i;
                     sec[packed(width, i, g)] += pw_.g;
-                    sec[packed(width, i, delta_)] += pw_.d;
+                    sec[packed(width, i, delta_index())] += pw_.d;
                     sec[packed(width, g, g)] += theta[i] * pw_.gg;
-                    sec[packed(width, g, delta_)] += theta[i] * pw_.gd;
-                    sec[packed(width, delta_, delta_)] += theta[i] * pw_.dd;
+                    sec[packed(width, g, delta_index())] += theta[i] * pw_.gd;
+                    sec[packed(width, delta_index(), delta_index())] += theta[i] * pw_.dd;
                     if constexpr (Coupled) couple(theta, w, t - i, i, delta, sec);
                 }
-                for (std::size_t j = 1, n = std::min(q_, t); j <= n; ++j) {
-                    const std::size_t slot = (t - j) % slots, b = beta_ + j - 1;
+                for (std::size_t j = 1, n = std::min(q(), t); j <= n; ++j) {
+                    const std::size_t slot = (t - j) % slots, b = beta_begin() + j - 1;
                     const double beta = theta[b];
                     const double* dp = w.first_ring + slot * width;
                     const double* sp = w.second_ring + slot * pw;
@@ -147,9 +148,9 @@ public:
             for (std::size_t a = 0; a < width; ++a)
                 for (std::size_t b = a; b < width; ++b) {
                     double l2 = two_over * (sec[packed(width, a, b)] * inv - d[a] * d[b] * inv * inv);
-                    if (b == delta_) l2 -= two_over / delta * d[a] * inv;
-                    if (a == delta_) l2 -= two_over / delta * d[b] * inv;  // the mean entries follow delta
-                    if (a == delta_ && b == delta_) l2 += 2.0 * two_over / (delta * delta) * log_s;
+                    if (b == delta_index()) l2 -= two_over / delta * d[a] * inv;
+                    if (a == delta_index()) l2 -= two_over / delta * d[b] * inv;  // the mean entries follow delta
+                    if (a == delta_index() && b == delta_index()) l2 += 2.0 * two_over / (delta * delta) * log_s;
                     w.l2[packed(width, a, b)] = l2;
                 }
             std::copy_n(sec, pw, w.second_ring + (t % slots) * pw);
@@ -191,17 +192,17 @@ private:
                 double* sec) const noexcept
     {
         const std::size_t width = this->width(), o = own(), slot = k % w.mean_slots;
-        const Slope sl = slope(w.e[k], theta[p_ + i], delta);
+        const Slope sl = slope(w.e[k], theta[p() + i], delta);
         const double alpha = theta[i];
-        const double* de = w.de + slot * m_;
-        const double* dde = w.dde ? w.dde + slot * packed_size(m_) : nullptr;
-        for (std::size_t a = 0; a < m_; ++a) {
-            for (std::size_t b = a; b < m_; ++b)
+        const double* de = w.de + slot * mean();
+        const double* dde = w.dde ? w.dde + slot * packed_size(mean()) : nullptr;
+        for (std::size_t a = 0; a < mean(); ++a) {
+            for (std::size_t b = a; b < mean(); ++b)
                 sec[packed(width, o + a, o + b)]
-                    += alpha * (sl.ee * de[a] * de[b] + (dde ? sl.e * dde[packed(m_, a, b)] : 0.0));
+                    += alpha * (sl.ee * de[a] * de[b] + (dde ? sl.e * dde[packed(mean(), a, b)] : 0.0));
             sec[packed(width, i, o + a)] += sl.e * de[a];
-            sec[packed(width, p_ + i, o + a)] += alpha * sl.eg * de[a];
-            sec[packed(width, delta_, o + a)] += alpha * sl.ed * de[a];
+            sec[packed(width, p() + i, o + a)] += alpha * sl.eg * de[a];
+            sec[packed(width, delta_index(), o + a)] += alpha * sl.ed * de[a];
         }
     }
 
@@ -220,7 +221,13 @@ private:
         return r;
     }
 
-    std::size_t p_, q_, m_, beta_, delta_;
+    [[nodiscard]] std::size_t p() const noexcept { return P == std::dynamic_extent ? p_ : P; }
+    [[nodiscard]] std::size_t q() const noexcept { return Q == std::dynamic_extent ? q_ : Q; }
+    [[nodiscard]] std::size_t mean() const noexcept { return !Coupled ? 0u : M == std::dynamic_extent ? m_ : M; }
+    [[nodiscard]] std::size_t beta_begin() const noexcept { return 1u + 2u * p(); }
+    [[nodiscard]] std::size_t delta_index() const noexcept { return beta_begin() + q(); }
+
+    std::size_t p_, q_, m_;
 };
 
 }  // namespace scivolapi::detail
