@@ -11,8 +11,6 @@ Assembler assembler_branches_normal(const ModelSpec& spec)
 
 Assembler assembler_normal(const ModelSpec& spec)
 {
-    if (spec.volatility == VolatilityKind::garch && spec.p == 1 && spec.q == 0 && spec.mean.width() == 0)
-        return assemble_requested<NoMean, GarchVolatility<false, false, 1, 0>, NormalDensity>;
     return assembler_with<NormalDensity>(spec);
 }
 

@@ -158,12 +158,13 @@ void check(const Model& model, const Sample& sample, const std::vector<double>& 
         }
 }
 
-// (1,1) recursions of every kind with no mean or a linear mean of K
+// (1,Q) recursions of every kind with no mean or a linear mean of K
 // regressors, from the model's own start with nonzero mean coefficients.
-template<class Density, std::size_t K>
+template<class Density, std::size_t Q, std::size_t K>
 void compare_linear(DensityKind density, VolatilityKind kind, std::size_t n)
 {
     ModelSpec spec;
+    spec.q = Q;
     spec.density = density;
     spec.volatility = kind;
     spec.mean.constant = K >= 1;
@@ -184,19 +185,19 @@ void compare_linear(DensityKind density, VolatilityKind kind, std::size_t n)
     switch (kind) {
     case VolatilityKind::garch:
         check(model, sample, theta, assemble_requested<RuntimeMean, GarchVolatility<false, coupled>, Density>,
-              assemble_requested<FixedMean, GarchVolatility<false, coupled, 1, 1, M>, Density>, n);
+              assemble_requested<FixedMean, GarchVolatility<false, coupled, 1, Q, M>, Density>, n);
         break;
     case VolatilityKind::gjr:
         check(model, sample, theta, assemble_requested<RuntimeMean, GarchVolatility<true, coupled>, Density>,
-              assemble_requested<FixedMean, GarchVolatility<true, coupled, 1, 1, M>, Density>, n);
+              assemble_requested<FixedMean, GarchVolatility<true, coupled, 1, Q, M>, Density>, n);
         break;
     case VolatilityKind::egarch:
         check(model, sample, theta, assemble_requested<RuntimeMean, EgarchVolatility<Density, coupled>, Density>,
-              assemble_requested<FixedMean, EgarchVolatility<Density, coupled, false, 1, 1, M>, Density>, n);
+              assemble_requested<FixedMean, EgarchVolatility<Density, coupled, false, 1, Q, M>, Density>, n);
         break;
     case VolatilityKind::aparch:
         check(model, sample, theta, assemble_requested<RuntimeMean, AparchVolatility<coupled>, Density>,
-              assemble_requested<FixedMean, AparchVolatility<coupled, 1, 1, M>, Density>, n);
+              assemble_requested<FixedMean, AparchVolatility<coupled, 1, Q, M>, Density>, n);
         break;
     default: assert(false);
     }
@@ -213,10 +214,13 @@ void compare_density(DensityKind density)
             compare<Density, true, true>(density, n, boundary);
         }
         for (auto kind : {VolatilityKind::garch, VolatilityKind::gjr, VolatilityKind::egarch, VolatilityKind::aparch}) {
+            compare_linear<Density, 0, 0>(density, kind, n);
+            compare_linear<Density, 0, 1>(density, kind, n);
+            compare_linear<Density, 0, 2>(density, kind, n);
             if (kind == VolatilityKind::egarch || kind == VolatilityKind::aparch)
-                compare_linear<Density, 0>(density, kind, n);
-            compare_linear<Density, 1>(density, kind, n);
-            compare_linear<Density, 2>(density, kind, n);
+                compare_linear<Density, 1, 0>(density, kind, n);
+            compare_linear<Density, 1, 1>(density, kind, n);
+            compare_linear<Density, 1, 2>(density, kind, n);
         }
     }
 }

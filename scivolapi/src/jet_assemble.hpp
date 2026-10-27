@@ -339,48 +339,51 @@ Assembler assembler_coupled(VolatilityKind kind) noexcept
     return nullptr;
 }
 
-// (1,1) recursions with a linear mean of K regressors, compiled widths.
-template<class Density, std::size_t K>
-Assembler assembler_linear_mean(VolatilityKind kind) noexcept
+// (1, Q) recursions without a mean (K = 0) or with a linear mean of K
+// regressors, compiled widths.
+template<class Density, std::size_t Q, std::size_t K>
+Assembler assembler_compiled(VolatilityKind kind) noexcept
 {
-    using Mean = ArmaxMean<K, 0>;
+    constexpr bool coupled = K > 0;
+    constexpr std::size_t M = coupled ? K : std::dynamic_extent;
+    using Mean = std::conditional_t<coupled, ArmaxMean<K, 0>, NoMean>;
     switch (kind) {
-    case VolatilityKind::garch: return assemble_requested<Mean, GarchVolatility<false, true, 1, 1, K>, Density>;
-    case VolatilityKind::gjr: return assemble_requested<Mean, GarchVolatility<true, true, 1, 1, K>, Density>;
-    case VolatilityKind::egarch: return assemble_requested<Mean, EgarchVolatility<Density, true, false, 1, 1, K>, Density>;
-    case VolatilityKind::aparch: return assemble_requested<Mean, AparchVolatility<true, 1, 1, K>, Density>;
+    case VolatilityKind::garch: return assemble_requested<Mean, GarchVolatility<false, coupled, 1, Q, M>, Density>;
+    case VolatilityKind::gjr: return assemble_requested<Mean, GarchVolatility<true, coupled, 1, Q, M>, Density>;
+    case VolatilityKind::egarch:
+        return assemble_requested<Mean, EgarchVolatility<Density, coupled, false, 1, Q, M>, Density>;
+    case VolatilityKind::aparch: return assemble_requested<Mean, AparchVolatility<coupled, 1, Q, M>, Density>;
     case VolatilityKind::constant: return nullptr;
     }
     return nullptr;
 }
 
+template<class Density, std::size_t Q>
+Assembler assembler_compiled(const ModelSpec& spec) noexcept
+{
+    const std::size_t k = spec.mean.regressors();
+    if (spec.mean.ma != 0 || k > 2) return nullptr;
+    return k == 0 ? assembler_compiled<Density, Q, 0>(spec.volatility)
+         : k == 1 ? assembler_compiled<Density, Q, 1>(spec.volatility)
+                  : assembler_compiled<Density, Q, 2>(spec.volatility);
+}
+
 template<class Density>
 Assembler assembler_with(const ModelSpec& spec) noexcept
 {
-    if (spec.p == 1 && spec.q == 1) {
-        if (spec.mean.width() == 0) {
-            if (spec.volatility == VolatilityKind::garch)
-                return assemble_requested<NoMean, GarchVolatility<false, false, 1, 1>, Density>;
-            if (spec.volatility == VolatilityKind::gjr)
-                return assemble_requested<NoMean, GarchVolatility<true, false, 1, 1>, Density>;
-            if (spec.volatility == VolatilityKind::egarch)
-                return assemble_requested<NoMean, EgarchVolatility<Density, false, false, 1, 1>, Density>;
-            if (spec.volatility == VolatilityKind::aparch)
-                return assemble_requested<NoMean, AparchVolatility<false, 1, 1>, Density>;
-        }
-        if (spec.mean.constant && spec.mean.ar == 1 && spec.mean.ma == 1
-            && spec.mean.har.empty() && spec.mean.exog == 0) {
-            if (spec.volatility == VolatilityKind::garch)
-                return assemble_requested<ArmaxMean<2, 1>, GarchVolatility<false, true, 1, 1, 3>, Density>;
-            if (spec.volatility == VolatilityKind::gjr)
-                return assemble_requested<ArmaxMean<2, 1>, GarchVolatility<true, true, 1, 1, 3>, Density>;
-        }
-        // Linear means with one or two regressors (a constant, one AR lag or
-        // regressor, or both): the selection candidates' means.
-        if (spec.mean.ma == 0 && spec.mean.regressors() == 1)
-            if (const Assembler fixed = assembler_linear_mean<Density, 1>(spec.volatility)) return fixed;
-        if (spec.mean.ma == 0 && spec.mean.regressors() == 2)
-            if (const Assembler fixed = assembler_linear_mean<Density, 2>(spec.volatility)) return fixed;
+    if (spec.p == 1 && spec.q == 1 && spec.mean.constant && spec.mean.ar == 1 && spec.mean.ma == 1
+        && spec.mean.har.empty() && spec.mean.exog == 0) {
+        if (spec.volatility == VolatilityKind::garch)
+            return assemble_requested<ArmaxMean<2, 1>, GarchVolatility<false, true, 1, 1, 3>, Density>;
+        if (spec.volatility == VolatilityKind::gjr)
+            return assemble_requested<ArmaxMean<2, 1>, GarchVolatility<true, true, 1, 1, 3>, Density>;
+    }
+    // (1,1) and (1,0) recursions with no mean or a linear mean of one or two
+    // regressors (a constant, one AR lag or regressor, or both): the common
+    // fits and the selection candidates.
+    if (spec.p == 1 && (spec.q == 1 || spec.q == 0)) {
+        const Assembler fixed = spec.q == 1 ? assembler_compiled<Density, 1>(spec) : assembler_compiled<Density, 0>(spec);
+        if (fixed) return fixed;
     }
     return spec.mean.width() ? assembler_coupled<Density, true>(spec.volatility)
                              : assembler_coupled<Density, false>(spec.volatility);
