@@ -50,6 +50,9 @@ covariance. A shaped density adds a staged shape fit and two-step sandwich
 covariance. Inspect `result.fit_info` for optimizer phases, stationarity,
 inference status and warnings. A finite estimate can remain uncertified;
 `result.success` reports certification.
+At a certified residual kink, `fit_info.kink_point` and `active_kink_rows`
+identify the nonsmooth estimate. Its inference status is `at_kink`; ordinary
+Hessian standard errors and restriction LR calibration are unavailable.
 
 ```python
 robust = (GARCH() + Normal()).fit(y, method="qmle")

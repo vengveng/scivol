@@ -41,6 +41,7 @@ PANEL = [
     ("APARCH(1,1)+StudentT", lambda: APARCH(1, 1) + StudentT(), False),
     ("GARCH(1,1)+NIG", lambda: GARCH(1, 1) + NormalInverseGaussian(), False),
     ("ARMA(1,1)+GARCH(1,1)+Normal", lambda: ARMA(1, 1) + GARCH(1, 1) + Normal(), False),
+    ("ARX(1)+EGARCH(1,1)+Normal", lambda: ARX(1) + EGARCH(1, 1) + Normal(), False),
     ("ARX(1)+GJR(1,1)+StudentT", lambda: ARX(1) + GJRGARCH(1, 1) + StudentT(), True),
     ("HARX(1,5,22)+GARCH(1,1)+Normal", lambda: HARX([1, 5, 22]) + GARCH(1, 1) + Normal(), True),
 ]

@@ -16,7 +16,7 @@ extern "C" {
 
 #include "third_party/slsqp.h"
 
-void scivolapi_opt_lsq(CBLAS_INT n, CBLAS_INT m, double* factor,
+void scivolapi_opt_lsq(CBLAS_INT n, CBLAS_INT m, CBLAS_INT equalities, double* factor,
     double* gradient, double* normals, double* gaps, double* lower,
     double* upper, double* direction, double* multipliers, double* buffer,
     CBLAS_INT* indices, int64_t* mode, struct ScivolNnlsWorkspace workspace);

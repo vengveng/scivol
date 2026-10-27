@@ -4,6 +4,11 @@
 
 namespace scivolapi::detail {
 
+Assembler assembler_branches_variance_gamma(const ModelSpec& spec)
+{
+    return assembler_coupled<GhFamilyDensity<VarianceGamma>, true, true>(spec.volatility);
+}
+
 Assembler assembler_variance_gamma(const ModelSpec& spec)
 {
     return assembler_with<GhFamilyDensity<VarianceGamma>>(spec);

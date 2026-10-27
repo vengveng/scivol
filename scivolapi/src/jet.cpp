@@ -1,6 +1,7 @@
 #include <scivolapi/jet.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -17,7 +18,7 @@ using detail::ThetaResult;
 using detail::Work;
 
 constexpr unsigned sensitivities = log_variance_sensitivities | residual_sensitivities;
-constexpr unsigned all_requests = value | gradient | hessian | paths | scores | terms | sensitivities;
+constexpr unsigned all_requests = value | gradient | hessian | paths | scores | terms | sensitivities | kinks;
 
 void expand(const double* packed_matrix, std::size_t n, double* dense) noexcept
 {
@@ -39,6 +40,12 @@ bool outputs_fit(unsigned request, const JetOutput& out, std::size_t dim, std::s
     if ((request & terms) && !sized(out.terms, n)) return false;
     if ((request & log_variance_sensitivities) && !sized(out.log_variance_sensitivities, n * dim)) return false;
     if ((request & residual_sensitivities) && !sized(out.residual_sensitivities, n * dim)) return false;
+    if (request & kinks) {
+        const auto& k = out.kink;
+        if (k.rows.size() < n || k.residuals.size() < n || k.weights.size() < n
+            || k.normals.size() < n*dim || k.curvatures.size() < n*dim*dim
+            || k.smooth_gradient.size() != dim || k.smooth_hessian.size() != dim*dim) return false;
+    }
     return true;
 }
 
@@ -92,6 +99,8 @@ Jet::Jet(const Model& model, const Sample& sample) : model_(model), sample_(samp
     const detail::Layout layout(model.spec());
     const detail::VolatilityShape shape = detail::volatility_shape(model.spec());
     work_.assign(detail::work_size(layout, shape, n), 0.0);
+    if (model.capabilities().residual_kink_decomposition)
+        kink_work_.assign(n + layout.dimension, 0.0);
     if (model.spec().mean.width() > 0) return;  // residuals are computed per evaluation
     Work work = detail::carve(work_.data(), layout, shape, n);
     for (std::size_t t = 0; t < n; ++t) {  // no mean: residuals are the data
@@ -119,7 +128,14 @@ JetResult Jet::theta(std::span<const double> theta, unsigned request, JetOutput&
         if (request & hessian) expand(work.hp, dim, out.hessian.data());
         if (request & paths) write_paths(work, n, out.paths);
     }
-    return finish(request, r, true);
+    JetResult result = finish(request & ~kinks, r, true);
+    if (r.status != Status::ok) return result;
+    if (request & kinks) {
+        if (decompose_kinks(theta, out.kink)) result.valid |= kinks;
+        if (out.kink.count) result.valid &= ~(gradient | hessian | scores);
+        result.status = result.valid == request ? Status::ok : Status::numerical_range;
+    }
+    return result;
 }
 
 // L(theta(z)):  g_z = J' g_theta,  H_z = J' H_theta J + sum_i g_theta_i d^2 theta_i/dz dz'.
@@ -127,7 +143,7 @@ JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
 {
     const detail::Layout layout(model_.spec());
     const std::size_t dim = layout.dimension, n = sample_.scored();
-    if (request == 0u || (request & ~all_requests) || (request & scores) || z.size() != dim
+    if (request == 0u || (request & ~all_requests) || (request & (scores | kinks)) || z.size() != dim
         || !outputs_fit(request, out, dim, n) || !detail::all_finite(z.data(), dim))
         return {};
     Work work = detail::carve(work_.data(), layout, detail::volatility_shape(model_.spec()), n);
@@ -197,6 +213,113 @@ JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
     if (request & residual_sensitivities)
         zr.residual_ok = r.residual_ok && transform_rows(out.residual_sensitivities);
     return finish(request, zr, true);
+}
+
+bool Jet::residual_faces(std::span<const double> theta, double radius, KinkOutput& out)
+{
+    const detail::Layout layout(model_.spec());
+    const auto n = sample_.scored(), d = layout.dimension, m = layout.mean;
+    if (theta.size() != d || !model_.evaluable(theta) || out.rows.size() < n
+        || out.residuals.size() < n || out.normals.size() < n*d
+        || (!out.curvatures.empty() && out.curvatures.size() < n*d*d))
+        return false;
+    const bool fixed = radius < 0;
+    const std::size_t selected = fixed ? out.count : 0;
+    if (!fixed) { out.count = 0; out.supported = true; }
+    if (!m) return !fixed || selected == 0;
+    Work work = detail::carve(work_.data(), layout, detail::volatility_shape(model_.spec()), n);
+    const detail::ArmaxMean<> mean(model_.spec().mean);
+    const auto regressors = model_.spec().mean.regressors(), ma = model_.spec().mean.ma;
+    std::array<double, detail::Layout::max_order+1> orders{};
+    if (!fixed)
+        for (std::size_t j = 0; j <= layout.p; ++j) orders[j] = model_.residual_kink_order(theta,j);
+    std::size_t at = 0;
+    for (std::size_t t = 0; t < n; ++t) {
+        mean.step(theta.data(), sample_, t, out.curvatures.empty() ? 1 : 2, work.mean);
+        const double e = work.e[t];
+        if (!std::isfinite(e)) return false;
+        bool include = false;
+        if (fixed) include = at < selected && out.rows[at] == sample_.first_scored+t;
+        else {
+            const double order = orders[std::min(layout.p,n-t-1)];
+            if (order == 0) continue;
+            // Forward-error scale of the actual residual subtraction. The
+            // allowance covers rounded products/sums, not statistical accuracy.
+            double scale = std::abs(sample_.y[sample_.first_scored+t]);
+            for (std::size_t j = 0; j < regressors; ++j)
+                scale += std::abs(sample_.design[t*regressors+j]*theta[j]);
+            for (std::size_t j = 1; j <= std::min(ma, t); ++j)
+                scale += std::abs(theta[regressors+j-1]*work.e[t-j]);
+            include = std::abs(e) <= std::max(radius, 64*std::numeric_limits<double>::epsilon()) * scale;
+            if (include && !std::isfinite(order)) out.supported = false;
+        }
+        if (!include) continue;
+        const double* de = work.mean.de+(t%work.mean.slots)*m;
+        if (std::all_of(de,de+m,[](double v) { return v==0; })) continue;
+        if (!fixed) out.rows[at] = sample_.first_scored+t;
+        out.residuals[at] = e;
+        double* a = out.normals.data()+at*d;
+        std::fill_n(a, d, 0.0);
+        std::copy_n(de, m, a);
+        double* h = out.curvatures.empty() ? nullptr : out.curvatures.data()+at*d*d;
+        if (h) std::fill_n(h, d*d, 0.0);
+        if (h && !mean.linear()) {
+            const double* packed_h = work.mean.dde+(t%work.mean.slots)*packed_size(m);
+            for (std::size_t i = 0; i < m; ++i)
+                for (std::size_t j = i; j < m; ++j) h[i*d+j] = h[j*d+i] = packed_h[packed(m,i,j)];
+        }
+        ++at;
+    }
+    if (fixed) return at == selected;
+    out.count = at;
+    return true;
+}
+
+bool Jet::decompose_kinks(std::span<const double> theta, KinkOutput& out)
+{
+    if (!residual_faces(theta, 0, out)) return false;
+    const detail::Layout layout(model_.spec());
+    const auto n = sample_.scored(), d = layout.dimension;
+    if (!out.count) return true;
+    if (!out.supported) {
+        std::fill_n(out.weights.data(), out.count, std::numeric_limits<double>::quiet_NaN());
+        return true;
+    }
+    double* signs = kink_work_.data();
+    double* center = signs+n;
+    std::fill_n(signs, n, std::numeric_limits<double>::quiet_NaN());
+    for (std::size_t k = 0; k < out.count; ++k) signs[out.rows[k]-sample_.first_scored] = 0;
+    Work work = detail::carve(work_.data(), layout, detail::volatility_shape(model_.spec()), n);
+    detail::AssembleInput in{model_.spec(), layout, sample_, theta.data(), 2, nullptr, nullptr};
+    in.kink_sign = signs;
+    const auto assemble = detail::assembler_for_branches(model_.spec());
+    double ignored;
+    const auto base = assemble(in, work, ignored);
+    if (base.status != Status::ok || !base.gradient_ok || !base.hessian_ok) return false;
+    std::copy_n(work.g, d, center);
+    std::copy_n(center, d, out.smooth_gradient.data());
+    expand(work.hp, d, out.smooth_hessian.data());
+    in.order = 1;
+    for (std::size_t k = 0; k < out.count; ++k) {
+        const auto row = out.rows[k]-sample_.first_scored;
+        signs[row] = 1;
+        const auto branch = assemble(in, work, ignored);
+        if (branch.status != Status::ok || !branch.gradient_ok) return false;
+        const double* a = out.normals.data()+k*d;
+        double scale = 0;
+        for (std::size_t i = 0; i < d; ++i) scale = std::max(scale,std::abs(a[i]));
+        if (!(scale > 0) || !std::isfinite(scale)) return false;
+        double norm = 0, product = 0;
+        for (std::size_t i = 0; i < d; ++i) {
+            const double unit = a[i]/scale;
+            norm += unit*unit;
+            product += (work.g[i]-center[i])*unit;
+        }
+        out.weights[k] = (product/norm)/scale;
+        if (!std::isfinite(out.weights[k])) return false;
+        signs[row] = 0;
+    }
+    return true;
 }
 
 }  // namespace scivolapi

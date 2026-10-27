@@ -49,7 +49,7 @@ namespace scivolapi::detail {
 //   S_t[a,b] += phi (F_ab - (E_a D_b + E_b D_a) / 2),
 //   S_t[alpha_i, a] += sign(z) u E_a,  S_t[gamma_i, a] += u E_a.
 // At e = 0 with alpha_i != 0, |z| has a kink in the mean entries: no derivatives.
-template<class Density, bool Coupled = false>
+template<class Density, bool Coupled = false, bool Branches = false>
 class EgarchVolatility {
 public:
     static constexpr std::size_t shapes = Density::shapes;
@@ -114,7 +114,11 @@ public:
                 for (std::size_t a = 0; a < width; ++a) d[a] += c * previous[a];
                 if constexpr (Coupled) {
                     const std::size_t k = t - i;
-                    if (w.e[k] == 0.0 && theta[i] != 0.0) out.defined = 0;
+                    if (w.e[k] == 0.0 && theta[i] != 0.0) {
+                        if constexpr (Branches) {
+                            if (!std::isfinite(w.kink_sign[k])) out.defined = 0;
+                        } else out.defined = 0;
+                    }
                     const double phi = response(theta, w, k, i);
                     const double* de = w.de + (k % w.mean_slots) * m_;
                     for (std::size_t a = 0; a < m_; ++a) d[own() + a] += phi * de[a];
@@ -176,7 +180,7 @@ private:
     // phi = (alpha_i sign(z) + gamma_i) u for lag i at observation k.
     double response(const double* theta, const VolatilityWork& w, std::size_t k, std::size_t i) const noexcept
     {
-        const double sign = w.e[k] >= 0.0 ? 1.0 : -1.0;
+        const double sign = absolute_sign(w, k);
         return (theta[i] * sign + theta[p_ + i]) * std::exp(-0.5 * w.state[k]);
     }
 
@@ -185,7 +189,7 @@ private:
                 double* s) const noexcept
     {
         const std::size_t width = this->width(), o = own(), slot = k % w.mean_slots;
-        const double u = std::exp(-0.5 * w.state[k]), sign = w.e[k] >= 0.0 ? 1.0 : -1.0;
+        const double u = std::exp(-0.5 * w.state[k]), sign = absolute_sign(w, k);
         const double phi = (theta[i] * sign + theta[p_ + i]) * u;
         const double* de = w.de + slot * m_;
         const double* dde = w.dde ? w.dde + slot * packed_size(m_) : nullptr;
@@ -196,6 +200,13 @@ private:
             s[packed(width, i, o + a)] += sign * u * de[a];
             s[packed(width, p_ + i, o + a)] += u * de[a];
         }
+    }
+
+    static double absolute_sign(const VolatilityWork& w, std::size_t k) noexcept
+    {
+        if constexpr (Branches)
+            if (std::isfinite(w.kink_sign[k])) return w.kink_sign[k];
+        return w.e[k] >= 0.0 ? 1.0 : -1.0;
     }
 
     // S[r, b] += f D[b] and S[b, r] += f D[b] for all b (the diagonal twice).

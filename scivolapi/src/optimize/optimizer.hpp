@@ -9,6 +9,7 @@
 #include <limits>
 #include <span>
 #include <vector>
+#include <scivolapi/jet.hpp>
 
 namespace scivolapi::optimize {
 
@@ -26,6 +27,10 @@ struct Problem {
     Objective objective;
     Hessian hessian;                  // may be empty
     bool objective_can_have_gradient_kinks = false;
+    std::size_t kink_capacity = 0;
+    // radius > 0 proposes faces, 0 requests the roundoff-active decomposition,
+    // radius < 0 evaluates the explicitly selected rows without changing them.
+    std::function<bool(const double*, double, KinkOutput&)> faces;
     std::vector<double> lower, upper;  // dimension each; NaN means unbounded; empty = no bounds
     std::size_t constraint_count = 0;
     Constraints constraints;          // required when constraint_count > 0
@@ -50,6 +55,7 @@ struct Point {
     std::vector<double> x;
     double value = std::numeric_limits<double>::quiet_NaN();
     std::vector<double> gradient;  // empty when not evaluated at this point
+    bool kink = false;
 };
 
 struct Work {

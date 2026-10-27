@@ -4,6 +4,11 @@
 
 namespace scivolapi::detail {
 
+Assembler assembler_branches_student_t(const ModelSpec& spec)
+{
+    return assembler_coupled<StudentTDensity, true, true>(spec.volatility);
+}
+
 Assembler assembler_student_t(const ModelSpec& spec)
 {
     return assembler_with<StudentTDensity>(spec);

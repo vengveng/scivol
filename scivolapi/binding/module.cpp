@@ -17,6 +17,7 @@
 
 #include "../src/density/distribution.hpp"
 #include "../src/density/moments.hpp"
+#include "../src/optimize/kinks.hpp"
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -199,6 +200,11 @@ nb::dict evaluate(BoundJet& self, const Vector& point, unsigned request, bool in
     out.terms = terms_;
     out.log_variance_sensitivities = lv;
     out.residual_sensitivities = re;
+    std::unique_ptr<optimize::KinkWorkspace> kink;
+    if (request & kinks) {
+        kink = std::make_unique<optimize::KinkWorkspace>(n, d);
+        out.kink = kink->out;
+    }
     const JetResult r = in_z ? self.jet.z(view(point), request, out) : self.jet.theta(view(point), request, out);
 
     nb::dict result;
@@ -216,6 +222,21 @@ nb::dict evaluate(BoundJet& self, const Vector& point, unsigned request, bool in
     if (r.valid & terms) result["terms"] = owned_vector(std::move(terms_));
     if (r.valid & log_variance_sensitivities) result["log_variance_sensitivities"] = owned_matrix(std::move(lv), n, d);
     if (r.valid & residual_sensitivities) result["residual_sensitivities"] = owned_matrix(std::move(re), n, d);
+    if (r.valid & kinks) {
+        const auto count = out.kink.count;
+        kink->rows.resize(count); kink->weights.resize(count);
+        kink->residuals.resize(count); kink->normals.resize(count*d); kink->curvatures.resize(count*d*d);
+        result["kink_rows"] = kink->rows;
+        result["kink_supported"] = out.kink.supported;
+        result["kink_residuals"] = owned_vector(std::move(kink->residuals));
+        result["kink_weights"] = owned_vector(std::move(kink->weights));
+        result["kink_normals"] = owned_matrix(std::move(kink->normals), count, d);
+        result["kink_curvatures"] = owned_tensor<3>(std::move(kink->curvatures), {count, d, d});
+        if (count && out.kink.supported) {
+            result["smooth_gradient"] = owned_vector(std::move(kink->gradient));
+            result["smooth_hessian"] = owned_matrix(std::move(kink->hessian), d, d);
+        }
+    }
     return result;
 }
 
@@ -321,6 +342,7 @@ NB_MODULE(_scivolapi, m)
     m.attr("TERMS") = static_cast<unsigned>(terms);
     m.attr("LOG_VARIANCE_SENSITIVITIES") = static_cast<unsigned>(log_variance_sensitivities);
     m.attr("RESIDUAL_SENSITIVITIES") = static_cast<unsigned>(residual_sensitivities);
+    m.attr("KINKS") = static_cast<unsigned>(kinks);
 
     nb::class_<MeanSpec>(m, "MeanSpec")
         .def(nb::init<>())
@@ -405,6 +427,7 @@ NB_MODULE(_scivolapi, m)
         .value("not_feasible", Inference::not_feasible)
         .value("not_stationary", Inference::not_stationary)
         .value("at_boundary", Inference::at_boundary)
+        .value("at_kink", Inference::at_kink)
         .value("not_positive_definite", Inference::not_positive_definite)
         .value("ill_conditioned", Inference::ill_conditioned);
 
@@ -454,6 +477,8 @@ NB_MODULE(_scivolapi, m)
         .def_ro("feasible", &FitResult::feasible)
         .def_ro("termination", &FitResult::termination)
         .def_ro("kkt_residual", &FitResult::kkt_residual)
+        .def_ro("kink_point", &FitResult::kink_point)
+        .def_ro("active_kink_rows", &FitResult::active_kink_rows)
         .def_ro("kkt_tolerance", &FitResult::kkt_tolerance)
         .def_ro("stationary", &FitResult::stationary)
         .def_ro("inference", &FitResult::inference)
@@ -591,6 +616,7 @@ NB_MODULE(_scivolapi, m)
         .def_ro("chart_covers_domain", &ModelCapabilities::chart_covers_domain)
         .def_ro("density_free_recursion", &ModelCapabilities::density_free_recursion)
         .def_ro("likelihood_can_have_gradient_kinks", &ModelCapabilities::likelihood_can_have_gradient_kinks)
+        .def_ro("residual_kink_decomposition", &ModelCapabilities::residual_kink_decomposition)
         .def_ro("exact_variance_horizon", &ModelCapabilities::exact_variance_horizon);
     nb::class_<InnovationDensity>(m, "InnovationDensity")
         .def("__getstate__", [](const InnovationDensity& d) { return std::make_tuple(static_cast<int>(d.density), d.shape); })

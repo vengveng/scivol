@@ -119,6 +119,7 @@ struct AssembleInput {
     double* terms;   // per-row terms of F, or null
     double* log_variance_sensitivities = nullptr;
     double* residual_sensitivities = nullptr;
+    const double* kink_sign = nullptr;
 };
 
 struct ThetaResult {
@@ -196,9 +197,16 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
     VolatilityStep step;
     const double* l1 = work.vol.l1;
     const double* l2 = work.vol.l2;
+    if constexpr (Sensitive) work.vol.kink_sign = in.kink_sign;
     for (std::size_t t = 0; t < n; ++t) {
         if constexpr (coupled) {
             mean.step(theta, in.sample, t, order, work.mean);
+            if constexpr (Sensitive) {
+                if (in.kink_sign && std::isfinite(in.kink_sign[t])) {
+                    work.e[t] = 0;
+                    work.e2[t] = 0;
+                }
+            }
             if (!std::isfinite(work.e[t])) {
                 result.status = Status::numerical_range;
                 return result;
@@ -315,14 +323,16 @@ ThetaResult assemble_requested(const AssembleInput& in, Work& work, double& valu
 
 // The loop for a density with a given volatility recursion, with or without a
 // mean, one set per density translation unit.
-template<class Density, bool Coupled>
+template<class Density, bool Coupled, bool Branches = false>
 Assembler assembler_coupled(VolatilityKind kind) noexcept
 {
     using Mean = std::conditional_t<Coupled, ArmaxMean<>, NoMean>;
     switch (kind) {
     case VolatilityKind::garch: return assemble_requested<Mean, GarchVolatility<false, Coupled>, Density>;
     case VolatilityKind::gjr: return assemble_requested<Mean, GarchVolatility<true, Coupled>, Density>;
-    case VolatilityKind::egarch: return assemble_requested<Mean, EgarchVolatility<Density, Coupled>, Density>;
+    case VolatilityKind::egarch:
+        if constexpr (Branches) return assemble<Mean, EgarchVolatility<Density, Coupled, true>, Density, -1, true>;
+        else return assemble_requested<Mean, EgarchVolatility<Density, Coupled>, Density>;
     case VolatilityKind::aparch: return assemble_requested<Mean, AparchVolatility<Coupled>, Density>;
     case VolatilityKind::constant: return assemble_requested<Mean, ConstantVolatility<Coupled>, Density>;
     }
@@ -351,6 +361,14 @@ Assembler assembler_with(const ModelSpec& spec) noexcept
                              : assembler_coupled<Density, false>(spec.volatility);
 }
 
+Assembler assembler_branches_normal(const ModelSpec&);
+Assembler assembler_branches_student_t(const ModelSpec&);
+Assembler assembler_branches_skew_t(const ModelSpec&);
+Assembler assembler_branches_ged(const ModelSpec&);
+Assembler assembler_branches_generalized_hyperbolic(const ModelSpec&);
+Assembler assembler_branches_nig(const ModelSpec&);
+Assembler assembler_branches_hyperbolic(const ModelSpec&);
+Assembler assembler_branches_variance_gamma(const ModelSpec&);
 Assembler assembler_normal(const ModelSpec&);
 Assembler assembler_student_t(const ModelSpec&);
 Assembler assembler_skew_t(const ModelSpec&);
@@ -372,6 +390,21 @@ inline Assembler assembler_for(const ModelSpec& spec) noexcept
     case DensityKind::nig: return assembler_nig(spec);
     case DensityKind::hyperbolic: return assembler_hyperbolic(spec);
     case DensityKind::variance_gamma: return assembler_variance_gamma(spec);
+    }
+    return nullptr;
+}
+
+inline Assembler assembler_for_branches(const ModelSpec& spec) noexcept
+{
+    switch (spec.density) {
+    case DensityKind::normal: return assembler_branches_normal(spec);
+    case DensityKind::student_t: return assembler_branches_student_t(spec);
+    case DensityKind::skew_t: return assembler_branches_skew_t(spec);
+    case DensityKind::ged: return assembler_branches_ged(spec);
+    case DensityKind::generalized_hyperbolic: return assembler_branches_generalized_hyperbolic(spec);
+    case DensityKind::nig: return assembler_branches_nig(spec);
+    case DensityKind::hyperbolic: return assembler_branches_hyperbolic(spec);
+    case DensityKind::variance_gamma: return assembler_branches_variance_gamma(spec);
     }
     return nullptr;
 }

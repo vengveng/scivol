@@ -7,6 +7,7 @@
 
 #include "fit_problem.hpp"
 #include "optimize/projection.hpp"
+#include "optimize/kinks.hpp"
 
 namespace scivolapi::detail {
 
@@ -133,10 +134,24 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
     }
 
     optimize::Stationarity stationarity;
-    if (problem.objective(unit_theta.data(), unit_value, unit_g.data())) {
+    if (problem.faces) {
+        optimize::KinkWorkspace scan(problem.kink_capacity, d, problem.constraint_count, false);
+        if (problem.faces(unit_theta.data(), 64*eps, scan.out) && scan.out.count) {
+            optimize::KinkWorkspace workspace(problem.kink_capacity, d, problem.constraint_count);
+            const bool decomposed = problem.faces(unit_theta.data(), 0, workspace.out);
+            r.kink_point = true;
+            r.active_kink_rows.assign(scan.rows.begin(), scan.rows.begin()+scan.out.count);
+            if (decomposed) stationarity = optimize::kink_stationarity(problem, unit_theta, workspace);
+            if (!scan.out.supported)
+                r.warnings.push_back("a non-Lipschitz residual power cusp has no finite Clarke certificate");
+            else if (!decomposed)
+                r.warnings.push_back("one-sided likelihood derivatives are unavailable at the residual face");
+        }
+    }
+    if (!r.kink_point && problem.objective(unit_theta.data(), unit_value, unit_g.data())) {
         optimize::ProjectionWorkspace workspace = optimize::projection_workspace(problem);
         stationarity = optimize::stationarity(problem, unit_theta, unit_g, workspace);
-    } else {
+    } else if (!r.kink_point) {
         r.warnings.push_back("the gradient is not available at the estimate");
     }
     r.kkt_residual = stationarity.residual;
@@ -175,6 +190,9 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
     if (!(reported.valid & gradient)) r.gradient.clear();
     if (!(reported.valid & hessian)) r.hessian.clear();
     if (reported.valid & scores) r.opg = outer_products(row_scores, n, d);
+    if (r.kink_point) {
+        r.gradient.clear(); r.hessian.clear(); r.opg.clear();
+    }
 
     const FitPhase& phase = r.phases.at(selected.phase);
     r.termination = phase.termination;
@@ -187,6 +205,7 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
     if (!r.stationary) r.warnings.push_back("first-order conditions are not met; the estimate is uncertified");
 
     if (!r.stationary) r.inference = Inference::not_stationary;
+    else if (r.kink_point) r.inference = Inference::at_kink;
     else if (stationarity.binding) r.inference = Inference::at_boundary;
     else if (r.hessian.empty()) r.inference = Inference::not_positive_definite;
     else r.inference = invert_information(r.hessian, d, r.covariance);
@@ -200,7 +219,9 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
     } else {
         r.covariance.clear();
         if (r.stationary) {
-            r.warnings.push_back(r.inference == Inference::at_boundary
+            r.warnings.push_back(r.inference == Inference::at_kink
+                                     ? "the estimate is a likelihood kink point; ordinary Hessian standard errors are not reported"
+                                     : r.inference == Inference::at_boundary
                                      ? "the estimate is on the boundary of the domain; standard errors are not reported"
                                      : "the observed information cannot be inverted reliably; standard errors are not reported");
         }
