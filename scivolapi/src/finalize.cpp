@@ -124,9 +124,15 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
     const std::vector<double>& unit_theta = selected.theta;
     const optimize::Problem problem = make_problem(model, unit_jet, false);
     r.feasible = model.feasible(unit_theta);
-    double unit_value = 0.0;
+    // A theta Newton iterate carries its exact value and gradient on this
+    // problem; otherwise evaluate them (the value alone where the gradient
+    // does not exist, as at a residual kink).
+    double unit_value = selected.value;
     std::vector<double> unit_g(d);
-    const bool value_ok = problem.objective(unit_theta.data(), unit_value, nullptr);
+    bool gradient_ok = selected.gradient.size() == d;
+    if (gradient_ok) std::copy(selected.gradient.begin(), selected.gradient.end(), unit_g.begin());
+    else gradient_ok = r.feasible && problem.objective(unit_theta.data(), unit_value, unit_g.data());
+    const bool value_ok = gradient_ok || (r.feasible && problem.objective(unit_theta.data(), unit_value, nullptr));
     if (!value_ok || !r.feasible) {
         r.warnings.push_back(r.feasible ? "the likelihood is not finite at the estimate"
                                         : "the estimate lies outside the model's domain");
@@ -148,7 +154,7 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
                 r.warnings.push_back("one-sided likelihood derivatives are unavailable at the residual face");
         }
     }
-    if (!r.kink_point && problem.objective(unit_theta.data(), unit_value, unit_g.data())) {
+    if (!r.kink_point && gradient_ok) {
         optimize::ProjectionWorkspace workspace = optimize::projection_workspace(problem);
         stationarity = optimize::stationarity(problem, unit_theta, unit_g, workspace);
     } else if (!r.kink_point) {

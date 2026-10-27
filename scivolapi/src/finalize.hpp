@@ -16,6 +16,7 @@ struct Candidate {
     std::size_t phase = 0;        // index into phases
     bool accepted = false;        // the phase's accepted iterate (vs. its best feasible trial)
     bool kink = false;
+    std::vector<double> gradient;  // at theta on the theta problem, when the phase supplies it
 };
 
 // The single finalizer for every model (instantiated for Model/Jet and

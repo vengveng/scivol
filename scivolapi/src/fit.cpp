@@ -95,7 +95,7 @@ void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, s
         if (iterations(phases) < budget) {
             const optimize::Record newton = run_phase("theta:newton", in_theta, Solver::newton, solved(slsqp, start),
                                                       budget - iterations(phases), options.accuracy, phases);
-            offer(newton, d, 1, same, candidates);
+            offer(newton, d, 1, same, candidates, true);
         }
     } else {
         std::vector<double> z(d);
@@ -127,7 +127,7 @@ void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, s
             const optimize::Record newton = run_phase("theta:newton", in_theta, Solver::newton, from_z(solved(in_z, z)),
                                                       std::min(reserve, std::max(1, budget - iterations(phases))), options.accuracy,
                                                       phases);
-            offer(newton, d, phases.size() - 1, same, candidates);
+            offer(newton, d, phases.size() - 1, same, candidates, true);
         }
     }
 
@@ -182,7 +182,7 @@ FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const
         if (iterations(phases) < options.maximum_iterations) {
             const auto refine = run_phase("theta:newton:restart", problem, Solver::newton, solved(retry, inside),
                 options.maximum_iterations-iterations(phases), options.accuracy, phases);
-            offer(refine, model.dimension(), phases.size()-1, same, candidates);
+            offer(refine, model.dimension(), phases.size()-1, same, candidates, true);
         }
         keep_feasible(model, candidates);
         if (!candidates.empty())

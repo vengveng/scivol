@@ -55,14 +55,17 @@ inline optimize::Record run_phase(const char* name, const optimize::Problem& pro
 }
 
 // Offers a phase's accepted iterate and best feasible trial as candidates,
-// mapped by `to_theta` (identity when empty).
+// mapped by `to_theta`. `theta_gradient`: the phase solved the finalizer's own
+// theta problem, so an accepted iterate's gradient can be reused there.
 template<class Map>
 void offer(const optimize::Record& record, std::size_t dimension, std::size_t phase, const Map& to_theta,
-           std::vector<Candidate>& candidates)
+           std::vector<Candidate>& candidates, bool theta_gradient = false)
 {
     auto one = [&](const optimize::Point& point, bool accepted) {
         if (point.x.size() != dimension || !std::isfinite(point.value)) return;
-        candidates.push_back({to_theta(point.x), point.value, phase, accepted, point.kink});
+        candidates.push_back({to_theta(point.x), point.value, phase, accepted, point.kink,
+                              theta_gradient && accepted && point.gradient.size() == dimension
+                                  ? point.gradient : std::vector<double>{}});
     };
     one(record.accepted, true);
     one(record.best_feasible, false);
