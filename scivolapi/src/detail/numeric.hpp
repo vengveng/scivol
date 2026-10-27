@@ -18,6 +18,11 @@ inline constexpr double log_2pi = 1.8378770664093454835606594728112;
     return size * (size + 1u) / 2u;
 }
 
+// [x < 0] as 1.0 or 0.0, computed without a branch: a residual's sign is
+// unpredictable, and compilers turn a ternary on it into a branch. Products
+// with the indicator are exact (x or +-0).
+[[nodiscard]] inline double negative_indicator(double x) noexcept { return static_cast<double>(x < 0.0); }
+
 // Neumaier compensated summation for additive likelihood totals.
 class CompensatedSum {
 public:

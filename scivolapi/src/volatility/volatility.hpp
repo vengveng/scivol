@@ -14,10 +14,15 @@
 //   bool step(theta, sample, t, order, VolatilityWork&, VolatilityStep&) const;
 //
 // `theta` points at the recursion's first parameter. `step` writes h_t into
-// work.h and reports lambda_t = log h_t; for order >= 1 it writes d lambda_t into
+// work.h and reports h_t, lambda_t = log h_t and h_t^(-1/2) (the standardization
+// of e_t, in whatever form the recursion has it); for order >= 1 it writes d lambda_t into
 // work.l1 and for order >= 2 the packed second derivatives into work.l2, both
 // over its local coordinates [own block | mean entries]. It keeps whatever history
 // it needs in the rings. False: h_t is not representable.
+//
+// A recursion linear in h (GARCH, GJR) declares `variance_curvature`: an order-2
+// step leaves d2h_t in work.s and does not form work.l2, and the caller uses
+// l_lambda L2 = (l_lambda / h) d2h - l_lambda L1 L1'.
 //
 // A recursion whose state is linear in its own past (GARCH, GJR) may declare
 // `adjoint_hessian` and accumulate_second(): with work.history set, an order-2
@@ -36,6 +41,7 @@ namespace scivolapi::detail {
 struct VolatilityStep {
     double h = 0.0;
     double lambda = 0.0;
+    double inv_sigma = 0.0;  // h^(-1/2)
     int defined = 2;  // highest derivative order that exists from here on
 };
 
@@ -44,6 +50,7 @@ struct VolatilityWork {
     const double* e2;     // squared residuals (n)
     double* h;            // variance path (n)
     double* state;        // the recursion's natural state path, if it differs from h (n)
+    double* scale;        // h^(-1/2) path (n), kept by recursions that reuse it (EGARCH)
     double* first_ring;   // slots * width
     double* second_ring;  // slots * packed(width)
     double* d;            // current first sensitivities (width)

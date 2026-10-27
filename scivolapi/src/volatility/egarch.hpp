@@ -18,11 +18,12 @@ namespace scivolapi::detail {
 //
 //   x_0 = log seed (constant),
 //   x_t = omega + sum_{i<=min(p,t)} [alpha_i (|z_{t-i}| - m) + gamma_i z_{t-i}]
-//               + sum_{j<=q} beta_j x_{t-j},     z_k = e_k exp(-x_k / 2),
+//               + sum_{j<=q} beta_j x_{t-j},     z_k = e_k u_k,  u_k = exp(-x_k / 2),
 //
 // with the missing log-variance lags x_{-1}, x_{-2}, ... = log seed, like x_0,
 // so the likelihood is equivariant to the scale of the data (a zero lag would
-// mean h = 1 in the data's units).
+// mean h = 1 in the data's units). Each step forms u_t once, keeps it in the
+// scale path for the later shocks and reports it as h_t^(-1/2); h_t = (1 / u_t)^2.
 // with m = E|z| of the density, a function of its shapes. The recursion feeds
 // back through z: dz_k = -z_k D_k / 2 and d|z_k| = -|z_k| D_k / 2 (smooth at
 // e_k = 0 for fixed data), so with D = dx/dtheta over the whole theta and
@@ -82,7 +83,7 @@ public:
     {
         const std::size_t width = this->width(), pw = packed_size(width), slots = ring_slots();
         double* x = w.state;  // the log-variance path
-        const double log_seed = std::log(sample.variance_seed);
+        const double log_seed = t == 0 ? std::log(sample.variance_seed) : x[0];  // x_0 = log seed
         double value = log_seed;
         if (t > 0) {
             value = theta[0];
@@ -93,12 +94,14 @@ public:
             for (std::size_t j = 1, n = std::min(q(), t); j <= n; ++j) value += theta[beta_begin() + j - 1] * x[t - j];
             for (std::size_t j = t + 1; j <= q(); ++j) value += theta[beta_begin() + j - 1] * log_seed;
         }
-        const double h = std::exp(value);
+        const double u = std::exp(-0.5 * value), root = 1.0 / u, h = root * root;
         if (!std::isfinite(value) || !(h > 0.0) || !std::isfinite(h)) return false;
         x[t] = value;
+        w.scale[t] = u;
         w.h[t] = h;
         out.h = h;
         out.lambda = value;
+        out.inv_sigma = u;
         if (order < 1) return true;
 
         double* d = w.d;
@@ -175,14 +178,14 @@ public:
 private:
     static double shock(const VolatilityWork& w, std::size_t k) noexcept
     {
-        return w.e[k] * std::exp(-0.5 * w.state[k]);
+        return w.e[k] * w.scale[k];
     }
 
     // phi = (alpha_i sign(z) + gamma_i) u for lag i at observation k.
     double response(const double* theta, const VolatilityWork& w, std::size_t k, std::size_t i) const noexcept
     {
         const double sign = absolute_sign(w, k);
-        return (theta[i] * sign + theta[p() + i]) * std::exp(-0.5 * w.state[k]);
+        return (theta[i] * sign + theta[p() + i]) * w.scale[k];
     }
 
     // Second-order terms of lag i (observation k, sensitivities dp) that involve E or F.
@@ -190,7 +193,7 @@ private:
                 double* s) const noexcept
     {
         const std::size_t width = this->width(), o = own(), slot = k % w.mean_slots;
-        const double u = std::exp(-0.5 * w.state[k]), sign = absolute_sign(w, k);
+        const double u = w.scale[k], sign = absolute_sign(w, k);
         const double phi = (theta[i] * sign + theta[p() + i]) * u;
         const double* de = w.de + slot * mean();
         const double* dde = w.dde ? w.dde + slot * packed_size(mean()) : nullptr;

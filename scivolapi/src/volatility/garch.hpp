@@ -21,8 +21,8 @@ namespace scivolapi::detail {
 // Sensitivities follow by differentiating the recursion (D_0 = S_0 = 0):
 //   D_t = u_t + sum_j beta_j D_{t-j},  u_t = d(direct terms)/dtheta
 //   S_t[a,b] = sum_j beta_j S_{t-j}[a,b] + [a = beta_j] D_{t-j}[b] + [b = beta_j] D_{t-j}[a]
-// and the step reports lambda = log h with
-//   dlambda = D / h,  d2lambda = S / h - dlambda dlambda'.
+// and the step reports lambda = log h with dlambda = D / h, and S itself for the
+// curvature (d2lambda = S / h - dlambda dlambda', which it does not form).
 // Coupled, the innovation term c_i e^2 (c_i = alpha_i + gamma_i [e < 0]) adds, for
 // mean entries a, b with E = de, F = d2e of the lagged residual:
 //   u[a] = 2 c_i e E_a,  du[a,b] = 2 c_i (E_a E_b + e F_ab),
@@ -41,6 +41,7 @@ template<bool Leverage, bool Coupled = false, std::size_t P = std::dynamic_exten
          std::size_t Q = std::dynamic_extent, std::size_t M = std::dynamic_extent>
 class GarchVolatility {
 public:
+    static constexpr bool variance_curvature = true;
     static constexpr bool adjoint_hessian = true;
 
     explicit GarchVolatility(const ModelSpec& spec, std::size_t mean = 0) noexcept
@@ -77,7 +78,7 @@ public:
             for (std::size_t i = 1, n = std::min(p(), t); i <= n; ++i) {
                 const double e2 = w.e2[t - i];
                 h += theta[i] * e2;
-                if (Leverage && w.e[t - i] < 0.0) h += theta[p() + i] * e2;
+                if constexpr (Leverage) h += negative_indicator(w.e[t - i]) * theta[p() + i] * e2;
             }
             for (std::size_t j = 1, n = std::min(q(), t); j <= n; ++j) h += theta[beta_begin() + j - 1] * w.h[t - j];
         }
@@ -85,6 +86,7 @@ public:
         w.h[t] = h;
         out.h = h;
         out.lambda = std::log(h);
+        out.inv_sigma = 1.0 / std::sqrt(h);
         if (order < 1) return true;
 
         std::fill_n(w.d, width, 0.0);
@@ -92,7 +94,7 @@ public:
             w.d[0] = 1.0;
             for (std::size_t i = 1, n = std::min(p(), t); i <= n; ++i) {
                 w.d[i] = w.e2[t - i];
-                if (Leverage && w.e[t - i] < 0.0) w.d[p() + i] = w.e2[t - i];
+                if constexpr (Leverage) w.d[p() + i] = negative_indicator(w.e[t - i]) * w.e2[t - i];
                 if constexpr (Coupled) {
                     const double f = 2.0 * shock_weight(theta, w, t - i, i) * w.e[t - i];
                     const double* de = w.de + ((t - i) % w.mean_slots) * mean();
@@ -131,9 +133,6 @@ public:
                 }
                 w.s[packed(width, b, b)] += d[b];  // the diagonal receives both terms
             }
-            for (std::size_t a = 0; a < width; ++a)
-                for (std::size_t b = a; b < width; ++b)
-                    w.l2[packed(width, a, b)] = w.s[packed(width, a, b)] * inv - w.l1[a] * w.l1[b];
             std::copy_n(w.s, m, w.second_ring + (t % slots) * m);
         }
         std::copy_n(w.d, width, w.first_ring + (t % slots) * width);
@@ -169,7 +168,7 @@ public:
                     for (std::size_t a = 0; a < m; ++a) {
                         for (std::size_t b = a; b < m; ++b) hp[packed(dim, o + a, o + b)] += c2 * r[a] * r[b];
                         hp[packed(dim, i, o + a)] -= ce * r[a];
-                        if (Leverage && e < 0.0) hp[packed(dim, p() + i, o + a)] -= ce * r[a];
+                        if constexpr (Leverage) hp[packed(dim, p() + i, o + a)] -= negative_indicator(e) * ce * r[a];
                     }
                 }
         }
@@ -186,7 +185,8 @@ private:
     // c_i = alpha_i + gamma_i [e_k < 0]
     double shock_weight(const double* theta, const VolatilityWork& w, std::size_t k, std::size_t i) const noexcept
     {
-        return theta[i] + (Leverage && w.e[k] < 0.0 ? theta[p() + i] : 0.0);
+        if constexpr (Leverage) return theta[i] + negative_indicator(w.e[k]) * theta[p() + i];
+        else return theta[i];
     }
 
     // Second-order terms of lag i (observation k) that involve the mean entries.
@@ -201,7 +201,7 @@ private:
             for (std::size_t b = a; b < mean(); ++b)
                 w.s[packed(width, o + a, o + b)] += c2 * (de[a] * de[b] + (dde ? e * dde[packed(mean(), a, b)] : 0.0));
             w.s[packed(width, i, o + a)] += 2.0 * e * de[a];
-            if (Leverage && e < 0.0) w.s[packed(width, p() + i, o + a)] += 2.0 * e * de[a];
+            if constexpr (Leverage) w.s[packed(width, p() + i, o + a)] += negative_indicator(e) * (2.0 * e) * de[a];
         }
     }
 

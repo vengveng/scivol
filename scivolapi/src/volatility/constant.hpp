@@ -32,6 +32,7 @@ public:
         w.h[t] = h;
         out.h = h;
         out.lambda = std::log(h);
+        out.inv_sigma = 1.0 / std::sqrt(h);
         if (order < 1) return true;
         const std::size_t width = this->width();
         std::fill_n(w.l1, width, 0.0);

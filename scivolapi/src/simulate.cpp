@@ -30,7 +30,7 @@ bool finite(std::span<const double> v)
 
 // The recursions after a run: rows [0, observed) filtered, then the last path.
 struct Run {
-    std::vector<double> e, h, state;
+    std::vector<double> e, h, state, scale;
     std::size_t observed = 0;
     Simulation paths;
 };
@@ -53,6 +53,7 @@ Run run(const Model& model, std::span<const double> theta, std::vector<double> y
     r.e.assign(rows, 0.0);
     r.h.assign(rows, 0.0);
     r.state.assign(rows, 0.0);
+    r.scale.assign(rows, 0.0);
     std::vector<double> e2(rows, 0.0);
     y.resize(lags + rows, 0.0);
     Simulation& s = r.paths;
@@ -65,7 +66,7 @@ Run run(const Model& model, std::span<const double> theta, std::vector<double> y
 
     const detail::PathInput in{spec, layout, theta.data(), seed, lags, observed, horizon,
                                x.empty() ? nullptr : x.data(), z.data(), paths};
-    detail::PathBuffers b{y.data(), r.e.data(), e2.data(), r.h.data(), r.state.data(),
+    detail::PathBuffers b{y.data(), r.e.data(), e2.data(), r.h.data(), r.state.data(), r.scale.data(),
                           s.y.data(), s.mean.data(), s.residual.data(), s.variance.data()};
     switch (detail::path_runner_for(spec)(in, b)) {
     case PathStatus::ok: break;

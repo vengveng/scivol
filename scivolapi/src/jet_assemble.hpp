@@ -9,6 +9,7 @@
 
 #include "density/density.hpp"
 #include "detail/numeric.hpp"
+#include "jet_second.hpp"
 #include "mean/mean.hpp"
 #include "model_layout.hpp"
 #include "volatility/aparch.hpp"
@@ -73,13 +74,15 @@ struct Work {
     double* share;  // simplex shares (dimension)
     double* history = nullptr;  // adjoint Hessian rows (n * width), when the shape allows it
     double* weights = nullptr;  // adjoint Hessian weights (n)
+    double* second;             // SecondOrder storage
 };
 
 inline std::size_t work_size(const Layout& layout, const VolatilityShape& v, std::size_t n)
 {
     const std::size_t w = v.width, pw = packed_size(w), d = layout.dimension;
-    return 4u * n + v.slots * (w + pw) + 2u * (w + pw) + v.mean_slots * (v.mean + packed_size(v.mean))
-        + 2u * (d + packed_size(d)) + 3u * d * d + 2u * d + (v.adjoint ? n * (w + 1u) : 0u);
+    return 5u * n + v.slots * (w + pw) + 2u * (w + pw) + v.mean_slots * (v.mean + packed_size(v.mean))
+        + 2u * (d + packed_size(d)) + 3u * d * d + 2u * d + (v.adjoint ? n * (w + 1u) : 0u)
+        + SecondOrder::size(w, v.mean, layout.shape_count);
 }
 
 inline Work carve(double* base, const Layout& layout, const VolatilityShape& v, std::size_t n)
@@ -94,6 +97,7 @@ inline Work carve(double* base, const Layout& layout, const VolatilityShape& v, 
     k.vol.e2 = k.e2;
     k.vol.h = take(n);
     k.vol.state = take(n);
+    k.vol.scale = take(n);
     k.vol.first_ring = take(v.slots * w);
     k.vol.second_ring = take(v.slots * pw);
     k.vol.d = take(w);
@@ -118,6 +122,7 @@ inline Work carve(double* base, const Layout& layout, const VolatilityShape& v, 
         k.history = take(n * w);
         k.weights = take(n);
     }
+    k.second = take(SecondOrder::size(w, v.mean, layout.shape_count));
     return k;
 }
 
@@ -147,12 +152,6 @@ inline bool all_finite(const double* x, std::size_t n) noexcept
     return true;
 }
 
-// Adds v to the packed symmetric entry (i, j) in either order.
-inline void add_packed(double* hp, std::size_t dim, std::size_t i, std::size_t j, double v) noexcept
-{
-    hp[i <= j ? packed(dim, i, j) : packed(dim, j, i)] += v;
-}
-
 // One pass over the scored rows: value, theta gradient (work.g) and packed theta
 // Hessian (work.hp) as requested, plus the residual and variance paths.
 //
@@ -163,6 +162,7 @@ inline void add_packed(double* hp, std::size_t dim, std::size_t i, std::size_t j
 //   g += l_lambda L1 + l_e E + l_s,
 //   H += l_lambda,lambda L1 L1' + l_lambda L2 + l_ee E E' + l_e F + l_e,lambda (E L1' + L1 E')
 //        + shape rows l_lambda,s L1 + l_e,s E + l_ss.
+// The second-order terms are summed by SecondOrder and enter H after the pass.
 // Sensitive: also write per-row d log h / d theta and d e / d theta (diagnostics only;
 // a compile-time choice, so the fitting loops carry no per-row branch for them).
 template<class Mean, class Volatility, class Density, int Order = -1, bool Sensitive = false>
@@ -170,13 +170,17 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
 {
     constexpr bool coupled = Mean::present;
     constexpr std::size_t shapes = Density::shapes;
+    constexpr bool variance_curvature = requires { Volatility::variance_curvature; };
     ThetaResult result;
-    const std::size_t m = in.layout.mean;
-    Volatility volatility(in.spec, m);
     const Mean mean = [&] {
         if constexpr (coupled) return Mean(in.spec.mean);
         else return Mean{};
     }();
+    const std::size_t m = [&] {  // the layout's mean entries, a constant for compiled widths
+        if constexpr (coupled) return mean.width();
+        else return std::size_t{0};
+    }();
+    Volatility volatility(in.spec, m);
     const double* theta = in.theta;
     const int order = Order < 0 ? in.order : Order;
     const std::size_t n = in.sample.scored();
@@ -194,6 +198,8 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
     double* hp = coupled ? work.lhp : work.hp;
     if (order >= 1) std::fill_n(g, dim, 0.0);
     if (order >= 2) std::fill_n(hp, packed_size(dim), 0.0);
+    SecondOrder second(work.second, w, m, shapes);
+    if (order >= 2) second.clear();
     if constexpr (coupled) work.vol.dde = mean.linear() ? nullptr : work.mean.dde;
     // A linear recursion accumulates sum_t (l_lambda / h_t) d2h_t by the adjoint
     // instead of carrying d2h_t forward: l_lambda d2lambda = (l_lambda / h) d2h
@@ -240,7 +246,7 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
             return result;
         }
 
-        const double inv_sigma = 1.0 / std::sqrt(step.h), x = work.e[t] * inv_sigma;
+        const double inv_sigma = step.inv_sigma, x = work.e[t] * inv_sigma;
         const Local<shapes> l = local<coupled>(Density::template observe<coupled>(density, x, order), x,
                                                step.lambda, inv_sigma, order);
         defined = std::min({defined, l.defined, step.defined});
@@ -280,37 +286,20 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
             for (std::size_t i = 0; i < shapes; ++i) row[index(sh + i)] += l.s[i] + c.s[i];
         }
         if (order >= 2) {
-            if (adjoint) {
-                const double outer = l.lamlam - l.lam;
-                for (std::size_t a = 0; a < w; ++a)
-                    for (std::size_t b = a; b < w; ++b) hp[packed(dim, a, b)] += outer * l1[a] * l1[b];
-                work.weights[t] = l.lam / step.h;
-            } else {
-                for (std::size_t a = 0; a < w; ++a)
-                    for (std::size_t b = a; b < w; ++b)
-                        hp[packed(dim, a, b)] += l.lamlam * l1[a] * l1[b] + l.lam * l2[packed(w, a, b)];
-            }
-            for (std::size_t a = 0; a < w; ++a) {
-                // l_lambda,s_i lambda_a; when a is s_i itself (EGARCH) the diagonal receives
-                // it twice, from d(l_s)/ds and from d(l_lambda lambda_s)/ds.
-                for (std::size_t i = 0; i < shapes; ++i)
-                    add_packed(hp, dim, a, sh + i, (a == sh + i ? 2.0 : 1.0) * l.lams[i] * l1[a]);
-            }
+            // l_lambda L2 = (l_lambda / h) d2h - l_lambda L1 L1' for a recursion linear
+            // in h; with the adjoint the d2h part is added after the pass.
+            const double o = variance_curvature ? l.lamlam - l.lam : l.lamlam;
+            const double k = variance_curvature ? l.lam / step.h : l.lam;
+            const double* curvature = adjoint ? nullptr : variance_curvature ? work.vol.s : l2;
+            second.add(l1, o, k, curvature, de, l.elam, l.ee, l.lams.data(), l.es.data());
+            if (adjoint) work.weights[t] = k;
             if constexpr (coupled)
-                for (std::size_t a = 0; a < m; ++a) {
-                    const std::size_t r = own + a;
-                    for (std::size_t b = a; b < m; ++b)
-                        hp[packed(dim, r, own + b)]
-                            += l.ee * de[a] * de[b] + (dde ? l.e * dde[packed(m, a, b)] : 0.0);
-                    for (std::size_t c = 0; c < w; ++c)  // l_e,lambda E_a L1_c; the diagonal twice
-                        add_packed(hp, dim, r, c, (c == r ? 2.0 : 1.0) * l.elam * de[a] * l1[c]);
-                    for (std::size_t i = 0; i < shapes; ++i) add_packed(hp, dim, r, sh + i, l.es[i] * de[a]);
-                }
-            for (std::size_t i = 0; i < shapes; ++i)
-                for (std::size_t j = i; j < shapes; ++j) hp[packed(dim, sh + i, sh + j)] += l.ss[packed(shapes, i, j)];
+                if (dde) second.add_residual_curvature(l.e, dde);
+            second.add_shapes(l.ss);
         }
     }
 
+    if (order >= 2) second.add_to(hp, dim, own, sh);
     if constexpr (requires { Volatility::adjoint_hessian; })
         if (adjoint) volatility.accumulate_second(theta + m, in.sample, work.vol, n, hp, dim);
 

@@ -93,12 +93,13 @@ public:
         if (!(value > 0.0) || !std::isfinite(value)) return false;
         const double log_s = std::log(value);
         const double lambda = t > 0 ? 2.0 * log_s / delta : log_seed;
-        const double h = std::exp(lambda);
+        const double u = std::exp(-0.5 * lambda), root = 1.0 / u, h = root * root;  // u = h^(-1/2)
         if (!(h > 0.0) || !std::isfinite(h)) return false;
         s[t] = value;
         w.h[t] = h;
         out.h = h;
         out.lambda = lambda;
+        out.inv_sigma = u;
         if (order < 1) return true;
 
         double* d = w.d;

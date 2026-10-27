@@ -43,6 +43,7 @@ struct PathBuffers {
     double* e2;
     double* h;
     double* state;
+    double* scale;
     double* path_y;
     double* path_mean;
     double* path_residual;
@@ -63,6 +64,7 @@ PathStatus run_paths(const PathInput& in, PathBuffers& b)
     w.e2 = b.e2;
     w.h = b.h;
     w.state = b.state;
+    w.scale = b.scale;
     Sample seed;
     seed.variance_seed = in.seed;
     VolatilityStep step;
