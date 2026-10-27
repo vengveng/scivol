@@ -29,6 +29,25 @@ optimize::Problem make_problem(const ModelT& model, JetT& jet, bool in_z)
     optimize::Problem problem;
     problem.dimension = d;
     problem.objective_can_have_gradient_kinks = model.capabilities().likelihood_can_have_gradient_kinks;
+    if constexpr (requires { jet.residual_faces(std::span<const double>{}, 0.0, std::declval<KinkOutput&>()); }) {
+        if (!in_z && model.capabilities().residual_kink_decomposition) {
+            problem.kink_capacity = scored_rows(jet.sample());
+            problem.faces = [&jet, d, scale](const double* x, double radius, KinkOutput& k) {
+                const std::span<const double> point{x, d};
+                if (radius != 0) return jet.residual_faces(point, radius, k);
+                JetOutput out;
+                out.kink = k;
+                if (!(jet.theta(point, kinks, out).valid & kinks)) return false;
+                k.count = out.kink.count; k.supported = out.kink.supported;
+                if (k.count && k.supported) {
+                    for (double& g : k.smooth_gradient) g *= scale;
+                    for (double& h : k.smooth_hessian) h *= scale;
+                    for (std::size_t j = 0; j < k.count; ++j) k.weights[j] *= scale;
+                }
+                return true;
+            };
+        }
+    }
     problem.objective = [&jet, d, scale, in_z](const double* x, double& f, double* g) {
         JetOutput out;
         unsigned request = value;

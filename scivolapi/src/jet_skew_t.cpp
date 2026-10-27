@@ -4,6 +4,11 @@
 
 namespace scivolapi::detail {
 
+Assembler assembler_branches_skew_t(const ModelSpec& spec)
+{
+    return assembler_coupled<SkewTDensity, true, true>(spec.volatility);
+}
+
 Assembler assembler_skew_t(const ModelSpec& spec)
 {
     return assembler_with<SkewTDensity>(spec);

@@ -49,6 +49,7 @@ struct VolatilityWork {
     std::size_t mean_slots = 1;  // ring slots, observation k in slot k % mean_slots
     const double* de = nullptr;  // mean_slots * mean
     const double* dde = nullptr; // mean_slots * packed(mean); null when e is linear in the mean
+    const double* kink_sign = nullptr; // explicit lifted absolute-value branches, requested separately
 };
 
 }  // namespace scivolapi::detail

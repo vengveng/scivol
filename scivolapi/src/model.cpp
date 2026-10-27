@@ -472,8 +472,24 @@ ModelCapabilities Model::capabilities() const noexcept
     c.likelihood_can_have_gradient_kinks = spec_.mean.width() != 0
         && (spec_.volatility == VolatilityKind::egarch || spec_.volatility == VolatilityKind::aparch
             || spec_.density == DensityKind::ged);
+    c.residual_kink_decomposition = c.likelihood_can_have_gradient_kinks;
     if (spec_.volatility == VolatilityKind::aparch) c.exact_variance_horizon = 1;
     return c;
+}
+
+double Model::residual_kink_order(std::span<const double> theta, std::size_t future) const
+{
+    check_size(theta, dimension());
+    if (!spec_.mean.width()) return 0;
+    const Layout l(spec_);
+    if (spec_.density == DensityKind::ged && theta[l.shapes] <= 1)
+        return std::numeric_limits<double>::quiet_NaN();
+    bool shock = false;
+    for (std::size_t i = 0; i < std::min(spec_.p, future); ++i)
+        shock |= theta[l.mean + 1 + i] != 0;
+    if (shock && spec_.volatility == VolatilityKind::aparch && theta[l.mean + 1 + 2*spec_.p + spec_.q] <= 1)
+        return std::numeric_limits<double>::quiet_NaN();
+    return shock && spec_.volatility == VolatilityKind::egarch ? 1 : 0;
 }
 
 double Model::persistence(std::span<const double> theta) const

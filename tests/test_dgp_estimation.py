@@ -2867,5 +2867,29 @@ def test_automatic_restarts_a_degenerate_aparch_warm_start():
     assert all('restart' not in name for name in independent.fit_info.optimizer_phases)
 
 
+@pytest.mark.parametrize("seed", [2, 18])
+def test_arx_egarch_dgp_has_a_reproducible_stationarity_certificate(seed):
+    from scivol import ARX, EGARCH, Normal
+
+    spec = ARX(1, constant=False)+EGARCH(1, 1)+Normal()
+    truth = np.array([.2, -.1, .15, -.06, .85])
+    y = spec.simulate(3000, truth, seed=seed).data
+    fitted = spec.fit(y)
+    repeated = spec.fit(y)
+    assert fitted.success, fitted.warnings
+    assert fitted.fit_info.kkt_residual <= fitted.fit_info.kkt_tolerance
+    np.testing.assert_allclose(fitted.params, truth, atol=.08, rtol=0)
+    np.testing.assert_array_equal(fitted.params, repeated.params)
+    assert fitted.log_likelihood == repeated.log_likelihood
+    assert fitted.fit_info.active_kink_rows == repeated.fit_info.active_kink_rows
+    if seed == 18:
+        assert fitted.fit_info.kink_point
+        assert fitted.fit_info.active_kink_rows == (2604,)
+        assert fitted.fit_info.inference_status == 'at_kink'
+        assert fitted.std_errors is None or not len(fitted.std_errors)
+    else:
+        assert not fitted.fit_info.kink_point
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

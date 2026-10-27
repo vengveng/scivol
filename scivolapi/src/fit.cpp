@@ -223,6 +223,8 @@ FitResult fit_shapes(const Model& model, const Model& gaussian, std::span<const 
     r.scored = sample.scored();
     r.data_scale = first.data_scale;
     r.kkt_tolerance = first.kkt_tolerance;
+    r.kink_point = first.kink_point;
+    r.active_kink_rows = first.active_kink_rows;
     r.warnings = first.warnings;
     r.phases = std::move(phases);
     r.termination = first.termination != Termination::converged ? first.termination

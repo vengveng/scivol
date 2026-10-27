@@ -59,7 +59,7 @@ void offer(const optimize::Record& record, std::size_t dimension, std::size_t ph
 {
     auto one = [&](const optimize::Point& point, bool accepted) {
         if (point.x.size() != dimension || !std::isfinite(point.value)) return;
-        candidates.push_back({to_theta(point.x), point.value, phase, accepted});
+        candidates.push_back({to_theta(point.x), point.value, phase, accepted, point.kink});
     };
     one(record.accepted, true);
     one(record.best_feasible, false);
@@ -78,13 +78,16 @@ inline int iterations(const std::vector<FitPhase>& phases)
     return total;
 }
 
-// Lowest objective value wins; on ties the later phase's accepted iterate.
+// Lowest objective value wins. An accepted manifold point within summation
+// roundoff of the best value wins over its unresolved one-sided predecessor.
 inline const Candidate& select(const std::vector<Candidate>& candidates)
 {
     const Candidate* best = &candidates.front();
     for (const Candidate& c : candidates) {
+        const double roundoff = 8*std::numeric_limits<double>::epsilon()*std::max({1.0,std::abs(c.value),std::abs(best->value)});
         const bool better = c.value < best->value
-            || (c.value == best->value && (c.phase > best->phase || (c.phase == best->phase && c.accepted)));
+            || (c.value == best->value && (c.phase > best->phase || (c.phase == best->phase && c.accepted)))
+            || (c.kink && c.accepted && c.phase >= best->phase && std::abs(c.value-best->value) <= roundoff);
         if (better) best = &c;
     }
     return *best;

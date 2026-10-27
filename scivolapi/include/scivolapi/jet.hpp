@@ -19,6 +19,7 @@ enum Request : unsigned {
     terms = 32u,    // each scored row's term of F, its share of the constants included
     log_variance_sensitivities = 64u, // d log h_t / d theta, scored rows x dimension
     residual_sensitivities = 128u,    // d e_t / d theta, scored rows x dimension
+    kinks = 256u, // residual faces, central gradient and one-sided coefficients (theta only)
 };
 
 enum class Status {
@@ -34,6 +35,18 @@ struct Paths {
     std::span<double> innovation;
 };
 
+// Capacity is scored rows (rows/values/weights), rows * dimension (normals),
+// rows * dimension^2 (curvatures), dimension (smooth_gradient) and dimension^2
+// (smooth_hessian). Only the leading `count` rows are written. Row indices are
+// zero-based in the original Sample, including its conditioning rows.
+struct KinkOutput {
+    std::size_t count = 0;
+    bool supported = true; // false for non-Lipschitz power cusps
+    std::span<std::size_t> rows;
+    std::span<double> residuals, normals, curvatures, weights;
+    std::span<double> smooth_gradient, smooth_hessian;
+};
+
 // Caller-provided outputs. Unrequested outputs are not touched.
 struct JetOutput {
     double value = std::numeric_limits<double>::quiet_NaN();
@@ -46,6 +59,7 @@ struct JetOutput {
     // In z these are first derivatives at the original z, multiplied by d theta/dz.
     std::span<double> log_variance_sensitivities;
     std::span<double> residual_sensitivities;
+    KinkOutput kink;
 };
 
 struct JetResult {
@@ -69,10 +83,20 @@ public:
     // Scores are not available in z.
     JetResult z(std::span<const double> z, unsigned request, JetOutput& out);
 
+    // The same residual faces with an explicit relative identification radius.
+    // A positive radius only proposes faces for retraction; it never changes
+    // F or its derivatives or certifies an off-manifold point. Zero uses the
+    // roundoff rule documented in MODELS.md. No likelihood work is done here.
+    // Negative radius evaluates the supplied, sorted rows[0:count] unchanged.
+    // Curvatures may be empty for a first-order identification-only request.
+    bool residual_faces(std::span<const double> theta, double radius, KinkOutput& out);
+
 private:
     const Model& model_;
     Sample sample_;
     std::vector<double> work_;
+    std::vector<double> kink_work_;
+    bool decompose_kinks(std::span<const double> theta, KinkOutput& out);
 };
 
 }  // namespace scivolapi

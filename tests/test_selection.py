@@ -33,6 +33,29 @@ def test_templates_declare_generators_and_native_closure():
         GARCH('auto')
 
 
+def test_residual_kink_mles_are_certified_but_lr_calibration_is_explicitly_unsupported():
+    y = (ARX(1, constant=False)+GARCH()+Normal()).simulate(
+        3000, [.2, .1, .1, .8], seed=104).data
+    parent = api.Model(native_spec(ARX(1, constant=False)+EGARCH()+StudentT()))
+    restriction = next(r for r in parent.restrictions() if r.name == 'density.normal')
+    child = api.Model(restriction.child)
+    plan = api.ComparisonPlan(y, 1)
+    pf, cf = api.fit(parent, plan), api.fit(child, plan)
+    for fitted in (pf, cf):
+        assert fitted.success, fitted.warnings
+        assert fitted.kink_point
+        assert fitted.active_kink_rows == [1095]
+        assert fitted.inference == api.Inference.at_kink
+        assert not len(fitted.gradient) and not len(fitted.hessian)
+        assert not len(fitted.std_errors)
+    lr = api.restriction_test(parent, child, restriction, pf, cf, plan)
+    assert lr.status == api.LRStatus.unsupported
+    assert 'kink' in lr.message
+    reused = api.restrict_fit(parent, pf, restriction, plan)
+    assert reused.status == api.RestrictFitStatus.reused
+    assert reused.result.success and reused.result.kink_point
+
+
 def test_gets_reduces_native_graph_and_records_joint_tests(garch_data):
     result = search(constant_variance=False).fit(garch_data, n_jobs=2)
     assert isinstance(result.selected, EstimationResult)
@@ -279,7 +302,7 @@ def test_exact_tail_face_saves_a_fit_without_spurious_parent_refit():
     assert any(t['statistic'] == 0 and t['p_value'] == 1 for t in result.tests)
 
 
-def test_auto_boundary_tests_and_kink_stopping():
+def test_auto_boundary_tests_and_kink_certification():
     y = (GARCH()+Normal()).simulate(3000, [.1, .15, .7], seed=101).data
     result = Auto().fit(y)
     assert result.status == 'selected'
@@ -287,12 +310,15 @@ def test_auto_boundary_tests_and_kink_stopping():
     assert not any(t['decision'] in ('retained_boundary', 'singular_information') for t in result.tests)
     kink = next(c for c in result.candidates
                 if str(c.specification) == 'ARX(1,constant=False)+EGARCH(1,1)+Normal')
-    assert not kink.fit.success
-    assert kink.fit.termination in (api.Termination.stalled, api.Termination.line_search_failed)
+    assert kink.fit.success and kink.fit.kink_point
+    assert kink.fit.termination == api.Termination.converged
+    assert kink.fit.active_kink_rows == [1569]
+    assert kink.fit.inference == api.Inference.at_kink
+    assert not len(kink.fit.std_errors)
     assert kink.fit.warnings
     assert sum(p.iterations for p in kink.fit.phases) < 100
-    # At the finite cusp, opposing one-sided gradients explain why the smooth
-    # KKT check cannot certify it. No claim of nonexistence of an MLE is made.
+    # The opposing one-sided gradients are consistent with the certified
+    # convex kink; an ordinary pointwise gradient remains unavailable.
     theta = np.array(kink.fit.theta)
     plan = api.ComparisonPlan(y, 1)
     jet = api.Jet(kink.model, plan)

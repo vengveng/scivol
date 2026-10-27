@@ -4,6 +4,11 @@
 
 namespace scivolapi::detail {
 
+Assembler assembler_branches_nig(const ModelSpec& spec)
+{
+    return assembler_coupled<GhFamilyDensity<NormalInverseGaussian>, true, true>(spec.volatility);
+}
+
 Assembler assembler_nig(const ModelSpec& spec)
 {
     return assembler_with<GhFamilyDensity<NormalInverseGaussian>>(spec);

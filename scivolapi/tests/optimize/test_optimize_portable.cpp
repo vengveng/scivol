@@ -42,7 +42,7 @@ int main()
     assert(w.allocate(2, 0));
     double factor[]{1, 0, 2}, g[]{1e15, -1e15}, lo[]{-1, -1}, hi[]{1, 1}, d[2];
     std::int64_t mode;
-    scivolapi_opt_lsq(2, 0, factor, g, w.normals, w.values, lo, hi, d,
+    scivolapi_opt_lsq(2, 0, 0, factor, g, w.normals, w.values, lo, hi, d,
         w.multipliers, w.buffer, w.indices, &mode, w.nnls);
     assert(mode == 1); close(d[0], -1); close(d[1], 1);
 

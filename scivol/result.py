@@ -199,6 +199,8 @@ class FitMetadata:
     optimizer_terminated: Optional[bool] = None
     stationarity_status: Optional[str] = None
     inference_status: Optional[str] = None
+    kink_point: bool = False
+    active_kink_rows: tuple[int, ...] = ()
     kkt_residual: Optional[float] = None
     kkt_tolerance: Optional[float] = None
     function_evaluations: Optional[int] = None

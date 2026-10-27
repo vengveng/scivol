@@ -64,6 +64,7 @@ struct ModelCapabilities {
     bool chart_covers_domain = true;     // z covers the domain apart from closed boundary faces
     bool density_free_recursion = true;  // the variance recursion does not involve the density's shapes
     bool likelihood_can_have_gradient_kinks = false; // moving residuals can cross a nondifferentiable likelihood face
+    bool residual_kink_decomposition = false; // Jet can expose residual faces and their one-sided pieces
     std::size_t exact_variance_horizon = static_cast<std::size_t>(-1);  // horizons with exact variance forecasts
 };
 
@@ -182,6 +183,10 @@ public:
     [[nodiscard]] bool to_z(std::span<const double> theta, std::span<double> z) const;
 
     [[nodiscard]] ModelCapabilities capabilities() const noexcept;
+    // 0: no gradient kink from this residual; 1: finite absolute-value kink;
+    // NaN: a moving estimated power makes the face non-Lipschitz. `future`
+    // counts scored rows following this residual, excluding unused lag terms.
+    [[nodiscard]] double residual_kink_order(std::span<const double> theta, std::size_t future) const;
     // The persistence of the variance recursion at theta, the quantity the
     // stationarity condition bounds by one: sum of the persistence coefficients
     // weighted by the density's moments (GJR, APARCH), sum beta for EGARCH, zero

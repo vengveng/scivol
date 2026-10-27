@@ -4,6 +4,11 @@
 
 namespace scivolapi::detail {
 
+Assembler assembler_branches_normal(const ModelSpec& spec)
+{
+    return assembler_coupled<NormalDensity, true, true>(spec.volatility);
+}
+
 Assembler assembler_normal(const ModelSpec& spec)
 {
     if (spec.volatility == VolatilityKind::garch && spec.p == 1 && spec.q == 0 && spec.mean.width() == 0)

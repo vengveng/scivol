@@ -4,6 +4,11 @@
 
 namespace scivolapi::detail {
 
+Assembler assembler_branches_ged(const ModelSpec& spec)
+{
+    return assembler_coupled<GedDensity, true, true>(spec.volatility);
+}
+
 Assembler assembler_ged(const ModelSpec& spec)
 {
     return assembler_with<GedDensity>(spec);

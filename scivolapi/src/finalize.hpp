@@ -15,6 +15,7 @@ struct Candidate {
     double value = 0.0;           // F / n_scored
     std::size_t phase = 0;        // index into phases
     bool accepted = false;        // the phase's accepted iterate (vs. its best feasible trial)
+    bool kink = false;
 };
 
 // The single finalizer for every model (instantiated for Model/Jet and

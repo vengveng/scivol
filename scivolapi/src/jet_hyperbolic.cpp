@@ -4,6 +4,11 @@
 
 namespace scivolapi::detail {
 
+Assembler assembler_branches_hyperbolic(const ModelSpec& spec)
+{
+    return assembler_coupled<GhFamilyDensity<Hyperbolic>, true, true>(spec.volatility);
+}
+
 Assembler assembler_hyperbolic(const ModelSpec& spec)
 {
     return assembler_with<GhFamilyDensity<Hyperbolic>>(spec);
