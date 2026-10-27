@@ -62,13 +62,31 @@ bool elementary(const double* shape, int order, bool negative, Dual2<2>& out) no
     return assign(result,order,out);
 }
 
+// (eta, lambda, delta) derivatives -> (eta, lambda, gamma, delta).
+Dual2<4> embed_without_gamma(const Dual2<3>& a) noexcept
+{
+    constexpr std::size_t index[3]{0, 1, 3};
+    Dual2<4> r;
+    r.v = a.v;
+    for (std::size_t i = 0; i < 3; ++i) {
+        r.g[index[i]] = a.g[i];
+        for (std::size_t j = i; j < 3; ++j) r.h[packed(4, index[i], index[j])] = a.h[packed(3, i, j)];
+    }
+    return r;
+}
+
 // Integrate in Hansen's latent Student-t coordinate. The branch probability
 // and its Jacobian combine before differentiation. This avoids cancellation
 // of O((1-|lambda|)^-2) scores on the collapsing branch. Each map fixes both
 // the density join and the zero of |z|, including their shape dependence.
+// On each sign piece (|z| - gamma z)^delta = (1 - s gamma)^delta |z|^delta, so
+// the integrals carry (eta, lambda, delta) derivatives only and the leverage
+// factor joins exactly afterwards (the half-moment factorization
+// M = (1-gamma)^delta A+ + (1+gamma)^delta A-).
 template<std::size_t N>
 bool skew_integral(const double* shape, double gamma, double delta, int order, bool negative, Dual2<N>& out) noexcept
 {
+    static_assert(N == 4);
     SkewTDensity::Prepared p;
     if (!shape || order < 0 || order > 2 || !SkewTDensity::prepare(shape, order, p)
         || !(delta * shape[0] < 1.0) || !(delta > 0.0) || !(std::abs(gamma) < 1.0)) return false;
@@ -77,12 +95,12 @@ bool skew_integral(const double* shape, double gamma, double delta, int order, b
         else return negative ? quadrature_negative_second_moment<SkewTDensity>(shape, order, out)
                              : quadrature_absolute_moment<SkewTDensity>(shape, order, out);
     }
-    using D = Dual2<N>;
+    using D = Dual2<3>;
     auto point_quantity = [&](double v, const double* g, const double* h) {
         D q = D::constant(v);
         if (order >= 1) for (std::size_t i = 0; i < 2; ++i) q.g[i] = g[i];
         if (order >= 2) for (std::size_t i = 0; i < 2; ++i)
-            for (std::size_t j = i; j < 2; ++j) q.h[packed(N,i,j)] = h[packed(2,i,j)];
+            for (std::size_t j = i; j < 2; ++j) q.h[packed(3,i,j)] = h[packed(2,i,j)];
         return q;
     };
     const double sign = p.lambda > 0.0 ? 1.0 : -1.0;
@@ -90,8 +108,10 @@ bool skew_integral(const double* shape, double gamma, double delta, int order, b
     D b = point_quantity(p.b, p.b1, p.b2);
     const D eta = order ? D::variable(p.eta,0) : D::constant(p.eta);
     const D lambda = order ? D::variable(p.lambda,1) : D::constant(p.lambda);
-    D g = D::constant(gamma), d = D::constant(delta);
-    if constexpr (N == 4) if (order) { g = D::variable(gamma,2); d = D::variable(delta,3); }
+    const D d = order ? D::variable(delta, 2) : D::constant(delta);
+    using D4 = Dual2<4>;
+    const D4 g4 = order ? D4::variable(gamma, 2) : D4::constant(gamma);
+    const D4 d4 = order ? D4::variable(delta, 3) : D4::constant(delta);
     const auto norm = t_log_normalizer(p.eta,order);
     D log_c = lift(eta,norm.value,order >= 1 ? norm.d1 : 0.0,order >= 2 ? norm.d2 : 0.0);
     D log_scale = D::constant(0.0);
@@ -107,13 +127,13 @@ bool skew_integral(const double* shape, double gamma, double delta, int order, b
         log_c = R-0.5*log(6.28318530717958647693*eta);
     }
     const D log_b = log(b), log_a = log(abs_a);
-    std::array<CompensatedSum,1+N+packed_size(N)> sum{};
+    std::array<CompensatedSum,1+4+packed_size(4)> sum{};
     for (int piece = 0; piece < 3; ++piece) {
         const double z_sign = piece == 1 ? sign : -sign;
         if (negative && z_sign > 0.0) continue;
         const D branch = (piece == 0 ? -sign : sign) * lambda + 1.0;
         const D log_branch = log(branch);
-        const D log_asymmetry = log(1.0 - z_sign * g);
+        const D4 asymmetry = exp(d4 * log(1.0 - z_sign * g4));  // (1 - s gamma)^delta
         auto weighted = [&](double r, double log_weight, D& value) {
             D u, log_z, log_mass;
             if (piece == 0) {
@@ -135,17 +155,17 @@ bool skew_integral(const double* shape, double gamma, double delta, int order, b
                 const auto t=t_moment_kernel(u.v,p.eta,order);
                 kernel=lift2(u,eta,t.t,t.u,t.eta,t.uu,t.ueta,t.etaeta);
             }
-            value = exp(log_c - kernel + log_mass + d * (log_scale + log_z + log_asymmetry) + log_weight);
+            value = exp(log_c - kernel + log_mass + d * (log_scale + log_z) + log_weight);
             return finite(value,order);
         };
         D part;
-        if (!integrate_piece<N>(weighted,0.0,piece == 2 ? 1.0 : std::numeric_limits<double>::infinity(),order,part)) return false;
-        const auto c = components(part,order);
+        if (!integrate_piece<3>(weighted,0.0,piece == 2 ? 1.0 : std::numeric_limits<double>::infinity(),order,part)) return false;
+        const auto c = components(embed_without_gamma(part) * asymmetry, order);
         for (std::size_t j = 0; j < c.size(); ++j) sum[j].add(c[j]);
     }
-    Components<N> c{};
+    Components<4> c{};
     for (std::size_t j = 0; j < c.size(); ++j) c[j] = sum[j].total();
-    const D result = dual<N>(c,order);
+    const D4 result = dual<4>(c,order);
     if (!finite(result,order)) return false;
     return assign(result,order,out);
 }
