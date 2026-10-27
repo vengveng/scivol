@@ -51,24 +51,27 @@ struct LogNormalizer {
     return r;
 }
 
-// Taylor coefficients (-1)^j / (j + 1) of phi(x) = log1p(x)/x.
-inline constexpr auto log1p_ratio_series = [] {
-    std::array<double, 23> c{};
-    for (std::size_t j = 0; j < c.size(); ++j) c[j] = (j % 2 ? -1.0 : 1.0) / static_cast<double>(j + 1);
-    return c;
-}();
+// Chebyshev fits of phi' and phi'' for phi(x) = log1p(x)/x on [0, 1/8], in
+// monomial form (degree 11; within one ulp of the Taylor series
+// sum_j (-1)^(j+1) (j+1) x^j / (j+2) and its derivative, checked against mpmath).
+inline constexpr std::array<double, 12> log1p_ratio_d1{
+    -0.5, 0.6666666666666649, -0.7499999999993099, 0.7999999998965168, -0.833333325299817, 0.8571424881860943,
+    -0.8749892181871265, 0.8886803561826204, -0.8972862229623672, 0.8854128724262077, -0.7817168703369787,
+    0.44867336164778276};
+inline constexpr std::array<double, 12> log1p_ratio_d2{
+    0.6666666666666666, -1.4999999999999776, 2.3999999999914543, -3.3333333320515375, 4.285714186156498,
+    -5.249995424232636, 6.222088367653529, -7.197407225648488, 8.148002038656427, -8.870597883411984,
+    8.45652561119736, -5.1078842896636845};
 
-// phi'(x) and phi''(x) given phi(x): the Taylor series where the closed forms
+// phi'(x) and phi''(x) given phi(x): the polynomials where the closed forms
 // cancel (x <= 1/8), the closed forms beyond.
 inline void log1p_ratio_derivatives(double x, double phi, int order, double& d1, double& d2) noexcept
 {
     d1 = d2 = 0.0;
     if (x <= 0.125) {
-        double value = 0.0;
-        for (int j = x < 0.001 ? 7 : x < 0.01 ? 11 : 22; j >= 0; --j) {
-            if (order >= 2) d2 = d2 * x + 2.0 * d1;
-            d1 = d1 * x + value;
-            value = value * x + log1p_ratio_series[static_cast<std::size_t>(j)];
+        for (std::size_t j = log1p_ratio_d1.size(); j-- > 0;) {
+            d1 = std::fma(d1, x, log1p_ratio_d1[j]);
+            if (order >= 2) d2 = std::fma(d2, x, log1p_ratio_d2[j]);
         }
         return;
     }
@@ -86,8 +89,10 @@ inline void log1p_ratio_derivatives(double x, double phi, int order, double& d1,
     return p;
 }
 
+// iq = 1 / (r + eta u^2) = q / r with q = 1 / (1 + x), shared by the eta and u
+// derivatives (filled from order 1).
 struct TKernel {
-    double t = 0.0, u = 0.0, uu = 0.0, eta = 0.0, ueta = 0.0, etaeta = 0.0;
+    double t = 0.0, u = 0.0, uu = 0.0, eta = 0.0, ueta = 0.0, etaeta = 0.0, iq = 0.0;
 };
 
 // T = c log1p(x) / (2 eta) = c u^2 phi(x) / (2r), c = 1 + s eta,
@@ -97,6 +102,11 @@ struct TKernel {
 // one log1p times a point constant; below eta = 2^-300, where c / (2 eta)
 // overflows, the phi form (exactly u^2 / 2 at eta = 0). The value expression is
 // the same at every order, so sparse and full requests agree bitwise.
+// The eta derivatives use closed forms in l = log1p(x) and v = x / (1 + x),
+// dividing once per observation, by 1 + x. Their terms are of size x; at small
+// x the second derivative's sum is x sr (s + sr) eta^2 / r^2 (sr = scale_rate),
+// so the cancellation stays below a factor 8 where 8 sr (s + sr) eta^2 >= r^2
+// (the univariate t with nu <= 8.9) or x > 1/8. Elsewhere the phi polynomials.
 [[nodiscard]] inline TKernel t_square_kernel(double u2, double eta, int order, double s = 1.0, double scale_rate = 2.0) noexcept
 {
     TKernel t;
@@ -106,18 +116,20 @@ struct TKernel {
     const double phi = x == 0.0 ? 1.0 : x < 0x1p-60 ? 1.0 - 0.5 * x : l / x;
     t.t = eta >= 0x1p-300 ? l * (0.5 * c / eta) : (0.5 * c / r) * u2 * phi;
     if (order < 1) return t;
-    if (x <= 0.125) {
+    const double ir = 1.0 / r, q = 1.0 / (1.0 + x);
+    t.iq = q * ir;
+    if (x <= 0.125 && 8.0 * scale_rate * (s + scale_rate) * eta * eta < r * r) {
         double d1, d2;
         log1p_ratio_derivatives(x, phi, order, d1, d2);
-        const double a = 0.5 * u2 / r, dx = u2 / (r * r);
-        t.eta = a * ((s + scale_rate) / r * phi + c * d1 * dx);
+        const double a = 0.5 * u2 * ir, dx = u2 * ir * ir;
+        t.eta = a * ((s + scale_rate) * ir * phi + c * d1 * dx);
         if (order >= 2)
-            t.etaeta = a * (2.0 * scale_rate * (s + scale_rate) / (r * r) * phi + 2.0 * (s + scale_rate + scale_rate * c) / r * d1 * dx
+            t.etaeta = a * (2.0 * scale_rate * (s + scale_rate) * ir * ir * phi + 2.0 * (s + scale_rate + scale_rate * c) * ir * d1 * dx
                             + c * d2 * dx * dx);
     } else {
-        const double v = std::isfinite(x) ? x / (1.0 + x) : 1.0;
-        t.eta = (c * v / r - l) / (2.0 * eta * eta);
-        if (order >= 2) t.etaeta = (l - v / r + 0.5 * c * v * (2.0 * scale_rate * eta - v) / (r * r)) / (eta * eta * eta);
+        const double v = std::isfinite(x) ? x * q : 1.0;
+        t.eta = (c * v * ir - l) * (0.5 / (eta * eta));
+        if (order >= 2) t.etaeta = (l - v * ir + 0.5 * c * v * (2.0 * scale_rate * eta - v) * ir * ir) * (1.0 / (eta * eta * eta));
     }
     return t;
 }
@@ -127,7 +139,7 @@ struct TKernel {
     const double u2 = u * u;
     TKernel t = t_square_kernel(u2, eta, order, s, scale_rate);
     if (order >= 1) {
-        const double c = 1.0 + s * eta, iq = 1.0 / (1.0 - scale_rate * eta + eta * u2);
+        const double c = 1.0 + s * eta, iq = t.iq;
         t.u = c * u * iq;
         if (order >= 2) {
             t.uu = c * iq * iq * std::fma(-eta, u2 + scale_rate, 1.0);
