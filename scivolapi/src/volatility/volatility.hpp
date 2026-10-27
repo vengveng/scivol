@@ -19,6 +19,13 @@
 // over its local coordinates [own block | mean entries]. It keeps whatever history
 // it needs in the rings. False: h_t is not representable.
 //
+// A recursion whose state is linear in its own past (GARCH, GJR) may declare
+// `adjoint_hessian` and accumulate_second(): with work.history set, an order-2
+// step stores its first sensitivities D_t for every row and skips the
+// second-order recursion; the caller records c_t = l_lambda / h_t in
+// work.weights and accumulate_second() then adds sum_t c_t d2h_t to the Hessian
+// by the adjoint recursion (see GarchVolatility).
+//
 // Coupled recursions (a mean model is present) differentiate through the past
 // residuals as well, using d e_k / d(mean) and d2 e_k / d(mean)^2 from the mean
 // rings. Where the innovation term has a genuine kink at e_k = 0 (GJR's
@@ -50,6 +57,10 @@ struct VolatilityWork {
     const double* de = nullptr;  // mean_slots * mean
     const double* dde = nullptr; // mean_slots * packed(mean); null when e is linear in the mean
     const double* kink_sign = nullptr; // explicit lifted absolute-value branches, requested separately
+
+    // Adjoint Hessian accumulation (adjoint_hessian recursions; null otherwise).
+    double* history = nullptr;   // D_t for every row (n * width)
+    double* weights = nullptr;   // c_t (n), overwritten by the adjoint weights
 };
 
 }  // namespace scivolapi::detail

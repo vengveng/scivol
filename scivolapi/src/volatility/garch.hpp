@@ -29,10 +29,20 @@ namespace scivolapi::detail {
 //   du[alpha_i, a] = 2 e E_a,  du[gamma_i, a] = 2 e [e < 0] E_a.
 // At e = 0 with gamma_i != 0 the second derivative jumps (2 alpha_i against
 // 2 (alpha_i + gamma_i)): the Hessian does not exist there.
+//
+// The Hessian needs S_t only through sum_t c_t S_t (c_t = l_lambda / h_t). With
+// S_t = sum_j beta_j S_{t-j} + G_t, G_t the direct terms above, exchanging the
+// order of summation gives the adjoint form
+//   sum_t c_t S_t = sum_t chat_t G_t,   chat_t = c_t + sum_j beta_j chat_{t+j},
+// one backward scalar recursion in place of a packed-matrix one per row
+// (accumulate_second). It needs D_t for every row and, coupled, a linear mean
+// (E_k = -r_k, F = 0).
 template<bool Leverage, bool Coupled = false, std::size_t P = std::dynamic_extent,
          std::size_t Q = std::dynamic_extent, std::size_t M = std::dynamic_extent>
 class GarchVolatility {
 public:
+    static constexpr bool adjoint_hessian = true;
+
     explicit GarchVolatility(const ModelSpec& spec, std::size_t mean = 0) noexcept
         : p_(spec.p), q_(spec.q), m_(Coupled ? mean : 0)
     {
@@ -99,7 +109,12 @@ public:
         const double inv = 1.0 / h;
         for (std::size_t a = 0; a < width; ++a) w.l1[a] = w.d[a] * inv;
 
-        if (order >= 2) {
+        if (order >= 2 && w.history) {  // adjoint: keep D_t, no second-order recursion
+            std::copy_n(w.d, width, w.history + t * width);
+            if constexpr (Coupled && Leverage)
+                for (std::size_t i = 1, n = std::min(p(), t); i <= n; ++i)
+                    if (w.e[t - i] == 0.0 && theta[p() + i] != 0.0) out.defined = std::min(out.defined, 1);
+        } else if (order >= 2) {
             std::fill_n(w.s, m, 0.0);
             if constexpr (Coupled)
                 for (std::size_t i = 1, n = std::min(p(), t); i <= n; ++i) couple(theta, w, t - i, i, out);
@@ -123,6 +138,48 @@ public:
         }
         std::copy_n(w.d, width, w.first_ring + (t % slots) * width);
         return true;
+    }
+
+    // Adds sum_t c_t S_t to the packed Hessian hp (dimension dim, local order
+    // [own | mean | ...]) from c_t in w.weights (overwritten by chat_t) and D_t in
+    // w.history. Coupled terms use the linear mean's E_k = -r_k.
+    void accumulate_second(const double* theta, const Sample& sample, VolatilityWork& w, std::size_t n,
+                           double* hp, std::size_t dim) const noexcept
+    {
+        const std::size_t width = this->width(), o = own(), m = mean();
+        double* chat = w.weights;
+        // v_j = sum_t chat_t D_{t-j}, the beta_j row of sum_t chat_t G_t, in the
+        // second ring (q * packed(width) >= q * width entries, unused here).
+        double* v = w.second_ring;
+        std::fill_n(v, q() * width, 0.0);
+        for (std::size_t t = n; t-- > 0;) {
+            double c = chat[t];
+            for (std::size_t j = 1; j <= q() && t + j < n; ++j) c += theta[beta_begin() + j - 1] * chat[t + j];
+            chat[t] = c;
+            for (std::size_t j = 1, nj = std::min(q(), t); j <= nj; ++j) {
+                const double* d = w.history + (t - j) * width;
+                double* vj = v + (j - 1) * width;
+                for (std::size_t a = 0; a < width; ++a) vj[a] += c * d[a];
+            }
+            if constexpr (Coupled)
+                for (std::size_t i = 1, ni = std::min(p(), t); i <= ni; ++i) {
+                    const std::size_t k = t - i;
+                    const double e = w.e[k], c2 = 2.0 * c * shock_weight(theta, w, k, i), ce = 2.0 * c * e;
+                    const double* r = sample.design.data() + k * m;  // E_k = -r_k
+                    for (std::size_t a = 0; a < m; ++a) {
+                        for (std::size_t b = a; b < m; ++b) hp[packed(dim, o + a, o + b)] += c2 * r[a] * r[b];
+                        hp[packed(dim, i, o + a)] -= ce * r[a];
+                        if (Leverage && e < 0.0) hp[packed(dim, p() + i, o + a)] -= ce * r[a];
+                    }
+                }
+        }
+        for (std::size_t j = 1; j <= q(); ++j) {
+            const std::size_t b = beta_begin() + j - 1;
+            const double* vj = v + (j - 1) * width;
+            for (std::size_t a = 0; a < b; ++a) hp[packed(dim, a, b)] += vj[a];
+            for (std::size_t a = b; a < width; ++a) hp[packed(dim, b, a)] += vj[a];
+            hp[packed(dim, b, b)] += vj[b];  // the diagonal receives both terms
+        }
     }
 
 private:

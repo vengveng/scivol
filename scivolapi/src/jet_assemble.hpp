@@ -29,6 +29,7 @@ struct VolatilityShape {
     std::size_t slots = 0;       // volatility ring slots
     std::size_t mean = 0;        // mean entries
     std::size_t mean_slots = 1;  // mean ring slots
+    bool adjoint = false;        // per-row history for the adjoint Hessian (GARCH, GJR; linear mean)
 };
 
 inline VolatilityShape volatility_shape(const ModelSpec& spec) noexcept
@@ -47,6 +48,11 @@ inline VolatilityShape volatility_shape(const ModelSpec& spec) noexcept
     v.width += m;
     v.mean = m;
     v.mean_slots = std::max(spec.p, spec.mean.ma) + 1u;  // the current row and the lags read back
+    // The adjoint Hessian pays a backward pass and a per-row history; below four
+    // local coordinates the forward second-order recursion is cheaper (GARCH(1,1)
+    // F+G+H 21 against 29 ns/row; at width four 37 against 33).
+    v.adjoint = (spec.volatility == VolatilityKind::garch || spec.volatility == VolatilityKind::gjr)
+        && spec.mean.ma == 0 && v.width >= 4;
     return v;
 }
 
@@ -65,13 +71,15 @@ struct Work {
     double* jac;    // d theta / dz (dimension^2)
     double* tmp;    // dimension^2
     double* share;  // simplex shares (dimension)
+    double* history = nullptr;  // adjoint Hessian rows (n * width), when the shape allows it
+    double* weights = nullptr;  // adjoint Hessian weights (n)
 };
 
 inline std::size_t work_size(const Layout& layout, const VolatilityShape& v, std::size_t n)
 {
     const std::size_t w = v.width, pw = packed_size(w), d = layout.dimension;
     return 4u * n + v.slots * (w + pw) + 2u * (w + pw) + v.mean_slots * (v.mean + packed_size(v.mean))
-        + 2u * (d + packed_size(d)) + 3u * d * d + 2u * d;
+        + 2u * (d + packed_size(d)) + 3u * d * d + 2u * d + (v.adjoint ? n * (w + 1u) : 0u);
 }
 
 inline Work carve(double* base, const Layout& layout, const VolatilityShape& v, std::size_t n)
@@ -106,6 +114,10 @@ inline Work carve(double* base, const Layout& layout, const VolatilityShape& v, 
     k.jac = take(d * d);
     k.tmp = take(d * d);
     k.share = take(d);
+    if (v.adjoint) {
+        k.history = take(n * w);
+        k.weights = take(n);
+    }
     return k;
 }
 
@@ -183,6 +195,17 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
     if (order >= 1) std::fill_n(g, dim, 0.0);
     if (order >= 2) std::fill_n(hp, packed_size(dim), 0.0);
     if constexpr (coupled) work.vol.dde = mean.linear() ? nullptr : work.mean.dde;
+    // A linear recursion accumulates sum_t (l_lambda / h_t) d2h_t by the adjoint
+    // instead of carrying d2h_t forward: l_lambda d2lambda = (l_lambda / h) d2h
+    // - l_lambda dlambda dlambda', the second part joining the rank-one term.
+    bool adjoint = false;
+    if constexpr (requires { Volatility::adjoint_hessian; }) {
+        bool linear = true;
+        if constexpr (coupled) linear = mean.linear();
+        adjoint = order >= 2 && linear && work.history != nullptr;
+    }
+    work.vol.history = adjoint ? work.history : nullptr;
+    work.vol.weights = adjoint ? work.weights : nullptr;
 
     // Local order -> theta order.
     auto index = [&](std::size_t a) -> std::size_t {
@@ -257,9 +280,17 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
             for (std::size_t i = 0; i < shapes; ++i) row[index(sh + i)] += l.s[i] + c.s[i];
         }
         if (order >= 2) {
+            if (adjoint) {
+                const double outer = l.lamlam - l.lam;
+                for (std::size_t a = 0; a < w; ++a)
+                    for (std::size_t b = a; b < w; ++b) hp[packed(dim, a, b)] += outer * l1[a] * l1[b];
+                work.weights[t] = l.lam / step.h;
+            } else {
+                for (std::size_t a = 0; a < w; ++a)
+                    for (std::size_t b = a; b < w; ++b)
+                        hp[packed(dim, a, b)] += l.lamlam * l1[a] * l1[b] + l.lam * l2[packed(w, a, b)];
+            }
             for (std::size_t a = 0; a < w; ++a) {
-                for (std::size_t b = a; b < w; ++b)
-                    hp[packed(dim, a, b)] += l.lamlam * l1[a] * l1[b] + l.lam * l2[packed(w, a, b)];
                 // l_lambda,s_i lambda_a; when a is s_i itself (EGARCH) the diagonal receives
                 // it twice, from d(l_s)/ds and from d(l_lambda lambda_s)/ds.
                 for (std::size_t i = 0; i < shapes; ++i)
@@ -279,6 +310,9 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
                 for (std::size_t j = i; j < shapes; ++j) hp[packed(dim, sh + i, sh + j)] += l.ss[packed(shapes, i, j)];
         }
     }
+
+    if constexpr (requires { Volatility::adjoint_hessian; })
+        if (adjoint) volatility.accumulate_second(theta + m, in.sample, work.vol, n, hp, dim);
 
     const double scored = static_cast<double>(n);
     value = total.total() + scored * c.value;
