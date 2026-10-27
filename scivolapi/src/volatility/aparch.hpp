@@ -7,6 +7,7 @@
 #include <scivolapi/model.hpp>
 
 #include "../detail/numeric.hpp"
+#include "../model_layout.hpp"
 #include "volatility.hpp"
 
 namespace scivolapi::detail {
@@ -71,11 +72,22 @@ public:
         const std::size_t width = this->width(), pw = packed_size(width), slots = ring_slots();
         const double delta = theta[delta_index()];
         double* s = w.state;  // the sigma^delta path
-        const double log_seed = std::log(sample.variance_seed);
-        double value = std::exp(0.5 * delta * log_seed);
-        if (t > 0) {
+        const std::size_t lags = std::min(p(), t);
+        Shock shocks[Layout::max_order];  // each active lag's power and derivatives, once per row
+        const double log_seed = t == 0 ? std::log(sample.variance_seed) : 0.0;
+        double value;
+        if (t == 0) {
+            value = std::exp(0.5 * delta * log_seed);
+        } else {
             value = theta[0];
-            for (std::size_t i = 1, n = std::min(p(), t); i <= n; ++i) value += theta[i] * power(w.e[t - i], theta[p() + i], delta).p;
+            if (order < 1) {
+                for (std::size_t i = 1; i <= lags; ++i) value += theta[i] * power(w.e[t - i], theta[p() + i], delta);
+            } else {
+                for (std::size_t i = 1; i <= lags; ++i) {
+                    shocks[i - 1] = shock(w.e[t - i], theta[p() + i], delta, order);
+                    value += theta[i] * shocks[i - 1].p;
+                }
+            }
             for (std::size_t j = 1, n = std::min(q(), t); j <= n; ++j) value += theta[beta_begin() + j - 1] * s[t - j];
         }
         if (!(value > 0.0) || !std::isfinite(value)) return false;
@@ -95,17 +107,16 @@ public:
             d[delta_index()] = 0.5 * value * log_seed;
         } else {
             d[0] = 1.0;
-            for (std::size_t i = 1, n = std::min(p(), t); i <= n; ++i) {
-                const Power pw_ = power(w.e[t - i], theta[p() + i], delta);
-                d[i] += pw_.p;
-                d[p() + i] += theta[i] * pw_.g;
-                d[delta_index()] += theta[i] * pw_.d;
+            for (std::size_t i = 1; i <= lags; ++i) {
+                const Shock& sh = shocks[i - 1];
+                d[i] += sh.p;
+                d[p() + i] += theta[i] * sh.g;
+                d[delta_index()] += theta[i] * sh.d;
                 if constexpr (Coupled) {
                     const std::size_t k = t - i;
-                    const Slope sl = slope(w.e[k], theta[p() + i], delta);
-                    out.defined = std::min(out.defined, sl.defined);
+                    out.defined = std::min(out.defined, sh.defined);
                     const double* de = w.de + (k % w.mean_slots) * mean();
-                    for (std::size_t a = 0; a < mean(); ++a) d[own() + a] += theta[i] * sl.e * de[a];
+                    for (std::size_t a = 0; a < mean(); ++a) d[own() + a] += theta[i] * sh.e * de[a];
                 }
             }
             for (std::size_t j = 1, n = std::min(q(), t); j <= n; ++j) {
@@ -125,15 +136,15 @@ public:
             if (t == 0) {
                 sec[packed(width, delta_index(), delta_index())] = 0.25 * value * log_seed * log_seed;
             } else {
-                for (std::size_t i = 1, n = std::min(p(), t); i <= n; ++i) {
-                    const Power pw_ = power(w.e[t - i], theta[p() + i], delta);
+                for (std::size_t i = 1; i <= lags; ++i) {
+                    const Shock& sh = shocks[i - 1];
                     const std::size_t g = p() + i;
-                    sec[packed(width, i, g)] += pw_.g;
-                    sec[packed(width, i, delta_index())] += pw_.d;
-                    sec[packed(width, g, g)] += theta[i] * pw_.gg;
-                    sec[packed(width, g, delta_index())] += theta[i] * pw_.gd;
-                    sec[packed(width, delta_index(), delta_index())] += theta[i] * pw_.dd;
-                    if constexpr (Coupled) couple(theta, w, t - i, i, delta, sec);
+                    sec[packed(width, i, g)] += sh.g;
+                    sec[packed(width, i, delta_index())] += sh.d;
+                    sec[packed(width, g, g)] += theta[i] * sh.gg;
+                    sec[packed(width, g, delta_index())] += theta[i] * sh.gd;
+                    sec[packed(width, delta_index(), delta_index())] += theta[i] * sh.dd;
+                    if constexpr (Coupled) couple(theta, w, t - i, i, sh, sec);
                 }
                 for (std::size_t j = 1, n = std::min(q(), t); j <= n; ++j) {
                     const std::size_t slot = (t - j) % slots, b = beta_begin() + j - 1;
@@ -160,39 +171,65 @@ public:
     }
 
 private:
-    struct Power {
-        double p = 0.0, g = 0.0, d = 0.0, gg = 0.0, gd = 0.0, dd = 0.0;
-    };
-    struct Slope {
-        double e = 0.0, ee = 0.0, eg = 0.0, ed = 0.0;
-        int defined = 2;
+    // One shock P = b^delta, b = |e| - gamma e = e sigma with sigma = sign(e) - gamma
+    // (the factored form avoids cancellation near |gamma| = 1, and r = e / b =
+    // 1 / sigma), with its gamma and delta derivatives and, coupled, the residual
+    // slopes P_e = delta b^(delta-1) sigma etc. (see above). One logarithm and one
+    // exponential (two with slopes) serve every requested order; P itself is
+    // formed identically for every order.
+    // A plain aggregate: the per-row array of shocks is not initialized; shock()
+    // writes every field it returns.
+    struct Shock {
+        double p, g, d, gg, gd, dd;  // P and its gamma/delta derivatives
+        double e, ee, eg, ed;        // residual slopes (Coupled)
+        int defined;
     };
 
-    // P's derivatives involving e (see above).
-    static Slope slope(double e, double gamma, double delta) noexcept
+    // P alone, by exactly the arithmetic shock() uses for it.
+    static double power(double e, double gamma, double delta) noexcept
     {
-        Slope r;
-        if (e == 0.0) {
+        if (e == 0.0) return 0.0;
+        const double sigma = (e > 0.0 ? 1.0 : -1.0) - gamma;
+        return std::exp(delta * std::log(e * sigma));
+    }
+
+    static Shock shock(double e, double gamma, double delta, int order) noexcept
+    {
+        Shock r{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2};
+        if (e == 0.0) {  // P and its gamma/delta derivatives vanish; the slopes exist only for large delta
             if (!(delta > 1.0)) r.defined = 0;
             else if (delta == 2.0 && gamma == 0.0) r.ee = 2.0;
             else if (!(delta > 2.0)) r.defined = 1;
             return r;
         }
         const double sigma = (e > 0.0 ? 1.0 : -1.0) - gamma, b = e * sigma, l = std::log(b);
-        const double b1 = std::exp((delta - 1.0) * l);  // b^(delta-1)
-        r.e = delta * b1 * sigma;
-        r.ee = delta * (delta - 1.0) * std::exp((delta - 2.0) * l) * sigma * sigma;
-        r.eg = -delta * delta * b1;
-        r.ed = b1 * sigma * (1.0 + delta * l);
+        r.p = std::exp(delta * l);
+        if (order < 1) return r;
+        const double ratio = 1.0 / sigma;
+        r.g = -delta * ratio * r.p;
+        r.d = r.p * l;
+        if (order >= 2) {
+            r.gg = delta * (delta - 1.0) * ratio * ratio * r.p;
+            r.gd = -ratio * r.p * (1.0 + delta * l);
+            r.dd = r.p * l * l;
+        }
+        if constexpr (Coupled) {
+            const double b1 = std::exp((delta - 1.0) * l);  // b^(delta-1)
+            r.e = delta * b1 * sigma;
+            r.eg = -delta * delta * b1;
+            if (order >= 2) {
+                r.ee = delta * (delta - 1.0) * (b1 / b) * sigma * sigma;
+                r.ed = b1 * sigma * (1.0 + delta * l);
+            }
+        }
         return r;
     }
 
     // Second-order terms of lag i (observation k) that involve the mean entries.
-    void couple(const double* theta, const VolatilityWork& w, std::size_t k, std::size_t i, double delta,
+    void couple(const double* theta, const VolatilityWork& w, std::size_t k, std::size_t i, const Shock& sl,
                 double* sec) const noexcept
     {
         const std::size_t width = this->width(), o = own(), slot = k % w.mean_slots;
-        const Slope sl = slope(w.e[k], theta[p() + i], delta);
         const double alpha = theta[i];
         const double* de = w.de + slot * mean();
         const double* dde = w.dde ? w.dde + slot * packed_size(mean()) : nullptr;
@@ -204,21 +241,6 @@ private:
             sec[packed(width, p() + i, o + a)] += alpha * sl.eg * de[a];
             sec[packed(width, delta_index(), o + a)] += alpha * sl.ed * de[a];
         }
-    }
-
-    // P = (|e| - gamma e)^delta and its derivatives in gamma and delta.
-    static Power power(double e, double gamma, double delta) noexcept
-    {
-        Power r;
-        if (e == 0.0) return r;
-        const double b = std::abs(e) - gamma * e, l = std::log(b), ratio = e / b;
-        r.p = std::exp(delta * l);
-        r.g = -delta * ratio * r.p;
-        r.d = r.p * l;
-        r.gg = delta * (delta - 1.0) * ratio * ratio * r.p;
-        r.gd = -ratio * r.p * (1.0 + delta * l);
-        r.dd = r.p * l * l;
-        return r;
     }
 
     [[nodiscard]] std::size_t p() const noexcept { return P == std::dynamic_extent ? p_ : P; }
