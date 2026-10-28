@@ -412,4 +412,4 @@ class TestDefaultOptimizationPathVisibility:
             assert result.fit_info.solver == "z:trust+theta:newton"
             assert result.fit_info.optimization_space == "z+theta"
         theta = (GARCH(1, 1) + Normal()).fit(data, coordinates="theta")
-        assert theta.fit_info.solver == "theta:slsqp+theta:newton"
+        assert theta.fit_info.solver == "theta:trust+theta:newton"

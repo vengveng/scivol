@@ -178,7 +178,7 @@ def test_summary_prints(capsys):
         opt,
         data,
         fit_info={
-            "solver": "theta:slsqp+theta:newton",
+            "solver": "theta:trust+theta:newton",
             "optimization_space": "theta+theta",
             "requested_hold_back": 5,
             "effective_hold_back": 7,

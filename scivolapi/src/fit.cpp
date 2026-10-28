@@ -90,12 +90,20 @@ void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, s
     const bool theta_path = options.coordinates == Coordinates::theta
         || (options.coordinates == Coordinates::automatic && !model.capabilities().chart_covers_domain);
     if (theta_path) {
-        const optimize::Record slsqp = run_phase("theta:slsqp", in_theta, Solver::slsqp, start, budget, options.accuracy, phases);
-        offer(slsqp, d, 0, same, candidates);
+        optimize::Record trust = run_phase("theta:trust", in_theta, Solver::trust_region, start, budget,
+                                           options.accuracy, phases);
+        offer(trust, d, 0, same, candidates);
+        // As on the automatic path: a stalled trust region sits against a
+        // likelihood kink, which SLSQP's line search reaches.
+        if (trust.termination == optimize::Termination::stalled && iterations(phases) < budget) {
+            trust = run_phase("theta:slsqp", in_theta, Solver::slsqp, solved(trust, start), budget - iterations(phases),
+                              options.accuracy, phases);
+            offer(trust, d, phases.size() - 1, same, candidates);
+        }
         if (iterations(phases) < budget) {
-            const optimize::Record newton = run_phase("theta:newton", in_theta, Solver::newton, solved(slsqp, start),
+            const optimize::Record newton = run_phase("theta:newton", in_theta, Solver::newton, solved(trust, start),
                                                       budget - iterations(phases), options.accuracy, phases);
-            offer(newton, d, 1, same, candidates, true);
+            offer(newton, d, phases.size() - 1, same, candidates, true);
         }
     } else {
         std::vector<double> z(d);

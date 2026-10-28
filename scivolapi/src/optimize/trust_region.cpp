@@ -1,4 +1,5 @@
-#include "solver_common.hpp"
+#include "projection.hpp"
+#include "sqp_steps.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -15,6 +16,22 @@
 // nondecreasing scaling D_i = max(D_i, sqrt|H_ii|) (More, 1978), which makes
 // the region independent of each coordinate's units. Trials request value,
 // gradient and Hessian together, since nearly all of them are accepted.
+//
+// With bounds or constraints c(x) >= 0 (the theta problems), each iteration
+// instead solves the quadratic subproblem
+//
+//   min g'p + p'Bp/2   over   l - x <= p <= u - x,   c + J p >= 0,   |D_i p_i| <= radius,
+//
+// an infinity-norm region in the same scaled units, which LSQ takes as bounds.
+// LSQ needs a convex model: B = H + s D^2 with s = 1e-10 where that is positive
+// definite, otherwise s = 1.5 |lambda_min(D^-1 H D^-1)|, which keeps half of the
+// negative curvature's size as positive curvature; coordinates on binding bounds
+// are held and active constraints enter as penalties (see convex_factor), so s
+// reflects the curvature along the active faces. Iterates stay feasible (the
+// objective rejects points outside the domain): a trial is retracted onto
+// c >= 0 by minimum-norm corrections within the bounds, and the region follows
+// the ratio of the actual decrease to the true quadratic model's prediction
+// along the actual displacement.
 namespace scivolapi::optimize {
 namespace {
 
@@ -148,14 +165,257 @@ bool solve_subproblem(Subproblem& w, const double* g, std::size_t n, double radi
     return true;
 }
 
+// Factors B = W + P + s D^2 into w.packed_factor (see above), W the model
+// Hessian. The rows and
+// columns of held coordinates are replaced by D_i^2 on the diagonal: their
+// curvature neither enters the shift nor couples them to the free coordinates.
+// P = sum rho a a' over the normals a of the active constraints (c = 0): a step
+// along the face has a'p = -c = 0, so P leaves the model on the face unchanged
+// and only penalizes leaving it, and the shift answers to the curvature on the
+// face rather than across it. In scaled units rho = 2 ||D^-1 H D^-1||_F + 1.
+// `curvature` holds the convexified matrix before the shift; `model`, `values`
+// and `vectors` are scratch (n x n, n, n x n).
+bool convex_factor(const Problem& p, detail::SolverWorkspace& w, const double* hessian, const double* scale,
+                   const char* held, std::size_t n, double* curvature, double* model, double* values, double* vectors)
+{
+    const std::size_t m = p.constraint_count;
+    double frobenius = 0.0;
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t j = 0; j < n; ++j) {
+            const bool free = !held[i] && !held[j];
+            curvature[i * n + j] = free ? hessian[i * n + j] : i == j ? scale[i] * scale[i] : 0.0;
+            if (free) frobenius = std::hypot(frobenius, hessian[i * n + j] / (scale[i] * scale[j]));
+        }
+    const double rho = 2.0 * frobenius + 1.0;
+    for (std::size_t r = 0; r < m; ++r) {
+        if (!(w.values[r] <= 1e-10)) continue;
+        double norm = 0.0;
+        for (std::size_t i = 0; i < n; ++i)
+            if (!held[i]) norm += (w.normals[r + i * m] / scale[i]) * (w.normals[r + i * m] / scale[i]);
+        if (!(norm > 0.0)) continue;
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t j = 0; j < n; ++j)
+                if (!held[i] && !held[j]) curvature[i * n + j] += rho / norm * w.normals[r + i * m] * w.normals[r + j * m];
+    }
+    auto factor_with = [&](double shift) {
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t j = 0; j < n; ++j)
+                model[i * n + j] = curvature[i * n + j] + (i == j ? shift * scale[i] * scale[i] : 0.0);
+        return detail::cholesky_factor(model, w.factor, n, 0.0) && detail::pack_factor(w, n);
+    };
+    constexpr double floor = 1e-10;
+    if (factor_with(floor)) return true;
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t j = 0; j < n; ++j) model[i * n + j] = curvature[i * n + j] / (scale[i] * scale[j]);
+    if (!symmetric_eigen(model, n, values, vectors)) return false;
+    double shift = std::max(-1.5 * *std::min_element(values, values + n), floor);
+    for (int attempt = 0; attempt < 8; ++attempt, shift *= 2.0)
+        if (factor_with(shift)) return true;
+    return false;
+}
+
+// W = H - sum_r lambda_r d2 c_r, the Hessian of the Lagrangian, for the rows
+// with lambda_r > 0. The constraints' curvature comes from forward differences
+// of their Jacobians (constraints are cheap); it shapes only the step's model,
+// not the objective or its certification. A column whose difference is not
+// available (bounds, or a point outside a constraint's own domain, which
+// reports a zero Jacobian row) gets no curvature. Uses w.trial, w.trial_values
+// and w.trial_normals, and `scratch` (n x n).
+void lagrangian_hessian(const Problem& p, detail::SolverWorkspace& w, detail::Evaluation& evaluate,
+                        const double* multipliers, double* lagrangian, double* scratch)
+{
+    const std::size_t n = p.dimension, m = p.constraint_count;
+    std::copy_n(w.hessian, n * n, lagrangian);
+    if (std::none_of(multipliers, multipliers + m, [](double l) { return l > 0.0; })) return;
+    std::fill_n(scratch, n * n, 0.0);
+    for (std::size_t k = 0; k < n; ++k) {
+        double h = std::sqrt(eps) * (1.0 + std::abs(w.x[k]));
+        if (!std::isnan(w.upper[k]) && w.x[k] + h > w.upper[k]) h = -h;
+        std::copy_n(w.x, n, w.trial);
+        w.trial[k] = w.x[k] + h;
+        if (!evaluate.constraints(w.trial, w.trial_values, w.trial_normals)) continue;
+        bool available = true;
+        for (std::size_t r = 0; r < m && available; ++r) {
+            if (!(multipliers[r] > 0.0)) continue;
+            bool zero = true;
+            for (std::size_t i = 0; i < n; ++i) zero = zero && w.trial_normals[r + i * m] == 0.0;
+            available = !zero;
+        }
+        if (!available) continue;
+        for (std::size_t i = 0; i < n; ++i) {
+            double d = 0.0;
+            for (std::size_t r = 0; r < m; ++r)
+                if (multipliers[r] > 0.0) d += multipliers[r] * (w.trial_normals[r + i * m] - w.normals[r + i * m]);
+            scratch[k * n + i] = d / h;
+        }
+    }
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t j = 0; j < n; ++j) lagrangian[i * n + j] -= 0.5 * (scratch[i * n + j] + scratch[j * n + i]);
+}
+
+Record minimize_constrained(const Problem& p, std::span<const double> start, const Options& options)
+{
+    Record record;
+    const std::size_t n = p.dimension;
+    if (!detail::valid_problem(p, start, options) || !p.second_order) return record;
+    detail::SolverWorkspace w;
+    if (!w.allocate(n, p.constraint_count)) return record;
+    ProjectionWorkspace projection = projection_workspace(p);
+    detail::initialize(p, start, w);
+    detail::Points points{record, p};
+    points.prepare();
+    detail::Evaluation evaluate{p, record.work, w.constraint_rows};
+    Work& work = record.work;
+    auto second_order = [&](const double* x, double& f, double* g, double* h) {
+        if (!detail::within_bounds(p, x)) return false;
+        ++work.gradient_requests;
+        ++work.hessian_requests;
+        const bool ok = p.second_order(x, f, g, h) && std::isfinite(f) && detail::finite(g, n)
+            && detail::finite(h, n * n);
+        if (!ok) ++work.rejected_trials;
+        return ok;
+    };
+
+    const std::size_t m = p.constraint_count;
+    std::vector<double> scale(n, 0.0), trial_hessian(n * n), curvature(n * n), model(n * n), values(n), vectors(n * n);
+    std::vector<double> lagrangian(n * n), multipliers(m, 0.0);  // W, and lambda from the last subproblem
+    std::vector<char> held(n), binding(n, 0);  // binding: the last subproblem's bound multiplier is positive
+    double* step = w.projected;
+    double f;
+    if (!evaluate.constraints(w.x, w.values, w.normals) || !detail::feasible(p, w.x, w.values)
+        || !second_order(w.x, f, w.gradient, w.hessian)) {
+        record.termination = Termination::not_evaluable_start;
+        points.finish(evaluate);
+        return record;
+    }
+    points.accept(w.x, f, w.gradient);
+    points.retain(w.x, f, w.gradient, w.values);
+    // This solver is the theta path's main phase: it continues to Newton's
+    // machine-level target, so the refinement that follows only certifies.
+    // The first region is as small as in the unconstrained solver.
+    const double tolerance = std::max(std::sqrt(options.accuracy), std::sqrt(eps));
+    const double target = std::sqrt(eps);
+    double radius = 0.1, peak = radius;
+    record.termination = Termination::iteration_limit;
+    while (true) {
+        const double residual = stationarity(p, {w.x, n}, {w.gradient, n}, projection).residual;
+        if (residual <= target) {
+            record.termination = Termination::converged;
+            break;
+        }
+        if (work.iterations >= options.maximum_iterations) break;
+
+        double largest = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            scale[i] = std::max(scale[i], std::sqrt(std::abs(w.hessian[i * n + i])));
+            largest = std::max(largest, scale[i]);
+        }
+        if (!(largest > 0.0)) {
+            record.termination = Termination::singular;
+            break;
+        }
+        for (double& s : scale) s = std::max(s, std::sqrt(eps) * largest);
+        // A coordinate on a binding bound is held there for this iteration
+        // (projected Newton, Bertsekas 1982): otherwise negative curvature
+        // across the bound would set the shift and damp every free coordinate.
+        // A bound binds if the gradient points through it or the last
+        // subproblem's multiplier was positive (a bound held through an active
+        // constraint); a held coordinate whose subproblem pushes inward moves
+        // the multiplier to its other side and is released.
+        for (std::size_t i = 0; i < n; ++i)
+            held[i] = (w.x[i] == w.lower[i] && (w.gradient[i] > 0.0 || binding[i]))
+                || (w.x[i] == w.upper[i] && (w.gradient[i] < 0.0 || binding[i]));
+        lagrangian_hessian(p, w, evaluate, multipliers.data(), lagrangian.data(), model.data());
+        if (!convex_factor(p, w, lagrangian.data(), scale.data(), held.data(), n, curvature.data(), model.data(),
+                           values.data(), vectors.data())) {
+            record.termination = Termination::singular;
+            break;
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            const double reach = held[i] ? 0.0 : radius / scale[i];
+            w.qp_lower[i] = std::isnan(w.lower[i]) ? -reach : std::max(w.lower[i] - w.x[i], -reach);
+            w.qp_upper[i] = std::isnan(w.upper[i]) ? reach : std::min(w.upper[i] - w.x[i], reach);
+        }
+        if (!detail::solve_qp(p, w, w.gradient, w.values, w.normals, w.direction)) {
+            record.termination = Termination::singular;
+            break;
+        }
+        for (std::size_t r = 0; r < m; ++r) multipliers[r] = std::max(w.multipliers[r], 0.0);
+        // LSQ returns a step onto a bound only within roundoff of it; a
+        // coordinate whose bound has a positive multiplier lands on it exactly
+        // (closed faces such as eta = 0). Multipliers of the region's box do not
+        // count.
+        for (std::size_t i = 0; i < n; ++i) {
+            const double lower = w.multipliers[m + i], upper = w.multipliers[m + n + i];
+            const bool at_lower = !std::isnan(w.lower[i]) && w.qp_lower[i] == w.lower[i] - w.x[i] && lower > 0.0;
+            const bool at_upper = !std::isnan(w.upper[i]) && w.qp_upper[i] == w.upper[i] - w.x[i] && upper > 0.0;
+            w.trial[i] = held[i] ? w.x[i] : at_lower ? w.lower[i] : at_upper ? w.upper[i] : w.x[i] + w.direction[i];
+            binding[i] = at_lower || at_upper;
+        }
+        const bool retracted = detail::feasible_trial(p, w, evaluate);
+        // The model's decrease along the subproblem step d. With W it
+        // describes the objective along the face the retraction follows, so
+        // the actual decrease at the retracted trial is measured against it.
+        double predicted = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            double wd = 0.0;
+            for (std::size_t j = 0; j < n; ++j) wd += lagrangian[i * n + j] * w.direction[j];
+            predicted -= w.direction[i] * (w.gradient[i] + 0.5 * wd);
+        }
+        double reach = 0.0;
+        bool moved = false;
+        for (std::size_t i = 0; i < n; ++i) {
+            step[i] = retracted ? w.trial[i] - w.x[i] : w.direction[i];
+            reach = std::max(reach, std::abs(scale[i] * step[i]));
+            moved = moved || (retracted && step[i] != 0.0);
+        }
+        // No representable progress left.
+        if (!(predicted > 8.0 * eps * (1.0 + std::abs(f))) || (retracted && !moved)) {
+            record.termination = residual <= tolerance ? Termination::converged : Termination::line_search_failed;
+            break;
+        }
+        ++work.iterations;
+        double trial_f;
+        const bool ok = retracted && second_order(w.trial, trial_f, w.trial_gradient, trial_hessian.data());
+        if (ok) points.retain(w.trial, trial_f, w.trial_gradient, w.trial_values);
+        const double ratio = ok ? (f - trial_f) / predicted : -std::numeric_limits<double>::infinity();
+        if (ratio > 1e-4) {
+            const double decrease = f - trial_f;
+            std::copy_n(w.trial, n, w.x);
+            std::copy_n(w.trial_gradient, n, w.gradient);
+            std::copy_n(trial_hessian.data(), n * n, w.hessian);
+            std::copy_n(w.trial_values, p.constraint_count, w.values);
+            std::copy_n(w.trial_normals, p.constraint_count * n, w.normals);
+            f = trial_f;
+            points.accept(w.x, f, w.gradient);
+            // A region-limited step gaining no more than the accuracy: the
+            // model has stopped describing the objective (see above).
+            if (reach >= 0.99 * radius && decrease <= options.accuracy * (1.0 + std::abs(f))) {
+                record.termination = Termination::stalled;
+                break;
+            }
+        }
+        if (ratio < 0.25) radius = 0.25 * reach;
+        else if (ratio > 0.75 && reach >= 0.99 * radius) radius *= 2.0;
+        peak = std::max(peak, radius);
+        if (p.objective_can_have_gradient_kinks && radius < 1e-2 * peak) {
+            record.termination = Termination::stalled;
+            break;
+        }
+    }
+    record.solver_mode = static_cast<int>(record.termination);
+    points.finish(evaluate);
+    return record;
+}
+
 }  // namespace
 
 Record minimize_trust_region(const Problem& p, std::span<const double> start, const Options& options)
 {
+    if (!p.lower.empty() || !p.upper.empty() || p.constraint_count) return minimize_constrained(p, start, options);
     Record record;
     const std::size_t n = p.dimension;
-    if (!detail::valid_problem(p, start, options) || !p.second_order || !p.lower.empty() || !p.upper.empty()
-        || p.constraint_count)
+    if (!detail::valid_problem(p, start, options) || !p.second_order)
         return record;
     Work& work = record.work;
     auto evaluate = [&](const double* x, double& f, double* g, double* h) {

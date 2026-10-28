@@ -1,37 +1,16 @@
 #include "projection.hpp"
-#include "solver_common.hpp"
+#include "sqp_steps.hpp"
 #include "kinks.hpp"
 
 namespace scivolapi::optimize {
 
 namespace {
 
-bool cholesky_factor(const double* hessian, double* factor, std::size_t n, double damping)
-{
-    std::copy_n(hessian, n * n, factor);
-    for (std::size_t row = 0; row < n; ++row) {
-        for (std::size_t col = 0; col <= row; ++col) {
-            double value = factor[row * n + col];
-            if (row == col) value += damping;
-            for (std::size_t k = 0; k < col; ++k)
-                value -= factor[row * n + k] * factor[col * n + k];
-            if (row == col) {
-                if (!(value > 0) || !std::isfinite(value)) return false;
-                factor[row * n + col] = std::sqrt(value);
-            } else {
-                factor[row * n + col] = value / factor[col * n + col];
-                if (!std::isfinite(factor[row * n + col])) return false;
-            }
-        }
-    }
-    return true;
-}
-
-void identity_factor(detail::SolverWorkspace& w, std::size_t n)
-{
-    std::fill_n(w.packed_factor, n * (n + 1) / 2, 0.0);
-    for (std::size_t i = 0, at = 0; i < n; at += n - i, ++i) w.packed_factor[at] = 1;
-}
+using detail::cholesky_factor;
+using detail::feasible_trial;
+using detail::identity_factor;
+using detail::pack_factor;
+using detail::solve_direction;
 
 bool newton_factor(detail::SolverWorkspace& w, std::size_t n)
 {
@@ -39,39 +18,10 @@ bool newton_factor(detail::SolverWorkspace& w, std::size_t n)
     for (std::size_t i = 0; i < n; ++i) scale = std::max(scale, std::abs(w.hessian[i * n + i]));
     double damping = 0;
     for (int attempt = 0; attempt < 14; ++attempt) {
-        if (cholesky_factor(w.hessian, w.factor, n, damping)) {
-            // Convert Cholesky L L' into the packed unit-L / D format of LSQ.
-            for (std::size_t col = 0, at = 0; col < n; ++col) {
-                const double diagonal = w.factor[col * n + col];
-                w.packed_factor[at++] = diagonal * diagonal;
-                for (std::size_t row = col + 1; row < n; ++row)
-                    w.packed_factor[at++] = w.factor[row * n + col] / diagonal;
-            }
-            return detail::finite(w.packed_factor, n * (n + 1) / 2);
-        }
+        if (cholesky_factor(w.hessian, w.factor, n, damping)) return pack_factor(w, n);
         damping = damping == 0 ? std::max(1e-10, scale * 1e-8) : damping * 10;
     }
     return false;
-}
-
-bool solve_direction(const Problem& p, detail::SolverWorkspace& w,
-    const double* x, const double* gradient, double* values, double* normals,
-    double* direction, std::size_t equalities = 0)
-{
-    const auto n = p.dimension;
-    for (std::size_t i = 0; i < n; ++i) {
-        w.qp_lower[i] = w.lower[i] - x[i];
-        w.qp_upper[i] = w.upper[i] - x[i];
-        w.qp_gradient[i] = gradient ? gradient[i] : 0;
-        if ((!std::isnan(w.lower[i]) && !std::isfinite(w.qp_lower[i]))
-            || (!std::isnan(w.upper[i]) && !std::isfinite(w.qp_upper[i]))) return false;
-    }
-    std::int64_t mode = 0;
-    scivolapi_opt_lsq(static_cast<CBLAS_INT>(n), static_cast<CBLAS_INT>(p.constraint_count),
-        static_cast<CBLAS_INT>(equalities),
-        w.packed_factor, w.qp_gradient, normals, values, w.qp_lower, w.qp_upper,
-        direction, w.multipliers, w.buffer, w.indices, &mode, w.nnls);
-    return mode == 1 && detail::finite(direction, n);
 }
 
 bool stationarity_direction(const Problem& p, detail::SolverWorkspace& w)
@@ -102,30 +52,6 @@ bool stationarity_direction(const Problem& p, detail::SolverWorkspace& w)
         w.qp_lower, w.qp_upper, w.projected, w.multipliers, w.buffer, w.indices,
         &mode, w.nnls);
     return mode == 1 && detail::finite(w.projected, n);
-}
-
-bool feasible_trial(const Problem& p, detail::SolverWorkspace& w, detail::Evaluation& evaluate)
-{
-    detail::project_bounds(p, w.trial);
-    for (int correction = 0; correction < 8; ++correction) {
-        if (!evaluate.constraints(w.trial, w.trial_values, w.trial_normals)) return false;
-        if (detail::feasible(p, w.trial, w.trial_values))
-            return detail::retract_roundoff(p, evaluate, w.trial, w.trial_values, w.trial_normals);
-        // Retract a nonlinear tangent step using minimum-norm feasibility
-        // corrections. Acceptance still uses the original, actual displacement.
-        identity_factor(w, p.dimension);
-        if (!solve_direction(p, w, w.trial, nullptr, w.trial_values,
-                w.trial_normals, w.correction)) return false;
-        bool changed = false;
-        for (std::size_t i = 0; i < p.dimension; ++i) {
-            const double next = w.trial[i] + w.correction[i];
-            changed |= next != w.trial[i];
-            w.trial[i] = next;
-        }
-        detail::project_bounds(p, w.trial);
-        if (!changed) return false;
-    }
-    return false;
 }
 
 // Accepts the feasible trial (constraints already evaluated) on sufficient

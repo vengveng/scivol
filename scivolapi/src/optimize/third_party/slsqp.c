@@ -656,8 +656,18 @@ lsq(
         for (int64_t i = 0; i < meq; i++) { y[i] = lsei_scratch[i+n_wG_rows]; }
         for (int64_t i = 0; i < mineq; i++) { y[meq + i] = lsei_scratch[i]; }
 
-        // Set the user-defined bounds on x to NaN
+        // Bound multipliers: lower bound i at y[m + i], upper at y[m + orign + i];
+        // NaN for an absent bound (and for the augmented variable's bounds).
         for (int64_t i = 0; i < 2*n; i++) { y[m + i] = NAN; }
+        int64_t row = mineq;
+        for (int64_t i = 0; i < n; i++)
+        {
+            if (!isnan(xl[i])) { if (i < orign) { y[m + i] = lsei_scratch[row]; } row++; }
+        }
+        for (int64_t i = 0; i < n; i++)
+        {
+            if (!isnan(xu[i])) { if (i < orign) { y[m + orign + i] = lsei_scratch[row]; } row++; }
+        }
     }
 
     // Clamp the solution, if given, to the finite bound interval

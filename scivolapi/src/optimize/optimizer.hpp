@@ -83,9 +83,11 @@ struct Record {
 // Sequential least-squares quadratic programming (Kraft / SciPy SLSQP).
 Record minimize_slsqp(const Problem& problem, std::span<const double> start, const Options& options);
 
-// Exact-Hessian trust-region Newton for unconstrained problems (no bounds or
-// constraints); requires `second_order`. Stops well inside the stationarity
-// tolerance max(sqrt(accuracy), sqrt(eps)), where a refinement certifies.
+// Exact-Hessian trust-region Newton; requires `second_order`. Unconstrained
+// problems use an exact ellipsoidal subproblem; bounds and constraints a
+// box-region SQP subproblem with feasible iterates. Stops well inside the
+// stationarity tolerance max(sqrt(accuracy), sqrt(eps)), where a refinement
+// certifies.
 Record minimize_trust_region(const Problem& problem, std::span<const double> start, const Options& options);
 
 // Newton refinement with the exact Hessian from a starting point, respecting

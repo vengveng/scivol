@@ -156,7 +156,7 @@ def test_fit_reaches_the_production_optimum(garch_data):
 def test_theta_and_z_paths_run_independently_and_agree(garch_data):
     theta = (GARCH(1, 1) + Normal()).fit(garch_data, coordinates="theta")
     z = (GARCH(1, 1) + Normal()).fit(garch_data, coordinates="z")
-    assert theta.fit_info.optimizer_phases == ("theta:slsqp", "theta:newton")
+    assert theta.fit_info.optimizer_phases == ("theta:trust", "theta:newton")
     assert z.fit_info.optimizer_phases == ("z:slsqp",)
     assert theta.success and z.success
     assert theta.log_likelihood == pytest.approx(z.log_likelihood, abs=1e-6)

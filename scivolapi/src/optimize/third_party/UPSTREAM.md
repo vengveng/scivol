@@ -18,6 +18,8 @@ Retained production corrections:
 - Exactly diagonal positive finite box QPs use their separable primal solution,
   avoiding cancellation in LDP recovery. Dense/constrained QPs still use LSQ.
 - The main iteration budget is checked before incrementing it.
+- LSQ returns the bound multipliers after the constraint multipliers
+  (lower, then upper; NaN for an absent bound) instead of NaN.
 
 Removed the optional scivol constraint-curvature reset heuristic and its state.
 Kraft's ordinary singular-update/descent BFGS resets remain part of SLSQP.
