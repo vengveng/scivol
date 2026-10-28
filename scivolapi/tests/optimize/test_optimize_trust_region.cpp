@@ -1,5 +1,6 @@
 #include "test_support.hpp"
 
+#include <limits>
 #include <vector>
 
 namespace {
@@ -155,4 +156,24 @@ int main()
     r = minimize_trust_region(p, std::array{0.0, 1.05}, o);
     assert(r.termination == Termination::converged && r.work.iterations <= 2);
     assert(r.accepted.x[0] == 0.0); close(r.accepted.x[1], 1.0, 1e-8);
+
+    // A coordinate held at the smallest normal, where its curvature is ~1e31
+    // (f = x0 + x0^1.9, like omega near its open bound): its scale must not
+    // raise the others', or the free coordinate would crawl at a fraction of
+    // its Newton step for the rest of the budget.
+    p = {}; p.dimension = 2;
+    p.objective = [](const double* x, double& f, double* g) {
+        f = x[0] + std::pow(x[0], 1.9) + (x[1] - 1) * (x[1] - 1);
+        if (g) { g[0] = 1 + 1.9 * std::pow(x[0], 0.9); g[1] = 2 * (x[1] - 1); }
+        return true;
+    };
+    p.hessian = [](const double* x, double* h) {
+        h[0] = 1.71 * std::pow(x[0], -0.1); h[1] = h[2] = 0; h[3] = 2; return true;
+    };
+    with_second_order(p);
+    p.lower = {std::numeric_limits<double>::min(), std::nan("")};
+    p.upper = {std::nan(""), std::nan("")};
+    r = minimize_trust_region(p, std::array{0.5, -10.0}, o);
+    assert(r.termination == Termination::converged && r.work.iterations <= 20);
+    assert(r.accepted.x[0] == std::numeric_limits<double>::min()); close(r.accepted.x[1], 1.0, 1e-8);
 }

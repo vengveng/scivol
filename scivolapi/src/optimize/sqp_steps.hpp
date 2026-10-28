@@ -41,10 +41,11 @@ inline bool pack_factor(SolverWorkspace& w, std::size_t n)
     return finite(w.packed_factor, n * (n + 1) / 2);
 }
 
-inline void identity_factor(SolverWorkspace& w, std::size_t n)
+// The metric diag(scale)^2, the identity without a scale.
+inline void identity_factor(SolverWorkspace& w, std::size_t n, const double* scale = nullptr)
 {
     std::fill_n(w.packed_factor, n * (n + 1) / 2, 0.0);
-    for (std::size_t i = 0, at = 0; i < n; at += n - i, ++i) w.packed_factor[at] = 1;
+    for (std::size_t i = 0, at = 0; i < n; at += n - i, ++i) w.packed_factor[at] = scale ? scale[i] * scale[i] : 1.0;
 }
 
 // min g'd + d'Bd/2 over w.qp_lower <= d <= w.qp_upper (NaN: unbounded) and
@@ -79,15 +80,16 @@ inline bool solve_direction(const Problem& p, SolverWorkspace& w,
 
 // Moves w.trial onto the feasible set: bounds by projection, then minimum-norm
 // corrections within the bounds for the nonlinear constraints a tangent step
-// violates. Acceptance uses the actual displacement. Overwrites w.packed_factor.
-inline bool feasible_trial(const Problem& p, SolverWorkspace& w, Evaluation& evaluate)
+// violates, in the norm |diag(scale) d| (Euclidean without a scale).
+// Acceptance uses the actual displacement. Overwrites w.packed_factor.
+inline bool feasible_trial(const Problem& p, SolverWorkspace& w, Evaluation& evaluate, const double* scale = nullptr)
 {
     project_bounds(p, w.trial);
     for (int correction = 0; correction < 8; ++correction) {
         if (!evaluate.constraints(w.trial, w.trial_values, w.trial_normals)) return false;
         if (feasible(p, w.trial, w.trial_values))
             return retract_roundoff(p, evaluate, w.trial, w.trial_values, w.trial_normals);
-        identity_factor(w, p.dimension);
+        identity_factor(w, p.dimension, scale);
         if (!solve_direction(p, w, w.trial, nullptr, w.trial_values,
                 w.trial_normals, w.correction)) return false;
         bool changed = false;

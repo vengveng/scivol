@@ -89,6 +89,11 @@ void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, s
     // the theta path (the domain's constraints are enforced there).
     const bool theta_path = options.coordinates == Coordinates::theta
         || (options.coordinates == Coordinates::automatic && !model.capabilities().chart_covers_domain);
+    // The theta refinement certifies a solution reached by the main phase; on
+    // both paths it gets at most this reserve (it needs a few iterations where it
+    // certifies, and on an unbounded likelihood it would descend for the rest of
+    // the budget).
+    const int reserve = std::min(100, std::max(1, budget / 4));
     if (theta_path) {
         optimize::Record trust = run_phase("theta:trust", in_theta, Solver::trust_region, start, budget,
                                            options.accuracy, phases);
@@ -102,7 +107,8 @@ void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, s
         }
         if (iterations(phases) < budget) {
             const optimize::Record newton = run_phase("theta:newton", in_theta, Solver::newton, solved(trust, start),
-                                                      budget - iterations(phases), options.accuracy, phases);
+                                                      std::min(reserve, budget - iterations(phases)), options.accuracy,
+                                                      phases);
             offer(newton, d, phases.size() - 1, same, candidates, true);
         }
     } else {
@@ -114,13 +120,11 @@ void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, s
         // that phase always runs. An explicit z fit is its own formulation:
         // SLSQP with the whole budget in z.
         const bool hybrid = options.coordinates == Coordinates::automatic;
-        const int reserve = hybrid ? std::min(100, std::max(1, budget / 4)) : 0;
         const optimize::Problem z_problem = make_problem(model, unit_jet, true);
         optimize::Record in_z = hybrid
             ? run_phase("z:trust", z_problem, Solver::trust_region, z, std::max(1, budget - reserve),
                         options.accuracy, phases)
-            : run_phase("z:slsqp", z_problem, Solver::slsqp, z, std::max(1, budget - reserve),
-                        options.accuracy, phases);
+            : run_phase("z:slsqp", z_problem, Solver::slsqp, z, budget, options.accuracy, phases);
         offer(in_z, d, phases.size() - 1, from_z, candidates);
         // A stalled trust region sits against a likelihood kink, where the
         // quadratic model fails. SLSQP's line search tolerates the kink and

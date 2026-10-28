@@ -296,6 +296,7 @@ Record minimize_constrained(const Problem& p, std::span<const double> start, con
     const double tolerance = std::max(std::sqrt(options.accuracy), std::sqrt(eps));
     const double target = std::sqrt(eps);
     double radius = 0.1, peak = radius;
+    double least_scale = 0.0;  // set at the first iteration
     record.termination = Termination::iteration_limit;
     while (true) {
         const double residual = stationarity(p, {w.x, n}, {w.gradient, n}, projection).residual;
@@ -314,7 +315,13 @@ Record minimize_constrained(const Problem& p, std::span<const double> start, con
             record.termination = Termination::singular;
             break;
         }
-        for (double& s : scale) s = std::max(s, std::sqrt(eps) * largest);
+        // The floor for coordinates without curvature is fixed by the start:
+        // a floor tied to the current largest scale would let one coordinate's
+        // curvature blowing up near an open bound (omega at the smallest normal)
+        // inflate every other scale for good, after which the floor shift
+        // below, not the curvature, would set the length of every step.
+        if (least_scale == 0.0) least_scale = std::sqrt(eps) * largest;
+        for (double& s : scale) s = std::max(s, least_scale);
         // A coordinate on a binding bound is held there for this iteration
         // (projected Newton, Bertsekas 1982): otherwise negative curvature
         // across the bound would set the shift and damp every free coordinate.
@@ -352,7 +359,10 @@ Record minimize_constrained(const Problem& p, std::span<const double> start, con
             w.trial[i] = held[i] ? w.x[i] : at_lower ? w.lower[i] : at_upper ? w.upper[i] : w.x[i] + w.direction[i];
             binding[i] = at_lower || at_upper;
         }
-        const bool retracted = detail::feasible_trial(p, w, evaluate);
+        // Corrections in the region's norm: in plain units a correction too
+        // small to matter elsewhere can move a coordinate of large scale (a
+        // coefficient near zero) across the whole region.
+        const bool retracted = detail::feasible_trial(p, w, evaluate, scale.data());
         // The model's decrease along the subproblem step d. With W it
         // describes the objective along the face the retraction follows, so
         // the actual decrease at the retracted trial is measured against it.
@@ -395,7 +405,7 @@ Record minimize_constrained(const Problem& p, std::span<const double> start, con
                 break;
             }
         }
-        if (ratio < 0.25) radius = 0.25 * reach;
+        if (ratio < 0.25) radius = 0.25 * std::min(reach, radius);
         else if (ratio > 0.75 && reach >= 0.99 * radius) radius *= 2.0;
         peak = std::max(peak, radius);
         if (p.objective_can_have_gradient_kinks && radius < 1e-2 * peak) {
