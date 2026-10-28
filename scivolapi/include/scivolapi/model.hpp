@@ -169,6 +169,10 @@ public:
     // Lower/upper bounds on theta (NaN = unbounded) and inequality constraints
     // c(theta) >= 0 beyond the bounds.
     void bounds(std::span<double> lower, std::span<double> upper) const;
+    // Which finite bounds are representational endpoints of an open domain
+    // (omega > 0 stored as the smallest normal, |rho| < 1, nu > 2): 1 where the
+    // bound itself is excluded, 0 where it is closed (alpha >= 0, eta >= 0) or absent.
+    void open_bounds(std::span<char> lower, std::span<char> upper) const;
     [[nodiscard]] std::size_t constraint_count() const noexcept;
     void constraints(std::span<const double> theta, std::span<double> values,
                      std::span<double> jacobian) const;

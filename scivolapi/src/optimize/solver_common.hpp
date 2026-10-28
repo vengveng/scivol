@@ -27,6 +27,8 @@ inline bool valid_problem(const Problem& p, std::span<const double> start, const
         || (p.constraint_count && !p.constraints)
         || (!p.lower.empty() && p.lower.size() != p.dimension)
         || (!p.upper.empty() && p.upper.size() != p.dimension)
+        || (!p.open_lower.empty() && p.open_lower.size() != p.dimension)
+        || (!p.open_upper.empty() && p.open_upper.size() != p.dimension)
         || !std::isfinite(o.accuracy) || o.accuracy <= 0 || o.maximum_iterations < 0)
         return false;
     for (std::size_t i = 0; i < p.dimension; ++i) {
@@ -46,6 +48,26 @@ inline bool within_bounds(const Problem& p, const double* x, double tolerance = 
             || (!p.upper.empty() && x[i] - p.upper[i] > tolerance)) return false;
     }
     return true;
+}
+
+// A trust-region step covers at most this fraction of the distance to an open
+// bound (the fraction-to-the-boundary rule of interior methods): a region wide
+// in a weakly curved coordinate would otherwise reach the representational
+// endpoint in one step (zeta = 0 from zeta = 1) and leave the iterates in a
+// degenerate corner. The Newton refinement may still probe the endpoint.
+constexpr double open_bound_fraction = 0.99;
+
+inline bool open_lower(const Problem& p, std::size_t i) { return !p.open_lower.empty() && p.open_lower[i]; }
+inline bool open_upper(const Problem& p, std::size_t i) { return !p.open_upper.empty() && p.open_upper[i]; }
+
+// The step box l - x <= d <= u - x, open bounds pulled in by the fraction rule.
+inline double step_lower(const Problem& p, double lower, double x, std::size_t i)
+{
+    return open_lower(p, i) ? open_bound_fraction * (lower - x) : lower - x;
+}
+inline double step_upper(const Problem& p, double upper, double x, std::size_t i)
+{
+    return open_upper(p, i) ? open_bound_fraction * (upper - x) : upper - x;
 }
 
 inline void project_bounds(const Problem& p, double* x)

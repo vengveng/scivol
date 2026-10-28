@@ -157,6 +157,26 @@ int main()
     assert(r.termination == Termination::converged && r.work.iterations <= 2);
     assert(r.accepted.x[0] == 0.0); close(r.accepted.x[1], 1.0, 1e-8);
 
+    // The same minimizer with the bound open (x0 > 0 represented by the
+    // smallest normal): iterates approach it geometrically and never land on it.
+    p = {}; p.dimension = 2;
+    p.objective = [](const double* x, double& f, double* g) {
+        f = x[0] + (x[1] - 1) * (x[1] - 1);
+        if (g) { g[0] = 1; g[1] = 2 * (x[1] - 1); }
+        return true;
+    };
+    p.hessian = [](const double*, double* h) { h[0] = h[1] = h[2] = 0; h[3] = 2; return true; };
+    with_second_order(p);
+    p.lower = {std::numeric_limits<double>::min(), std::nan("")};
+    p.upper = {std::nan(""), std::nan("")};
+    p.open_lower = {1, 0};
+    r = minimize_trust_region(p, std::array{1.0, 0.0}, o);
+    assert(r.termination == Termination::converged && r.accepted.x[0] > std::numeric_limits<double>::min());
+    assert(r.accepted.x[0] <= 1.5e-8); close(r.accepted.x[1], 1.0, 1e-8);
+    p.open_lower = {};
+    r = minimize_trust_region(p, std::array{1.0, 0.0}, o);
+    assert(r.termination == Termination::converged && r.accepted.x[0] == std::numeric_limits<double>::min());
+
     // A coordinate held at the smallest normal, where its curvature is ~1e31
     // (f = x0 + x0^1.9, like omega near its open bound): its scale must not
     // raise the others', or the free coordinate would crawl at a fraction of

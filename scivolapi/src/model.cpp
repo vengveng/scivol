@@ -281,6 +281,23 @@ void Model::bounds(std::span<double> lower, std::span<double> upper) const
         }
 }
 
+void Model::open_bounds(std::span<char> lower, std::span<char> upper) const
+{
+    require(lower.size() == dimension() && upper.size() == dimension(), "bounds have the wrong length");
+    const Layout layout(spec_);
+    for (std::size_t k = 0; k < dimension(); ++k) {
+        lower[k] = upper[k] = 0;
+        if (layout.scalar_entry[k]) {
+            const auto& chart = layout.scalar(k);
+            lower[k] = !chart.closed_lower && std::isfinite(chart.lower_bound());
+            upper[k] = std::isfinite(chart.upper_bound());
+        }
+    }
+    for (std::size_t k = 0; k < layout.simplex_count; ++k) lower[layout.simplex_index[k]] = 0;
+    for (std::size_t b = 0; b < layout.stable_blocks; ++b)
+        if (layout.stable[b].count == 1) lower[layout.stable[b].at] = upper[layout.stable[b].at] = 1;
+}
+
 std::vector<double> Model::closed_face_normals(std::span<const double> theta) const
 {
     check_size(theta, dimension());

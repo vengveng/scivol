@@ -162,11 +162,18 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
     }
     r.kkt_residual = stationarity.residual;
     r.stationary = r.kkt_residual <= r.kkt_tolerance;
-    // The optimizer's chart stops at the last representable value inside an
-    // open bound. A KKT point there is a supremum on the excluded boundary,
-    // not a maximum in the declared domain.
+    // A KKT point at an open bound is a supremum on the excluded boundary,
+    // not a maximum in the declared domain: the optimizer stopped at the
+    // bound's representational endpoint, or short of it with the projected
+    // gradient step x - g crossing it (the bound is active in the projection).
     bool open_bound = false;
     if constexpr (univariate) open_bound = model.at_open_bound(unit_theta);
+    for (std::size_t i = 0; r.stationary && gradient_ok && i < d; ++i) {
+        const double step = unit_theta[i] - unit_g[i];
+        open_bound = open_bound
+            || (!problem.open_lower.empty() && problem.open_lower[i] && unit_g[i] > 0.0 && step <= problem.lower[i])
+            || (!problem.open_upper.empty() && problem.open_upper[i] && unit_g[i] < 0.0 && step >= problem.upper[i]);
+    }
 
     // Reported quantities, evaluated directly on the original data.
     r.theta.resize(d);

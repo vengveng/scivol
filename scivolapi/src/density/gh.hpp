@@ -46,12 +46,45 @@ Dual2<S, Order> lift_bessel(const Dual2<S, Order>& lambda, const Dual2<S, Order>
                          : lift(zeta, k.value, k.z, Order >= 2 ? k.zz : 0.0);
 }
 
-// Unit-variance GH: with kappa = K_{l+1}(zeta) / (zeta K_l(zeta)) and the Turan gap
-// W = K_{l+2}/K_{l+1} - K_{l+1}/K_l > 0 (computed without subtraction),
-//   alpha^2 = zeta^2 kappa (1 + rho^2 zeta W / (1 - rho^2)) / (1 - rho^2),
-//   beta = alpha rho,  delta^2 = zeta^2 / (alpha^2 (1 - rho^2)),  mu = -beta delta^2 kappa,
-//   c = -lambda log(gamma / delta) + log(2 pi) / 2 + log K_l(zeta) + 2 nu log alpha,
-// where gamma / delta = alpha^2 (1 - rho^2) / zeta.
+// log(zeta^nu K_nu(zeta)), nu = lambda + shift, as a Dual2 number in the shapes.
+// For nu > 0 it stays finite as zeta -> 0 and its zeta derivatives come from
+// Bessel ratios (d/dzeta = -K_{nu-1}/K_nu), never from log K_nu and nu log zeta
+// separately, whose 1/zeta terms cancel to the last digits. For nu < 0,
+// K_nu = K_{-nu} adds the singular part 2 nu log zeta explicitly.
+template<std::size_t S, int Order = 2>
+bool log_power_bessel(const Dual2<S, Order>& lambda, const Dual2<S, Order>& zeta, double shift, bool lambda_varies,
+                      unsigned want, Dual2<S, Order>& out) noexcept
+{
+    const double nu = lambda.v + shift;
+    bessel::LogK k;
+    if (nu == 0.0) {  // nu log zeta vanishes here, its order derivatives do not
+        if (!bessel::log_k(0.0, zeta.v, want, k)) return false;
+        out = lift_bessel(lambda, zeta, lambda_varies, k) + (lambda + shift) * log(zeta);
+        return true;
+    }
+    if (!bessel::log_zk(std::abs(nu), zeta.v, want, k)) return false;
+    if (nu > 0.0) {
+        out = lift_bessel(lambda, zeta, lambda_varies, k);
+        return true;
+    }
+    k.nu = -k.nu;
+    k.nuz = -k.nuz;
+    out = lift_bessel(lambda, zeta, lambda_varies, k) + 2.0 * ((lambda + shift) * log(zeta));
+    return true;
+}
+
+// Unit-variance GH. With A_j = log(zeta^(l+j) K_{l+j}(zeta)), the ratio
+// R = zeta K_{l+1} / K_l = exp(A_1 - A_0) and V = zeta W, W = K_{l+2}/K_{l+1} - K_{l+1}/K_l > 0
+// (the Turan gap),
+//   alpha^2 = R (1 + rho^2 V / (1 - rho^2)) / (1 - rho^2),
+//   beta = alpha rho,  delta^2 = zeta^2 / (alpha^2 (1 - rho^2)),  mu = -rho R / (alpha (1 - rho^2)),
+//   c = A_0 - log(alpha^2) / 2 - lambda log(1 - rho^2) + log(2 pi) / 2,
+// the normalizing constant -lambda log(gamma / delta) + log(2 pi) / 2 + log K_l(zeta) + 2 nu log alpha
+// with gamma / delta = alpha^2 (1 - rho^2) / zeta. Every factor is regular as zeta -> 0
+// for lambda > 0 (the Variance-Gamma limit), so its derivatives keep full precision
+// there. Below zeta = 1, V = R_{l+1} - R_l (R_{l+1} is exp(A_2 - A_1)), whose terms
+// stay O(1); from zeta = 1 on, where nothing cancels in log K_l + l log zeta, the
+// ladder and the subtraction-free gap give R and V.
 template<std::size_t S, int Order = 2>
 bool standardize(const Dual2<S, Order>& rho, const Dual2<S, Order>& zeta, const Dual2<S, Order>& lambda, bool lambda_varies,
                  GhPoint<S, Order>& out) noexcept
@@ -60,25 +93,37 @@ bool standardize(const Dual2<S, Order>& rho, const Dual2<S, Order>& zeta, const 
         return false;
     const unsigned want = Order == 0 ? 0u : bessel::argument | (lambda_varies ? bessel::order : 0u)
         | (Order == 1 ? bessel::first_only : 0u);
-    bessel::LogK k[2], gap;
-    if (!bessel::log_k_ladder(lambda.v, zeta.v, 2, want, k) || !bessel::log_ratio_gap(lambda.v, zeta.v, want, gap))
-        return false;
-    const Dual2<S, Order> l0 = lift_bessel(lambda, zeta, lambda_varies, k[0]);
-    const Dual2<S, Order> kappa = exp(lift_bessel(lambda, zeta, lambda_varies, k[1]) - l0) / zeta;
-    const Dual2<S, Order> w = exp(lift_bessel(lambda, zeta, lambda_varies, gap));
+    Dual2<S, Order> a0, ratio, v;
+    if (zeta.v < 1.0) {
+        Dual2<S, Order> a1, a2;
+        if (!log_power_bessel(lambda, zeta, 0.0, lambda_varies, want, a0)
+            || !log_power_bessel(lambda, zeta, 1.0, lambda_varies, want, a1)
+            || !log_power_bessel(lambda, zeta, 2.0, lambda_varies, want, a2))
+            return false;
+        ratio = exp(a1 - a0);
+        v = exp(a2 - a1) - ratio;
+    } else {
+        // Large arguments: A_0 and A_1 are both about -zeta, so the ratio comes
+        // from the ladder, which forms log K_{l+1} - log K_l directly.
+        bessel::LogK k[2], gap;
+        if (!bessel::log_k_ladder(lambda.v, zeta.v, 2, want, k) || !bessel::log_ratio_gap(lambda.v, zeta.v, want, gap))
+            return false;
+        const Dual2<S, Order> l0 = lift_bessel(lambda, zeta, lambda_varies, k[0]);
+        a0 = l0 + lambda * log(zeta);
+        ratio = zeta * exp(lift_bessel(lambda, zeta, lambda_varies, k[1]) - l0);
+        v = zeta * exp(lift_bessel(lambda, zeta, lambda_varies, gap));
+    }
     const Dual2<S, Order> one_minus = 1.0 - rho, one_plus = rho + 1.0;
     const Dual2<S, Order> rho2 = one_minus * one_plus;
-    const Dual2<S, Order> zeta2 = zeta * zeta;
-    const Dual2<S, Order> alpha2 = zeta2 * kappa * ((rho * rho * zeta * w / rho2) + 1.0) / rho2;
-    if (!(alpha2.v > 0.0) || !std::isfinite(alpha2.v)) return false;
+    const Dual2<S, Order> alpha2 = ratio * ((rho * rho * v / rho2) + 1.0) / rho2;
+    if (!(alpha2.v > 0.0) || !std::isfinite(alpha2.v) || !(v.v > 0.0)) return false;
     out.alpha = sqrt(alpha2);
     out.minus = out.alpha * one_minus;
     out.plus = out.alpha * one_plus;
-    out.d2 = zeta2 / (alpha2 * rho2);
-    out.mu = -1.0 * (out.alpha * rho * out.d2 * kappa);
+    out.d2 = zeta * zeta / (alpha2 * rho2);
+    out.mu = -1.0 * (rho * ratio / (out.alpha * rho2));
     out.nu = lambda + (-0.5);
-    out.constant = (-1.0 * (lambda * (log(alpha2) + log(rho2) - log(zeta)))) + half_log_2pi + l0
-        + (out.nu * log(alpha2));
+    out.constant = a0 + (-0.5) * log(alpha2) + (-1.0) * (lambda * log(rho2)) + half_log_2pi;
     return true;
 }
 

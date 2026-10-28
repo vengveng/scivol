@@ -328,10 +328,18 @@ Record minimize_constrained(const Problem& p, std::span<const double> start, con
         // A bound binds if the gradient points through it or the last
         // subproblem's multiplier was positive (a bound held through an active
         // constraint); a held coordinate whose subproblem pushes inward moves
-        // the multiplier to its other side and is released.
+        // the multiplier to its other side and is released. Iterates never
+        // reach an open bound, so there the active set is the epsilon-active
+        // one of projected Newton: within the tolerance of the bound with the
+        // gradient pointing through it (omega -> 0 on an unbounded likelihood).
+        const auto near = [&](double bound, double x) {
+            return std::abs(x - bound) <= tolerance * std::max(1.0, std::abs(bound));
+        };
         for (std::size_t i = 0; i < n; ++i)
             held[i] = (w.x[i] == w.lower[i] && (w.gradient[i] > 0.0 || binding[i]))
-                || (w.x[i] == w.upper[i] && (w.gradient[i] < 0.0 || binding[i]));
+                || (w.x[i] == w.upper[i] && (w.gradient[i] < 0.0 || binding[i]))
+                || (detail::open_lower(p, i) && w.gradient[i] > 0.0 && near(w.lower[i], w.x[i]))
+                || (detail::open_upper(p, i) && w.gradient[i] < 0.0 && near(w.upper[i], w.x[i]));
         lagrangian_hessian(p, w, evaluate, multipliers.data(), lagrangian.data(), model.data());
         if (!convex_factor(p, w, lagrangian.data(), scale.data(), held.data(), n, curvature.data(), model.data(),
                            values.data(), vectors.data())) {
@@ -340,8 +348,8 @@ Record minimize_constrained(const Problem& p, std::span<const double> start, con
         }
         for (std::size_t i = 0; i < n; ++i) {
             const double reach = held[i] ? 0.0 : radius / scale[i];
-            w.qp_lower[i] = std::isnan(w.lower[i]) ? -reach : std::max(w.lower[i] - w.x[i], -reach);
-            w.qp_upper[i] = std::isnan(w.upper[i]) ? reach : std::min(w.upper[i] - w.x[i], reach);
+            w.qp_lower[i] = std::isnan(w.lower[i]) ? -reach : std::max(detail::step_lower(p, w.lower[i], w.x[i], i), -reach);
+            w.qp_upper[i] = std::isnan(w.upper[i]) ? reach : std::min(detail::step_upper(p, w.upper[i], w.x[i], i), reach);
         }
         if (!detail::solve_qp(p, w, w.gradient, w.values, w.normals, w.direction)) {
             record.termination = Termination::singular;
@@ -351,7 +359,7 @@ Record minimize_constrained(const Problem& p, std::span<const double> start, con
         // LSQ returns a step onto a bound only within roundoff of it; a
         // coordinate whose bound has a positive multiplier lands on it exactly
         // (closed faces such as eta = 0). Multipliers of the region's box do not
-        // count.
+        // count, nor do open bounds, whose step bound the fraction rule pulls in.
         for (std::size_t i = 0; i < n; ++i) {
             const double lower = w.multipliers[m + i], upper = w.multipliers[m + n + i];
             const bool at_lower = !std::isnan(w.lower[i]) && w.qp_lower[i] == w.lower[i] - w.x[i] && lower > 0.0;

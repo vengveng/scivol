@@ -224,26 +224,70 @@ def test_ged_derivatives_exist_at_exact_zero_returns(series):
     assert_close(out["hessian"], hessian, 1e-9)
 
 
+def mp_gh_terms(x, rho, zeta, lam):
+    """Standardized GH negative log density summed over x, in the current mpmath precision."""
+    import mpmath as mp
+
+    k = mp.besselk
+    kappa = k(lam + 1, zeta) / k(lam, zeta) / zeta
+    kappa_next = k(lam + 2, zeta) / k(lam + 1, zeta) / zeta
+    rho2 = 1 - rho * rho
+    alpha = mp.sqrt(zeta**2 * kappa * (1 + rho**2 * zeta**2 * (kappa_next - kappa) / rho2) / rho2)
+    beta, delta = alpha * rho, zeta / (alpha * mp.sqrt(rho2))
+    mu, gamma = -beta * delta**2 * kappa, alpha * mp.sqrt(rho2)
+    total = 0
+    for value in x:
+        c = mp.mpf(value) - mu
+        r = mp.sqrt(delta**2 + c**2)
+        total -= (lam * mp.log(gamma / delta) - mp.log(2 * mp.pi) / 2 - mp.log(k(lam, zeta)) + beta * c
+                  + mp.log(k(lam - mp.mpf(1) / 2, alpha * r)) - (mp.mpf(1) / 2 - lam) * (mp.log(r) - mp.log(alpha)))
+    return total
+
+
 def mp_gh_nll(x, rho, zeta, lam):
-    """Standardized GH negative log density summed over x, in 80-digit arithmetic."""
+    """mp_gh_terms in 80-digit arithmetic."""
     import mpmath as mp
 
     with mp.workdps(80):
-        rho, zeta, lam = mp.mpf(rho), mp.mpf(zeta), mp.mpf(lam)
-        k = mp.besselk
-        kappa = k(lam + 1, zeta) / k(lam, zeta) / zeta
-        kappa_next = k(lam + 2, zeta) / k(lam + 1, zeta) / zeta
-        rho2 = 1 - rho * rho
-        alpha = mp.sqrt(zeta**2 * kappa * (1 + rho**2 * zeta**2 * (kappa_next - kappa) / rho2) / rho2)
-        beta, delta = alpha * rho, zeta / (alpha * mp.sqrt(rho2))
-        mu, gamma = -beta * delta**2 * kappa, alpha * mp.sqrt(rho2)
-        total = 0
-        for value in x:
-            c = mp.mpf(value) - mu
-            r = mp.sqrt(delta**2 + c**2)
-            total -= (lam * mp.log(gamma / delta) - mp.log(2 * mp.pi) / 2 - mp.log(k(lam, zeta)) + beta * c
-                      + mp.log(k(lam - mp.mpf(1) / 2, alpha * r)) - (mp.mpf(1) / 2 - lam) * (mp.log(r) - mp.log(alpha)))
-        return float(total)
+        return float(mp_gh_terms(x, mp.mpf(rho), mp.mpf(zeta), mp.mpf(lam)))
+
+
+# zeta -> 0 is a regular limit for lambda > 0 (Variance-Gamma); lambda = -1 puts the
+# order lambda + 1 on zero. The reference differentiates the 60-digit likelihood.
+@pytest.mark.parametrize("member,shape", [
+    ("hyperbolic", [0.3, 1e-9]), ("generalized_hyperbolic", [0.3, 1e-9, 1.7]),
+    ("generalized_hyperbolic", [-0.4, 0.3, -1.0]), ("nig", [0.3, 1e-9]),
+])
+def test_gh_family_shape_derivatives_are_exact_at_small_zeta(member, shape):
+    import mpmath as mp
+
+    data = np.random.default_rng(1).standard_t(5, 12) * 0.9
+    data[::3] = 0.0
+    theta = point(1, 1, shape)
+    out = api.Jet(model_for(member), data).theta(theta, api.VALUE | api.GRADIENT | api.HESSIAN | api.PATHS)
+    assert out["status"] == "ok"
+    fixed = {"hyperbolic": 1.0, "nig": -0.5}.get(member)
+    with mp.workdps(60):
+        x = [mp.mpf(v) / mp.sqrt(mp.mpf(h)) for v, h in zip(data, out["variance"])]
+        s0 = [mp.mpf(v) for v in shape]
+        step = [mp.mpf(10) ** -15 * (v if i == 1 else 1) for i, v in enumerate(s0)]
+
+        def f(*s):
+            return mp_gh_terms(x, s[0], s[1], mp.mpf(fixed) if fixed is not None else s[2])
+
+        def along(i, j=None):
+            def g(a, b=None):
+                return f(*[a if m == i else b if m == j else s0[m] for m in range(len(s0))])
+            return g
+
+        n = len(shape)
+        gradient = [float(mp.diff(along(i), s0[i], h=step[i])) for i in range(n)]
+        hessian = [[float(mp.diff(along(i), s0[i], 2, h=step[i]) if i == j
+                          else mp.diff(along(i, j), (s0[i], s0[j]), (1, 1), h=min(step[i], step[j])))
+                    for j in range(n)] for i in range(n)]
+    d = len(theta)
+    assert_close(np.asarray(out["gradient"])[3:], np.array(gradient), 1e-12)
+    assert_close(np.asarray(out["hessian"]).reshape(d, d)[3:, 3:], np.array(hessian), 1e-12)
 
 
 @pytest.mark.parametrize("member,lam", [("nig", -0.5), ("hyperbolic", 1.0)])
@@ -324,6 +368,21 @@ def test_fit_reaches_the_production_optimum(t_data, hyperbolic_data, density):
     result = (GARCH(1, 1) + COMPONENTS[density]()).fit(data)
     assert result.success and result.fit_info.inference_status == "available"
     assert result.log_likelihood >= PRODUCTION_LOG_LIKELIHOOD["density_" + density] - 1e-6
+
+
+@pytest.mark.parametrize("coordinates", ["automatic", "theta"])
+def test_likelihood_rising_toward_an_open_bound_is_not_a_maximum(coordinates):
+    # On t(3) innovations the VG likelihood rises toward lambda = 3/2, which the
+    # domain excludes: however close the optimizer stops, no maximum exists.
+    rng = np.random.default_rng(1)
+    z = rng.standard_t(3.0, 2000) * np.sqrt(1.0 / 3.0)
+    y, h = np.empty(2000), 1.0
+    for t in range(2000):
+        y[t] = np.sqrt(h) * z[t]
+        h = 0.1 + 0.05 * y[t] ** 2 + 0.85 * h
+    result = (GARCH(1, 1) + VarianceGamma()).fit(y, coordinates=coordinates)
+    assert result.params[-1] > 1.5 and result.params[-1] - 1.5 < 1e-6
+    assert not result.success and result.fit_info.inference_status == "at_open_bound"
 
 
 def test_student_t_fit_recovers_the_tail_index(t_data):

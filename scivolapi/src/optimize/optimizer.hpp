@@ -35,6 +35,9 @@ struct Problem {
     // radius < 0 evaluates the explicitly selected rows without changing them.
     std::function<bool(const double*, double, KinkOutput&)> faces;
     std::vector<double> lower, upper;  // dimension each; NaN means unbounded; empty = no bounds
+    // 1 where the bound is the representational endpoint of an open domain:
+    // iterates approach it but are never placed on it. Empty = all closed.
+    std::vector<char> open_lower, open_upper;
     std::size_t constraint_count = 0;
     Constraints constraints;          // required when constraint_count > 0
 };

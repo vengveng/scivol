@@ -105,11 +105,23 @@ void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, s
                               options.accuracy, phases);
             offer(trust, d, phases.size() - 1, same, candidates);
         }
-        if (iterations(phases) < budget) {
-            const optimize::Record newton = run_phase("theta:newton", in_theta, Solver::newton, solved(trust, start),
+        const auto refine = [&](const optimize::Record& from) {
+            if (iterations(phases) >= budget) return optimize::Termination::iteration_limit;
+            const optimize::Record newton = run_phase("theta:newton", in_theta, Solver::newton, solved(from, start),
                                                       std::min(reserve, budget - iterations(phases)), options.accuracy,
                                                       phases);
             offer(newton, d, phases.size() - 1, same, candidates, true);
+            return newton.termination;
+        };
+        // A trust region that stopped without progress short of KKT (a face
+        // too sharp for its retraction, such as the HAR unit root) hands over
+        // to SLSQP when the refinement cannot certify its point either.
+        if (refine(trust) != optimize::Termination::converged
+            && trust.termination == optimize::Termination::line_search_failed && iterations(phases) < budget) {
+            trust = run_phase("theta:slsqp", in_theta, Solver::slsqp, solved(trust, start), budget - iterations(phases),
+                              options.accuracy, phases);
+            offer(trust, d, phases.size() - 1, same, candidates);
+            refine(trust);
         }
     } else {
         std::vector<double> z(d);
@@ -193,7 +205,7 @@ FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const
         offer(retry, model.dimension(), phases.size()-1, same, candidates);
         if (iterations(phases) < options.maximum_iterations) {
             const auto refine = run_phase("theta:newton:restart", problem, Solver::newton, solved(retry, inside),
-                options.maximum_iterations-iterations(phases), options.accuracy, phases);
+                std::min(reserve, options.maximum_iterations-iterations(phases)), options.accuracy, phases);
             offer(refine, model.dimension(), phases.size()-1, same, candidates, true);
         }
         keep_feasible(model, candidates);

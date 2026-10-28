@@ -89,6 +89,11 @@ optimize::Problem make_problem(const ModelT& model, JetT& jet, bool in_z)
         problem.lower.resize(d);
         problem.upper.resize(d);
         model.bounds(problem.lower, problem.upper);
+        if constexpr (requires { model.open_bounds(std::span<char>{}, std::span<char>{}); }) {
+            problem.open_lower.resize(d);
+            problem.open_upper.resize(d);
+            model.open_bounds(problem.open_lower, problem.open_upper);
+        }
         problem.constraint_count = model.constraint_count();
         problem.constraints = [&model, d](const double* x, double* c, double* jac) {
             model.constraints({x, d}, {c, model.constraint_count()}, {jac, model.constraint_count() * d});
@@ -140,6 +145,10 @@ inline optimize::Problem make_tail_problem(const Model& model, Jet& jet, std::sp
     model.bounds(lower, upper);
     problem.lower.assign(lower.begin() + static_cast<std::ptrdiff_t>(first), lower.end());
     problem.upper.assign(upper.begin() + static_cast<std::ptrdiff_t>(first), upper.end());
+    std::vector<char> open_lower(d), open_upper(d);
+    model.open_bounds(open_lower, open_upper);
+    problem.open_lower.assign(open_lower.begin() + static_cast<std::ptrdiff_t>(first), open_lower.end());
+    problem.open_upper.assign(open_upper.begin() + static_cast<std::ptrdiff_t>(first), open_upper.end());
     return problem;
 }
 
