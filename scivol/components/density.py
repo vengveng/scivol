@@ -1,7 +1,7 @@
 # scivol/components/density.py
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
 
@@ -10,77 +10,67 @@ from ..roles import Role
 
 class Normal(Component):
     role = Role.DENSITY
-    
+
     def __init__(self):
         self.fitted_params = {}
-    
+
     @property
     def signature(self): return 'Normal'
-    
-    @property  
+
+    @property
     def n_params(self): return 0
-    
-    def default_start(self, data): return np.array([])
-    def bounds(self): return []
+
     def pack(self, params_dict): return np.array([])
-    def unpack(self, flat_params): 
+    def unpack(self, flat_params):
         self.fitted_params = {}
         return {}
 
 class StudentT(Component):
     role = Role.DENSITY
-    
+
     def __init__(self):
         self.fitted_params = None
-    
+
     @property
     def signature(self): return "StudentT"
-    
+
     @property
-    def n_params(self): return 1  # degrees of freedom
-    
-    def default_start(self, data): return np.array([10.0])
-    def bounds(self): return [(2.01, 100.0)]
-    def pack(self, params_dict): return np.array([params_dict['nu']])
+    def n_params(self): return 1  # reciprocal tail
+
+    def pack(self, params_dict): return np.array([params_dict['eta']])
     def unpack(self, flat_params):
-        self.fitted_params = {'nu': flat_params[0]} if len(flat_params) > 0 else {}
+        self.fitted_params = {'eta': flat_params[0]} if len(flat_params) > 0 else {}
         return self.fitted_params
 
 
 class SkewT(Component):
     """
     Skewed Student-t distribution (Hansen, 1994 parameterization).
-    
+
     Parameters
     ----------
-    nu : float
-        Degrees of freedom (must be > 2 for finite variance)
+    eta : float
+        Reciprocal degrees of freedom in [0, 1/2), with the Normal limit at zero
     lam : float
         Skewness parameter (-1, 1), where lam=0 gives symmetric Student-t
     """
     role = Role.DENSITY
-    
+
     def __init__(self):
         self.fitted_params = None
-    
+
     @property
     def signature(self): return "SkewT"
-    
+
     @property
-    def n_params(self): return 2  # degrees of freedom + skewness
-    
-    def default_start(self, data): 
-        return np.array([10.0, 0.0])  # nu=10, lambda=0 (symmetric)
-    
-    def bounds(self): 
-        return [(2.01, 100.0), (-0.99, 0.99)]  # nu bounds, lambda bounds
-    
-    def pack(self, params_dict): 
-        return np.array([params_dict['nu'], params_dict['lam']])
-    
+    def n_params(self): return 2  # reciprocal tail + skewness
+
+    def pack(self, params_dict):
+        return np.array([params_dict['eta'], params_dict['lam']])
+
     def unpack(self, flat_params):
         if len(flat_params) >= 2:
-            self.fitted_params = {'nu': flat_params[0], 'lam': flat_params[1]}
+            self.fitted_params = {'eta': flat_params[0], 'lam': flat_params[1]}
         else:
             self.fitted_params = {}
         return self.fitted_params
@@ -107,12 +97,6 @@ class GED(Component):
     def n_params(self):
         return 1
 
-    def default_start(self, data):
-        return np.array([1.5], dtype=np.float64)
-
-    def bounds(self):
-        return [(1.01, 100.0)]
-
     def pack(self, params_dict):
         return np.array([params_dict["nu"]], dtype=np.float64)
 
@@ -136,12 +120,6 @@ class GeneralizedHyperbolic(Component):
     @property
     def n_params(self):
         return 3
-
-    def default_start(self, data):
-        return np.array([0.0, 1.0, 1.0], dtype=np.float64)
-
-    def bounds(self):
-        return [(-0.995, 0.995), (0.1, 25.0), (-6.0, 6.0)]
 
     def pack(self, params_dict):
         return np.array(
@@ -177,12 +155,6 @@ class NormalInverseGaussian(Component):
     def n_params(self):
         return 2
 
-    def default_start(self, data):
-        return np.array([0.0, 1.0], dtype=np.float64)
-
-    def bounds(self):
-        return [(-0.995, 0.995), (0.1, 25.0)]
-
     def pack(self, params_dict):
         return np.array(
             [params_dict["rho"], params_dict["zeta"]], dtype=np.float64
@@ -214,12 +186,6 @@ class Hyperbolic(Component):
     @property
     def n_params(self):
         return 2
-
-    def default_start(self, data):
-        return np.array([0.0, 1.0], dtype=np.float64)
-
-    def bounds(self):
-        return [(-0.995, 0.995), (0.1, 25.0)]
 
     def pack(self, params_dict):
         return np.array(
@@ -257,12 +223,6 @@ class VarianceGamma(Component):
     def n_params(self):
         return 2
 
-    def default_start(self, data):
-        return np.array([0.0, 3.0], dtype=np.float64)
-
-    def bounds(self):
-        return [(-0.995, 0.995), (1.51, 50.0)]
-
     def pack(self, params_dict):
         return np.array(
             [params_dict["rho"], params_dict["lambda"]], dtype=np.float64
@@ -277,64 +237,3 @@ class VarianceGamma(Component):
         else:
             self.fitted_params = {}
         return self.fitted_params
-
-
-class AutoDensity(Component):
-    """
-    Placeholder component for automatic density/distribution selection.
-    
-    When used in a spec, the fit method will search over candidate distributions
-    and select the best one based on a blended criterion of AIC and diagnostic tests.
-    
-    Parameters
-    ----------
-    candidates : list of str, optional
-        List of distribution names to search over.
-        Default is ['Normal', 'StudentT', 'SkewT'].
-        
-    Examples
-    --------
-    >>> from scivol import GARCH, AutoDensity
-    >>> spec = GARCH(1, 1) + AutoDensity()  # Search all distributions
-    >>> spec = GARCH(auto=True) + AutoDensity(candidates=['Normal', 'StudentT'])
-    
-    Notes
-    -----
-    When used with QMLE estimation, AutoDensity is redundant since QMLE always
-    fits with Normal likelihood. A warning will be issued and Normal will be used.
-    """
-    role = Role.DENSITY
-    
-    # Keep the default grid inexpensive and backward compatible. Other shipped
-    # densities, including GED, GH, and NIG, remain available explicitly.
-    CANDIDATES = ['Normal', 'StudentT', 'SkewT']
-    
-    def __init__(self, candidates: Optional[List[str]] = None):
-        self.candidates = candidates or self.CANDIDATES.copy()
-        self.fitted_params = {}
-        self._is_auto = True
-    
-    @property
-    def signature(self) -> str:
-        return "AutoDensity"
-    
-    @property
-    def n_params(self) -> int:
-        # Placeholder - actual n_params depends on selected distribution
-        return 0
-    
-    def default_start(self, data: np.ndarray) -> np.ndarray:
-        return np.array([])
-    
-    def bounds(self) -> List[Tuple[float, float]]:
-        return []
-    
-    def pack(self, params_dict: dict) -> np.ndarray:
-        return np.array([])
-    
-    def unpack(self, flat_params: np.ndarray) -> dict:
-        return {}
-    
-    def get_candidates(self) -> List[str]:
-        """Return list of candidate distribution names."""
-        return self.candidates

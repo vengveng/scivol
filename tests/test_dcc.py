@@ -20,10 +20,6 @@ import pytest
 from numpy.typing import NDArray
 
 from scivol import CCC, DCC, GARCH, Normal
-from scivol._devtools.ad_oracle import dcc_value_grad_hess
-from scivol._dcc_kernels import (
-    dcc_nll, dcc_nll_grad, dcc_nll_grad_hess, compute_qbar,
-)
 
 
 HAS_JAX = importlib.util.find_spec("jax") is not None
@@ -102,7 +98,7 @@ def dcc_dgp_data():
     Qbar_true = np.array([[1.0, 0.5, 0.3], [0.5, 1.0, 0.4], [0.3, 0.4, 1.0]])
     dgp = simulate_dcc_garch(T, garch_params, dcc_a, dcc_b, Qbar_true, seed=42)
     eps = dgp["eps"]
-    Qbar = compute_qbar(eps)
+    Qbar = (eps.T @ eps / len(eps))
     return {
         "eps": eps, "Qbar": Qbar, "theta_true": theta,
         "T": T, "N": N, "p": 1, "q": 1,
@@ -119,7 +115,7 @@ def dcc_oracle_data():
     Qbar_true = np.array([[1.0, 0.5, 0.3], [0.5, 1.0, 0.4], [0.3, 0.4, 1.0]])
     dgp = simulate_dcc_garch(T, garch_params, dcc_a, dcc_b, Qbar_true, seed=123)
     eps = dgp["eps"]
-    return {"eps": eps, "Qbar": compute_qbar(eps)}
+    return {"eps": eps, "Qbar": (eps.T @ eps / len(eps))}
 
 
 @pytest.fixture(scope="module")
@@ -146,99 +142,6 @@ def fitted_multivariate_results():
 
 # =============================================================================
 # 1. NLL consistency: _11 vs _pq
-# =============================================================================
-
-class TestNLLConsistency:
-    """NLL from _11 and _pq must match."""
-
-    def test_nll_11_vs_pq(self, dcc_dgp_data):
-        theta = dcc_dgp_data["theta_true"]
-        eps, Qbar = dcc_dgp_data["eps"], dcc_dgp_data["Qbar"]
-        # _11 call
-        nll_11 = dcc_nll(theta, eps, Qbar, 1, 1)
-        # force _pq path by passing through the pq interface
-        from scivol import _core
-        eps_c = np.ascontiguousarray(eps, dtype=np.float64)
-        Qbar_c = np.ascontiguousarray(Qbar.ravel(), dtype=np.float64)
-        theta_c = np.ascontiguousarray(theta, dtype=np.float64)
-        nll_pq = _core._dcc_nll_pq_gaussian(
-            theta_c.ctypes.data, eps_c.ctypes.data, Qbar_c.ctypes.data,
-            5000, 3, 1, 1)
-        assert np.isclose(nll_11, nll_pq, rtol=1e-12)
-
-
-# =============================================================================
-# 2. Gradient validation via AD oracle
-# =============================================================================
-
-@pytest.mark.skipif(not HAS_JAX, reason="jax is required for AD-oracle derivative checks")
-class TestGradientValidation:
-    """Analytical gradient must match the AD oracle."""
-
-    @pytest.mark.parametrize("theta,p,q", [
-        (np.array([0.05, 0.93]), 1, 1),
-        (np.array([0.10, 0.80]), 1, 1),
-        (np.array([0.02, 0.97]), 1, 1),
-        (np.array([0.03, 0.02, 0.90]), 2, 1),
-        (np.array([0.04, 0.45, 0.45]), 1, 2),
-        (np.array([0.02, 0.01, 0.50, 0.40]), 2, 2),
-    ])
-    def test_gradient_vs_ad(self, dcc_oracle_data, theta, p, q):
-        eps, Qbar = dcc_oracle_data["eps"], dcc_oracle_data["Qbar"]
-        _, grad_a = dcc_nll_grad(theta, eps, Qbar, p, q)
-        _, grad_ref, _ = dcc_value_grad_hess(theta, eps, Qbar, p, q)
-        np.testing.assert_allclose(grad_a, grad_ref, rtol=1e-8, atol=1e-10)
-
-
-# =============================================================================
-# 3. Hessian validation via AD oracle
-# =============================================================================
-
-@pytest.mark.skipif(not HAS_JAX, reason="jax is required for AD-oracle derivative checks")
-class TestHessianValidation:
-    """Analytical Hessian must match the AD oracle."""
-
-    @pytest.mark.parametrize("theta,p,q", [
-        (np.array([0.05, 0.93]), 1, 1),
-        (np.array([0.10, 0.80]), 1, 1),
-        (np.array([0.03, 0.02, 0.90]), 2, 1),
-        (np.array([0.04, 0.45, 0.45]), 1, 2),
-        (np.array([0.02, 0.01, 0.50, 0.40]), 2, 2),
-    ])
-    def test_hessian_vs_ad(self, dcc_oracle_data, theta, p, q):
-        eps, Qbar = dcc_oracle_data["eps"], dcc_oracle_data["Qbar"]
-        _, _, hess_a = dcc_nll_grad_hess(theta, eps, Qbar, p, q)
-        _, _, hess_ref = dcc_value_grad_hess(theta, eps, Qbar, p, q)
-        np.testing.assert_allclose(hess_a, hess_ref, rtol=1e-8, atol=1e-10)
-
-
-# =============================================================================
-# 4. Per-obs scores
-# =============================================================================
-
-class TestScores:
-    """Per-obs scores must be consistent with total gradient."""
-
-    def test_scores_sum_to_grad(self, dcc_dgp_data):
-        theta = dcc_dgp_data["theta_true"]
-        eps, Qbar = dcc_dgp_data["eps"], dcc_dgp_data["Qbar"]
-        T = dcc_dgp_data["T"]
-        nll, grad, scores = dcc_nll_grad(theta, eps, Qbar, 1, 1, return_scores=True)
-        grad_from_scores = -scores.sum(axis=0) / T
-        np.testing.assert_allclose(grad, grad_from_scores, rtol=1e-10)
-
-    def test_scores_from_hess(self, dcc_dgp_data):
-        theta = dcc_dgp_data["theta_true"]
-        eps, Qbar = dcc_dgp_data["eps"], dcc_dgp_data["Qbar"]
-        T = dcc_dgp_data["T"]
-        nll, grad, hess, scores = dcc_nll_grad_hess(
-            theta, eps, Qbar, 1, 1, return_scores=True)
-        grad_from_scores = -scores.sum(axis=0) / T
-        np.testing.assert_allclose(grad, grad_from_scores, rtol=1e-10)
-
-
-# =============================================================================
-# 5. DCC class: convergence and parameter recovery
 # =============================================================================
 
 class TestDCCFit:
@@ -302,10 +205,9 @@ class TestDCCFit:
             window=1000,
             step=100,
             univariate_spec=GARCH(1, 1) + Normal(),
-            univariate_fit_kwargs={"maxiter": 30, "verbose": False},
+            univariate_fit_kwargs={"maxiter": 30},
             n_jobs=1,
             maxiter=30,
-            compute_se=False,
         )
 
         assert len(rolling) == 3
@@ -327,10 +229,9 @@ class TestDCCFit:
         result = DCC(1, 1).fit(
             returns,
             univariate_spec=GARCH(1, 1) + Normal(),
-            univariate_fit_kwargs={"maxiter": 50, "verbose": False},
+            univariate_fit_kwargs={"maxiter": 50},
             n_jobs=1,
             maxiter=50,
-            compute_se=False,
         )
 
         assert len(result.univariate_results) == 3
@@ -354,11 +255,11 @@ class TestDCCFit:
         )
         marginals = [
             (GARCH(1, 1) + Normal()).fit(
-                returns[column], hold_back=7, maxiter=50, verbose=False
+                returns[column], hold_back=7, maxiter=50
             )
             for column in returns
         ]
-        result = DCC(1, 1).fit(returns, univariate_results=marginals, compute_se=False)
+        result = DCC(1, 1).fit(returns, univariate_results=marginals)
 
         assert result.T == 343
         assert result.corr("a", "b").index.equals(returns.index[7:])
@@ -397,17 +298,7 @@ class TestMultivariateForecastAndSimulation:
             np.testing.assert_allclose(forecast.variance[:, i], marginal_fc.variance)
             np.testing.assert_allclose(forecast.residual_variance[:, i], marginal_fc.residual_variance)
 
-        _ = result.Rt
-        q1 = (1.0 - np.sum(result.theta)) * result.Qbar
-        q1 = q1 + result.theta[0] * np.outer(result._eps[-1], result._eps[-1]) + result.theta[1] * result._Qt_cache[-1]
-        r1 = _normalize_corr(q1)
-        np.testing.assert_allclose(forecast.correlation[0], r1, rtol=1e-12, atol=1e-12)
-        np.testing.assert_allclose(
-            forecast.residual_covariance[0],
-            np.outer(np.sqrt(forecast.residual_variance[0]), np.sqrt(forecast.residual_variance[0])) * forecast.correlation[0],
-            rtol=1e-12,
-            atol=1e-12,
-        )
+        np.testing.assert_allclose(forecast.correlation[0], result.forecast_correlation(1)[0], rtol=1e-11)
 
     def test_public_forecast_correlation_matches_forecast(self, fitted_multivariate_results):
         result = fitted_multivariate_results["dcc"]
@@ -493,7 +384,7 @@ class TestMultivariateForecastAndSimulation:
         original_state = result.univariate_results[0].filter()
 
         def fake_filter():
-            return replace(original_state, distribution="StudentT", nu=8.0)
+            return replace(original_state, distribution="StudentT", eta=1/8.0)
 
         monkeypatch.setattr(result.univariate_results[0], "filter", fake_filter)
         simulated = result.simulate(50, seed=7)
@@ -505,16 +396,15 @@ class TestMultivariateForecastAndSimulation:
         result = DCC(1, 1, "studentt").fit(
             source["returns"],
             univariate_results=source["univariate_results"],
-            compute_se=False,
         )
         scenarios = result.scenarios(4000, seed=919)
         simulated = result.simulate(30, seed=919)
 
-        assert result.params.nu is not None
+        assert result.params.eta is not None
         assert scenarios.copula_distribution == "studentt"
-        assert scenarios.copula_nu == result.params.nu
+        assert scenarios.copula_eta == result.params.eta
         assert simulated.copula_distribution == "studentt"
-        assert simulated.copula_nu == result.params.nu
+        assert simulated.copula_eta == result.params.eta
         assert scenarios.data.shape == (4000, 3)
         assert simulated.data.shape == (30, 3)
         assert np.all(np.isfinite(scenarios.data))

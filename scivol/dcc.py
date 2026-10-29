@@ -1,16 +1,11 @@
 """
-scivol/dcc.py
-=============
-Multivariate correlation models.
+Multivariate correlation models: CCC (constant) and DCC(p, q).
 
-Shipped surfaces:
-  - CCC(): constant conditional correlation baseline / diagnostic model
-  - DCC(p, q): dynamic conditional correlation model
-
-Both models use the existing univariate result layer for marginal forecasting.
-Dynamic DCC fitting stays on the shipped Gaussian or Student-t C likelihood,
-gradient, and Hessian kernels; the Python layer only orchestrates inputs,
-cached post-fit recursions, and result surfaces.
+Both fit a copula to fixed marginal probabilities from standardized residuals.
+The target Qbar is the copula scores' second moment. Native derivatives include
+its dependence on the copula tail parameter; inference treats the marginal
+estimates as given. Simulated copula draws are mapped through each marginal's
+quantile function, then every marginal continues natively.
 """
 
 from __future__ import annotations
@@ -22,23 +17,19 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.optimize import minimize
-from scipy.stats import norm, t as student_t
 
-from . import _dcc_kernels as _dk
-from .components import ARMA, ARX, GARCH, GJRGARCH, HARX, Normal
-from .roles import Role
-from ._optimizer import resolve_optimizer_budget
+from . import _scivolapi as api
+from .components import GARCH, Normal
 
 if TYPE_CHECKING:
-    from ._evaluation import ForecastResult, FilteredState
+    from ._evaluation import ForecastResult
     from .result import EstimationResult
     from .spec import CompositeSpec
 
 
 def _normalize_correlation(matrix: NDArray[np.float64]) -> NDArray[np.float64]:
-    diag = np.sqrt(np.maximum(np.diag(matrix), 1e-12))
-    return matrix / np.outer(diag, diag)
+    scale = np.sqrt(np.diag(matrix))
+    return matrix / np.outer(scale, scale)
 
 
 def _extract_multivariate_input(
@@ -160,26 +151,6 @@ def _stack_marginal_forecasts(
     return forecasts, mean, variance, residual_variance
 
 
-def _residual_covariance_from_correlation(
-    correlation: NDArray[np.float64],
-    residual_variance: NDArray[np.float64],
-) -> NDArray[np.float64]:
-    std = np.sqrt(np.maximum(residual_variance, 1e-12))
-    return correlation * std[:, :, None] * std[:, None, :]
-
-
-def _constant_correlation_nll(
-    eps: NDArray[np.float64],
-    corr: NDArray[np.float64],
-) -> float:
-    chol = np.linalg.cholesky(corr)
-    logdet = 2.0 * float(np.sum(np.log(np.diag(chol))))
-    inv_corr = np.linalg.inv(corr)
-    quad = np.einsum("ti,ij,tj->t", eps, inv_corr, eps, optimize=True)
-    baseline = np.einsum("ti,ti->t", eps, eps, optimize=True)
-    return float(0.5 * np.mean(logdet + quad - baseline))
-
-
 @dataclass(slots=True)
 class MultivariateForecastResult(Mapping[str, NDArray[np.float64]]):
     mean: NDArray[np.float64]
@@ -270,7 +241,7 @@ class MultivariateSimulationResult:
     correlation: NDArray[np.float64]
     residual_covariance: NDArray[np.float64]
     copula_distribution: str = "gaussian"
-    copula_nu: Optional[float] = None
+    copula_eta: Optional[float] = None
     columns: Optional[List[Any]] = None
 
     @property
@@ -287,7 +258,7 @@ class MultivariateSimulationResult:
             "correlation": self.correlation.copy(),
             "residual_covariance": self.residual_covariance.copy(),
             "copula_distribution": self.copula_distribution,
-            "copula_nu": self.copula_nu,
+            "copula_eta": self.copula_eta,
         }
 
 
@@ -302,7 +273,7 @@ class MultivariateScenarioResult:
     residual_covariance: NDArray[np.float64]
     innovation_method: str
     copula_distribution: str = "gaussian"
-    copula_nu: Optional[float] = None
+    copula_eta: Optional[float] = None
     columns: Optional[List[Any]] = None
 
     @property
@@ -321,7 +292,7 @@ class MultivariateScenarioResult:
             "residual_covariance": self.residual_covariance.copy(),
             "innovation_method": self.innovation_method,
             "copula_distribution": self.copula_distribution,
-            "copula_nu": self.copula_nu,
+            "copula_eta": self.copula_eta,
         }
 
 
@@ -350,7 +321,7 @@ class DCCParams:
 
     a: NDArray[np.float64]
     b: NDArray[np.float64]
-    nu: Optional[float] = None
+    eta: Optional[float] = None
 
     @property
     def persistence(self) -> float:
@@ -359,10 +330,10 @@ class DCCParams:
     def __repr__(self) -> str:
         a_str = ", ".join(f"{x:.6f}" for x in self.a)
         b_str = ", ".join(f"{x:.6f}" for x in self.b)
-        nu_str = "" if self.nu is None else f", nu={self.nu:.6f}"
+        eta_str = "" if self.eta is None else f", eta={self.eta:.6f}"
         return (
             f"DCCParams(a=[{a_str}], b=[{b_str}]"
-            f"{nu_str}, persistence={self.persistence:.6f})"
+            f"{eta_str}, persistence={self.persistence:.6f})"
         )
 
 
@@ -384,421 +355,27 @@ class CCCParams:
         return f"CCCParams(corr=<{n_series}x{n_series} matrix>, avg_pairwise_corr={self.avg_pairwise_corr:.6f})"
 
 
-def _dcc_recursion(
-    theta: NDArray[np.float64],
-    eps: NDArray[np.float64],
-    Qbar: NDArray[np.float64],
-    p: int,
-    q: int,
-    *,
-    return_q: bool = False,
-) -> Union[NDArray[np.float64], Tuple[NDArray[np.float64], NDArray[np.float64]]]:
-    """Run the DCC recursion and return the correlation path (and optional Q path)."""
-    t_count, n_series = eps.shape
-    a_arr = theta[:p]
-    b_arr = theta[p:]
-    intercept = (1.0 - float(np.sum(theta))) * Qbar
-
-    rt_out = np.empty((t_count, n_series, n_series), dtype=np.float64)
-    qt_out = np.empty((t_count, n_series, n_series), dtype=np.float64) if return_q else None
-
-    q_buf = [Qbar.copy() for _ in range(max(q, 1))]
-    eps_outer_buf = [np.zeros((n_series, n_series), dtype=np.float64) for _ in range(max(p, 1))]
-
-    for t in range(t_count):
-        q_t = intercept.copy()
-        for i in range(p):
-            q_t = q_t + float(a_arr[i]) * eps_outer_buf[i]
-        for j in range(q):
-            q_t = q_t + float(b_arr[j]) * q_buf[j]
-
-        rt_out[t] = _normalize_correlation(q_t)
-        if qt_out is not None:
-            qt_out[t] = q_t
-
-        if p > 0:
-            eps_outer_buf = [np.outer(eps[t], eps[t])] + eps_outer_buf[: p - 1]
-        if q > 0:
-            q_buf = [q_t.copy()] + q_buf[: q - 1]
-
-    if qt_out is None:
-        return rt_out
-    return rt_out, qt_out
+def correlation_model(p: int, q: int, distribution: str) -> "api.CorrelationModel":
+    spec = api.CorrelationSpec()
+    spec.p, spec.q = int(p), int(q)
+    spec.density = api.CorrelationDensity.student_t if distribution == "studentt" else api.CorrelationDensity.normal
+    return api.CorrelationModel(spec)
 
 
-def _dcc_forecast_correlation_path(
-    theta: NDArray[np.float64],
-    eps: NDArray[np.float64],
-    Qbar: NDArray[np.float64],
-    qt_path: NDArray[np.float64],
-    p: int,
-    q: int,
-    horizon: int,
-) -> NDArray[np.float64]:
-    n_series = Qbar.shape[0]
-    a_arr = theta[:p]
-    b_arr = theta[p:]
-    intercept = (1.0 - float(np.sum(theta))) * Qbar
-
-    eps_outer_buf = [
-        np.outer(eps[-1 - i], eps[-1 - i]) if eps.shape[0] > i else np.zeros((n_series, n_series), dtype=np.float64)
-        for i in range(max(p, 1))
-    ]
-    q_buf = [qt_path[-1 - j].copy() if qt_path.shape[0] > j else Qbar.copy() for j in range(max(q, 1))]
-
-    out = np.empty((horizon, n_series, n_series), dtype=np.float64)
-    for h in range(horizon):
-        q_h = intercept.copy()
-        for i in range(p):
-            q_h = q_h + float(a_arr[i]) * eps_outer_buf[i]
-        for j in range(q):
-            q_h = q_h + float(b_arr[j]) * q_buf[j]
-
-        r_h = _normalize_correlation(q_h)
-        out[h] = r_h
-
-        if p > 0:
-            eps_outer_buf = [r_h.copy()] + eps_outer_buf[: p - 1]
-        if q > 0:
-            q_buf = [q_h.copy()] + q_buf[: q - 1]
-
-    return out
-
-
-class _CorrelationProcess:
-    def next(self) -> NDArray[np.float64]:
-        raise NotImplementedError
-
-    def observe(self, innovation: NDArray[np.float64]) -> None:
-        raise NotImplementedError
-
-
-class _ConstantCorrelationProcess(_CorrelationProcess):
-    def __init__(self, corr: NDArray[np.float64]) -> None:
-        self._corr = corr
-
-    def next(self) -> NDArray[np.float64]:
-        return self._corr
-
-    def observe(self, innovation: NDArray[np.float64]) -> None:
-        return None
-
-
-class _DCCCorrelationProcess(_CorrelationProcess):
-    def __init__(
-        self,
-        theta: NDArray[np.float64],
-        Qbar: NDArray[np.float64],
-        qt_path: NDArray[np.float64],
-        eps: NDArray[np.float64],
-        p: int,
-        q: int,
-    ) -> None:
-        self._a = theta[:p].copy()
-        self._b = theta[p:].copy()
-        self._intercept = (1.0 - float(np.sum(theta))) * Qbar
-        self._p = p
-        self._q = q
-        n_series = Qbar.shape[0]
-        self._eps_outer_buf = [
-            np.outer(eps[-1 - i], eps[-1 - i]) if eps.shape[0] > i else np.zeros((n_series, n_series), dtype=np.float64)
-            for i in range(max(p, 1))
-        ]
-        self._q_buf = [qt_path[-1 - j].copy() if qt_path.shape[0] > j else Qbar.copy() for j in range(max(q, 1))]
-        self._current_q: Optional[NDArray[np.float64]] = None
-
-    def next(self) -> NDArray[np.float64]:
-        q_t = self._intercept.copy()
-        for i in range(self._p):
-            q_t = q_t + float(self._a[i]) * self._eps_outer_buf[i]
-        for j in range(self._q):
-            q_t = q_t + float(self._b[j]) * self._q_buf[j]
-        self._current_q = q_t
-        return _normalize_correlation(q_t)
-
-    def observe(self, innovation: NDArray[np.float64]) -> None:
-        if self._current_q is None:
-            raise RuntimeError("next() must be called before observe().")
-        if self._p > 0:
-            self._eps_outer_buf = [np.outer(innovation, innovation)] + self._eps_outer_buf[: self._p - 1]
-        if self._q > 0:
-            self._q_buf = [self._current_q.copy()] + self._q_buf[: self._q - 1]
-
-
-@dataclass
-class _MarginalSimulationRuntime:
-    distribution: str
-    distribution_nu: Optional[float]
-    distribution_lam: Optional[float]
-    distribution_rho: Optional[float]
-    distribution_zeta: Optional[float]
-    distribution_shape_lambda: Optional[float]
-    mean_kind: str
-    vol_kind: str
-    const: float
-    unconditional_mean: float
-    phi: NDArray[np.float64]
-    theta_ma: NDArray[np.float64]
-    arx: NDArray[np.float64]
-    har: NDArray[np.float64]
-    xbeta: NDArray[np.float64]
-    horizons: Tuple[int, ...]
-    omega: float
-    alpha: NDArray[np.float64]
-    beta: NDArray[np.float64]
-    gamma: Optional[NDArray[np.float64]]
-    future_x: NDArray[np.float64]
-    data_history: List[float]
-    resid_history: List[float]
-    sigma2_history: List[float]
-
-    def one_step(self, step_index: int) -> Tuple[float, float]:
-        if self.vol_kind == "dynamic":
-            sigma2_t = self.omega
-            for i, a in enumerate(self.alpha, start=1):
-                resid_lag = self.resid_history[-i] if len(self.resid_history) >= i else 0.0
-                resid2 = float(resid_lag * resid_lag)
-                sigma2_t += float(a) * resid2
-                if self.gamma is not None and resid_lag < 0.0:
-                    sigma2_t += float(self.gamma[i - 1]) * resid2
-            fallback_sigma2 = self.sigma2_history[-1] if self.sigma2_history else max(self.omega, 1e-12)
-            for j, b in enumerate(self.beta, start=1):
-                sigma_lag = self.sigma2_history[-j] if len(self.sigma2_history) >= j else fallback_sigma2
-                sigma2_t += float(b) * float(sigma_lag)
-            sigma2_t = max(float(sigma2_t), 1e-12)
-        else:
-            sigma2_t = max(float(self.sigma2_history[-1]), 1e-12)
-
-        if self.mean_kind == "arma":
-            mean_t = self.const
-            for i, phi_i in enumerate(self.phi, start=1):
-                y_lag = self.data_history[-i] if len(self.data_history) >= i else self.unconditional_mean
-                mean_t += float(phi_i) * float(y_lag)
-            for j, theta_j in enumerate(self.theta_ma, start=1):
-                resid_lag = self.resid_history[-j] if len(self.resid_history) >= j else 0.0
-                mean_t += float(theta_j) * float(resid_lag)
-        elif self.mean_kind == "arx":
-            mean_t = self.const
-            for i, phi_i in enumerate(self.arx, start=1):
-                y_lag = self.data_history[-i] if len(self.data_history) >= i else 0.0
-                mean_t += float(phi_i) * float(y_lag)
-            if self.xbeta.size:
-                mean_t += float(self.future_x[step_index] @ self.xbeta)
-        elif self.mean_kind == "harx":
-            mean_t = self.const
-            for horizon_lag, coef in zip(self.horizons, self.har):
-                window = self.data_history[-horizon_lag:] if horizon_lag > 0 else self.data_history
-                avg = float(np.mean(window)) if window else 0.0
-                mean_t += float(coef) * avg
-            if self.xbeta.size:
-                mean_t += float(self.future_x[step_index] @ self.xbeta)
-        else:
-            mean_t = self.const
-
-        return float(mean_t), float(sigma2_t)
-
-    def observe(self, y_t: float, resid_t: float, sigma2_t: float) -> None:
-        self.data_history.append(float(y_t))
-        self.resid_history.append(float(resid_t))
-        self.sigma2_history.append(float(sigma2_t))
-
-
-def _coerce_future_x(
-    mean_comp: Any,
-    x_item: Any,
-    n_obs: int,
-) -> NDArray[np.float64]:
-    if not isinstance(mean_comp, (ARX, HARX)):
-        return np.zeros((n_obs, 0), dtype=np.float64)
-
-    expected = getattr(mean_comp, "n_exog", 0)
-    if expected <= 0:
-        return np.zeros((n_obs, 0), dtype=np.float64)
-    if x_item is None:
-        raise ValueError(f"{mean_comp.signature} multivariate simulation requires x with shape ({n_obs}, {expected}).")
-
-    arr = np.asarray(x_item, dtype=np.float64)
-    if arr.ndim == 1:
-        arr = arr[:, None]
-    if arr.shape != (n_obs, expected):
-        raise ValueError(f"{mean_comp.signature} multivariate simulation requires x with shape ({n_obs}, {expected}).")
-    return np.ascontiguousarray(arr, dtype=np.float64)
-
-
-def _build_marginal_runtimes(
-    results: List["EstimationResult"],
-    n_obs: int,
-    x: Any,
-    columns: Optional[List[Any]],
-) -> List[_MarginalSimulationRuntime]:
-    per_series_x = _resolve_per_series_inputs(x, len(results), columns, label="x")
-    runtimes: List[_MarginalSimulationRuntime] = []
-
-    for i, result in enumerate(results):
-        spec = result._get_resolved_spec()
-        state = result.filter()
-        mean_comp = spec.get_component(Role.MEAN)
-        vol = spec.get_component(Role.VOLATILITY)
-
-        const = 0.0
-        unconditional_mean = 0.0
-        phi = np.zeros(0, dtype=np.float64)
-        theta_ma = np.zeros(0, dtype=np.float64)
-        arx = np.zeros(0, dtype=np.float64)
-        har = np.zeros(0, dtype=np.float64)
-        xbeta = np.zeros(0, dtype=np.float64)
-        horizons: Tuple[int, ...] = ()
-        mean_kind = "constant"
-
-        if isinstance(mean_comp, ARMA):
-            params = mean_comp.fitted_params or {}
-            const = float(params.get("const", params.get("c", 0.0)))
-            phi = np.asarray(params.get("ar", params.get("phi", [])), dtype=np.float64)
-            theta_ma = np.asarray(params.get("ma", params.get("theta", [])), dtype=np.float64)
-            unconditional_mean = const / (1.0 - float(np.sum(phi))) if phi.size and abs(float(np.sum(phi))) < 1.0 else const
-            mean_kind = "arma"
-        elif isinstance(mean_comp, ARX):
-            params = mean_comp.fitted_params or {}
-            const = float(params.get("const", 0.0))
-            arx = np.asarray(params.get("ar", []), dtype=np.float64)
-            xbeta = np.asarray(params.get("exog", []), dtype=np.float64)
-            mean_kind = "arx"
-        elif isinstance(mean_comp, HARX):
-            params = mean_comp.fitted_params or {}
-            const = float(params.get("const", 0.0))
-            har = np.asarray(params.get("har", []), dtype=np.float64)
-            xbeta = np.asarray(params.get("exog", []), dtype=np.float64)
-            horizons = tuple(int(h) for h in mean_comp.horizons)
-            mean_kind = "harx"
-
-        omega = 0.0
-        alpha = np.zeros(0, dtype=np.float64)
-        beta = np.zeros(0, dtype=np.float64)
-        gamma = None
-        vol_kind = "static"
-
-        if isinstance(vol, GARCH):
-            omega = float(vol.fitted_params["omega"])  # type: ignore[index]
-            alpha = np.asarray(vol.fitted_params["alpha"], dtype=np.float64)  # type: ignore[index]
-            beta = np.asarray(vol.fitted_params["beta"], dtype=np.float64)  # type: ignore[index]
-            vol_kind = "dynamic"
-        elif isinstance(vol, GJRGARCH):
-            omega = float(vol.fitted_params["omega"])  # type: ignore[index]
-            alpha = np.asarray(vol.fitted_params["alpha"], dtype=np.float64)  # type: ignore[index]
-            beta = np.asarray(vol.fitted_params["beta"], dtype=np.float64)  # type: ignore[index]
-            gamma = np.asarray(vol.fitted_params["gamma"], dtype=np.float64)  # type: ignore[index]
-            vol_kind = "dynamic"
-
-        runtimes.append(
-            _MarginalSimulationRuntime(
-                distribution=state.distribution,
-                distribution_nu=state.nu,
-                distribution_lam=state.lam,
-                distribution_rho=state.rho,
-                distribution_zeta=state.zeta,
-                distribution_shape_lambda=state.shape_lambda,
-                mean_kind=mean_kind,
-                vol_kind=vol_kind,
-                const=const,
-                unconditional_mean=unconditional_mean,
-                phi=phi,
-                theta_ma=theta_ma,
-                arx=arx,
-                har=har,
-                xbeta=xbeta,
-                horizons=horizons,
-                omega=omega,
-                alpha=alpha,
-                beta=beta,
-                gamma=gamma,
-                future_x=_coerce_future_x(mean_comp, per_series_x[i], n_obs),
-                data_history=[float(x) for x in np.asarray(state.data, dtype=np.float64)],
-                resid_history=[float(x) for x in np.asarray(state.residuals, dtype=np.float64)],
-                sigma2_history=[float(x) for x in np.asarray(state.sigma2, dtype=np.float64)],
-            )
-        )
-
-    return runtimes
-
-
-def _simulate_multivariate_path(
-    process: _CorrelationProcess,
-    runtimes: List[_MarginalSimulationRuntime],
-    n_obs: int,
-    seed: Optional[int],
-    columns: Optional[List[Any]],
-    copula_distribution: str = "gaussian",
-    copula_nu: Optional[float] = None,
-) -> MultivariateSimulationResult:
-    n_series = len(runtimes)
-    rng = np.random.default_rng(seed)
-
-    data = np.empty((n_obs, n_series), dtype=np.float64)
-    mean = np.empty((n_obs, n_series), dtype=np.float64)
-    residuals = np.empty((n_obs, n_series), dtype=np.float64)
-    sigma2 = np.empty((n_obs, n_series), dtype=np.float64)
-    innovations = np.empty((n_obs, n_series), dtype=np.float64)
-    correlation = np.empty((n_obs, n_series, n_series), dtype=np.float64)
-    residual_covariance = np.empty((n_obs, n_series, n_series), dtype=np.float64)
-
-    for t in range(n_obs):
-        for i, runtime in enumerate(runtimes):
-            mean[t, i], sigma2[t, i] = runtime.one_step(t)
-
-        corr_t = process.next()
-        correlation[t] = corr_t
-        residual_covariance[t] = corr_t * np.sqrt(sigma2[t])[:, None] * np.sqrt(sigma2[t])[None, :]
-        try:
-            chol = np.linalg.cholesky(corr_t)
-        except np.linalg.LinAlgError:
-            chol = np.linalg.cholesky(corr_t + 1e-10 * np.eye(n_series, dtype=np.float64))
-        latent = chol @ rng.standard_normal(n_series)
-        if copula_distribution == "studentt":
-            if copula_nu is None:
-                raise RuntimeError("Student-t simulation requires stored degrees of freedom.")
-            latent = latent * np.sqrt(copula_nu / rng.chisquare(copula_nu))
-            uniforms = student_t.cdf(latent, df=copula_nu)
-        else:
-            uniforms = norm.cdf(latent)
-        uniforms = np.clip(uniforms, 1e-12, 1.0 - 1e-12)
-        from ._evaluation import _distribution_quantile
-
-        for i, runtime in enumerate(runtimes):
-            innovations[t, i] = _distribution_quantile(
-                runtime.distribution,
-                np.asarray([uniforms[i]], dtype=np.float64),
-                runtime.distribution_nu,
-                runtime.distribution_lam,
-                runtime.distribution_rho,
-                runtime.distribution_zeta,
-                runtime.distribution_shape_lambda,
-            )[0]
-
-        residuals[t] = np.sqrt(sigma2[t]) * innovations[t]
-        data[t] = mean[t] + residuals[t]
-
-        for i, runtime in enumerate(runtimes):
-            runtime.observe(float(data[t, i]), float(residuals[t, i]), float(sigma2[t, i]))
-        process.observe(innovations[t])
-
-    return MultivariateSimulationResult(
-        data=data,
-        mean=mean,
-        residuals=residuals,
-        sigma2=sigma2,
-        innovations=innovations,
-        correlation=correlation,
-        residual_covariance=residual_covariance,
-        copula_distribution=copula_distribution,
-        copula_nu=copula_nu,
-        columns=columns,
-    )
+def _marginal_density(result: "EstimationResult") -> "api.InnovationDensity":
+    return result._native()[0].innovation_density(np.ascontiguousarray(result.params, dtype=np.float64))
 
 
 class _CorrelationResultMixin:
+    """Shared by CCC and DCC results: a native correlation model at `_dynamics`
+    (the DCC coefficients; zeros for CCC) on the residuals `_eps` with target `Qbar`."""
+
     N: int
     Qbar: NDArray[np.float64]
     univariate_results: Optional[List["EstimationResult"]]
+    distribution: str
+    _eps: Optional[NDArray[np.float64]]
+    _marginals: Optional[List[api.InnovationDensity]]
     _index: Optional[Any]
     _columns: Optional[List[Any]]
 
@@ -852,163 +429,129 @@ class _CorrelationResultMixin:
             )
         return self.univariate_results
 
-    def _forecast_correlation_matrices(self, horizon: int) -> NDArray[np.float64]:
+    # Native model and paths ------------------------------------------------- #
+    def _correlation(self) -> tuple["api.CorrelationModel", NDArray[np.float64]]:
         raise NotImplementedError
 
-    def _make_simulation_process(self) -> _CorrelationProcess:
-        raise NotImplementedError
+    def _copula_eta(self) -> Optional[float]:
+        return None
 
-    def forecast(
-        self,
-        horizon: int = 10,
-        *,
-        x: Any = None,
-    ) -> MultivariateForecastResult:
+    @property
+    def Rt(self) -> NDArray[np.float64]:
+        if self._Rt_cache is None:
+            model, theta = self._correlation()
+            out = api.CorrelationJet(model, self._eps, self.Qbar, self._marginals or []).theta(theta, api.PATHS)
+            if out["status"] != "ok":
+                raise ValueError(f"The correlation path is not available ({out['status']}).")
+            object.__setattr__(self, "_Rt_cache", np.asarray(out["correlations"]))
+        return self._Rt_cache
+
+    def _joint_paths(self, paths: int, horizon: int, seed: Any, x: Any, method: str) -> dict[str, NDArray[np.float64]]:
+        """Correlation-driven innovations and every marginal continued along them: paths x horizon (x series)."""
+        marginals = self._require_univariate_results(method)
+        rng = np.random.default_rng(seed)
+        normals = rng.standard_normal((paths, horizon, self.N))
+        eta = self._copula_eta()
+        chi2 = None if eta is None or eta == 0.0 else rng.gamma(0.5 / eta, 2.0 * eta, (paths, horizon))
+        model, theta = self._correlation()
+        correlation = api.simulate_correlation(model, theta, self._eps, [_marginal_density(m) for m in marginals],
+                                               normals, chi2, self.Qbar)
+        future = _resolve_per_series_inputs(x, self.N, self._columns, label="x")
+        columns = {key: np.empty((paths, horizon, self.N)) for key in ("y", "mean", "residual", "variance")}
+        for i, marginal in enumerate(marginals):
+            z = np.ascontiguousarray(correlation["innovation"][:, :, i])
+            future_x = None if future[i] is None else np.ascontiguousarray(
+                np.asarray(future[i], dtype=np.float64).reshape(horizon, -1))
+            out = api.simulate(marginal._native_model, np.ascontiguousarray(marginal.params), marginal._native_y, z,
+                               marginal._native_x, future_x)
+            for key in columns:
+                columns[key][:, :, i] = out[key]
+        columns["innovation"] = correlation["innovation"]
+        columns["correlation"] = correlation["correlation"]
+        return columns
+
+    def forecast_correlation(self, horizon: int = 10, *, simulations: int = 10_000,
+                             seed: Any = 0) -> NDArray[np.float64]:
+        """E[R_{T+h}]: exact one step ahead, an average over `simulations` paths beyond."""
         if horizon <= 0:
             raise ValueError("horizon must be positive")
+        paths = 1 if horizon == 1 else int(simulations)
+        correlation = self._joint_paths(paths, horizon, seed, None, "forecast_correlation")["correlation"]
+        return np.mean(correlation, axis=0)
 
-        correlation = self.forecast_correlation(horizon)
+    def forecast(self, horizon: int = 10, *, x: Any = None, simulations: int = 10_000,
+                 seed: Any = 0) -> MultivariateForecastResult:
+        """Marginal forecasts, E[R_{T+h}] and the residual covariance E[e_{T+h} e_{T+h}'],
+        the last two averaged over `simulations` joint paths (exact one step ahead for R)."""
+        if horizon <= 0:
+            raise ValueError("horizon must be positive")
         marginals = self._require_univariate_results("forecast")
-        marginal_forecasts, mean, variance, residual_variance = _stack_marginal_forecasts(
-            marginals,
-            horizon,
-            x,
-            self._columns,
-        )
-        residual_covariance = _residual_covariance_from_correlation(correlation, residual_variance)
+        forecasts, mean, variance, residual_variance = _stack_marginal_forecasts(marginals, horizon, x, self._columns)
+        paths = self._joint_paths(int(simulations), horizon, seed, x, "forecast")
+        e = paths["residual"]
         return MultivariateForecastResult(
-            mean=mean,
-            variance=variance,
-            residual_variance=residual_variance,
-            correlation=correlation,
-            residual_covariance=residual_covariance,
-            marginals=tuple(marginal_forecasts),
-            columns=self._columns,
+            mean=mean, variance=variance, residual_variance=residual_variance,
+            correlation=np.mean(paths["correlation"], axis=0),
+            residual_covariance=np.einsum("phi,phj->hij", e, e) / len(e),
+            marginals=tuple(forecasts), columns=self._columns,
         )
 
-    def forecast_correlation(self, horizon: int = 10) -> NDArray[np.float64]:
-        """Return the conditional correlation forecast path."""
-        if horizon <= 0:
-            raise ValueError("horizon must be positive")
-        return self._forecast_correlation_matrices(horizon)
+    def simulate(self, n_obs: int, *, seed: Optional[int] = None, x: Any = None) -> MultivariateSimulationResult:
+        """One path of n_obs rows continuing the sample: correlations, copula innovations, marginals."""
+        if n_obs <= 0:
+            raise ValueError("n_obs must be positive")
+        paths = self._joint_paths(1, n_obs, seed, x, "simulate")
+        sigma = np.sqrt(paths["variance"][0])
+        return MultivariateSimulationResult(
+            data=paths["y"][0], mean=paths["mean"][0], residuals=paths["residual"][0], sigma2=paths["variance"][0],
+            innovations=paths["innovation"][0], correlation=paths["correlation"][0],
+            residual_covariance=paths["correlation"][0] * sigma[:, :, None] * sigma[:, None, :],
+            copula_distribution=self.distribution, copula_eta=self._copula_eta(), columns=self._columns,
+        )
 
-    def scenarios(
-        self,
-        n_draws: int,
-        *,
-        seed: Optional[int] = None,
-        x: Any = None,
-        innovations: str = "parametric",
-    ) -> MultivariateScenarioResult:
-        """Draw many one-step outcomes from the same forecast origin."""
+    def scenarios(self, n_draws: int, *, seed: Optional[int] = None, x: Any = None,
+                  innovations: str = "parametric") -> MultivariateScenarioResult:
+        """n_draws one-step outcomes from the forecast origin.
+
+        parametric: the copula draws mapped through each marginal's density.
+        empirical: the same copula probabilities mapped through the empirical
+        quantiles of each marginal's standardized residuals.
+        """
         if not isinstance(n_draws, (int, np.integer)) or int(n_draws) <= 0:
             raise ValueError("n_draws must be a positive integer")
         if innovations not in {"parametric", "empirical"}:
             raise ValueError("innovations must be 'parametric' or 'empirical'.")
-
-        marginals = self._require_univariate_results("scenarios")
-        _, mean_path, _, residual_variance_path = _stack_marginal_forecasts(
-            marginals, 1, x, self._columns
-        )
-        mean = mean_path[0]
-        residual_variance = residual_variance_path[0]
-        correlation = self.forecast_correlation(1)[0]
-        residual_covariance = _residual_covariance_from_correlation(
-            correlation[None, :, :], residual_variance[None, :]
-        )[0]
-
-        rng = np.random.default_rng(seed)
-        try:
-            chol = np.linalg.cholesky(correlation)
-        except np.linalg.LinAlgError:
-            chol = np.linalg.cholesky(
-                correlation + 1e-10 * np.eye(correlation.shape[0], dtype=np.float64)
-            )
-        latent = rng.standard_normal((int(n_draws), self.N)) @ chol.T
-        copula_distribution = getattr(self, "distribution", "gaussian")
-        if copula_distribution == "studentt":
-            copula_nu = getattr(self.params, "nu", None)
-            if copula_nu is None:
-                raise RuntimeError("Student-t scenarios require stored degrees of freedom.")
-            scales = np.sqrt(copula_nu / rng.chisquare(copula_nu, size=int(n_draws)))
-            latent = latent * scales[:, None]
-            uniforms = student_t.cdf(latent, df=copula_nu)
-        else:
-            uniforms = norm.cdf(latent)
-        uniforms = np.clip(uniforms, 1e-12, 1.0 - 1e-12)
-        sampled = np.empty_like(latent)
-
-        if innovations == "parametric":
-            from ._evaluation import _distribution_quantile
-
-            for i, result in enumerate(marginals):
-                state = result.filter()
-                sampled[:, i] = _distribution_quantile(
-                    state.distribution,
-                    uniforms[:, i],
-                    state.nu,
-                    state.lam,
-                    state.rho,
-                    state.zeta,
-                    state.shape_lambda,
-                )
-        else:
-            for i, result in enumerate(marginals):
-                empirical = np.asarray(result.std_resid, dtype=np.float64)
-                empirical = empirical[np.isfinite(empirical)]
-                if empirical.size < 10:
-                    raise ValueError(
-                        f"Series {i} has fewer than 10 finite standardized residuals."
-                    )
-                empirical = empirical - empirical.mean()
-                scale = empirical.std(ddof=0)
-                if not np.isfinite(scale) or scale <= 0:
-                    raise ValueError(f"Series {i} has degenerate standardized residuals.")
-                empirical = empirical / scale
-                sampled[:, i] = np.quantile(empirical, uniforms[:, i], method="linear")
-
-        residuals = sampled * np.sqrt(np.maximum(residual_variance, 1e-12))
-        data = mean + residuals
+        paths = self._joint_paths(int(n_draws), 1, seed, x, "scenarios")
+        mean, variance, correlation = paths["mean"][0, 0], paths["variance"][0, 0], paths["correlation"][0, 0]
+        z = paths["innovation"][:, 0]
+        if innovations == "empirical":
+            z = self._empirical_innovations(z)
+        sigma = np.sqrt(variance)
+        residuals = z * sigma
         return MultivariateScenarioResult(
-            data=data,
-            mean=mean,
-            residuals=residuals,
-            residual_variance=residual_variance,
-            innovations=sampled,
-            correlation=correlation,
-            residual_covariance=residual_covariance,
-            innovation_method=innovations,
-            copula_distribution=copula_distribution,
-            copula_nu=(getattr(self.params, "nu", None)),
+            data=mean + residuals, mean=mean, residuals=residuals, residual_variance=variance, innovations=z,
+            correlation=correlation, residual_covariance=correlation * np.outer(sigma, sigma),
+            innovation_method=innovations, copula_distribution=self.distribution, copula_eta=self._copula_eta(),
             columns=self._columns,
         )
 
-    def simulate(
-        self,
-        n_obs: int,
-        *,
-        seed: Optional[int] = None,
-        x: Any = None,
-    ) -> MultivariateSimulationResult:
-        if n_obs <= 0:
-            raise ValueError("n_obs must be positive")
-
-        marginals = self._require_univariate_results("simulate")
-        runtimes = _build_marginal_runtimes(marginals, n_obs, x, self._columns)
-        return _simulate_multivariate_path(
-            self._make_simulation_process(),
-            runtimes,
-            n_obs,
-            seed,
-            self._columns,
-            copula_distribution=getattr(self, "distribution", "gaussian"),
-            copula_nu=getattr(self.params, "nu", None),
-        )
+    def _empirical_innovations(self, parametric: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Each marginal's copula probability u = F_i(z_i), mapped through the empirical
+        quantiles of its standardized residuals (centred and scaled to unit variance)."""
+        out = np.empty_like(parametric)
+        for i, marginal in enumerate(self._require_univariate_results("scenarios")):
+            density = _marginal_density(marginal)
+            u, _ = api.distribution(density.density, density.shape, np.ascontiguousarray(parametric[:, i]))
+            empirical = np.asarray(marginal.std_resid, dtype=np.float64)
+            if empirical.size < 10:
+                raise ValueError(f"Series {i} has fewer than 10 finite standardized residuals.")
+            out[:, i] = np.quantile((empirical - empirical.mean()) / empirical.std(), u)
+        return out
 
 
 @dataclass
 class CCCResult(_CorrelationResultMixin):
-    """Result of a CCC estimation."""
+    """Result of a CCC estimation: R = Qbar normalized to a correlation matrix."""
 
     params: CCCParams
     nll: float
@@ -1018,8 +561,10 @@ class CCCResult(_CorrelationResultMixin):
     converged: bool
     nit: int
     time_elapsed: float
+    distribution: str = "gaussian"
     univariate_results: Optional[List["EstimationResult"]] = None
     _eps: Optional[NDArray[np.float64]] = field(default=None, repr=False)
+    _marginals: Optional[List[api.InnovationDensity]] = field(default=None, repr=False)
     _index: Optional[Any] = field(default=None, repr=False)
     _columns: Optional[List[Any]] = field(default=None, repr=False)
     _Rt_cache: Optional[NDArray[np.float64]] = field(default=None, repr=False)
@@ -1038,11 +583,11 @@ class CCCResult(_CorrelationResultMixin):
 
     @property
     def aic(self) -> float:
-        return -2.0 * self.log_likelihood
+        return api.information_criteria(self.log_likelihood, 0, self.T)[0]
 
     @property
     def bic(self) -> float:
-        return -2.0 * self.log_likelihood
+        return api.information_criteria(self.log_likelihood, 0, self.T)[0]
 
     @property
     def std_errors(self) -> NDArray[np.float64]:
@@ -1052,18 +597,9 @@ class CCCResult(_CorrelationResultMixin):
     def std_errors_robust(self) -> NDArray[np.float64]:
         return np.empty(0, dtype=np.float64)
 
-    @property
-    def Rt(self) -> NDArray[np.float64]:
-        if self._Rt_cache is None:
-            repeated = np.broadcast_to(self.params.corr, (self.T, self.N, self.N)).copy()
-            object.__setattr__(self, "_Rt_cache", repeated)
-        return self._Rt_cache  # type: ignore[return-value]
-
-    def _forecast_correlation_matrices(self, horizon: int) -> NDArray[np.float64]:
-        return np.broadcast_to(self.params.corr, (horizon, self.N, self.N)).copy()
-
-    def _make_simulation_process(self) -> _CorrelationProcess:
-        return _ConstantCorrelationProcess(self.params.corr)
+    def _correlation(self) -> tuple["api.CorrelationModel", NDArray[np.float64]]:
+        # DCC(1,1) at a = b = 0: Q_t = Qbar for every row.
+        return correlation_model(1, 1, "gaussian"), np.zeros(2)
 
     def summary(self) -> str:
         lines = []
@@ -1110,12 +646,17 @@ class DCCResult(_CorrelationResultMixin):
     opg: Optional[NDArray[np.float64]] = None
     cov_mle: Optional[NDArray[np.float64]] = None
     cov_robust: Optional[NDArray[np.float64]] = None
+    success: bool = False
+    inference: str = ""
+    kkt_residual: float = float("nan")
+    warnings: tuple[str, ...] = ()
+    phases: tuple[str, ...] = ()
     univariate_results: Optional[List["EstimationResult"]] = None
     _eps: Optional[NDArray[np.float64]] = field(default=None, repr=False)
+    _marginals: Optional[List[api.InnovationDensity]] = field(default=None, repr=False)
     _index: Optional[Any] = field(default=None, repr=False)
     _columns: Optional[List[Any]] = field(default=None, repr=False)
     _Rt_cache: Optional[NDArray[np.float64]] = field(default=None, repr=False)
-    _Qt_cache: Optional[NDArray[np.float64]] = field(default=None, repr=False)
 
     @property
     def K(self) -> int:
@@ -1127,69 +668,33 @@ class DCCResult(_CorrelationResultMixin):
 
     @property
     def aic(self) -> float:
-        return 2.0 * self.K - 2.0 * self.log_likelihood
+        return api.information_criteria(self.log_likelihood, self.K, self.T)[0]
 
     @property
     def bic(self) -> float:
-        return self.K * np.log(self.T) - 2.0 * self.log_likelihood
+        return api.information_criteria(self.log_likelihood, self.K, self.T)[1]
 
     @property
     def std_errors(self) -> NDArray[np.float64]:
         if self.cov_mle is not None:
-            return np.sqrt(np.maximum(np.diag(self.cov_mle), 0.0))
+            return np.sqrt(np.diag(self.cov_mle))
         return np.full(self.K, np.nan)
 
     @property
     def std_errors_robust(self) -> NDArray[np.float64]:
         if self.cov_robust is not None:
-            return np.sqrt(np.maximum(np.diag(self.cov_robust), 0.0))
+            return np.sqrt(np.diag(self.cov_robust))
         return np.full(self.K, np.nan)
 
-    def _ensure_recursion(self) -> None:
-        if self._Rt_cache is not None and self._Qt_cache is not None:
-            return
-        if self._eps is None:
-            raise RuntimeError(
-                "Standardised residuals not stored on this result. "
-                "Use DCC.fit() or DCC.fit_from_residuals() to create results."
-            )
-        dynamics = self.theta[: self.p + self.q]
-        rt, qt = _dcc_recursion(dynamics, self._eps, self.Qbar, self.p, self.q, return_q=True)
-        object.__setattr__(self, "_Rt_cache", rt)
-        object.__setattr__(self, "_Qt_cache", qt)
+    def _correlation(self) -> tuple["api.CorrelationModel", NDArray[np.float64]]:
+        return correlation_model(self.p, self.q, self.distribution), np.ascontiguousarray(self.theta)
 
-    @property
-    def Rt(self) -> NDArray[np.float64]:
-        self._ensure_recursion()
-        return self._Rt_cache  # type: ignore[return-value]
-
-    def _forecast_correlation_matrices(self, horizon: int) -> NDArray[np.float64]:
-        self._ensure_recursion()
-        return _dcc_forecast_correlation_path(
-            self.theta[: self.p + self.q],
-            self._eps,  # type: ignore[arg-type]
-            self.Qbar,
-            self._Qt_cache,  # type: ignore[arg-type]
-            self.p,
-            self.q,
-            horizon,
-        )
-
-    def _make_simulation_process(self) -> _CorrelationProcess:
-        self._ensure_recursion()
-        return _DCCCorrelationProcess(
-            self.theta[: self.p + self.q],
-            self.Qbar,
-            self._Qt_cache,  # type: ignore[arg-type]
-            self._eps,  # type: ignore[arg-type]
-            self.p,
-            self.q,
-        )
+    def _copula_eta(self) -> Optional[float]:
+        return self.params.eta
 
     def summary(self) -> str:
-        names = [f"a[{i + 1}]" for i in range(self.p)] + [f"b[{j + 1}]" for j in range(self.q)]
-        if self.distribution == "studentt":
-            names.append("nu")
+        model, theta = self._correlation()
+        names = model.parameter_names
         se = self.std_errors
         se_r = self.std_errors_robust
 
@@ -1214,14 +719,25 @@ class DCCResult(_CorrelationResultMixin):
         lines.append(f"{'Param':<8} {'Estimate':>10} {'MLE SE':>10} {'Rob SE':>10} {'t-stat':>10}")
         lines.append("-" * 72)
         for i, name in enumerate(names):
-            t_stat = self.theta[i] / se[i] if se[i] > 0 else np.nan
+            t_stat = api.coefficient_test(float(self.theta[i]), float(se[i]), self.T-self.K)["statistic"] if se[i] > 0 else np.nan
             lines.append(
                 f"{name:<8} {self.theta[i]:>10.6f} {se[i]:>10.6f} "
                 f"{se_r[i]:>10.6f} {t_stat:>10.2f}"
             )
-        lines.append(f"\n  Persistence: {self.params.persistence:.6f}")
+        for name, value in model.innovation_density(theta).derived.items():
+            lines.append(f"  {name}: {value:.6g}")
+        lines.append(f"\n  Persistence: {self.params.persistence:.6f}  Inference: {self.inference}")
         lines.append("=" * 72)
         return "\n".join(lines)
+
+
+
+
+def _residual_input(eps: Any) -> NDArray[np.float64]:
+    eps = np.ascontiguousarray(eps, dtype=np.float64)
+    if eps.ndim != 2:
+        raise ValueError("eps must be 2-D (T, N)")
+    return eps
 
 
 class CCC:
@@ -1246,51 +762,35 @@ class CCC:
         marginal_timeout: Optional[float] = None,
     ) -> CCCResult:
         returns_np, index, columns = _extract_multivariate_input(returns)
-        std_resid, uni_res = _prepare_univariate_results(
-            returns_np,
-            univariate_spec,
-            univariate_results,
-            returns_source=returns,
-            initial_results=univariate_initial_results,
-            n_jobs=n_jobs,
-            timeout=marginal_timeout,
+        std_resid, marginals = _prepare_univariate_results(
+            returns_np, univariate_spec, univariate_results, returns_source=returns,
+            initial_results=univariate_initial_results, n_jobs=n_jobs, timeout=marginal_timeout,
             fit_kwargs=univariate_fit_kwargs,
         )
-        result = self.fit_from_residuals(std_resid)
-        object.__setattr__(result, "univariate_results", uni_res)
-        object.__setattr__(result, "_index", None if index is None else index[-result.T:])
-        object.__setattr__(result, "_columns", columns)
+        result = self.fit_from_residuals(std_resid, marginals=[_marginal_density(m) for m in marginals])
+        result.univariate_results = marginals
+        result._index = None if index is None else index[-result.T:]
+        result._columns = columns
         return result
 
     def fit_from_residuals(
-        self,
-        eps: NDArray[np.float64],
-        Qbar: Optional[NDArray[np.float64]] = None,
+        self, eps: NDArray[np.float64], Qbar: Optional[NDArray[np.float64]] = None,
+        marginals: Optional[Sequence[api.InnovationDensity]] = None,
     ) -> CCCResult:
-        eps = np.ascontiguousarray(eps, dtype=np.float64)
-        if eps.ndim != 2:
-            raise ValueError("eps must be 2-D (T, N)")
+        """Fit constant Gaussian copula correlation; omitted marginals are Normal."""
+        eps = _residual_input(eps)
         t_count, n_series = eps.shape
-
-        if Qbar is None:
-            Qbar = _dk.compute_qbar(eps)
-        Qbar = np.ascontiguousarray(Qbar, dtype=np.float64)
-
-        start = time.perf_counter()
-        corr = _normalize_correlation(Qbar)
-        nll = _constant_correlation_nll(eps, corr)
-        elapsed = time.perf_counter() - start
-
+        started = time.perf_counter()
+        target = None if Qbar is None else np.ascontiguousarray(Qbar, dtype=np.float64)
+        jet = api.CorrelationJet(correlation_model(1, 1, "gaussian"), eps, target, list(marginals or []))
+        out = jet.theta(np.zeros(2), api.VALUE)
+        if out["status"] != "ok":
+            raise ValueError(f"The constant correlation likelihood is not available ({out['status']}).")
+        qbar = np.asarray(jet.target(np.zeros(2)))
         return CCCResult(
-            params=CCCParams(corr=corr),
-            nll=nll,
-            T=t_count,
-            N=n_series,
-            Qbar=Qbar,
-            converged=True,
-            nit=0,
-            time_elapsed=elapsed,
-            _eps=eps,
+            params=CCCParams(corr=_normalize_correlation(qbar)), nll=float(out["value"]) / t_count, T=t_count,
+            N=n_series, Qbar=qbar, converged=True, nit=0, time_elapsed=time.perf_counter() - started, _eps=eps,
+            _marginals=list(marginals or []),
         )
 
     def __repr__(self) -> str:
@@ -1307,6 +807,8 @@ class DCC:
         Number of ARCH-type lags for correlation dynamics.
     q : int
         Number of GARCH-type lags for correlation dynamics.
+    distribution : str
+        "gaussian" or "studentt" (the Student-t copula's correlation likelihood).
     """
 
     def __init__(self, p: int = 1, q: int = 1, distribution: str = "gaussian") -> None:
@@ -1341,21 +843,15 @@ class DCC:
         **kwargs: Any,
     ) -> DCCResult:
         returns_np, index, columns = _extract_multivariate_input(returns)
-        std_resid, uni_res = _prepare_univariate_results(
-            returns_np,
-            univariate_spec,
-            univariate_results,
-            returns_source=returns,
-            initial_results=univariate_initial_results,
-            n_jobs=n_jobs,
-            timeout=marginal_timeout,
+        std_resid, marginals = _prepare_univariate_results(
+            returns_np, univariate_spec, univariate_results, returns_source=returns,
+            initial_results=univariate_initial_results, n_jobs=n_jobs, timeout=marginal_timeout,
             fit_kwargs=univariate_fit_kwargs,
         )
-
-        result = self.fit_from_residuals(std_resid, **kwargs)
-        object.__setattr__(result, "univariate_results", uni_res)
-        object.__setattr__(result, "_index", None if index is None else index[-result.T:])
-        object.__setattr__(result, "_columns", columns)
+        result = self.fit_from_residuals(std_resid, marginals=[_marginal_density(m) for m in marginals], **kwargs)
+        result.univariate_results = marginals
+        result._index = None if index is None else index[-result.T:]
+        result._columns = columns
         return result
 
     def fit_from_residuals(
@@ -1365,127 +861,61 @@ class DCC:
         theta0: Optional[NDArray[np.float64]] = None,
         initial_result: Optional[DCCResult] = None,
         maxiter: Optional[int] = None,
-        compute_se: bool = True,
+        accuracy: float = 1e-10,
+        marginals: Optional[Sequence[api.InnovationDensity]] = None,
     ) -> DCCResult:
-        eps = np.ascontiguousarray(eps, dtype=np.float64)
-        if eps.ndim != 2:
-            raise ValueError("eps must be 2-D (T, N)")
-        t_count, n_series = eps.shape
-        p, q = self.p, self.q
-        dynamics_count = p + q
-        k = self.n_params
-
-        if Qbar is None:
-            Qbar = _dk.compute_qbar(eps)
-        Qbar = np.ascontiguousarray(Qbar, dtype=np.float64)
-
+        """Fit a copula on residuals, targeting its scores; omitted marginals are Normal."""
+        eps = _residual_input(eps)
         if theta0 is not None and initial_result is not None:
             raise ValueError("Pass either theta0 or initial_result, not both.")
-        warm_started = initial_result is not None or theta0 is not None
         if initial_result is not None:
-            if initial_result.p != p or initial_result.q != q:
-                raise ValueError(
-                    f"Warm-start DCC result is DCC({initial_result.p},{initial_result.q}); "
-                    f"expected DCC({p},{q})."
-                )
-            if initial_result.distribution != self.distribution:
-                raise ValueError(
-                    f"Warm-start DCC result uses {initial_result.distribution}; "
-                    f"expected {self.distribution}."
-                )
+            if (initial_result.p, initial_result.q, initial_result.distribution) != (self.p, self.q, self.distribution):
+                raise ValueError(f"Warm-start result is for {initial_result.distribution} "
+                                 f"DCC({initial_result.p},{initial_result.q}); this fit is {self.signature}.")
             theta0 = initial_result.theta
-        if theta0 is None:
-            theta0 = np.full(k, 0.05, dtype=np.float64)
-            if self.distribution == "studentt":
-                theta0[-1] = 10.0
-        theta0 = np.ascontiguousarray(theta0, dtype=np.float64)
-        if theta0.shape != (k,) or not np.all(np.isfinite(theta0)):
-            raise ValueError(f"theta0 must be finite with shape ({k},).")
-        resolved_maxiter, _ = resolve_optimizer_budget(
-            maxiter,
-            None,
-            default_maxiter=500,
-            default_maxfev=5000,
-        )
-
-        bounds = [(1e-6, 0.999)] * dynamics_count
-        if self.distribution == "studentt":
-            bounds.append((2.01, 200.0))
-        constraints = [{"type": "ineq", "fun": lambda x: 0.9999 - np.sum(x[:dynamics_count])}]
-        cache: Dict[Tuple[float, ...], Tuple[float, NDArray[np.float64]]] = {}
-
-        def _eval(x: NDArray[np.float64]) -> Tuple[float, NDArray[np.float64]]:
-            x_arr = np.ascontiguousarray(x, dtype=np.float64)
-            key = tuple(float(v) for v in x_arr)
-            cached = cache.get(key)
-            if cached is None:
-                if self.distribution == "studentt":
-                    cached = _dk.dcc_studentt_nll_grad(x_arr, eps, Qbar, p, q)
-                else:
-                    cached = _dk.dcc_nll_grad(x_arr, eps, Qbar, p, q)
-                cache[key] = cached
-                if len(cache) > 20:
-                    cache.pop(next(iter(cache)))
-            return cached
-
-        start = time.perf_counter()
-        # Always use the shipped analytical C gradient on the optimization path.
-        opt = minimize(
-            fun=lambda x: _eval(np.asarray(x, dtype=np.float64))[0],
-            x0=theta0,
-            method="SLSQP",
-            jac=lambda x: _eval(np.asarray(x, dtype=np.float64))[1],
-            bounds=bounds,
-            constraints=constraints,
-            options={"maxiter": resolved_maxiter, "ftol": 1e-12},
-        )
-        elapsed = time.perf_counter() - start
-        theta_hat = np.asarray(opt.x, dtype=np.float64).copy()
-
-        hessian = opg = cov_mle = cov_robust = None
-        if compute_se:
-            if self.distribution == "studentt":
-                _, _, hess_h, scores_h = _dk.dcc_studentt_nll_grad_hess(
-                    theta_hat, eps, Qbar, p, q, return_scores=True
-                )
-            else:
-                _, _, hess_h, scores_h = _dk.dcc_nll_grad_hess(
-                    theta_hat, eps, Qbar, p, q, return_scores=True
-                )
-            hessian = hess_h
-            opg = (scores_h.T @ scores_h) / t_count
-            try:
-                h_inv = np.linalg.inv(hess_h)
-                cov_mle = h_inv / t_count
-                cov_robust = (h_inv @ opg @ h_inv) / t_count
-            except np.linalg.LinAlgError:
-                pass
-
-        params = DCCParams(
-            a=theta_hat[:p].copy(),
-            b=theta_hat[p:dynamics_count].copy(),
-            nu=(float(theta_hat[-1]) if self.distribution == "studentt" else None),
-        )
+        p, q, t_count = self.p, self.q, eps.shape[0]
+        maxiter = 500 if maxiter is None else int(maxiter)
+        model = correlation_model(p, q, self.distribution)
+        options = api.FitOptions()
+        options.maximum_iterations = maxiter
+        options.accuracy = float(accuracy)
+        if theta0 is not None:
+            options.start = [float(v) for v in np.asarray(theta0, dtype=np.float64).ravel()]
+        target = None if Qbar is None else np.ascontiguousarray(Qbar, dtype=np.float64)
+        started = time.perf_counter()
+        r = api.fit_correlation(model, eps, options, target, list(marginals or []))
+        elapsed = time.perf_counter() - started
+        if not r.estimate_available:
+            raise RuntimeError("DCC fit failed: " + "; ".join(r.warnings))
+        theta = np.array(r.theta)
+        jet = api.CorrelationJet(model, eps, target, list(marginals or []))
         return DCCResult(
-            params=params,
-            theta=theta_hat,
-            nll=float(opt.fun),
+            params=DCCParams(a=theta[:p].copy(), b=theta[p:p + q].copy(),
+                             eta=model.innovation_density(theta).named.get("eta")),
+            theta=theta,
+            nll=-r.log_likelihood / t_count,
             p=p,
             q=q,
             T=t_count,
-            N=n_series,
-            Qbar=Qbar,
-            converged=bool(opt.success),
-            nit=int(opt.nit),
+            N=eps.shape[1],
+            Qbar=np.asarray(jet.target(theta)),
+            converged=r.termination == api.Termination.converged,
+            nit=sum(phase.iterations for phase in r.phases),
             time_elapsed=elapsed,
-            warm_started=warm_started,
-            maxiter=resolved_maxiter,
+            warm_started=theta0 is not None,
+            maxiter=maxiter,
             distribution=self.distribution,
-            hessian=hessian,
-            opg=opg,
-            cov_mle=cov_mle,
-            cov_robust=cov_robust,
+            hessian=np.array(r.hessian) / t_count if r.hessian.size else None,  # of the per-row average
+            opg=np.array(r.opg) / t_count if r.opg.size else None,
+            cov_mle=np.array(r.covariance) if r.covariance.size else None,
+            cov_robust=np.array(r.robust_covariance) if r.robust_covariance.size else None,
+            success=bool(r.success),
+            inference=r.inference.name,
+            kkt_residual=float(r.kkt_residual),
+            warnings=tuple(r.warnings),
+            phases=tuple(phase.name for phase in r.phases),
             _eps=eps,
+            _marginals=list(marginals or []),
         )
 
     def fit_rolling(
@@ -1501,7 +931,6 @@ class DCC:
         n_jobs: Optional[int] = None,
         marginal_timeout: Optional[float] = None,
         maxiter: Optional[int] = None,
-        compute_se: bool = True,
     ) -> RollingDCCResult:
         """Fit rolling DCC windows using prior marginal and DCC estimates."""
         returns_np, index, _ = _extract_multivariate_input(returns)
@@ -1532,7 +961,6 @@ class DCC:
                 marginal_timeout=marginal_timeout,
                 initial_result=previous,
                 maxiter=maxiter,
-                compute_se=compute_se,
             )
             windows.append(
                 RollingDCCWindow(start=start, stop=stop, label=label, result=fitted)

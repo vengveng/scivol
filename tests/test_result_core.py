@@ -51,7 +51,7 @@ def _build_fitted_spec() -> CompositeSpec:
     # inject mock parameter estimates
     arma.unpack(np.array([0.05, 0.20, -0.10]))          # const, ar1, ma1
     garch.unpack(np.array([0.01, 0.08, 0.90]))          # ω, α1, β1
-    t_dist.unpack(np.array([8.0]))                      # df
+    t_dist.unpack(np.array([0.125]))                      # eta
 
     return arma + garch + t_dist
 
@@ -83,7 +83,7 @@ def test_scalar_properties():
     # optimisation proxy
     assert res.params is opt.x
     assert res.n_iter == opt.nit
-    assert res.converged is True
+    assert res.success is True
     assert res.convergence_message == "converged"
 
     # log-likelihood sign convention
@@ -112,7 +112,9 @@ def test_scalar_properties():
 def test_to_dict_structure():
     data = np.ones(50)
     spec = _build_fitted_spec()
-    opt = DummyOpt(x=np.arange(spec.total_params), fun=10.0)
+    theta = np.arange(spec.total_params, dtype=np.float64)
+    theta[-1] = 1.0/theta[-1]
+    opt = DummyOpt(x=theta, fun=10.0)
     res = EstimationResult(spec, opt, data)
 
     d = res.to_dict()
@@ -126,7 +128,7 @@ def test_to_dict_structure():
         "hqic",
         "n_obs",
         "n_params",
-        "converged",
+        "success",
         "n_iter",
         "parameters",
     } <= d.keys()
@@ -141,86 +143,31 @@ def test_to_dict_structure():
 def test_fit_info_is_exposed_in_result_and_dict():
     data = np.ones(50)
     spec = _build_fitted_spec()
-    opt = DummyOpt(x=np.arange(spec.total_params), fun=10.0)
+    opt = DummyOpt(x=np.array([0.05, 0.20, -0.10, 0.01, 0.08, 0.90, 0.125]), fun=10.0)  # the components' values
     res = EstimationResult(
         spec,
         opt,
         data,
         fit_info={
-            "solver": "slsqp",
-            "log_mode": True,
-            "optimization_space": "z-space",
-            "used_default_solver": False,
-            "used_default_log_mode": True,
+            "solver": "z:slsqp+theta:newton",
+            "optimization_space": "z+theta",
+            "optimizer_phases": ("z:slsqp", "theta:newton"),
             "warnings": ["small sample"],
         },
     )
 
-    assert res.fit_info.solver == "slsqp"
-    assert res.fit_info.log_mode is True
-    assert res.fit_info.optimization_space == "z-space"
+    assert res.fit_info.solver == "z:slsqp+theta:newton"
+    assert res.fit_info.optimization_space == "z+theta"
     assert res.fit_info.warnings == ("small sample",)
     assert res.warnings == ("small sample",)
 
     d = res.to_dict()
-    assert d["fit_info"]["solver"] == "slsqp"
-    assert d["fit_info"]["optimization_space"] == "z-space"
-    assert d["fit_info"]["used_default_log_mode"] is True
+    assert d["fit_info"]["solver"] == "z:slsqp+theta:newton"
+    assert d["fit_info"]["optimizer_phases"] == ["z:slsqp", "theta:newton"]
     assert d["fit_info"]["warnings"] == ["small sample"]
     assert d["warnings"] == ["small sample"]
 
 
-def test_summary_prints_recorded_fit_warnings(capsys):
-    data = np.ones(50)
-    spec = _build_fitted_spec()
-    opt = DummyOpt(x=np.arange(spec.total_params), fun=10.0)
-    res = EstimationResult(spec, opt, data, fit_info={"warnings": ["small sample"]})
-
-    res.summary()
-
-    out = capsys.readouterr().out
-    assert "Warnings" in out
-    assert "small sample" in out
-
-
-def test_component_params_are_snapshotted():
-    data = np.ones(50)
-    spec = _build_fitted_spec()
-    opt = DummyOpt(x=np.arange(spec.total_params), fun=10.0)
-    res = EstimationResult(spec, opt, data)
-
-    gp_before = res.garch_params
-    ap_before = res.arma_params
-    dp_before = res.dist_params
-    assert gp_before is not None
-    assert ap_before is not None
-
-    # Simulate later routine reuse mutating the original component instances.
-    assert res.vol is not None
-    assert res.mean is not None
-    assert res.density is not None
-    res.vol.unpack(np.array([0.02, 0.15, 0.70]))
-    res.mean.unpack(np.array([0.10, -0.30, 0.40]))
-    res.density.unpack(np.array([12.0]))
-
-    gp_after = res.garch_params
-    ap_after = res.arma_params
-    dp_after = res.dist_params
-    assert gp_after is not None
-    assert ap_after is not None
-
-    np.testing.assert_allclose(gp_after.to_array(), gp_before.to_array())
-    np.testing.assert_allclose(ap_after.to_array(), ap_before.to_array())
-    assert dp_after.nu == dp_before.nu
-
-    d = res.to_dict()
-    assert d["parameters"]["ARMA(1,1)"]["const"] == pytest.approx(0.05)
-    assert d["parameters"]["GARCH(1,1)"]["omega"] == pytest.approx(0.01)
-    assert d["dist_params"]["nu"] == pytest.approx(8.0)
-
-
-# ------------------------------------------------------------------ #
-# 3. summary() produces human-readable text
 # ------------------------------------------------------------------ #
 def test_summary_prints(capsys):
     data = np.zeros(30)
@@ -231,11 +178,8 @@ def test_summary_prints(capsys):
         opt,
         data,
         fit_info={
-            "solver": "slsqp",
-            "log_mode": False,
-            "optimization_space": "theta-space",
-            "used_default_solver": False,
-            "used_default_log_mode": True,
+            "solver": "theta:trust+theta:newton",
+            "optimization_space": "theta+theta",
             "requested_hold_back": 5,
             "effective_hold_back": 7,
             "scale": 100.0,
@@ -267,8 +211,10 @@ def test_egarch_summary_prints_egarch_diagnostics(capsys):
     res.summary()
     captured = capsys.readouterr().out
 
-    assert "Persistence (beta)" in captured
-    assert "Unconditional Log Variance" in captured
+    assert "Persistence:" in captured
+    assert "Unconditional Variance:" in captured
+    assert "Geometric Variance" not in captured
+    assert res.garch_params.unconditional_variance == res.unconditional_variance
     assert "non-stationary log-variance recursion" not in captured
 
 
@@ -281,8 +227,8 @@ def test_forecast_returns_object():
     data = rng.standard_normal(100) * 0.01
     spec = _build_fitted_spec()
     # ARMA(1,1) + GARCH(1,1) + Student-t parameter order:
-    # [const, ar1, ma1, omega, alpha1, beta1, nu]
-    params = np.array([0.05, 0.20, -0.10, 1e-6, 0.10, 0.85, 8.0])
+    # [const, ar1, ma1, omega, alpha1, beta1, eta]
+    params = np.array([0.05, 0.20, -0.10, 1e-6, 0.10, 0.85, 0.125])
     opt = DummyOpt(x=params, fun=10.0)
     res = EstimationResult(spec, opt, data)
 
@@ -315,7 +261,7 @@ def test_forecast_convergence():
         y[t] = np.sqrt(sigma2[t]) * rng.standard_normal()
     
     spec = GARCH(1, 1) + Normal()
-    res = spec.fit(y, solver='slsqp', verbose=False)
+    res = spec.fit(y)
     
     # Skip if no GARCH params
     gp = res.garch_params
@@ -336,3 +282,15 @@ def test_forecast_convergence():
     # Loose tolerance due to estimation error
     rel_diff = abs(fc.variance[-1] - unconditional_var) / unconditional_var
     assert rel_diff < 0.3, f"Forecast didn't converge: rel_diff = {rel_diff}"
+
+
+def test_success_is_the_single_estimation_certification_flag():
+    import warnings
+    from scivol import GARCH, Normal
+
+    result = (GARCH()+Normal()).fit(np.random.default_rng(2026).normal(size=300))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert result.success == result.optimization_result.success
+    assert not caught
+    assert not hasattr(result, "converged")

@@ -7,13 +7,13 @@ import pandas as pd
 import pytest
 
 from scivol import BatchFitResult, EGARCH, GED, GARCH, GJRGARCH, Normal, SkewT, StudentT
-from scivol._kernels.routine import Routine
 from scivol.result import FitMetadata
 
 
 class DummyBatchResult:
     def __init__(self, data_len: int) -> None:
         self.n_obs = data_len
+        self.data = np.zeros(data_len)
         self.fit_info = FitMetadata()
         self.time_elapsed = 0.0
         self._index = None
@@ -24,7 +24,7 @@ class DummyBatchResult:
         return self.fit_info.warnings
 
     @property
-    def converged(self) -> bool:
+    def success(self) -> bool:
         return True
 
     @property
@@ -37,20 +37,10 @@ class DummyBatchResult:
 
 
 def _install_dummy_garch_normal(monkeypatch: pytest.MonkeyPatch) -> None:
-    import scivol._kernels as _k
-
-    monkeypatch.setattr(
-        "scivol._native_fit._uses_native_by_default", lambda _spec: False
-    )
-
-    def fake_fit(y, **_kw):
+    def fake_fit(spec, y, **_kw):
         return DummyBatchResult(len(y))
 
-    monkeypatch.setitem(
-        _k._ROUTINES,
-        "GARCH(1,1)+Normal",
-        Routine(uid="GARCH(1,1)+Normal", n_params=3, fit=fake_fit),
-    )
+    monkeypatch.setattr("scivol._fit.fit_spec", fake_fit)
 
 
 @pytest.fixture
@@ -71,7 +61,7 @@ def test_fit_many_records_failures_without_losing_successes(returns_frame: pd.Da
     data.loc[data.index[10], "c"] = np.nan
 
     batch = (GARCH(1, 1) + Normal()).fit_many(
-        data, n_jobs=1, maxiter=100, verbose=False
+        data, n_jobs=1, maxiter=100
     )
 
     assert isinstance(batch, BatchFitResult)
@@ -99,13 +89,12 @@ def test_fit_many_summarizes_recorded_fit_warnings(monkeypatch: pytest.MonkeyPat
 
 def test_fit_many_warm_starts_each_series(returns_frame: pd.DataFrame) -> None:
     spec = GARCH(1, 1) + Normal()
-    cold = spec.fit_many(returns_frame, n_jobs=1, maxiter=100, verbose=False)
+    cold = spec.fit_many(returns_frame, n_jobs=1, maxiter=100)
     warm = spec.fit_many(
         returns_frame,
         initial_results=cold,
         n_jobs=1,
         maxiter=2,
-        verbose=False,
     )
 
     assert not cold.failures
@@ -120,7 +109,6 @@ def test_fit_many_timeout_is_reported_per_series(returns_frame: pd.DataFrame) ->
         returns_frame[["a"]],
         n_jobs=1,
         timeout=1e-6,
-        verbose=False,
     )
 
     assert batch.failed == ("a",)
@@ -134,7 +122,6 @@ def test_fit_rolling_reuses_successful_previous_window(returns_frame: pd.DataFra
         step=20,
         n_jobs=1,
         maxiter=50,
-        verbose=False,
     )
 
     assert len(rolling) == 3
@@ -145,39 +132,35 @@ def test_fit_rolling_reuses_successful_previous_window(returns_frame: pd.DataFra
 
 def test_warm_start_rejects_a_different_specification(returns_frame: pd.DataFrame) -> None:
     source = (GARCH(1, 1) + Normal()).fit(
-        returns_frame["a"], maxiter=50, verbose=False
+        returns_frame["a"], maxiter=50
     )
 
     with pytest.raises(ValueError, match="Warm-start result"):
         (GJRGARCH(1, 1) + Normal()).fit(
-            returns_frame["a"], initial_params=source, maxiter=2, verbose=False
+            returns_frame["a"], initial_params=source, maxiter=2
         )
 
 
 @pytest.mark.parametrize("volatility", [GARCH, GJRGARCH, EGARCH])
 @pytest.mark.parametrize("density", [Normal, StudentT, SkewT, GED])
-@pytest.mark.parametrize("log_mode", [False, True])
+@pytest.mark.parametrize("coordinates", ["theta", "z"])
 def test_all_marginal_surfaces_accept_theta_warm_starts(
     returns_frame: pd.DataFrame,
     volatility,
     density,
-    log_mode: bool,
+    coordinates: str,
 ) -> None:
     spec = volatility(1, 1) + density()
     cold = spec.fit(
         returns_frame["a"],
-        solver="slsqp",
-        log_mode=log_mode,
+        coordinates=coordinates,
         maxiter=100,
-        verbose=False,
     )
     warm = spec.fit(
         returns_frame["a"],
-        solver="slsqp",
-        log_mode=log_mode,
+        coordinates=coordinates,
         initial_params=cold,
         maxiter=2,
-        verbose=False,
     )
 
     assert warm.fit_info.warm_started is True

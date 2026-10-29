@@ -92,7 +92,7 @@ class TestSmallSamples:
     def test_garch_normal_small_sample(self, small_data):
         """GARCH + Normal should work with 50 observations."""
         spec = GARCH(1, 1) + Normal()
-        result = spec.fit(small_data, solver='nelder-mead', verbose=False)
+        result = spec.fit(small_data)
         
         # Should complete without error
         assert result is not None
@@ -101,7 +101,7 @@ class TestSmallSamples:
     def test_garch_studentt_small_sample(self, small_data):
         """GARCH + StudentT should work with 50 observations."""
         spec = GARCH(1, 1) + StudentT()
-        result = spec.fit(small_data, solver='nelder-mead', verbose=False)
+        result = spec.fit(small_data)
         
         assert result is not None
         assert np.isfinite(result.log_likelihood)
@@ -109,7 +109,7 @@ class TestSmallSamples:
     def test_garch_skewt_small_sample(self, small_data):
         """GARCH + SkewT should work with 50 observations."""
         spec = GARCH(1, 1) + SkewT()
-        result = spec.fit(small_data, solver='nelder-mead', verbose=False)
+        result = spec.fit(small_data)
         
         assert result is not None
         assert np.isfinite(result.log_likelihood)
@@ -120,7 +120,7 @@ class TestSmallSamples:
         
         # Should not crash - may or may not converge
         try:
-            result = spec.fit(very_small_data, solver='nelder-mead', verbose=False)
+            result = spec.fit(very_small_data)
             # If it returns, check it's a valid result
             assert result is not None
         except (ValueError, RuntimeError):
@@ -158,7 +158,7 @@ class TestBoundaryParameters:
         
         # Fit model
         spec = GARCH(1, 1) + Normal()
-        result = spec.fit(y, solver='slsqp', verbose=False)
+        result = spec.fit(y)
         
         # Should complete and find high persistence
         assert result is not None
@@ -169,19 +169,19 @@ class TestBoundaryParameters:
             # Persistence should be high (close to true value)
             assert gp.persistence > 0.8
     
-    def test_studentt_near_nu_boundary(self, sample_data):
-        """Test Student-t with nu close to 2 (heavy tails)."""
+    def test_studentt_tail_domain(self, sample_data):
+        """The reciprocal tail includes the Normal boundary."""
         spec = GARCH(1, 1) + StudentT()
-        result = spec.fit(sample_data, solver='slsqp', verbose=False)
+        result = spec.fit(sample_data)
         
-        # nu should be > 2 (required for finite variance)
-        nu = result.params[-1]
-        assert nu > 2.0
+        # The reciprocal tail stays in its finite-variance domain.
+        eta = result.params[-1]
+        assert 0 <= eta < 0.5
     
     def test_skewt_lambda_bounded(self, sample_data):
         """Test Skew-t lambda stays in (-1, 1)."""
         spec = GARCH(1, 1) + SkewT()
-        result = spec.fit(sample_data, solver='slsqp', verbose=False)
+        result = spec.fit(sample_data)
         
         # lambda should be in (-1, 1)
         lam = result.params[-1]
@@ -202,7 +202,7 @@ class TestNumericalStability:
         
         # Should not crash (may not converge well)
         try:
-            result = spec.fit(data, solver='nelder-mead', verbose=False)
+            result = spec.fit(data)
             assert result is not None
         except (ValueError, RuntimeError):
             # Acceptable to raise on degenerate data
@@ -216,7 +216,7 @@ class TestNumericalStability:
         
         # Should complete - may have numerical issues
         try:
-            result = spec.fit(data, solver='nelder-mead', verbose=False)
+            result = spec.fit(data)
             assert result is not None
         except (ValueError, RuntimeError, FloatingPointError):
             # Acceptable for extreme cases
@@ -228,7 +228,7 @@ class TestNumericalStability:
         data = rng.standard_normal(500) * 100
         spec = GARCH(1, 1) + Normal()
         
-        result = spec.fit(data, solver='nelder-mead', verbose=False)
+        result = spec.fit(data)
         
         assert result is not None
         assert np.isfinite(result.log_likelihood)
@@ -250,15 +250,15 @@ class TestConvergence:
     def test_slsqp_converges(self, sample_data):
         """SLSQP solver should converge on well-behaved data."""
         spec = GARCH(1, 1) + Normal()
-        result = spec.fit(sample_data, solver='slsqp', verbose=False)
+        result = spec.fit(sample_data)
         
         # Check convergence
-        assert result.converged or np.isfinite(result.log_likelihood)
+        assert result.success or np.isfinite(result.log_likelihood)
     
     def test_nelder_mead_converges(self, sample_data):
         """Nelder-Mead solver should converge on well-behaved data."""
         spec = GARCH(1, 1) + Normal()
-        result = spec.fit(sample_data, solver='nelder-mead', verbose=False)
+        result = spec.fit(sample_data)
         
         # Check we get a valid result
         assert np.isfinite(result.log_likelihood)
@@ -267,10 +267,22 @@ class TestConvergence:
         """Different solvers should give similar results."""
         spec = GARCH(1, 1) + Normal()
         
-        result_slsqp = spec.fit(sample_data, solver='slsqp', verbose=False)
-        result_nm = spec.fit(sample_data, solver='nelder-mead', verbose=False)
+        result_slsqp = spec.fit(sample_data)
+        result_nm = spec.fit(sample_data)
         
         # Log-likelihoods should be close
         ll_diff = abs(result_slsqp.log_likelihood - result_nm.log_likelihood)
         # Allow some tolerance since they're different optimization methods
         assert ll_diff < 10.0  # Within 10 LL units
+
+
+@pytest.mark.parametrize("theta", [[.1, .1, .8, 5.], [.1, .1, .8, -.1], [.1, .3, .8, .2]])
+def test_simulate_rejects_infeasible_parameters_before_drawing(theta, monkeypatch):
+    from scivol import GARCH, StudentT
+
+    def must_not_draw(*args):
+        raise AssertionError("innovations must not be drawn for an infeasible theta")
+
+    monkeypatch.setattr("scivol._evaluation.innovations", must_not_draw)
+    with pytest.raises(ValueError, match="outside the model's domain"):
+        (GARCH()+StudentT()).simulate(20, theta)

@@ -11,7 +11,10 @@ python/
 scivol.egg-info/
 dist/
 build/
-examples/
+examples/*
+!examples/native/
+examples/native/*
+!examples/native/jet.cpp
 bugfix.md
 *.gz
 *.whl

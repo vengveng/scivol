@@ -31,3 +31,13 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "slow" in item.keywords:
             item.add_marker(skip_slow)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def release_oracle_compilations(request):
+    """Release each oracle module's compiled executables before the next module."""
+    yield
+    if request.module.__name__.split(".")[-1].startswith("test_scivolapi_"):
+        import sys
+        if "jax" in sys.modules:
+            sys.modules["jax"].clear_caches()

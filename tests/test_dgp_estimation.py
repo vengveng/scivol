@@ -34,10 +34,8 @@ from numpy.typing import NDArray
 from scipy.special import gammaln
 from scipy.stats import gennorm
 
-from scivol._gh import standardized_gh_rvs
-from scivol._vg import standardized_vg_rvs
+from tests._samplers import egarch_abs_moment, hansen_skewt_ppf, standardized_gh_rvs, standardized_vg_rvs
 
-from scivol._evaluation import _egarch_abs_moment, _hansen_skewt_ppf
 
 # -----------------------------------------------------------------------------
 # Data Generating Process (DGP) Functions
@@ -82,7 +80,7 @@ def simulate_garch_studentt(
     omega: float,
     alpha: float,
     beta: float,
-    nu: float,
+    eta: float,
     seed: int = 42,
 ) -> NDArray[np.float64]:
     """
@@ -92,6 +90,7 @@ def simulate_garch_studentt(
         σ²_t = ω + α·ε²_{t-1} + β·σ²_{t-1}
         y_t = σ_t · z_t,  z_t ~ t_ν (standardized to unit variance)
     """
+    nu = 1.0 / eta
     rng = np.random.default_rng(seed)
     
     y = np.zeros(n, dtype=np.float64)
@@ -118,7 +117,7 @@ def simulate_garch_skewt(
     omega: float,
     alpha: float,
     beta: float,
-    nu: float,
+    eta: float,
     lam: float,
     seed: int = 42,
 ) -> NDArray[np.float64]:
@@ -127,6 +126,7 @@ def simulate_garch_skewt(
     
     Uses a simpler approximation: Student-t with asymmetric scaling.
     """
+    nu = 1.0 / eta
     rng = np.random.default_rng(seed)
     
     y = np.zeros(n, dtype=np.float64)
@@ -355,10 +355,11 @@ def simulate_arma_gjr_garch_studentt(
     alpha: float,
     gamma: float,
     beta: float,
-    nu: float,
+    eta: float,
     seed: int = 42,
 ) -> NDArray[np.float64]:
     """Simulate ARMA(1,1)-GJR-GARCH(1,1) with Student-t innovations."""
+    nu = 1.0 / eta
     rng = np.random.default_rng(seed)
 
     y = np.zeros(n, dtype=np.float64)
@@ -388,11 +389,12 @@ def simulate_arma_gjr_garch_skewt(
     alpha: float,
     gamma: float,
     beta: float,
-    nu: float,
+    eta: float,
     lam: float,
     seed: int = 42,
 ) -> NDArray[np.float64]:
     """Simulate ARMA(1,1)-GJR-GARCH(1,1) with skew-t-style innovations."""
+    nu = 1.0 / eta
     rng = np.random.default_rng(seed)
 
     y = np.zeros(n, dtype=np.float64)
@@ -429,6 +431,7 @@ def simulate_arma_egarch_pq(
     *,
     dist: str = "Normal",
     nu: float = 8.0,
+    eta: float = 0.125,
     lam: float = 0.0,
     seed: int = 42,
 ) -> NDArray[np.float64]:
@@ -463,17 +466,19 @@ def simulate_arma_egarch_pq(
 
     if dist == "Normal":
         draws = rng.standard_normal(n)
-        abs_moment = _egarch_abs_moment("Normal", None, None)
+        abs_moment = egarch_abs_moment("Normal", None, None)
     elif dist == "StudentT":
+        nu = 1.0/eta
         draws = rng.standard_t(nu, size=n) * np.sqrt((nu - 2.0) / nu)
-        abs_moment = _egarch_abs_moment("StudentT", nu, None)
+        abs_moment = egarch_abs_moment("StudentT", eta, None)
     elif dist == "SkewT":
-        draws = _hansen_skewt_ppf(rng.uniform(size=n), nu, lam)
-        abs_moment = _egarch_abs_moment("SkewT", nu, lam)
+        nu = 1.0/eta
+        draws = hansen_skewt_ppf(rng.uniform(size=n), eta, lam)
+        abs_moment = egarch_abs_moment("SkewT", eta, lam)
     elif dist == "GED":
         scale = np.sqrt(np.exp(gammaln(1.0 / nu) - gammaln(3.0 / nu)))
         draws = np.asarray(gennorm.rvs(beta=nu, scale=scale, size=n, random_state=rng), dtype=np.float64)
-        abs_moment = _egarch_abs_moment("GED", nu, None)
+        abs_moment = egarch_abs_moment("GED", nu, None)
     else:
         raise ValueError(f"Unsupported dist '{dist}'")
 
@@ -576,7 +581,7 @@ def simulate_gjr_garch_studentt(
     alpha: float,
     gamma: float,
     beta: float,
-    nu: float,
+    eta: float,
     seed: int = 42,
 ) -> NDArray[np.float64]:
     """
@@ -584,6 +589,7 @@ def simulate_gjr_garch_studentt(
     
     Stationarity requires: α + 0.5·γ + β < 1 (Student-t is symmetric).
     """
+    nu = 1.0 / eta
     rng = np.random.default_rng(seed)
     
     y = np.zeros(n, dtype=np.float64)
@@ -611,7 +617,7 @@ def simulate_gjr_garch_skewt(
     alpha: float,
     gamma: float,
     beta: float,
-    nu: float,
+    eta: float,
     lam: float,
     seed: int = 42,
 ) -> NDArray[np.float64]:
@@ -621,6 +627,7 @@ def simulate_gjr_garch_skewt(
     Stationarity requires: α + γ·P(z<0) + β < 1 where P(z<0) depends on lambda.
     For lambda < 0 (left-skew): P(z<0) > 0.5, making the constraint tighter.
     """
+    nu = 1.0 / eta
     rng = np.random.default_rng(seed)
     
     y = np.zeros(n, dtype=np.float64)
@@ -716,10 +723,11 @@ def simulate_egarch_studentt(
     alpha: float,
     gamma: float,
     beta: float,
-    nu: float,
+    eta: float,
     seed: int = 42,
 ) -> NDArray[np.float64]:
     """Simulate EGARCH(1,1) with standardized Student-t innovations."""
+    nu = 1.0 / eta
     rng = np.random.default_rng(seed)
     y = np.zeros(n, dtype=np.float64)
     sigma2 = np.zeros(n, dtype=np.float64)
@@ -747,16 +755,17 @@ def simulate_egarch_skewt(
     alpha: float,
     gamma: float,
     beta: float,
-    nu: float,
+    eta: float,
     lam: float,
     seed: int = 42,
 ) -> NDArray[np.float64]:
     """Simulate EGARCH(1,1) with Hansen-skew-t innovations."""
+    nu = 1.0 / eta
     rng = np.random.default_rng(seed)
     y = np.zeros(n, dtype=np.float64)
     sigma2 = np.zeros(n, dtype=np.float64)
-    abs_moment = _egarch_abs_moment("SkewT", nu, lam)
-    draws = _hansen_skewt_ppf(rng.uniform(size=n), nu, lam)
+    abs_moment = egarch_abs_moment("SkewT", eta, lam)
+    draws = hansen_skewt_ppf(rng.uniform(size=n), eta, lam)
 
     sigma2[0] = np.exp(omega / (1.0 - beta))
     y[0] = np.sqrt(sigma2[0]) * draws[0]
@@ -776,6 +785,7 @@ def simulate_egarch_pq(
     betas: list[float],
     dist: str = "Normal",
     nu: float | None = None,
+    eta: float | None = None,
     lam: float | None = None,
     seed: int = 42,
 ) -> NDArray[np.float64]:
@@ -785,15 +795,17 @@ def simulate_egarch_pq(
     max_lag = max(p, q)
     y = np.zeros(n, dtype=np.float64)
     sigma2 = np.zeros(n, dtype=np.float64)
-    abs_moment = _egarch_abs_moment(dist, nu, lam)
+    abs_moment = egarch_abs_moment(dist, nu if dist == "GED" else eta, lam)
     if dist == "Normal":
         draws = rng.standard_normal(n)
     elif dist == "StudentT":
+        nu = 1.0/eta
         assert nu is not None
         draws = rng.standard_t(nu, size=n) * np.sqrt((nu - 2.0) / nu)
     elif dist == "SkewT":
+        nu = 1.0/eta
         assert nu is not None and lam is not None
-        draws = _hansen_skewt_ppf(rng.uniform(size=n), nu, lam)
+        draws = hansen_skewt_ppf(rng.uniform(size=n), eta, lam)
     elif dist == "GED":
         assert nu is not None
         scale = np.sqrt(np.exp(gammaln(1.0 / nu) - gammaln(3.0 / nu)))
@@ -859,13 +871,13 @@ TRUE_PARAMS = {
         "omega": 1e-6,
         "alpha": 0.08,
         "beta": 0.90,
-        "nu": 8.0,
+        "eta": 0.125,
     },
     "garch_skewt": {
         "omega": 1e-6,
         "alpha": 0.08,
         "beta": 0.90,
-        "nu": 8.0,
+        "eta": 0.125,
         "lam": -0.15,
     },
     "garch_ged": {
@@ -938,7 +950,7 @@ TRUE_PARAMS = {
         "alpha": 0.03,
         "gamma": 0.07,
         "beta": 0.86,
-        "nu": 8.0,
+        "eta": 0.125,
     },
     "arma_gjr_garch_skewt": {
         "c": 0.0002,
@@ -948,7 +960,7 @@ TRUE_PARAMS = {
         "alpha": 0.03,
         "gamma": 0.07,
         "beta": 0.86,
-        "nu": 8.0,
+        "eta": 0.125,
         "lam": -0.15,
     },
     "arma_egarch_normal": {
@@ -968,7 +980,7 @@ TRUE_PARAMS = {
         "alpha": 0.08,
         "gamma": -0.04,
         "beta": 0.90,
-        "nu": 8.0,
+        "eta": 0.125,
     },
     "arma_egarch_skewt": {
         "c": 0.0002,
@@ -978,7 +990,7 @@ TRUE_PARAMS = {
         "alpha": 0.08,
         "gamma": -0.04,
         "beta": 0.90,
-        "nu": 8.0,
+        "eta": 0.125,
         "lam": -0.15,
     },
     "arma_egarch_ged": {
@@ -1017,14 +1029,14 @@ TRUE_PARAMS = {
         "alpha": 0.03,
         "gamma": 0.07,
         "beta": 0.88,
-        "nu": 8.0,
+        "eta": 0.125,
     },
     "gjr_garch_skewt": {
         "omega": 1e-6,
         "alpha": 0.03,
         "gamma": 0.07,
         "beta": 0.88,
-        "nu": 8.0,
+        "eta": 0.125,
         "lam": -0.15,
     },
     "egarch_normal": {
@@ -1038,7 +1050,7 @@ TRUE_PARAMS = {
         "alpha": 0.10,
         "gamma": -0.04,
         "beta": 0.90,
-        "nu": 8.0,
+        "eta": 0.125,
     },
     "egarch_ged": {
         "omega": -0.15,
@@ -1058,14 +1070,14 @@ TRUE_PARAMS = {
         "alphas": [0.07, 0.03],
         "gammas": [-0.04, 0.01],
         "betas": [0.88],
-        "nu": 8.0,
+        "eta": 0.125,
     },
     "egarch_21_skewt": {
         "omega": -0.18,
         "alphas": [0.07, 0.03],
         "gammas": [-0.04, 0.01],
         "betas": [0.88],
-        "nu": 8.0,
+        "eta": 0.125,
         "lam": -0.15,
     },
     "egarch_skewt": {
@@ -1073,20 +1085,20 @@ TRUE_PARAMS = {
         "alpha": 0.10,
         "gamma": -0.04,
         "beta": 0.90,
-        "nu": 8.0,
+        "eta": 0.125,
         "lam": -0.15,
     },
     "arx_normal": {
-        "params": np.array([0.25, 0.40, 0.90], dtype=np.float64),
+        "params": np.array([0.25, 0.40, 0.90, 1.0], dtype=np.float64),  # const, ar, exog, sigma2
     },
     "harx_normal": {
-        "params": np.array([0.10, 0.55, 0.20, 0.80], dtype=np.float64),
+        "params": np.array([0.10, 0.55, 0.20, 0.80, 1.0], dtype=np.float64),  # const, har[1], har[5], exog, sigma2
     },
     "arx_studentt": {
-        "params": np.array([0.15, 0.35, 0.70, 0.60, 8.0], dtype=np.float64),
+        "params": np.array([0.15, 0.35, 0.70, 0.60, 0.125], dtype=np.float64),
     },
     "harx_skewt": {
-        "params": np.array([0.05, 0.60, 0.20, 1.50, 0.75, 8.0, -0.10], dtype=np.float64),
+        "params": np.array([0.05, 0.60, 0.20, 1.50, 0.75, 0.125, -0.10], dtype=np.float64),
     },
     "arx_ged": {
         "params": np.array([0.08, 0.35, 0.90, 0.65, 1.6], dtype=np.float64),
@@ -1095,10 +1107,10 @@ TRUE_PARAMS = {
         "params": np.array([0.02, 0.22, 0.15, -0.15, 0.10, -0.04, 0.91], dtype=np.float64),
     },
     "arx_egarch_studentt": {
-        "params": np.array([0.02, 0.22, 0.15, -0.18, 0.08, -0.03, 0.90, 8.0], dtype=np.float64),
+        "params": np.array([0.02, 0.22, 0.15, -0.18, 0.08, -0.03, 0.90, 0.125], dtype=np.float64),
     },
     "harx_egarch_skewt": {
-        "params": np.array([0.01, 0.30, 0.09, 0.12, -0.20, 0.06, 0.03, 0.02, -0.01, 0.89, 8.0, -0.10], dtype=np.float64),
+        "params": np.array([0.01, 0.30, 0.09, 0.12, -0.20, 0.06, 0.03, 0.02, -0.01, 0.89, 0.125, -0.10], dtype=np.float64),
     },
     "arx_egarch_ged": {
         "params": np.array([0.02, 0.22, 0.15, -0.18, 0.08, -0.03, 0.90, 1.6], dtype=np.float64),
@@ -1175,7 +1187,7 @@ class TestGARCHStudentT:
         """Generate synthetic GARCH(1,1) Student-t data."""
         p = TRUE_PARAMS["garch_studentt"]
         return simulate_garch_studentt(
-            N_OBS, p["omega"], p["alpha"], p["beta"], p["nu"]
+            N_OBS, p["omega"], p["alpha"], p["beta"], p["eta"]
         )
     
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
@@ -1202,7 +1214,7 @@ class TestGARCHStudentT:
         # Check persistence
         alpha_hat = result.params[1]
         beta_hat = result.params[2]
-        nu_hat = result.params[3]
+        eta_hat = result.params[3]
         
         true_persistence = true["alpha"] + true["beta"]
         est_persistence = alpha_hat + beta_hat
@@ -1211,7 +1223,7 @@ class TestGARCHStudentT:
             f"Persistence: true={true_persistence:.4f}, est={est_persistence:.4f}"
         
         # Degrees of freedom (can be harder to pin down)
-        assert 4 < nu_hat < 20, f"Nu out of reasonable range: {nu_hat:.2f}"
+        assert 1/20 < eta_hat < 1/4, f"Nu out of reasonable range: {eta_hat:.2f}"
 
 
 # -----------------------------------------------------------------------------
@@ -1230,7 +1242,7 @@ class TestGARCHGED:
         from scivol import GARCH, GED
 
         spec = GARCH(1, 1) + GED()
-        result = spec.fit(data, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, coordinates="theta")
 
         assert result.params is not None
         assert len(result.params) == 4
@@ -1241,7 +1253,7 @@ class TestGARCHGED:
         from scivol import GARCH, GED
 
         spec = GARCH(1, 1) + GED()
-        result = spec.fit(data, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, coordinates="theta")
 
         true = TRUE_PARAMS["garch_ged"]
         alpha_hat = result.params[1]
@@ -1275,11 +1287,11 @@ class TestGARCHGeneralizedHyperbolic:
             p["lambda"],
         )
         return (GARCH(1, 1) + GeneralizedHyperbolic()).fit(
-            data, solver="slsqp", log_mode=False
+            data, coordinates="theta"
         )
 
     def test_convergence(self, result) -> None:
-        assert result.converged
+        assert result.success
         assert result.params.shape == (6,)
         assert np.all(np.isfinite(result.params))
 
@@ -1309,11 +1321,11 @@ class TestGARCHNormalInverseGaussian:
             -0.5,
         )
         return (GARCH(1, 1) + NormalInverseGaussian()).fit(
-            data, solver="slsqp", log_mode=False
+            data, coordinates="theta"
         )
 
     def test_convergence(self, result) -> None:
-        assert result.converged
+        assert result.success
         assert result.params.shape == (5,)
         assert np.all(np.isfinite(result.params))
 
@@ -1341,12 +1353,10 @@ class TestGARCHHyperbolic:
             p["zeta"],
             1.0,
         )
-        return (GARCH(1, 1) + Hyperbolic()).fit(
-            data, solver="slsqp", log_mode=False
-        )
+        return (GARCH(1, 1) + Hyperbolic()).fit(data)
 
     def test_convergence(self, result) -> None:
-        assert result.converged
+        assert result.success
         assert result.params.shape == (5,)
         assert np.all(np.isfinite(result.params))
 
@@ -1374,11 +1384,11 @@ class TestGARCHVarianceGamma:
             p["lambda"],
         )
         return (GARCH(1, 1) + VarianceGamma()).fit(
-            data, solver="slsqp", log_mode=False
+            data, coordinates="theta"
         )
 
     def test_convergence(self, result) -> None:
-        assert result.converged
+        assert result.success
         assert result.params.shape == (5,)
         assert np.all(np.isfinite(result.params))
 
@@ -1401,7 +1411,7 @@ class TestGARCHSkewT:
         """Generate synthetic GARCH(1,1) Skew-t data."""
         p = TRUE_PARAMS["garch_skewt"]
         return simulate_garch_skewt(
-            N_OBS, p["omega"], p["alpha"], p["beta"], p["nu"], p["lam"]
+            N_OBS, p["omega"], p["alpha"], p["beta"], p["eta"], p["lam"]
         )
     
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
@@ -1689,7 +1699,7 @@ class TestARMAGJRGARCHStudentT:
             p["alpha"],
             p["gamma"],
             p["beta"],
-            p["nu"],
+            p["eta"],
         )
 
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
@@ -1709,14 +1719,14 @@ class TestARMAGJRGARCHStudentT:
         alpha_hat = result.params[4]
         gamma_hat = result.params[5]
         beta_hat = result.params[6]
-        nu_hat = result.params[7]
+        eta_hat = result.params[7]
 
         true_persistence = true["alpha"] + 0.5 * true["gamma"] + true["beta"]
         est_persistence = alpha_hat + 0.5 * gamma_hat + beta_hat
 
         assert abs(est_persistence - true_persistence) < 0.10
         assert gamma_hat > 0
-        assert 4 < nu_hat < 20
+        assert 1/20 < eta_hat < 1/4
 
 
 class TestARMAGJRGARCHSkewT:
@@ -1734,7 +1744,7 @@ class TestARMAGJRGARCHSkewT:
             p["alpha"],
             p["gamma"],
             p["beta"],
-            p["nu"],
+            p["eta"],
             p["lam"],
         )
 
@@ -1788,7 +1798,7 @@ class TestARMANormal:
         result = spec.fit(data)
         
         assert result.params is not None
-        assert len(result.params) == 3  # c, phi, theta
+        assert len(result.params) == 4  # c, phi, theta, sigma2
         assert np.all(np.isfinite(result.params))
         assert result.log_likelihood > 0
     
@@ -1879,7 +1889,7 @@ class TestGJRGARCHStudentT:
     def data(self) -> NDArray[np.float64]:
         p = TRUE_PARAMS["gjr_garch_studentt"]
         return simulate_gjr_garch_studentt(
-            N_OBS, p["omega"], p["alpha"], p["gamma"], p["beta"], p["nu"]
+            N_OBS, p["omega"], p["alpha"], p["gamma"], p["beta"], p["eta"]
         )
     
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
@@ -1904,7 +1914,7 @@ class TestGJRGARCHStudentT:
         alpha_hat = result.params[1]
         gamma_hat = result.params[2]
         beta_hat = result.params[3]
-        nu_hat = result.params[4]
+        eta_hat = result.params[4]
         
         true_persistence = true["alpha"] + 0.5 * true["gamma"] + true["beta"]
         est_persistence = alpha_hat + 0.5 * gamma_hat + beta_hat
@@ -1913,7 +1923,7 @@ class TestGJRGARCHStudentT:
             f"Persistence: true={true_persistence:.4f}, est={est_persistence:.4f}"
         
         assert gamma_hat > 0, f"Gamma should be positive: {gamma_hat:.4f}"
-        assert 4 < nu_hat < 20, f"Nu out of reasonable range: {nu_hat:.2f}"
+        assert 1/20 < eta_hat < 1/4, f"Nu out of reasonable range: {eta_hat:.2f}"
 
 
 # -----------------------------------------------------------------------------
@@ -1928,7 +1938,7 @@ class TestGJRGARCHSkewT:
         p = TRUE_PARAMS["gjr_garch_skewt"]
         return simulate_gjr_garch_skewt(
             N_OBS, p["omega"], p["alpha"], p["gamma"], p["beta"],
-            p["nu"], p["lam"]
+            p["eta"], p["lam"]
         )
     
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
@@ -1982,7 +1992,7 @@ class TestAPARCHNormal:
         return (APARCH(1, 1) + Normal()).fit(data, maxiter=3000)
 
     def test_convergence(self, result) -> None:
-        assert result.converged, result.optimization_result.message
+        assert result.success, result.optimization_result.message
         assert np.all(np.isfinite(result.params))
 
     def test_parameter_recovery(self, result) -> None:
@@ -2019,7 +2029,7 @@ class TestEGARCHStudentT:
     @pytest.fixture
     def data(self) -> NDArray[np.float64]:
         p = TRUE_PARAMS["egarch_studentt"]
-        return simulate_egarch_studentt(N_OBS, p["omega"], p["alpha"], p["gamma"], p["beta"], p["nu"])
+        return simulate_egarch_studentt(N_OBS, p["omega"], p["alpha"], p["gamma"], p["beta"], p["eta"])
 
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
         from scivol import EGARCH, StudentT
@@ -2035,7 +2045,7 @@ class TestEGARCHSkewT:
     @pytest.fixture
     def data(self) -> NDArray[np.float64]:
         p = TRUE_PARAMS["egarch_skewt"]
-        return simulate_egarch_skewt(N_OBS, p["omega"], p["alpha"], p["gamma"], p["beta"], p["nu"], p["lam"])
+        return simulate_egarch_skewt(N_OBS, p["omega"], p["alpha"], p["gamma"], p["beta"], p["eta"], p["lam"])
 
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
         from scivol import EGARCH, SkewT
@@ -2085,6 +2095,22 @@ class TestEGARCHGED:
 
 
 class TestEGARCHHigherOrder:
+    @pytest.mark.parametrize("seed", [42, 43, 44])
+    def test_egarch_12_recovers_and_is_stationary_on_original_data(self, seed: int) -> None:
+        from scivol import EGARCH, Normal, _scivolapi as api
+
+        data = 0.01 * simulate_egarch_pq(5500, -0.04, [0.18], [-0.12], [0.65, 0.30], seed=seed)[500:]
+        result = (EGARCH(1, 2) + Normal()).fit(data)
+        assert result.success
+        spec = api.ModelSpec()
+        spec.volatility = api.VolatilityKind.egarch
+        spec.p, spec.q = 1, 2
+        gradient = api.Jet(api.Model(spec), data).theta(result.params, api.GRADIENT)["gradient"]
+        assert np.max(np.abs(gradient)) / data.size < result.fit_info.kkt_tolerance
+        assert abs(result.params[1] - 0.18) < 0.10
+        assert abs(result.params[2] + 0.12) < 0.06
+        assert abs(sum(result.params[3:5]) - 0.95) < 0.06
+
     @pytest.fixture
     def data_21_normal(self) -> NDArray[np.float64]:
         p = TRUE_PARAMS["egarch_21_normal"]
@@ -2100,7 +2126,7 @@ class TestEGARCHHigherOrder:
             p["gammas"],
             p["betas"],
             dist="StudentT",
-            nu=p["nu"],
+            eta=p["eta"],
         )
 
     @pytest.fixture
@@ -2113,7 +2139,7 @@ class TestEGARCHHigherOrder:
             p["gammas"],
             p["betas"],
             dist="SkewT",
-            nu=p["nu"],
+            eta=p["eta"],
             lam=p["lam"],
         )
 
@@ -2204,7 +2230,7 @@ class TestARMAEGARCHStudentT:
             [p["gamma"]],
             [p["beta"]],
             dist="StudentT",
-            nu=p["nu"],
+            eta=p["eta"],
         )
 
     def test_estimation_runs(self, data: NDArray[np.float64]) -> None:
@@ -2231,7 +2257,7 @@ class TestARMAEGARCHSkewT:
             [p["gamma"]],
             [p["beta"]],
             dist="SkewT",
-            nu=p["nu"],
+            eta=p["eta"],
             lam=p["lam"],
         )
 
@@ -2309,9 +2335,9 @@ class TestARXHARXStandalone:
         params = TRUE_PARAMS["arx_normal"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3101)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         np.testing.assert_allclose(result.params, params, atol=0.18, rtol=0.0)
 
     def test_harx_normal_parameter_recovery(self) -> None:
@@ -2321,9 +2347,9 @@ class TestARXHARXStandalone:
         params = TRUE_PARAMS["harx_normal"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3102)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         np.testing.assert_allclose(result.params, params, atol=0.20, rtol=0.0)
 
     def test_arx_studentt_estimation_runs(self) -> None:
@@ -2333,9 +2359,9 @@ class TestARXHARXStandalone:
         params = TRUE_PARAMS["arx_studentt"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3103)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         assert len(result.params) == params.size
         assert np.all(np.isfinite(result.params))
 
@@ -2346,9 +2372,9 @@ class TestARXHARXStandalone:
         params = TRUE_PARAMS["harx_skewt"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3104)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         assert len(result.params) == params.size
         assert np.all(np.isfinite(result.params))
 
@@ -2359,9 +2385,9 @@ class TestARXHARXStandalone:
         params = TRUE_PARAMS["arx_ged"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3105)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         assert len(result.params) == params.size
         assert np.all(np.isfinite(result.params))
 
@@ -2374,9 +2400,9 @@ class TestARXHARXEGARCH:
         params = TRUE_PARAMS["arx_egarch_normal"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3201)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         np.testing.assert_allclose(result.params[:3], params[:3], atol=0.16, rtol=0.0)
         assert result.params[6] == pytest.approx(params[6], abs=0.10)
 
@@ -2387,9 +2413,9 @@ class TestARXHARXEGARCH:
         params = TRUE_PARAMS["arx_egarch_studentt"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3202)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         assert len(result.params) == params.size
         assert np.all(np.isfinite(result.params))
 
@@ -2400,9 +2426,9 @@ class TestARXHARXEGARCH:
         params = TRUE_PARAMS["harx_egarch_skewt"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3203)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         assert len(result.params) == params.size
         assert np.all(np.isfinite(result.params))
 
@@ -2413,9 +2439,9 @@ class TestARXHARXEGARCH:
         params = TRUE_PARAMS["arx_egarch_ged"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3204)
 
-        result = spec.fit(data, x=x, solver="slsqp", log_mode=False, verbose=False)
+        result = spec.fit(data, x=x, coordinates="theta")
 
-        assert result.converged
+        assert result.success
         assert len(result.params) == params.size
         assert np.all(np.isfinite(result.params))
 
@@ -2611,7 +2637,7 @@ class TestDCCGARCH:
     def test_univariate_convergence(self, dcc_result) -> None:
         """All univariate fits should converge."""
         for i, r in enumerate(dcc_result.univariate_results):
-            assert r.converged, f"Series {i} failed to converge"
+            assert r.success, f"Series {i} failed to converge"
 
     def test_univariate_parameter_recovery(self, dcc_result) -> None:
         """Univariate GARCH parameters should be close to truth."""
@@ -2666,11 +2692,12 @@ def simulate_studentt_dcc_11(
     T: int,
     dcc_a: float,
     dcc_b: float,
-    nu: float,
+    eta: float,
     Qbar: NDArray[np.float64],
     seed: int = 44,
 ) -> NDArray[np.float64]:
     """Simulate unit-variance Student-t innovations from DCC(1,1)."""
+    nu = 1.0 / eta
     rng = np.random.default_rng(seed)
     n_series = Qbar.shape[0]
     q_prev = Qbar.copy()
@@ -2697,34 +2724,35 @@ class TestDCCStudentT:
 
     @pytest.fixture(scope="class")
     def result(self):
-        from scivol import DCC
+        from scivol import DCC, _scivolapi as api
 
         truth = {
             "a": 0.04,
             "b": 0.93,
-            "nu": 7.0,
+            "eta": 1/7.0,
             "qbar": np.array(
                 [[1.0, 0.45, 0.25], [0.45, 1.0, 0.35], [0.25, 0.35, 1.0]]
             ),
         }
         eps = simulate_studentt_dcc_11(
-            10_000, truth["a"], truth["b"], truth["nu"], truth["qbar"]
+            10_000, truth["a"], truth["b"], truth["eta"], truth["qbar"]
         )
         fitted = DCC(1, 1, "studentt").fit_from_residuals(
-            eps, compute_se=False, maxiter=300
+            eps, maxiter=300,
+            marginals=[api.InnovationDensity(api.DensityKind.student_t, [truth["eta"]])] * eps.shape[1],
         )
         return fitted, truth
 
     def test_convergence(self, result) -> None:
         fitted, _ = result
-        assert fitted.converged
+        assert fitted.success and fitted.converged
 
     def test_parameter_recovery(self, result) -> None:
         fitted, truth = result
         np.testing.assert_allclose(
             fitted.theta[:2], [truth["a"], truth["b"]], rtol=0.20, atol=0.015
         )
-        assert 4.0 < fitted.params.nu < 14.0
+        assert 1/14.0 < fitted.params.eta < 1/4.0
 
 
 # -----------------------------------------------------------------------------
@@ -2735,8 +2763,11 @@ class TestDCCStudentT:
 @pytest.mark.parametrize("density", range(8))
 @pytest.mark.parametrize("family", ("ARMA", "ARX", "HARX"))
 def test_standalone_mean_tensor_recovery(family, density):
-    from scivol import ARMA, ARX, HARX
-    from scivol._mean_fit import DENSITIES, MeanModel, fit_mean_spec
+    from scivol import (ARMA, ARX, GED, HARX, GeneralizedHyperbolic, Hyperbolic, Normal, NormalInverseGaussian,
+                        SkewT, StudentT, VarianceGamma)
+
+    densities = (Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, NormalInverseGaussian, Hyperbolic,
+                 VarianceGamma)
 
     rng = np.random.default_rng(8471)
     n = 2200
@@ -2744,11 +2775,11 @@ def test_standalone_mean_tensor_recovery(family, density):
         innovations = rng.normal(size=n)
         shape = []
     elif density in (1, 2):
-        shape = [7.0] if density == 1 else [7.0, 0.2]
+        shape = [1/7.0] if density == 1 else [1/7.0, 0.2]
         innovations = (
             rng.standard_t(7, n) * np.sqrt(5 / 7)
             if density == 1
-            else _hansen_skewt_ppf(rng.uniform(size=n), 7.0, 0.2)
+            else hansen_skewt_ppf(rng.uniform(size=n), 1/7.0, 0.2)
         )
     elif density == 3:
         shape = [1.7]
@@ -2780,18 +2811,97 @@ def test_standalone_mean_tensor_recovery(family, density):
         data[t] = np.dot(coefficients, state) + errors[t]
     data = data[200:]
     x = None if x is None else x[200:]
-    result = fit_mean_spec(mean + DENSITIES[density](), data, x=x)
-    assert result.converged, result.convergence_message
+    spec = mean + densities[density]()
+    result = spec.fit(data, x=x)
+    assert result.success, result.convergence_message
     np.testing.assert_allclose(result.params[:4], coefficients, atol=0.12, rtol=0)
-    assert abs(result._sigma2[0] - 1.2) < 0.25
-    model = MeanModel(result.spec, data, x)
+    assert abs(result.params[4] - 1.2) < 0.25  # sigma2
     truth = np.r_[coefficients, 1.2, shape]
-    assert -result.log_likelihood <= model.evaluate(truth, 1)[0] + 1e-6
+    assert result.log_likelihood >= spec.loglikelihood(data, truth, x=x) - 1e-6
 
 
 # -----------------------------------------------------------------------------
 # Run tests directly
 # -----------------------------------------------------------------------------
+
+@pytest.mark.parametrize("order,omega,alpha", [(1, .2, .25), (0, .5, 0.0)])
+def test_native_zero_order_children_recover_on_comparison_plan(order, omega, alpha):
+    from scivol import _scivolapi as api
+
+    y = simulate_garch_normal(5000, omega, alpha, 0.0, seed=83)
+    spec = api.ModelSpec()
+    spec.p, spec.q = order, 0
+    model = api.Model(spec)
+    plan = api.ComparisonPlan(y, 12)
+    result = api.fit(model, plan)
+    assert result.success, result.warnings
+    assert result.scored == len(y) - 12
+    truth = [omega, alpha] if order else [omega]
+    np.testing.assert_allclose(result.theta, truth, rtol=.12, atol=.025)
+
+
+def test_aparch_zero_beta_start_has_an_interior_mle():
+    from scivol import APARCH, GARCH, Normal
+
+    data = (GARCH()+Normal()).simulate(3000, [.1, .15, .7], seed=101).data
+    fitted = (APARCH(1, 0)+Normal()).fit(data)
+    assert fitted.success, fitted.warnings
+    assert 1 < fitted.params[-1] < 5
+    assert fitted.params[0] > .1 and fitted.params[1] > .1
+    assert fitted.log_likelihood > -3600
+
+
+def test_automatic_path_leaves_a_degenerate_aparch_warm_start():
+    from scivol import APARCH, ARX, GJRGARCH, Normal
+
+    y = (GJRGARCH()+Normal()).simulate(3000, [.1, .05, .08, .8], seed=102).data
+    theta = [.018522, .6868, 4.7e-34, -.096, 49.8]
+    model = ARX(1, constant=False)+APARCH(1, 0)+Normal()
+    fitted = model.fit(y, initial_params=theta)
+    assert fitted.success, fitted.warnings
+    assert fitted.log_likelihood > -4193
+    assert 1 < fitted.params[-1] < 5
+    assert fitted.n_iter <= 1000
+    independent = model.fit(y, initial_params=theta, coordinates='z')
+    assert all('restart' not in name for name in independent.fit_info.optimizer_phases)
+
+
+@pytest.mark.parametrize("seed", [2, 18])
+def test_arx_egarch_dgp_has_a_reproducible_stationarity_certificate(seed):
+    from scivol import ARX, EGARCH, Normal
+
+    spec = ARX(1, constant=False)+EGARCH(1, 1)+Normal()
+    truth = np.array([.2, -.1, .15, -.06, .85])
+    y = spec.simulate(3000, truth, seed=seed).data
+    fitted = spec.fit(y)
+    repeated = spec.fit(y)
+    assert fitted.success, fitted.warnings
+    assert fitted.fit_info.kkt_residual <= fitted.fit_info.kkt_tolerance
+    np.testing.assert_allclose(fitted.params, truth, atol=.08, rtol=0)
+    np.testing.assert_array_equal(fitted.params, repeated.params)
+    assert fitted.log_likelihood == repeated.log_likelihood
+    assert fitted.fit_info.active_kink_rows == repeated.fit_info.active_kink_rows
+    if seed == 18:
+        assert fitted.fit_info.kink_point
+        assert fitted.fit_info.active_kink_rows == (2604,)
+        assert fitted.fit_info.inference_status == 'at_kink'
+        assert fitted.std_errors is None or not len(fitted.std_errors)
+    else:
+        assert not fitted.fit_info.kink_point
+
+
+def test_aparch_supremum_at_excluded_asymmetry_bound_is_uncertified():
+    from scivol import APARCH, GJRGARCH, Normal
+
+    # Only negative shocks drive this GJR variance. APARCH's likelihood keeps
+    # rising toward the excluded asymmetry bound gamma = 1.
+    y = (GJRGARCH()+Normal()).simulate(4000, [.05, 0., .2, .85], seed=0).data
+    fitted = (APARCH(1, 1)+Normal()).fit(y)
+    assert abs(fitted.params[2] - 1.) <= 64*np.finfo(float).eps
+    assert not fitted.success
+    assert fitted.fit_info.inference_status == 'at_open_bound'
+    assert any('excluded open bound' in w for w in fitted.warnings)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

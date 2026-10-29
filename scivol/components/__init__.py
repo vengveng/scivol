@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 from .base import Component
-from .mean import ARMA, ARX, AutoMean, HARX
-from .vol import APARCH, EGARCH, GARCH, GJRGARCH, AutoVol
+from .mean import ARMA, ARX, HARX
+from .vol import APARCH, EGARCH, GARCH, GJRGARCH
 from .density import (
-    AutoDensity,
     GED,
     GeneralizedHyperbolic,
     Hyperbolic,
@@ -17,9 +16,6 @@ from .density import (
 )
 
 __all__: list[str] = [
-    "AutoDensity",
-    "AutoMean",
-    "AutoVol",
     "ARX",
     "HARX",
     "Component",

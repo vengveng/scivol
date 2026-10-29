@@ -9,11 +9,10 @@ from .._mixins import FitsMixin
 from ..components.base import Component
 from ..components.density import Normal
 
-SPECIAL_KERNELS = {'boom'}
 CANONICAL = ("mean", "volatility", "density")
 
 class CompositeSpec(FitsMixin):
-    __slots__ = ('components', '_sig') # signature
+    __slots__ = ('components', '_sig', '_native_definition') # signature
 
     def __init__(self, *components: Union[Component, CompositeSpec]):
         self.components: List[Component] = self._canonicalize(components)
@@ -90,8 +89,6 @@ class CompositeSpec(FitsMixin):
 
     def link(self, *others: Union[Component, CompositeSpec]) -> CompositeSpec:
         return CompositeSpec(self, *others)
-    
-    def has_special_kernel(self): return self._sig in SPECIAL_KERNELS
     
     def __lt__(self, other: Union[Component, CompositeSpec]) -> CompositeSpec:
         return self.__add__(other)

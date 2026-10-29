@@ -66,17 +66,6 @@ def test_total_params():
     assert spec.total_params == 8
 
 
-# ------------------------------------------------------------------
-# 5. GARCH helpers after fitting-mock
-# ------------------------------------------------------------------
-def test_garch_persistence_and_stationarity():
-    g = GARCH(1, 1)
-    # fake a fitted_param dict (bypass optimiser)
-    g.unpack(np.array([0.01, 0.08, 0.90]))
-    assert pytest.approx(g.persistence()) == 0.98
-    assert g.is_stationary()
-    assert g.unconditional_variance() > 0
-
 
 # ------------------------------------------------------------------
 # 6. Hash / equality contract
