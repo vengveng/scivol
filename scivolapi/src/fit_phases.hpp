@@ -21,6 +21,7 @@ inline Termination termination_of(optimize::Termination t)
     case optimize::Termination::iteration_limit: return Termination::iteration_limit;
     case optimize::Termination::line_search_failed: return Termination::line_search_failed;
     case optimize::Termination::stalled: return Termination::stalled;
+    case optimize::Termination::open_bound: return Termination::open_bound;
     default: return Termination::failed;
     }
 }

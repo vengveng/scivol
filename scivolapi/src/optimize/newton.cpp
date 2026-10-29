@@ -1,3 +1,4 @@
+#include "open_bounds.hpp"
 #include "projection.hpp"
 #include "sqp_steps.hpp"
 #include "kinks.hpp"
@@ -369,6 +370,10 @@ Record refine_newton(const Problem& problem, std::span<const double> start, cons
     const double tolerance = std::max(std::sqrt(options.accuracy), target);
     double residual = std::numeric_limits<double>::infinity();
     int vanishing_steps = 0;
+    const bool open = has_open_bound(problem);
+    FaceWorkspace face;
+    if (open) face.reserve(problem.dimension, problem.constraint_count);
+    int beyond = 0;
     auto stationary_within = [&](double limit) { return residual <= limit; };
     auto converge = [&] {
         record.termination = Termination::converged;
@@ -400,6 +405,21 @@ Record refine_newton(const Problem& problem, std::span<const double> start, cons
         if (!evaluate.hessian(w.x, w.hessian)) {
             record.termination = Termination::singular;
             record.solver_mode = -101;
+            break;
+        }
+        // Iterates whose local model keeps its minimum beyond an open bound
+        // creep toward a supremum the domain excludes; the rest of the budget
+        // would only follow them. (Only the refinement, which starts near a
+        // solution, stops so: far from one, as early in the main phase, the
+        // local model points past bounds the solution respects. The iterates'
+        // path alone is no evidence: Newton can close in on an optimum next to
+        // a bound geometrically for dozens of iterations.)
+        const std::size_t n = problem.dimension;
+        beyond = open && beyond_open_bound(problem, {w.x, n}, {w.gradient, n}, {w.hessian, n * n}, active_constraint, face)
+            ? beyond + 1 : 0;
+        if (beyond >= open_bound_streak) {
+            record.termination = Termination::open_bound;
+            record.solver_mode = -103;
             break;
         }
         if (!newton_factor(w, problem.dimension)

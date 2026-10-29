@@ -38,7 +38,9 @@ struct FitOptions {
     std::vector<double> start;      // optional theta; empty = the model's start
 };
 
-enum class Termination { converged, iteration_limit, line_search_failed, stalled, failed };
+// open_bound: the iterates ran toward a bound the domain excludes, the local
+// model of the likelihood placing its maximum beyond it.
+enum class Termination { converged, iteration_limit, line_search_failed, stalled, open_bound, failed };
 
 enum class Inference {
     available,

@@ -427,6 +427,7 @@ NB_MODULE(_scivolapi, m)
         .value("iteration_limit", Termination::iteration_limit)
         .value("line_search_failed", Termination::line_search_failed)
         .value("stalled", Termination::stalled)
+        .value("open_bound", Termination::open_bound)
         .value("failed", Termination::failed);
     nb::enum_<Inference>(m, "Inference")
         .value("available", Inference::available)

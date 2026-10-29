@@ -9,6 +9,7 @@
 #include <type_traits>
 
 #include "fit_problem.hpp"
+#include "optimize/open_bounds.hpp"
 #include "optimize/projection.hpp"
 #include "optimize/kinks.hpp"
 
@@ -19,106 +20,6 @@ namespace {
 constexpr double eps = std::numeric_limits<double>::epsilon();
 
 }  // namespace
-
-bool face_newton_step(const optimize::Problem& p, std::span<const double> x, std::span<const double> g,
-                      std::span<const double> h, double active, std::vector<double>& step)
-{
-    const std::size_t d = x.size();
-    const auto on = [&](double bound, double xi) {
-        return std::isfinite(bound) && std::abs(xi - bound) <= 64 * eps * std::max(1.0, std::abs(bound));
-    };
-    std::vector<std::size_t> free;
-    for (std::size_t i = 0; i < d; ++i) {
-        const bool closed_lower = !p.lower.empty() && (p.open_lower.empty() || !p.open_lower[i]) && on(p.lower[i], x[i]);
-        const bool closed_upper = !p.upper.empty() && (p.open_upper.empty() || !p.open_upper[i]) && on(p.upper[i], x[i]);
-        if (!closed_lower && !closed_upper) free.push_back(i);
-    }
-    const std::size_t k = free.size();
-    // Orthonormal basis of the active constraints' normals, then of its
-    // complement (modified Gram-Schmidt, twice; k is small).
-    std::vector<std::vector<double>> basis;
-    const auto orthogonalize = [&](std::vector<double>& v) {
-        const double size = std::sqrt(std::inner_product(v.begin(), v.end(), v.begin(), 0.0));
-        for (int pass = 0; pass < 2; ++pass)
-            for (const auto& b : basis) {
-                const double dot = std::inner_product(v.begin(), v.end(), b.begin(), 0.0);
-                for (std::size_t j = 0; j < k; ++j) v[j] -= dot * b[j];
-            }
-        const double rest = std::sqrt(std::inner_product(v.begin(), v.end(), v.begin(), 0.0));
-        if (!(rest > 1e-8 * size)) return false;
-        for (double& vj : v) vj /= rest;
-        return true;
-    };
-    if (p.constraint_count) {
-        std::vector<double> c(p.constraint_count), jacobian(p.constraint_count * d);
-        if (!p.constraints(x.data(), c.data(), jacobian.data())) return false;
-        for (std::size_t m = 0; m < p.constraint_count; ++m) {
-            if (!(c[m] <= active)) continue;
-            std::vector<double> normal(k);
-            for (std::size_t j = 0; j < k; ++j) normal[j] = jacobian[m * d + free[j]];
-            if (orthogonalize(normal)) basis.push_back(std::move(normal));
-        }
-    }
-    const std::size_t normals = basis.size();
-    for (std::size_t j = 0; j < k && basis.size() < k; ++j) {
-        std::vector<double> e(k, 0.0);
-        e[j] = 1.0;
-        if (orthogonalize(e)) basis.push_back(std::move(e));
-    }
-    const std::size_t q = basis.size() - normals;  // the face's dimension
-    step.assign(d, 0.0);
-    if (q == 0) return true;
-    const auto z = [&](std::size_t j, std::size_t a) { return basis[normals + a][j]; };
-    // Reduced Hessian R = Z'HZ and gradient Z'g.
-    std::vector<double> hz(k * q, 0.0), r(q * q, 0.0), rhs(q, 0.0);
-    for (std::size_t i = 0; i < k; ++i)
-        for (std::size_t a = 0; a < q; ++a)
-            for (std::size_t j = 0; j < k; ++j) hz[i * q + a] += h[free[i] * d + free[j]] * z(j, a);
-    for (std::size_t a = 0; a < q; ++a) {
-        for (std::size_t b = 0; b < q; ++b)
-            for (std::size_t i = 0; i < k; ++i) r[a * q + b] += z(i, a) * hz[i * q + b];
-        for (std::size_t i = 0; i < k; ++i) rhs[a] -= z(i, a) * g[free[i]];
-    }
-    // Cholesky of the equilibrated R, then R y = -Z'g.
-    std::vector<double> e(q), l(q * q, 0.0), y(q);
-    for (std::size_t a = 0; a < q; ++a) {
-        if (!(r[a * q + a] > 0.0) || !std::isfinite(r[a * q + a])) return false;
-        e[a] = 1.0 / std::sqrt(r[a * q + a]);
-    }
-    for (std::size_t j = 0; j < q; ++j) {
-        double diagonal = 1.0;
-        for (std::size_t m = 0; m < j; ++m) diagonal -= l[j * q + m] * l[j * q + m];
-        if (!(diagonal > 0.0)) return false;
-        l[j * q + j] = std::sqrt(diagonal);
-        for (std::size_t i = j + 1; i < q; ++i) {
-            double s = e[i] * r[i * q + j] * e[j];
-            for (std::size_t m = 0; m < j; ++m) s -= l[i * q + m] * l[j * q + m];
-            l[i * q + j] = s / l[j * q + j];
-        }
-    }
-    for (std::size_t i = 0; i < q; ++i) {
-        double s = e[i] * rhs[i];
-        for (std::size_t m = 0; m < i; ++m) s -= l[i * q + m] * y[m];
-        y[i] = s / l[i * q + i];
-    }
-    for (std::size_t i = q; i-- > 0;) {
-        double s = y[i];
-        for (std::size_t m = i + 1; m < q; ++m) s -= l[m * q + i] * y[m];
-        y[i] = s / l[i * q + i];
-    }
-    for (std::size_t j = 0; j < k; ++j)
-        for (std::size_t a = 0; a < q; ++a) step[free[j]] += z(j, a) * e[a] * y[a];
-    return std::all_of(step.begin(), step.end(), [](double s) { return std::isfinite(s); });
-}
-
-bool crosses_open_bound(const optimize::Problem& p, std::span<const double> x, std::span<const double> step)
-{
-    for (std::size_t i = 0; i < x.size(); ++i) {
-        if (!p.open_lower.empty() && p.open_lower[i] && step[i] < 0.0 && x[i] + step[i] <= p.lower[i]) return true;
-        if (!p.open_upper.empty() && p.open_upper[i] && step[i] > 0.0 && x[i] + step[i] >= p.upper[i]) return true;
-    }
-    return false;
-}
 
 // By Cholesky on the diagonally equilibrated matrix (parameters can differ in
 // scale by orders of magnitude).
@@ -274,9 +175,7 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
     if constexpr (univariate) open_bound = model.at_open_bound(unit_theta);
     std::vector<double> descent(d);
     std::transform(unit_g.begin(), unit_g.end(), descent.begin(), std::negate<>());
-    const bool gradient_crosses = r.stationary && gradient_ok && crosses_open_bound(problem, unit_theta, descent);
-    const bool any_open = std::find(problem.open_lower.begin(), problem.open_lower.end(), 1) != problem.open_lower.end()
-                          || std::find(problem.open_upper.begin(), problem.open_upper.end(), 1) != problem.open_upper.end();
+    const bool gradient_crosses = r.stationary && gradient_ok && optimize::crosses_open_bound(problem, unit_theta, descent);
 
     // Reported quantities, evaluated directly on the original data.
     r.theta.resize(d);
@@ -319,15 +218,20 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
     // maxima there. Where the reduced Hessian is positive definite, the
     // Newton step (unit-free) locates the local maximum instead: inside the
     // domain or beyond the open bound. Elsewhere only the gradient step speaks.
-    if (r.stationary && !open_bound && any_open) {
-        std::vector<double> newton;
+    if (r.stationary && !open_bound && optimize::has_open_bound(problem)) {
+        optimize::FaceWorkspace face;
+        face.reserve(d, problem.constraint_count);
         const bool definite = r.gradient.size() == d && r.hessian.size() == d * d
-                              && face_newton_step(problem, r.theta, r.gradient, r.hessian, 1e-8, newton);
-        open_bound = definite ? crosses_open_bound(problem, r.theta, newton) : gradient_crosses;
+                              && optimize::face_newton_step(problem, r.theta, r.gradient, r.hessian, optimize::active_constraint, face);
+        open_bound = definite ? optimize::crosses_open_bound(problem, r.theta, face.step) : gradient_crosses;
     }
 
     const FitPhase& phase = r.phases.at(selected.phase);
     r.termination = phase.termination;
+    // The phase stopped with its iterates running to an open bound, its local
+    // model placing the maximum beyond it: the supremum it approached lies on
+    // the excluded boundary, whether or not the point meets the KKT test.
+    if (r.termination == Termination::open_bound) open_bound = true;
     if (!selected.accepted)
         r.warnings.push_back("returned the best feasible trial of phase " + phase.name
                              + ", which the solver had not accepted");
@@ -339,8 +243,8 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
     if (open_bound)
         r.warnings.push_back("the likelihood increases toward an excluded open bound of the domain; no maximum exists in the domain");
 
-    if (!r.stationary) r.inference = Inference::not_stationary;
-    else if (open_bound) r.inference = Inference::at_open_bound;
+    if (open_bound) r.inference = Inference::at_open_bound;
+    else if (!r.stationary) r.inference = Inference::not_stationary;
     else if (r.kink_point) r.inference = Inference::at_kink;
     else if (stationarity.binding) r.inference = Inference::at_boundary;
     else if (r.hessian.empty()) r.inference = Inference::not_positive_definite;

@@ -106,6 +106,8 @@ void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, s
             offer(trust, d, phases.size() - 1, same, candidates);
         }
         const auto refine = [&](const optimize::Record& from) {
+            // Iterates that ran to an open bound have no maximum to certify.
+            if (from.termination == optimize::Termination::open_bound) return optimize::Termination::open_bound;
             if (iterations(phases) >= budget) return optimize::Termination::iteration_limit;
             const optimize::Record newton = run_phase("theta:newton", in_theta, Solver::newton, solved(from, start),
                                                       std::min(reserve, budget - iterations(phases)), options.accuracy,
@@ -116,7 +118,8 @@ void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, s
         // A trust region that stopped without progress short of KKT (a face
         // too sharp for its retraction, such as the HAR unit root) hands over
         // to SLSQP when the refinement cannot certify its point either.
-        if (refine(trust) != optimize::Termination::converged
+        const optimize::Termination refined = refine(trust);
+        if (refined != optimize::Termination::converged && refined != optimize::Termination::open_bound
             && trust.termination == optimize::Termination::line_search_failed && iterations(phases) < budget) {
             trust = run_phase("theta:slsqp", in_theta, Solver::slsqp, solved(trust, start), budget - iterations(phases),
                               options.accuracy, phases);

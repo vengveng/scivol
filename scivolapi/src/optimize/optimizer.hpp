@@ -52,6 +52,7 @@ enum class Termination {
     iteration_limit,     // budget exhausted
     line_search_failed,  // no acceptable step
     stalled,             // repeated vanishing steps before stationarity
+    open_bound,          // iterates running to an open bound: the local model's minimum lies beyond it
     not_evaluable_start, // the objective or constraints failed at the start
     singular,            // the subproblem could not be solved
     invalid_problem,     // inconsistent dimensions or bounds

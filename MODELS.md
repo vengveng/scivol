@@ -139,7 +139,11 @@ their workspaces can be used by independent Python threads.
   with `inference_status="at_open_bound"`. So is a stationary estimate short of
   an open bound whose local maximum lies beyond it: the Newton step of the
   likelihood on the active face crosses the bound, or, where the curvature
-  there is not positive, the projected-gradient step does.
+  there is not positive, the projected-gradient step does. The theta Newton
+  refinement stops (phase termination `open_bound`) once that holds at five
+  consecutive iterates; such a fit reports `at_open_bound` without a KKT
+  certificate, since the likelihood was still rising toward the excluded
+  bound.
 
 The model capability `likelihood_can_have_gradient_kinks` tells optimizers whether
 moving residuals can cross a face with a nondifferentiable first derivative.
