@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include "model.hpp"

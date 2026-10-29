@@ -11,6 +11,7 @@
 #include <array>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <vector>
 
 #include <scivolapi/scivolapi.hpp>
