@@ -136,7 +136,10 @@ their workspaces can be used by independent Python threads.
   at most `max(sqrt(accuracy), sqrt(eps))`. An estimate within `64 eps`
   (relative) of a nonzero open bound, or at the smallest normal number above a
   zero open bound, is a supremum on the excluded boundary: it is uncertified
-  with `inference_status="at_open_bound"`.
+  with `inference_status="at_open_bound"`. So is a stationary estimate short of
+  an open bound whose local maximum lies beyond it: the Newton step of the
+  likelihood on the active face crosses the bound, or, where the curvature
+  there is not positive, the projected-gradient step does.
 
 The model capability `likelihood_can_have_gradient_kinks` tells optimizers whether
 moving residuals can cross a face with a nondifferentiable first derivative.

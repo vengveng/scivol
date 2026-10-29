@@ -378,6 +378,11 @@ NB_MODULE(_scivolapi, m)
             m.bounds(lower, upper);
             return nb::make_tuple(owned_vector(std::move(lower)), owned_vector(std::move(upper)));
         })
+        .def("open_bounds", [](const Model& m) {
+            std::vector<char> lower(m.dimension()), upper(m.dimension());
+            m.open_bounds(lower, upper);
+            return nb::make_tuple(std::vector<bool>(lower.begin(), lower.end()), std::vector<bool>(upper.begin(), upper.end()));
+        }, "Which finite bounds are excluded from the domain (strict inequalities).")
         .def_prop_ro("capabilities", &Model::capabilities)
         .def("persistence", [](const Model& m, const Vector& theta) { return m.persistence(view(theta)); }, "theta"_a)
         .def("unconditional_variance", [](const Model& m, const Vector& theta) { return m.unconditional_variance(view(theta)); }, "theta"_a)
