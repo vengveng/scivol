@@ -16,11 +16,19 @@ enum Want : unsigned { value_only = 0u, argument = 1u, order = 2u, first_only = 
 // first_only requests just the first derivatives in the selected channels;
 // zz, nunu and nuz remain NaN. It requires argument or order.
 struct OrderJet { double f, g = 0.0, h = 0.0; };
+// Trapezoidal nodes t_j = j h of K_a(z) = int_0^inf exp(-z cosh t) cosh(a t) dt
+// for quadrature_low <= z < quadrature_high and a = |nu| <= quadrature_order.
+inline constexpr double quadrature_low = 0.5, quadrature_high = 8.0, quadrature_order = 10.0;
+inline constexpr std::size_t quadrature_capacity = 48;
 struct PreparedOrder {
     double nu = 0.0, reduced = 0.0, reflected_reduced = 0.0;
     unsigned want = 0;
     std::array<OrderJet, 3> gamma{}, reflected_gamma{};
     std::array<std::array<OrderJet, 17>, 6> series{}, reflected_series{};
+    // d = cosh t - 1, c = w cosh(a t), u = t tanh(a t), v = t^2 sech^2(a t), and the
+    // largest argument at which the node's terms still matter; none when nodes = 0.
+    std::size_t nodes = 0;
+    std::array<double, quadrature_capacity> node_d{}, node_c{}, node_u{}, node_v{}, node_reach{};
 };
 
 // Order constants for repeated log_zk_scaled evaluations. No heap storage.

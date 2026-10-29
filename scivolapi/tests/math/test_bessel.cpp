@@ -116,6 +116,34 @@ void check_reference(const Reference& row, bool prepared = false) noexcept {
     }
 }
 
+// The prepared trapezoidal path (0.5 <= z < 8, |nu| <= min(10, 4z)) against
+// the unprepared series and continued fraction, an independent algorithm, on
+// a dense grid. Each is within about 1e-15 of 40-digit references where the
+// other is; the series and fraction themselves reach 1e-13 near z = 2.
+void check_quadrature() noexcept {
+    double largest = 0.0;
+    for (double nu = -10.0; nu <= 10.0; nu += 0.37)
+        for (double z = 0.5; z < 8.0; z *= 1.09) {
+            PreparedOrder prepared;
+            if (!prepare(nu, argument | order, prepared) || !prepared.nodes) {
+                fail("quadrature nodes", {3, nu, z, {}}, argument | order);
+                continue;
+            }
+            LogK a, b;
+            if (!log_zk_scaled(prepared, z, a) || !log_zk_scaled(nu, z, argument | order, b)) {
+                fail("quadrature status", {3, nu, z, {}}, argument | order);
+                continue;
+            }
+            const auto x = fields(a), y = fields(b);
+            for (int i = 0; i < 6; ++i) {
+                const double error = std::abs(x[i]-y[i])/std::max(1.0, std::abs(y[i]));
+                largest = std::max(largest, error);
+                if (!(error <= 2e-13)) fail("quadrature agreement", {3, nu, z, {}}, argument | order, i, x[i], y[i]);
+            }
+        }
+    std::printf("quadrature against series and continued fraction: largest scaled difference %.3e\n", largest);
+}
+
 struct FixedReference { double z; std::array<double, 3> expected; };
 #include "nig_reference.inc"
 
@@ -367,6 +395,7 @@ int main() {
         check_reference(row);
         if (row.function == 3) check_reference(row, true);
     }
+    check_quadrature();
     check_fixed_nig();
     check_ladders();
     check_domains();

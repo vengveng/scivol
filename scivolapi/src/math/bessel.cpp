@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 
 #include "special.hpp"
@@ -794,6 +796,119 @@ Series uniform_gap(double nu, double z, unsigned want, Series& logratio) noexcep
     return reduced.add(reduced.log(d), reduced.scale(lz, -1.0));
 }
 
+// Trapezoidal rule on K_a(z) = int_0^inf exp(-z cosh t) cosh(a t) dt with the
+// prepared nodes. The integrand is entire and decays doubly exponentially, so
+// a fixed step converges geometrically; every term is positive, so log(e^z K)
+// is the log of a positive sum. Its derivatives are moments of d = cosh t - 1
+// and u = d log cosh(a t) / da under the normalized terms p_j: d_z = -E[d],
+// d_a = E[u], d_zz = Var(d), d_aa = Var(u) + E[t^2 sech^2(a t)],
+// d_az = -Cov(u, d), formed centred (two passes, no cancellation). One exp
+// per node serves the value and every derivative.
+// exp(x) for -700 < x <= 0 as plain arithmetic, so a loop of them
+// vectorizes: x = k ln2 + r with ln2 in two parts (k ln2_hi exact), |r| <=
+// ln2/2, exp(r) by its degree-13 Taylor polynomial (truncation below 4e-18
+// relative), 2^k through the exponent field. Within about one ulp of exp.
+inline double exp_nonpositive(double x) noexcept {
+    constexpr double inverse_ln2 = 1.44269504088896338700e+00, ln2_hi = 6.93147180369123816490e-01,
+                     ln2_lo = 1.90821492927058770002e-10, shifter = 0x1.8p52;
+    const double k = (x*inverse_ln2+shifter)-shifter;
+    const double r = (x-k*ln2_hi)-k*ln2_lo;
+    double q = 1.0/6227020800.0;
+    q = q*r+1.0/479001600.0;
+    q = q*r+1.0/39916800.0;
+    q = q*r+1.0/3628800.0;
+    q = q*r+1.0/362880.0;
+    q = q*r+1.0/40320.0;
+    q = q*r+1.0/5040.0;
+    q = q*r+1.0/720.0;
+    q = q*r+1.0/120.0;
+    q = q*r+1.0/24.0;
+    q = q*r+1.0/6.0;
+    q = q*r+0.5;
+    q = q*r+1.0;
+    q = q*r+1.0;
+    const std::int64_t bits = (static_cast<std::int64_t>(k)+1023) << 52;
+    return q*std::bit_cast<double>(bits);
+}
+
+void quadrature(const PreparedOrder& p, double a, double z, unsigned want, bool product, bool scaled, LogK& out) noexcept {
+    // The nodes this argument needs: through the first whose terms are
+    // negligible (reach decreases along the nodes, so a count finds it).
+    std::size_t n = 1;
+    for (std::size_t j = 1; j < p.nodes; ++j) n += p.node_reach[j] >= z;
+    n = std::min(n + 1, p.nodes);
+    // Sums run in four interleaved lanes over a zero-padded multiple of four
+    // nodes (fixed order: independent chains, vectorizable, deterministic).
+    const std::size_t m = (n+3) & ~std::size_t{3};
+    std::array<double, quadrature_capacity> e;
+    for (std::size_t j = 0; j < n; ++j) e[j] = p.node_c[j]*exp_nonpositive(std::max(-z*p.node_d[j], -700.0));
+    for (std::size_t j = n; j < m; ++j) e[j] = 0.0;
+    const auto total = [](const double (&lane)[4]) { return (lane[0]+lane[1])+(lane[2]+lane[3]); };
+    double s0[4] = {};
+    for (std::size_t j = 0; j < m; j += 4)
+        for (std::size_t l = 0; l < 4; ++l) s0[l] += e[j+l];
+    const double sum = total(s0);
+    const double log_z = product ? std::log(z) : 0.0;
+    out.value = std::log(sum)-(scaled ? 0.0 : z)+a*log_z;
+    if (!want) return;
+    // Every moment of an order is formed whatever the request, so a sparse
+    // request returns the bits of the full one.
+    const double inverse = 1.0/sum;
+    double sd[4] = {}, su[4] = {};
+    for (std::size_t j = 0; j < m; j += 4)
+        for (std::size_t l = 0; l < 4; ++l) {
+            sd[l] += e[j+l]*p.node_d[j+l];
+            su[l] += e[j+l]*p.node_u[j+l];
+        }
+    const double dm = total(sd)*inverse, um = total(su)*inverse;
+    if (want & argument) out.z = -dm-(scaled ? 0.0 : 1.0)+(product ? a/z : 0.0);
+    if (want & order) out.nu = um+log_z;
+    if (want & first_only) return;
+    double sdd[4] = {}, suu[4] = {}, svv[4] = {}, sud[4] = {};
+    for (std::size_t j = 0; j < m; j += 4)
+        for (std::size_t l = 0; l < 4; ++l) {
+            const double ej = e[j+l], dc = p.node_d[j+l]-dm, uc = p.node_u[j+l]-um;
+            sdd[l] += ej*dc*dc;
+            suu[l] += ej*uc*uc;
+            svv[l] += ej*p.node_v[j+l];
+            sud[l] += ej*uc*dc;
+        }
+    const double dd = total(sdd), uu = total(suu), vv = total(svv), ud = total(sud);
+    if (want & argument) out.zz = dd*inverse-(product ? (a/z)/z : 0.0);
+    if (want & order) {
+        out.nunu = (uu+vv)*inverse;
+        out.nuz = -ud*inverse+(product ? 1.0/z : 0.0);
+    }
+}
+
+// Nodes t_j = j h up to the first whose terms, weighted as in the second
+// derivatives ((1 + t^2)(1 + d)^2), fall below 1e-19 at the band's lowest
+// argument; node j's terms stay above that for z <= reach_j, which decreases
+// along the nodes. h = 0.14 keeps the discretization error at roundoff for
+// every derivative through a = 10 and down to z = 0.1 (checked against
+// 40-digit references).
+void prepare_quadrature(double a, PreparedOrder& out) noexcept {
+    constexpr double h = 0.14;
+    const double limit = std::log(1e-19);
+    out.nodes = 0;
+    if (!(a <= quadrature_order)) return;
+    for (std::size_t j = 0; j < quadrature_capacity; ++j) {
+        const double t = double(j)*h, half = std::sinh(0.5*t), d = 2.0*half*half, at = a*t;
+        const double sech = 1.0/std::cosh(at);
+        out.node_d[j] = d;
+        out.node_c[j] = (j ? h : 0.5*h)*std::cosh(at);
+        out.node_u[j] = t*std::tanh(at);
+        out.node_v[j] = t*t*sech*sech;
+        const double log_cosh = at+std::log1p(std::exp(-2.0*at))-log_two;
+        const double size = log_cosh+std::log1p(t*t)+2.0*std::log1p(d)-limit;
+        out.node_reach[j] = j ? size/d : std::numeric_limits<double>::infinity();
+        if (out.node_reach[j] < quadrature_low) {
+            out.nodes = j+1;
+            return;
+        }
+    }
+}
+
 bool finite_result(const LogK& result, unsigned want) noexcept {
     return std::isfinite(result.value)
         && (!(want & argument) || (std::isfinite(result.z) && ((want & first_only) || std::isfinite(result.zz))))
@@ -825,6 +940,11 @@ bool evaluate(double nu, double z, unsigned want, bool product, bool scaled, Log
         else if (a <= 128.0 && z >= 64.0 && z >= 0.25*a*a)
             large_argument(a, z, want, product, scaled, result);
         else if (a > 128.0) large_order(a, z, want, product, scaled, result, product && scaled && nu < 0.0);
+        // The z^nu factor of the product forms enters the quadrature's
+        // argument derivatives as a/z and a/z^2, which cancel against the
+        // moments once a/z is large: there the series keeps it symbolic.
+        else if (prepared && prepared->nodes && z >= quadrature_low && z < quadrature_high && a <= 4.0*z)
+            quadrature(*prepared, a, z, want, product, scaled, result);
         else if (z <= 2.0) small_argument(a, z, want, product, scaled, result, prepared);
         else {
             const Consecutive k = continued_fraction(a, z, scaled, want);
@@ -903,6 +1023,7 @@ bool prepare(double nu, unsigned want, PreparedOrder& out) noexcept {
     out.reflected_reduced = a < 0.5 ? complement - std::ceil(complement - 0.5) : -out.reduced;
     prepare_temme(out.reduced, op, out.gamma, out.series);
     prepare_temme(out.reflected_reduced, op, out.reflected_gamma, out.reflected_series);
+    prepare_quadrature(a, out);
     return true;
 }
 
