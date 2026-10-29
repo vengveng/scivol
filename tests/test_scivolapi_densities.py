@@ -469,3 +469,34 @@ def test_closed_tail_domain_and_saturated_interval_chart(density):
         result = jet.z(z,7)
         assert result["status"] == "ok"
         assert np.all(np.isfinite(result["gradient"])) and np.all(np.isfinite(result["hessian"]))
+
+
+# E[z^2 1(z < 0)] of the standardized VG (lambda = 4.2805573) and its rho- and
+# lambda-derivatives, from 40-digit mpmath integration of the normal mixture
+# z | V ~ N(slope (V - lambda), scale V), V ~ Gamma(lambda), with slope =
+# sqrt(2) rho / sqrt(lambda (1 + rho^2)) and scale = (1 - rho^2) / (lambda (1 +
+# rho^2)); at rho = 0.9 the same value follows from integrating the VG density
+# itself (mass and variance one), to 19 digits.
+VG_NEGATIVE_MOMENT = [
+    (0.9, 0.3757410165793074052, -0.011522407496695762, 0.013662791328537378),
+    (0.9999, 0.37520082272865233092, -9.4575170392259286e-6, 0.013723409511789202),
+    (0.99999999, 0.37520082225580800674, -9.4556259314145875e-10, 0.013723409564881796),
+    (-0.99999999, 0.62479917774419199326, -9.4556259314145875e-10, -0.013723409564881796),
+]
+
+
+@pytest.mark.parametrize("rho,moment,d_rho,d_lambda", VG_NEGATIVE_MOMENT)
+def test_variance_gamma_partial_moment_holds_up_to_the_skewness_bound(rho, moment, d_rho, d_lambda):
+    lam = 4.2805573
+    assert api.negative_second_moment(api.DensityKind.variance_gamma, [rho, lam]) == pytest.approx(moment, abs=2e-15)
+    # The GJR persistence row is limit - (alpha + gamma E[z^2 1(z < 0)] + beta):
+    # its shape entries are -gamma times the moment's derivatives.
+    spec = api.ModelSpec()
+    spec.volatility, spec.density = api.VolatilityKind.gjr, api.DensityKind.variance_gamma
+    model = api.Model(spec)
+    gamma = 0.1
+    theta = np.array([0.02, 0.03, gamma, 0.9, rho, lam])
+    assert model.feasible(theta)
+    _, jacobian = model.constraints(theta)
+    assert -jacobian[0, 4] / gamma == pytest.approx(d_rho, abs=1e-13)
+    assert -jacobian[0, 5] / gamma == pytest.approx(d_lambda, abs=1e-13)

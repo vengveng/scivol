@@ -31,6 +31,13 @@ namespace scivolapi::detail {
 template<std::size_t S, int Order = 2>
 struct GhPoint {
     Dual2<S, Order> alpha, minus, plus, d2, mu, nu, constant;  // minus = alpha - beta, plus = alpha + beta
+    // The standardized variable as a normal mixture z | V ~ N(slope (V - mean), scale V)
+    // over the family's fixed-shape mixing variable V (GIG(lambda, zeta, zeta), or
+    // Gamma(lambda) for VG). With q = 1 - rho^2 and D = E[V] q + rho^2 phi Var[V]
+    // (phi = zeta, or 2 for VG), unit variance gives scale = q / D and slope =
+    // rho sqrt(phi / D): bounded and smooth through |rho| -> 1, where alpha, beta
+    // and mu diverge and m = mu + beta w would cancel terms of size 1/q.
+    Dual2<S, Order> mix_mean, mix_slope, mix_scale;
 };
 
 namespace gh_detail {
@@ -124,6 +131,11 @@ bool standardize(const Dual2<S, Order>& rho, const Dual2<S, Order>& zeta, const 
     out.mu = -1.0 * (rho * ratio / (out.alpha * rho2));
     out.nu = lambda + (-0.5);
     out.constant = a0 + (-0.5) * log(alpha2) + (-1.0) * (lambda * log(rho2)) + half_log_2pi;
+    // ratio = zeta E[V] and zeta Var[V] = ratio v / zeta, so D = (ratio / zeta)(q + rho^2 v).
+    const Dual2<S, Order> spread = rho2 + rho * rho * v;
+    out.mix_mean = ratio / zeta;
+    out.mix_slope = rho * zeta / sqrt(ratio * spread);
+    out.mix_scale = zeta * rho2 / (ratio * spread);
     return true;
 }
 
@@ -192,6 +204,11 @@ struct VarianceGamma {
         const D log_gamma_lambda = lift(lambda, log_gamma(lambda.v), Order >= 1 ? digamma(lambda.v) : 0.0, Order >= 2 ? trigamma(lambda.v) : 0.0);
         out.constant = (-1.0 * log(scale)) + (gh_detail::half_log_2pi - log_2) + log_gamma_lambda
             + 2.0 * (out.nu * log(a));
+        // V ~ Gamma(lambda): E[V] = Var[V] = lambda, phi = 2, D = lambda (1 + rho^2).
+        const D spread = lambda * (rho * rho + 1.0);
+        out.mix_mean = lambda;
+        out.mix_slope = std::sqrt(2.0) * (rho / sqrt(spread));
+        out.mix_scale = rho2 / spread;
         return std::isfinite(out.constant.v);
     }
 };

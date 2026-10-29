@@ -489,8 +489,26 @@ template<class M> struct GhTraits<GhFamilyDensity<M>> {
     using Member = M;
 };
 
-// Conditional on W, Z is Normal(mu + beta W, W). Integrating its
-// partial second moment removes the observation-level Bessel function.
+// The normal's repeated tail integrals Hh_n(x) = int_x^inf (t - x)^n phi(t) dt / n!
+// for n = 0, 1, 2 at x >= 1.5, from the ratios r_n = Hh_n / Hh_{n-1}, which
+// satisfy r_{n-1} = 1 / (x + n r_n) (n Hh_n = Hh_{n-2} - x Hh_{n-1}): every term
+// positive, where the closed forms subtract nearly equal numbers (Hh_2 ~
+// phi / x^3 against terms of size phi / x). The fraction, run back from depth
+// 320 below x = 3 and 80 above, is within 2e-16 of 40-digit values there; the
+// closed form is within 1.5e-15 below x = 1.5.
+inline void normal_tail_integrals(double x, double phi, double& h0, double& h1, double& h2) noexcept
+{
+    double r = 0.0;
+    for (int n = x < 3.0 ? 320 : 80; n >= 3; --n) r = 1.0 / (x + n * r);
+    const double r2 = r, r1 = 1.0 / (x + 2.0 * r2), r0 = 1.0 / (x + r1);
+    h0 = phi * r0;
+    h1 = h0 * r1;
+    h2 = h1 * r2;
+}
+
+// Conditional on the mixing variable V, Z is Normal(slope (V - E[V]), scale V)
+// (GhPoint's bounded mixture form). Integrating its partial second moment
+// removes the observation-level Bessel function.
 template<class Density, int Order>
 bool gh_mixture_negative(const double* shape, Dual2<Density::shapes>& out) noexcept
 {
@@ -500,14 +518,11 @@ bool gh_mixture_negative(const double* shape, Dual2<Density::shapes>& out) noexc
     using D = Dual2<S, Order>;
     GhPoint<S, Order> p;
     if (!Member::point(shape, p)) return false;
-    const D alpha = p.alpha, mu = p.mu;
-    const D rho = D::variable(shape[0], 0);
-    const D beta = alpha * rho, lambda = p.nu + 0.5;
-    D scale, normalizer, zeta;
+    const D lambda = p.nu + 0.5, mean = p.mix_mean, slope = p.mix_slope, scale = p.mix_scale;
+    D normalizer, zeta;
     double center, width;
     if constexpr (Member::has_delta) {
         zeta = order ? D::variable(shape[1], 1) : D::constant(shape[1]);
-        scale = p.d2 / zeta;
         bessel::LogK k;
         const unsigned want = order == 0 ? 0u : bessel::argument | (Member::order_varies ? bessel::order : 0u)
             | (order == 1 ? bessel::first_only : 0u);
@@ -516,35 +531,86 @@ bool gh_mixture_negative(const double* shape, Dual2<Density::shapes>& out) noexc
         center = std::asinh(lambda.v / zeta.v);
         width = 1.0 / std::sqrt(std::hypot(lambda.v, zeta.v));
     } else {
-        scale = D::constant(2.0) / ((alpha * alpha) * ((1.0 - rho) * (rho + 1.0)));
         normalizer = lift(lambda, log_gamma(lambda.v), Order >= 1 ? digamma(lambda.v) : 0.0,
                           Order >= 2 ? trigamma(lambda.v) : 0.0);
         center = std::log(lambda.v);
         width = 1.0 / std::sqrt(lambda.v);
     }
-    if (!std::isfinite(center) || !std::isfinite(width) || !(scale.v > 0.0)) return false;
-    const auto weighted = [&](double u, double log_weight, Dual2<S>& d) {
-        const double t = center + width * u, v = std::exp(t);
+    if (!std::isfinite(center) || !std::isfinite(width) || !(scale.v > 0.0) || !std::isfinite(slope.v)) return false;
+    // One node: t = log V, the mixing weight's log density in t, and the
+    // conditional moment at m = slope (V - E[V]) from the gap V - E[V] as given
+    // (the caller forms it without cancellation where V is near E[V]).
+    const auto term = [&](double t, double v, double gap, double log_weight, Dual2<S>& d) {
         if (!(v > 0.0) || !std::isfinite(v)) return false;
         D log_density = t * lambda - normalizer + (log_weight + std::log(width));
         if constexpr (Member::has_delta) {
             const double sh = std::sinh(0.5 * t);
             log_density = log_density - (2.0 * sh * sh) * zeta;
         } else log_density = log_density + (-v);
-        const D w = v * scale, m = mu + beta * w;
+        D difference = -1.0 * mean;
+        difference.v = gap;
+        const D w = v * scale, m = slope * difference;
+        // E[Z^2 1(Z < 0) | V] = (m^2 + w) Phi(a) - m sqrt(w) phi(a), a = -m / sqrt(w),
+        // with derivatives in m and w. Where m is well above zero (a <= -1.5)
+        // the same quantities are 2 w Hh_2(-a), -2 sqrt(w) Hh_1(-a), Hh_0(-a).
         const double root = std::sqrt(w.v), a = -m.v / root;
         const double phi = std::exp(-0.5 * a * a) / std::sqrt(2.0 * 3.1415926535897932384626433832795);
-        const double cdf = 0.5 * std::erfc(-a / std::sqrt(2.0));
-        const double value = (m.v * m.v + w.v) * cdf - m.v * root * phi;
-        const D conditional = lift2(m, w, value, 2.0 * (m.v * cdf - root * phi), cdf,
-                                     2.0 * cdf, -phi / root, -0.5 * a * phi / w.v);
+        double cdf, value, dm;
+        if (a <= -1.5) {
+            double h1, h2;
+            normal_tail_integrals(-a, phi, cdf, h1, h2);
+            value = 2.0 * w.v * h2;
+            dm = -2.0 * root * h1;
+        } else {
+            cdf = 0.5 * std::erfc(-a / std::sqrt(2.0));
+            value = (m.v * m.v + w.v) * cdf - m.v * root * phi;
+            dm = 2.0 * (m.v * cdf - root * phi);
+        }
+        const D conditional = lift2(m, w, value, dm, cdf, 2.0 * cdf, -phi / root, -0.5 * a * phi / w.v);
         const auto value_dual = exp(log_density) * conditional;
         d.v = value_dual.v;
         if constexpr (Order >= 1) d.g = value_dual.g;
         if constexpr (Order >= 2) d.h = value_dual.h;
         return finite(d, order);
     };
+    const auto weighted = [&](double u, double log_weight, Dual2<S>& d) {
+        const double t = center + width * u, v = std::exp(t);
+        return term(t, v, v - mean.v, log_weight, d);
+    };
     const double inf = std::numeric_limits<double>::infinity();
+    // The conditional term turns over where the conditional mean changes sign
+    // (V = E[V]) within a layer of width delta = sqrt(scale E[V]) / |slope| in V;
+    // as |rho| -> 1 the layer thins (delta ~ sqrt(1 - rho^2)) and a whole-line
+    // rule misses it, above all in the derivatives, which concentrate there.
+    // Then the integral runs in s = (log V - log E[V]) / width, so V - E[V] =
+    // E[V] expm1(width s) keeps its digits inside the layer, in pieces split at
+    // E[V] and at 14 delta on either side. Beyond the layer on the side where
+    // m > 0, m / sqrt(w) >= 11.4 and the conditional term and its derivatives
+    // are below 1e-30 of the total: that piece is omitted. Breakpoints are held
+    // fixed under differentiation (the boundary terms of adjacent pieces cancel).
+    const double kink = mean.v, layer = slope.v != 0.0 ? std::sqrt(scale.v * kink) / std::abs(slope.v) : inf;
+    if (kink > 0.0 && std::isfinite(kink) && 14.0 * layer < 0.5 * kink) {
+        const double log_kink = std::log(kink);
+        const auto around = [&](double offset, double log_weight, Dual2<S>& d) {
+            const double x = width * offset;
+            return term(log_kink + x, kink * std::exp(x), kink * std::expm1(x), log_weight, d);
+        };
+        const double edges[5] = {-inf, std::log1p(-14.0 * layer / kink) / width, 0.0,
+                                 std::log1p(14.0 * layer / kink) / width, inf};
+        const int skipped = slope.v > 0.0 ? 3 : 0;
+        out = Dual2<S>{};
+        for (int piece = 0; piece < 4; ++piece) {
+            if (piece == skipped) continue;
+            Dual2<S> part;
+            if (!integrate_piece<S>(around, edges[piece], edges[piece + 1], order, part)) return false;
+            out.v += part.v;
+            if constexpr (S > 0) {
+                for (std::size_t i = 0; i < S; ++i) out.g[i] += part.g[i];
+                for (std::size_t i = 0; i < packed_size(S); ++i) out.h[i] += part.h[i];
+            }
+        }
+        return out.v > 0.0;
+    }
     return integrate_piece<S>(weighted, -inf, inf, order, out) && out.v > 0.0;
 }
 
