@@ -381,14 +381,30 @@ Assembler assembler_compiled(VolatilityKind kind) noexcept
     return nullptr;
 }
 
+// Up to two regressors for (1,0) and (1,1) recursions; three to six (ARX with
+// a regressor, HAR with or without one, AR(2..5) with a constant) for (1,1).
+// A compiled width roughly halves the mean's part of F+G and F+G+H (HARX-GARCH
+// with five regressors: 41 -> 22 and 101 -> 62 ns/row) and costs about a
+// second of compile time per width in each density's translation unit.
 template<class Density, std::size_t Q>
 Assembler assembler_compiled(const ModelSpec& spec) noexcept
 {
     const std::size_t k = spec.mean.regressors();
-    if (spec.mean.ma != 0 || k > 2) return nullptr;
-    return k == 0 ? assembler_compiled<Density, Q, 0>(spec.volatility)
-         : k == 1 ? assembler_compiled<Density, Q, 1>(spec.volatility)
-                  : assembler_compiled<Density, Q, 2>(spec.volatility);
+    if (spec.mean.ma != 0 || k > (Q == 1 ? 6 : 2)) return nullptr;
+    switch (k) {
+    case 0: return assembler_compiled<Density, Q, 0>(spec.volatility);
+    case 1: return assembler_compiled<Density, Q, 1>(spec.volatility);
+    case 2: return assembler_compiled<Density, Q, 2>(spec.volatility);
+    }
+    if constexpr (Q == 1) {
+        switch (k) {
+        case 3: return assembler_compiled<Density, Q, 3>(spec.volatility);
+        case 4: return assembler_compiled<Density, Q, 4>(spec.volatility);
+        case 5: return assembler_compiled<Density, Q, 5>(spec.volatility);
+        case 6: return assembler_compiled<Density, Q, 6>(spec.volatility);
+        }
+    }
+    return nullptr;
 }
 
 template<class Density>
@@ -401,9 +417,8 @@ Assembler assembler_with(const ModelSpec& spec) noexcept
         if (spec.volatility == VolatilityKind::gjr)
             return assemble_requested<ArmaxMean<2, 1>, GarchVolatility<true, true, 1, 1, 3>, Density>;
     }
-    // (1,1) and (1,0) recursions with no mean or a linear mean of one or two
-    // regressors (a constant, one AR lag or regressor, or both): the common
-    // fits and the selection candidates.
+    // (1,1) and (1,0) recursions with no mean or a linear mean of a few
+    // regressors: the common fits and the selection candidates.
     if (spec.p == 1 && (spec.q == 1 || spec.q == 0)) {
         const Assembler fixed = spec.q == 1 ? assembler_compiled<Density, 1>(spec) : assembler_compiled<Density, 0>(spec);
         if (fixed) return fixed;

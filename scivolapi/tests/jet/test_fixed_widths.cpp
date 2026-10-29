@@ -167,8 +167,10 @@ void compare_linear(DensityKind density, VolatilityKind kind, std::size_t n)
     spec.q = Q;
     spec.density = density;
     spec.volatility = kind;
+    // A constant, then AR lags; four regressors are the HAR(1, 5, 22) mean.
     spec.mean.constant = K >= 1;
-    spec.mean.ar = K >= 2 ? 1 : 0;
+    if constexpr (K == 4) spec.mean.har = {1, 5, 22};
+    else spec.mean.ar = K >= 2 ? K - 1 : 0;
     const Model model(spec);
     std::mt19937_64 rng(29);
     std::normal_distribution<double> normal;
@@ -178,6 +180,7 @@ void compare_linear(DensityKind density, VolatilityKind kind, std::size_t n)
     auto theta = model.start(sample);
     if constexpr (K >= 1) theta[0] = 0.03;
     if constexpr (K >= 2) theta[1] = -0.15;
+    for (std::size_t i = 2; i < K; ++i) theta[i] = i % 2 ? 0.04 : -0.06;
     using RuntimeMean = std::conditional_t<(K > 0), ArmaxMean<>, NoMean>;
     using FixedMean = std::conditional_t<(K > 0), ArmaxMean<K, 0>, NoMean>;
     constexpr bool coupled = K > 0;
@@ -221,6 +224,10 @@ void compare_density(DensityKind density)
                 compare_linear<Density, 1, 0>(density, kind, n);
             compare_linear<Density, 1, 1>(density, kind, n);
             compare_linear<Density, 1, 2>(density, kind, n);
+            compare_linear<Density, 1, 3>(density, kind, n);
+            compare_linear<Density, 1, 4>(density, kind, n);
+            compare_linear<Density, 1, 5>(density, kind, n);
+            compare_linear<Density, 1, 6>(density, kind, n);
         }
     }
 }
