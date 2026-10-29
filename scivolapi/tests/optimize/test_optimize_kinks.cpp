@@ -1,5 +1,6 @@
 #include "test_support.hpp"
 #include "optimize/kinks.hpp"
+#include "fit_problem.hpp"
 
 using scivolapi::KinkOutput;
 
@@ -109,14 +110,20 @@ int main()
     };
     p.faces=[](const double* x,double radius,KinkOutput& k) {
         k.count=0; k.supported=true;
+        // The smooth part excludes the active rows' |x_j| and keeps the others
+        // with their signs, as the jet's decomposition does.
+        bool active[2]={};
         for(std::size_t j=0;j<2;++j) {
             if(radius>=0 && std::abs(x[j])>std::max(radius,64*std::numeric_limits<double>::epsilon())) continue;
+            active[j]=true;
             const auto at=k.count++;
             k.rows[at]=j; k.residuals[at]=x[j]; k.weights[at]=1;
             std::fill_n(k.normals.data()+at*3,3,0.0); k.normals[at*3+j]=1;
-            std::fill_n(k.curvatures.data()+at*9,9,0.0);
+            if(!k.curvatures.empty()) std::fill_n(k.curvatures.data()+at*9,9,0.0);  // as the jet: only when requested
         }
-        k.smooth_gradient[0]=x[0]+.3; k.smooth_gradient[1]=x[1]-.4; k.smooth_gradient[2]=x[2]-2;
+        k.smooth_gradient[0]=x[0]+.3+(active[0] ? 0 : x[0]>0 ? 1 : -1);
+        k.smooth_gradient[1]=x[1]-.4+(active[1] ? 0 : x[1]>0 ? 1 : -1);
+        k.smooth_gradient[2]=x[2]-2;
         std::fill_n(k.smooth_hessian.data(),9,0.0);
         k.smooth_hessian[0]=k.smooth_hessian[4]=k.smooth_hessian[8]=1;
         return true;
@@ -124,4 +131,28 @@ int main()
     r=refine_newton(p,std::array{0.0,0.0,.2},{});
     assert(r.termination==Termination::converged && r.accepted.kink);
     close(r.accepted.x[0],0); close(r.accepted.x[1],0); close(r.accepted.x[2],2);
+
+    // On the first face with the second residual 1e-6 away (outside the
+    // proposal radius), the step along the face is blocked by the second kink;
+    // the refinement joins it and certifies the intersection.
+    r=refine_newton(p,std::array{0.0,1e-6,.2},{});
+    assert(r.termination==Termination::converged && r.accepted.kink);
+    close(r.accepted.x[0],0); close(r.accepted.x[1],0); close(r.accepted.x[2],2);
+
+    // Rows with the same residual function (identical regressors) are one
+    // kink: they merge into the first, with the summed subgradient weight.
+    {
+        KinkWorkspace m(4,3);
+        m.out.count=3;
+        const double normal[3]={1,-.5,0};
+        for(std::size_t j=0;j<3;++j) {
+            m.out.rows[j]=10+j; m.out.residuals[j]=j==1 ? 2e-3 : 1e-13*(1+1e-16*j); m.out.weights[j]=.25+j;
+            std::copy_n(normal,3,m.out.normals.data()+j*3);
+            std::fill_n(m.out.curvatures.data()+j*9,9,0.0);
+        }
+        m.out.normals[1*3+1]=-.6;  // row 11 differs
+        scivolapi::detail::merge_identical_faces(m.out,3,true);
+        assert(m.out.count==2 && m.out.rows[0]==10 && m.out.rows[1]==11);
+        close(m.out.weights[0],.25+2.25,1e-15); close(m.out.weights[1],1.25,1e-15);
+    }
 }

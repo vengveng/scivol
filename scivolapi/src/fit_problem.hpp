@@ -18,6 +18,47 @@ inline std::size_t scored_rows(const CorrelationSample& sample) noexcept { retur
 inline std::size_t observed_rows(const Sample& sample) noexcept { return sample.size(); }
 inline std::size_t observed_rows(const CorrelationSample& sample) noexcept { return sample.rows(); }
 
+// Rows whose residuals are the same function of theta (identical regressors,
+// as when HAR windows hold the same returns) are one kink: their subgradient
+// segments lie on the same normal and add. They are merged, to within 64 eps
+// in residual, normal and curvature, into the first such row with the summed
+// weight; kept separate, their identical constraints make the face's
+// equality system singular.
+inline void merge_identical_faces(KinkOutput& k, std::size_t d, bool weights) noexcept
+{
+    constexpr double tolerance = 64 * std::numeric_limits<double>::epsilon();
+    const bool curvature = !k.curvatures.empty();
+    const auto close = [&](const double* a, const double* b, std::size_t count) {
+        double size = 0.0;
+        for (std::size_t i = 0; i < count; ++i) size = std::max({size, std::abs(a[i]), std::abs(b[i])});
+        for (std::size_t i = 0; i < count; ++i)
+            if (std::abs(a[i] - b[i]) > tolerance * size) return false;
+        return true;
+    };
+    std::size_t kept = 0;
+    for (std::size_t j = 0; j < k.count; ++j) {
+        std::size_t into = kept;
+        for (std::size_t i = 0; i < kept && into == kept; ++i)
+            if (std::abs(k.residuals[j] - k.residuals[i]) <= tolerance * std::max(1.0, std::abs(k.residuals[i]))
+                && close(k.normals.data() + j * d, k.normals.data() + i * d, d)
+                && (!curvature || close(k.curvatures.data() + j * d * d, k.curvatures.data() + i * d * d, d * d)))
+                into = i;
+        if (into < kept) {
+            if (weights) k.weights[into] += k.weights[j];
+            continue;
+        }
+        if (kept != j) {
+            k.rows[kept] = k.rows[j];
+            k.residuals[kept] = k.residuals[j];
+            std::copy_n(k.normals.data() + j * d, d, k.normals.data() + kept * d);
+            if (curvature) std::copy_n(k.curvatures.data() + j * d * d, d * d, k.curvatures.data() + kept * d * d);
+            if (weights) k.weights[kept] = k.weights[j];
+        }
+        ++kept;
+    }
+    k.count = kept;
+}
+
 // The objective the optimizer sees: F / n_scored on unit-scaled data, an exact
 // positive scaling of the likelihood, in z or theta coordinates. Any model with
 // the Model interface (dimension, bounds, constraints) and its jet.
@@ -34,7 +75,11 @@ optimize::Problem make_problem(const ModelT& model, JetT& jet, bool in_z)
             problem.kink_capacity = scored_rows(jet.sample());
             problem.faces = [&jet, d, scale](const double* x, double radius, KinkOutput& k) {
                 const std::span<const double> point{x, d};
-                if (radius != 0) return jet.residual_faces(point, radius, k);
+                if (radius != 0) {
+                    if (!jet.residual_faces(point, radius, k)) return false;
+                    if (radius > 0) merge_identical_faces(k, d, false);
+                    return true;
+                }
                 JetOutput out;
                 out.kink = k;
                 if (!(jet.theta(point, kinks, out).valid & kinks)) return false;
@@ -43,6 +88,7 @@ optimize::Problem make_problem(const ModelT& model, JetT& jet, bool in_z)
                     for (double& g : k.smooth_gradient) g *= scale;
                     for (double& h : k.smooth_hessian) h *= scale;
                     for (std::size_t j = 0; j < k.count; ++j) k.weights[j] *= scale;
+                    merge_identical_faces(k, d, true);
                 }
                 return true;
             };

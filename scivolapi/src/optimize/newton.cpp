@@ -134,12 +134,18 @@ Record refine_residual_manifold(const Problem& p, std::span<const double> start,
     KinkWorkspace kink(p.kink_capacity, n, m);
     if (!p.faces(start.data(), std::sqrt(std::numeric_limits<double>::epsilon()), kink.out)
         || !kink.out.count || !kink.out.supported || kink.out.count > n) return r;
-    const std::size_t k = kink.out.count;
+    std::size_t k = kink.out.count;
     std::vector<std::size_t> selected(kink.rows.begin(), kink.rows.begin()+k);
+    selected.reserve(n);
+    KinkWorkspace probe(p.kink_capacity, n, m, false);  // faces near a blocked step
+    const bool open = has_open_bound(p);
+    FaceWorkspace open_face;
+    if (open) open_face.reserve(n, m);
+    int beyond = 0;
     Problem face = p;
     face.constraint_count = m+k;
     detail::SolverWorkspace w;
-    if (!w.allocate(n, m+k)) return r;
+    if (!w.allocate(n, m+n)) return r;  // room for faces joined on the way (at most n)
     detail::initialize(p, start, w);
 
     auto constraints = [&](const double* x) {
@@ -207,6 +213,11 @@ Record refine_residual_manifold(const Problem& p, std::span<const double> start,
         }
         std::copy_n(kink.gradient.data(), n, w.gradient);
         std::copy_n(kink.hessian.data(), n*n, w.hessian);
+        // As in the smooth refinement: steps along kink faces toward an
+        // excluded bound, the local model's minimum beyond it, are no maximum.
+        beyond = open && beyond_open_bound(p, {w.x, n}, {w.gradient, n}, {w.hessian, n*n}, active_constraint, open_face)
+            ? beyond+1 : 0;
+        if (beyond >= open_bound_streak) { r.termination = Termination::open_bound; r.solver_mode = -104; break; }
         bool reached_bound = false;
         for (std::size_t i = 0; i < n; ++i) {
             const double bound = w.gradient[i] > 0 ? w.lower[i] : w.gradient[i] < 0 ? w.upper[i] : detail::unavailable;
@@ -278,8 +289,34 @@ Record refine_residual_manifold(const Problem& p, std::span<const double> start,
             }
         }
         if (!accepted) {
-            if (certificate.residual <= tolerance) { r.termination=Termination::converged; r.solver_mode=0; }
-            break;
+            if (certificate.residual <= tolerance) { r.termination=Termination::converged; r.solver_mode=0; break; }
+            // A step along the face can be blocked by a kink just off it (a
+            // second residual within 1e-4 of zero, too far for the proposal
+            // radius on its own scale): join the first row the linearized step
+            // crosses to the face, retract onto the larger face and continue.
+            // The release rule above drops it again if its multiplier leaves
+            // its subgradient interval.
+            std::size_t blocking = std::numeric_limits<std::size_t>::max();
+            if (k < n && p.faces(w.x, 1e-4, probe.out) && probe.out.supported) {
+                double first = 1.0;
+                for (std::size_t j = 0; j < probe.out.count; ++j) {
+                    if (std::binary_search(selected.begin(), selected.end(), probe.rows[j])) continue;
+                    double change = 0;
+                    for (std::size_t i = 0; i < n; ++i) change += probe.normals[j*n+i]*w.direction[i];
+                    if (!(change != 0)) continue;
+                    const double fraction = -probe.residuals[j]/change;
+                    if (fraction > 0 && fraction <= first) { first = fraction; blocking = probe.rows[j]; }
+                }
+            }
+            if (blocking == std::numeric_limits<std::size_t>::max()) break;
+            selected.insert(std::lower_bound(selected.begin(), selected.end(), blocking), blocking);
+            k = selected.size();
+            face.constraint_count = m+k;
+            std::copy_n(w.x, n, w.trial);
+            ++r.work.value_requests;
+            if (!retract(w.trial) || !p.objective(w.trial, value, nullptr)) break;
+            std::copy_n(w.trial, n, w.x);
+            continue;
         }
     }
     if (on_manifold(w.x)) {
@@ -311,7 +348,8 @@ Record resume_released_face(const Problem& p, Record next, const Options& option
 
 Record finish_with_manifold(const Problem& p, Record record, const Options& options)
 {
-    if (!p.faces || record.termination == Termination::converged
+    // Iterates that ran to an excluded bound leave no kink optimum to refine.
+    if (!p.faces || record.termination == Termination::converged || record.termination == Termination::open_bound
         || record.work.iterations >= options.maximum_iterations) return record;
     const auto& start = record.accepted.x.empty() ? record.best_feasible.x : record.accepted.x;
     if (start.empty()) return record;
