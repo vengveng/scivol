@@ -52,8 +52,9 @@ inline VolatilityShape volatility_shape(const ModelSpec& spec) noexcept
     // The adjoint Hessian pays a backward pass and a per-row history; below four
     // local coordinates the forward second-order recursion is cheaper (GARCH(1,1)
     // F+G+H 21 against 29 ns/row; at width four 37 against 33).
-    v.adjoint = (spec.volatility == VolatilityKind::garch || spec.volatility == VolatilityKind::gjr)
-        && spec.mean.ma == 0 && v.width >= 4;
+    v.adjoint = ((spec.volatility == VolatilityKind::garch || spec.volatility == VolatilityKind::gjr) && v.width >= 4
+                 || spec.volatility == VolatilityKind::egarch)
+        && spec.mean.ma == 0;
     return v;
 }
 

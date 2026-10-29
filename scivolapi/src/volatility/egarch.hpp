@@ -50,11 +50,20 @@ namespace scivolapi::detail {
 //   S_t[a,b] += phi (F_ab - (E_a D_b + E_b D_a) / 2),
 //   S_t[alpha_i, a] += sign(z) u E_a,  S_t[gamma_i, a] += u E_a.
 // At e = 0 with alpha_i != 0, |z| has a kink in the mean entries: no derivatives.
+//
+// The Hessian needs S_t only through sum_t k_t S_t (k_t = l_lambda). S_t is
+// linear in the past S with scalar coefficients, S_t = sum_i c_i(z_{t-i}) S_{t-i}
+// + sum_j beta_j S_{t-j} + G_t, so exchanging the order of summation gives
+//   sum_t k_t S_t = sum_t chat_t G_t,  chat_t = k_t + sum_i c_i(z_t) chat_{t+i} + sum_j beta_j chat_{t+j},
+// one backward scalar recursion in place of a packed-matrix one per row
+// (accumulate_second). It needs D_t for every row and, coupled, a linear mean
+// (E_k = -r_k, F = 0).
 template<class Density, bool Coupled = false, bool Branches = false, std::size_t P = std::dynamic_extent,
          std::size_t Q = std::dynamic_extent, std::size_t M = std::dynamic_extent>
 class EgarchVolatility {
 public:
     static constexpr std::size_t shapes = Density::shapes;
+    static constexpr bool adjoint_hessian = true;
 
     explicit EgarchVolatility(const ModelSpec& spec, std::size_t mean = 0) noexcept
         : p_(spec.p), q_(spec.q), m_(Coupled ? mean : 0)
@@ -138,7 +147,9 @@ public:
         }
         std::copy_n(d, width, w.l1);
 
-        if (order >= 2) {
+        if (order >= 2 && w.history) {  // adjoint: keep D_t, no second-order recursion
+            std::copy_n(d, width, w.history + t * width);
+        } else if (order >= 2) {
             double* s = w.s;
             std::fill_n(s, pw, 0.0);
             for (std::size_t i = 1, n = std::min(p(), t); i <= n; ++i) {
@@ -173,6 +184,62 @@ public:
         }
         std::copy_n(d, width, w.first_ring + (t % slots) * width);
         return true;
+    }
+
+    // Adds sum_t k_t S_t to the packed Hessian hp (dimension dim, local order
+    // [own | mean | ...]) from k_t in w.weights (overwritten by chat_t) and D_t in
+    // w.history: the terms G_t of S_t above, weighted by chat_t, into one packed
+    // accumulator (w.s). Coupled terms use the linear mean's E_k = -r_k.
+    void accumulate_second(const double* theta, const Sample& sample, VolatilityWork& w, std::size_t n,
+                           double* hp, std::size_t dim) const noexcept
+    {
+        const std::size_t width = this->width(), pw = packed_size(width), o = own(), m = mean();
+        double* chat = w.weights;
+        double* acc = w.s;
+        std::fill_n(acc, pw, 0.0);
+        for (std::size_t t = n; t-- > 0;) {
+            double c = chat[t];
+            if (t + 1 < n) {
+                const double z = shock(w, t), az = std::abs(z);
+                for (std::size_t i = 1; i <= p() && t + i < n; ++i)
+                    c += -0.5 * (theta[i] * az + theta[p() + i] * z) * chat[t + i];
+                for (std::size_t j = 1; j <= q() && t + j < n; ++j) c += theta[beta_begin() + j - 1] * chat[t + j];
+            }
+            chat[t] = c;
+            if (c == 0.0) continue;
+            for (std::size_t i = 1, ni = std::min(p(), t); i <= ni; ++i) {
+                const std::size_t k = t - i;
+                const double z = shock(w, k), az = std::abs(z);
+                const double alpha = theta[i], gamma = theta[p() + i], quarter = 0.25 * c * (alpha * az + gamma * z);
+                const double* dp = w.history + k * width;
+                for (std::size_t a = 0; a < width; ++a) {
+                    const double f = quarter * dp[a];
+                    double* row = acc + packed(width, a, a);
+                    for (std::size_t b = a; b < width; ++b) row[b - a] += f * dp[b];
+                }
+                add_cross(acc, width, i, dp, -0.5 * c * az);
+                add_cross(acc, width, p() + i, dp, -0.5 * c * z);
+                for (std::size_t s = 0; s < shapes; ++s) {
+                    const std::size_t sk = shape_begin() + s;
+                    acc[packed(width, i, sk)] -= c * moment_.g[s];
+                    for (std::size_t l = s; l < shapes; ++l)
+                        acc[packed(width, sk, shape_begin() + l)] -= c * alpha * moment_.h[packed(shapes, s, l)];
+                }
+                if constexpr (Coupled) {
+                    const double u = w.scale[k], sign = absolute_sign(w, k), phi = (alpha * sign + gamma) * u;
+                    const double* r = sample.design.data() + k * m;  // E_k = -r_k
+                    for (std::size_t a = 0; a < m; ++a) {
+                        add_cross(acc, width, o + a, dp, 0.5 * c * phi * r[a]);
+                        acc[packed(width, i, o + a)] -= c * sign * u * r[a];
+                        acc[packed(width, p() + i, o + a)] -= c * u * r[a];
+                    }
+                }
+            }
+            for (std::size_t j = 1, nj = std::min(q(), t); j <= nj; ++j)
+                add_cross(acc, width, beta_begin() + j - 1, w.history + (t - j) * width, c);
+        }
+        for (std::size_t a = 0; a < width; ++a)
+            for (std::size_t b = a; b < width; ++b) hp[packed(dim, a, b)] += acc[packed(width, a, b)];
     }
 
 private:
