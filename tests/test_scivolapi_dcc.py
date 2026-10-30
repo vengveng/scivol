@@ -407,9 +407,12 @@ def test_student_copula_likelihood_stays_bounded_at_the_upper_face():
 
 
 def test_unrepresentable_marginal_probabilities_are_rejected():
+    # A Gaussian copula on Normal marginals scores eps itself, however far out;
+    # a Student-t copula needs the Normal tail at 40, which underflows.
     eps = np.array([[40., 1.], [-40., 2.]])
-    with pytest.raises(ValueError, match="probability rounded to zero or one"):
-        api.CorrelationJet(correlation_model(), eps, np.eye(2))
+    assert api.CorrelationJet(correlation_model(), eps, np.eye(2)).theta(np.array([.04, .9]), api.VALUE)["status"] == "ok"
+    with pytest.raises(ValueError, match="tail probability underflows to zero"):
+        api.CorrelationJet(correlation_model(density="student_t"), eps, np.eye(2))
     with pytest.raises(ValueError, match="one marginal density per series"):
         api.CorrelationJet(correlation_model(), np.ones((3, 2)), np.eye(2),
                            [api.InnovationDensity(api.DensityKind.normal)])
@@ -502,3 +505,19 @@ def test_target_is_a_function_of_theta_before_and_after_evaluation():
         np.testing.assert_allclose(jet.target(theta), expected, rtol=2e-13, atol=2e-14)
     with pytest.raises(ValueError, match="target"):
         jet.target(np.array([.04, .9, .5]))
+
+
+@pytest.mark.parametrize("density", ["normal", "student_t"])
+def test_copula_scores_of_extreme_residuals_use_their_own_tail(density):
+    """Beyond about 8.3 Normal standard deviations F rounds to one; the upper
+    tail 1 - F stays representable, and both copulas are symmetric, so a
+    mirrored sample has exactly the mirrored scores and the same likelihood."""
+    eps = np.random.default_rng(4).standard_normal((400, 2))
+    eps[100, 0], eps[250, 1] = 12.0, -9.5
+    model = correlation_model(1, 1, density)
+    theta = np.array([0.05, 0.9] + ([0.1] if density == "student_t" else []))
+    for marginals in ([], [api.InnovationDensity(api.DensityKind.student_t, [0.2])] * 2):
+        up = api.CorrelationJet(model, eps, None, marginals).theta(theta, api.VALUE)
+        down = api.CorrelationJet(model, -eps, None, marginals).theta(theta, api.VALUE)
+        assert up["status"] == down["status"] == "ok"
+        assert up["value"] == pytest.approx(down["value"], rel=1e-13)

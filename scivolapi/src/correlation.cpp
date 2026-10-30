@@ -388,16 +388,28 @@ CorrelationSample CorrelationModel::prepare(std::span<const double> eps, std::si
         if (marginal.density == DensityKind::student_t) sample.probabilities.identity_eta[i] = marginal.shape[0];
         for (std::size_t t = 0; t < rows; ++t) {
             const std::size_t a = t * series + i;
+            // The smaller tail probability, kept on its own side: the upper
+            // tail 1 - F of a large residual is not representable as F (F
+            // rounds to one beyond about 8.3 Normal standard deviations).
+            // Both copulas are symmetric, so a score is G^-1(tail) mirrored.
             double lower, upper;
             require(detail::distribution(marginal.density, marginal.shape.data(), eps[a], lower, upper)
                         == detail::ExpectationStatus::ok,
                     "a marginal probability could not be computed accurately");
-            require(lower > 0.0 && lower < 1.0 && upper > 0.0,
-                    "a marginal probability rounded to zero or one");
-            sample.probabilities.u[a] = lower;
-            if (dc::identity(marginal, CorrelationDensity::normal)) sample.probabilities.normal[a] = eps[a];
-            else require(detail::quantile(DensityKind::normal, nullptr, lower, sample.probabilities.normal[a])
-                             == detail::ExpectationStatus::ok, "a Gaussian copula score is not representable");
+            const bool lower_side = lower <= upper;
+            const double tail = lower_side ? lower : upper;
+            const bool identity = dc::identity(marginal, CorrelationDensity::normal);
+            require(tail > 0.0 || (identity && spec_.density == CorrelationDensity::normal),
+                    "a marginal tail probability underflows to zero");
+            sample.probabilities.u[a] = tail;
+            if (identity) {
+                sample.probabilities.normal[a] = eps[a];
+            } else {
+                double score;
+                require(detail::quantile(DensityKind::normal, nullptr, tail, score) == detail::ExpectationStatus::ok,
+                        "a Gaussian copula score is not representable");
+                sample.probabilities.normal[a] = lower_side ? score : -score;
+            }
         }
     }
     auto& permutation = sample.probabilities.permutation;
@@ -405,8 +417,7 @@ CorrelationSample CorrelationModel::prepare(std::span<const double> eps, std::si
     std::iota(permutation.begin(), permutation.end(), 0);
     const auto& u = sample.probabilities.u;
     std::sort(permutation.begin(), permutation.end(), [&](std::size_t a, std::size_t b) {
-        const double left = std::min(u[a], 1.0 - u[a]), right = std::min(u[b], 1.0 - u[b]);
-        return left != right ? left > right
+        return u[a] != u[b] ? u[a] > u[b]
                              : std::abs(sample.probabilities.normal[a]) < std::abs(sample.probabilities.normal[b]);
     });
     if (!target.empty()) std::copy(target.begin(), target.end(), sample.target.begin());

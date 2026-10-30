@@ -7,6 +7,8 @@
 
 namespace scivolapi::detail {
 
+// u: each residual's smaller marginal tail probability min(F, 1 - F) in (0, 1/2];
+// its side is the sign of the Gaussian score `normal`.
 struct StudentProbabilities {
     std::vector<double> u, normal, identity_eta;
     std::vector<std::size_t> permutation;
