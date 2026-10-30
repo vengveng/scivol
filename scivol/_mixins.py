@@ -90,6 +90,10 @@ class FitsMixin:
         n_obs = int(np.asarray(values).shape[0])
         if window > n_obs:
             raise ValueError("window cannot exceed the number of observations.")
+        # Regressors are rows of the data: each window gets its own rows.
+        x = fit_kwargs.pop("x", None)
+        if x is not None and len(x) != n_obs:
+            raise ValueError(f"x must have one row per observation ({n_obs}), got {len(x)}.")
 
         windows = []
         previous = initial_results
@@ -102,8 +106,10 @@ class FitsMixin:
                 window_data = np.asarray(data)[start:stop]
                 label = stop - 1
 
+            window_x = None if x is None else (x.iloc[start:stop] if hasattr(x, "iloc") else np.asarray(x)[start:stop])
             batch = self.fit_many(
                 window_data,
+                x=window_x,
                 initial_results=previous,
                 n_jobs=n_jobs,
                 timeout=timeout,

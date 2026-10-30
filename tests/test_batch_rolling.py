@@ -167,3 +167,18 @@ def test_all_marginal_surfaces_accept_theta_warm_starts(
     assert warm.fit_info.maxiter == 2
     assert warm.n_iter <= 2
     assert np.all(np.isfinite(warm.params))
+
+
+def test_rolling_windows_take_their_own_regressor_rows():
+    from scivol import ARX, GARCH
+
+    y = np.random.default_rng(0).standard_normal(600)
+    x = np.random.default_rng(1).standard_normal((600, 1))
+    rolled = (ARX(1) + GARCH()).fit_rolling(y, window=400, step=100, x=x)
+    assert all(not w.batch.failed for w in rolled)
+    direct = (ARX(1) + GARCH()).fit(y[100:500], x=x[100:500])
+    window = rolled[1].batch.results["0"]  # warm-started from the previous window: the same maximum
+    assert window.log_likelihood == pytest.approx(direct.log_likelihood, abs=1e-8)
+    np.testing.assert_allclose(window.params, direct.params, rtol=1e-5, atol=1e-8)
+    with pytest.raises(ValueError, match="one row per observation"):
+        (ARX(1) + GARCH()).fit_rolling(y, window=400, x=x[:500])
