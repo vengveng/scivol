@@ -50,6 +50,8 @@ Record minimize_slsqp(const Problem& problem, std::span<const double> start, con
     enum class Gradient { none, available, failed };
     bool trial_pending = false;
     Gradient trial_gradient = Gradient::none;
+    detail::Progress progress;
+    bool stalled = false;
     while (true) {
         __slsqp_body(&state, &value, w.gradient, w.normals, w.values, w.x,
             w.multipliers, w.lower, w.upper, w.buffer, w.indices, w.nnls);
@@ -92,13 +94,19 @@ Record minimize_slsqp(const Problem& problem, std::span<const double> start, con
             points.accept(w.x, value, w.gradient);
             points.retain(w.x, value, w.gradient, w.values);
             trial_pending = false;
+            // SLSQP brings iterates onto likelihood kinks; there it runs on.
+            if (state.mode == -1 && !problem.objective_can_have_gradient_kinks
+                && progress.stalled(value, options.accuracy)) {
+                stalled = true;
+                break;
+            }
             if (state.mode == -1) continue;
         }
         break;
     }
-    record.solver_mode = static_cast<int>(state.mode);
+    record.solver_mode = stalled ? -105 : static_cast<int>(state.mode);
     record.work.iterations = static_cast<int>(state.iter);
-    record.termination = termination(record.solver_mode);
+    record.termination = stalled ? Termination::stalled : termination(record.solver_mode);
     points.finish(evaluate);
     return record;
 }

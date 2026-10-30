@@ -419,6 +419,7 @@ Record refine_newton(const Problem& problem, std::span<const double> start, cons
     };
     record.termination = Termination::iteration_limit;
     record.solver_mode = 9;
+    detail::Progress progress;
     while (options.maximum_iterations > 0) {
         if (!stationarity_direction(problem, w)) {
             record.termination = Termination::singular;
@@ -499,6 +500,14 @@ Record refine_newton(const Problem& problem, std::span<const double> start, cons
         if (problem.objective_can_have_gradient_kinks && vanishing_steps >= 4 && !stationary_within(tolerance)) {
             record.termination = Termination::stalled;
             record.solver_mode = -102;
+            break;
+        }
+        // Where gradient kinks can occur, the kink rule above and the manifold
+        // refinement own stagnation: Newton must close in on the face first.
+        if (!problem.objective_can_have_gradient_kinks && progress.stalled(value, options.accuracy)
+            && !stationary_within(tolerance)) {
+            record.termination = Termination::stalled;
+            record.solver_mode = -105;
             break;
         }
         // Stalled progress at a point that already meets the tolerance (for

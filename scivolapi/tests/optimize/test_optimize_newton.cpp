@@ -1,7 +1,26 @@
 #include "test_support.hpp"
+#include "optimize/solver_common.hpp"
+
+// The progress window: no stop while the objective moves by more than the
+// accuracy across the window, a stop once it changes by less, and none when it
+// rises (SLSQP restoring feasibility).
+static void progress_window()
+{
+    using scivolapi::optimize::detail::Progress;
+    Progress moving;
+    for (int k = 0; k < 40; ++k) assert(!moving.stalled(2.0 - 1e-6 * k, 1e-10));
+    Progress flat;
+    bool stopped = false;
+    int at = 0;
+    for (int k = 0; k < 40 && !stopped; ++k) { stopped = flat.stalled(2.0 - 1e-13 * k, 1e-10); at = k; }
+    assert(stopped && at == Progress::window);
+    Progress rising;
+    for (int k = 0; k < 40; ++k) assert(!rising.stalled(2.0 + 1e-3 * k, 1e-10));
+}
 
 int main()
 {
+    progress_window();
     Problem p;
     p.dimension = 1;
     std::array<double, 32> errors{};

@@ -304,8 +304,13 @@ FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const
         StartRun out{detail::finalize(model, unit_jet, data_jet, scale, selected, phases, options.accuracy), selected.value};
         const bool at_open_bound = std::any_of(out.result.excluded_boundary.begin(), out.result.excluded_boundary.end(),
             [&](const std::string& c) { return std::find(conditions.begin(), conditions.end(), c) == conditions.end(); });
+        // On a smooth likelihood, a refinement that stalled on objective progress
+        // has shown it flat at its resolution: the restart would return there.
+        // (Where kinks can occur, a stall is the kink rule's, as before.)
+        const bool flat = !model.capabilities().likelihood_can_have_gradient_kinks && !phases.empty()
+                          && phases.back().termination == Termination::stalled;
         if (options.coordinates == Coordinates::automatic && model.capabilities().chart_covers_domain
-            && (!out.result.success || at_open_bound) && iterations(phases) < options.maximum_iterations) {
+            && (!out.result.success || at_open_bound) && !flat && iterations(phases) < options.maximum_iterations) {
             const auto problem = make_problem(model, unit_jet, false);
             const auto same = [](const std::vector<double>& t) { return t; };
             const int remaining = options.maximum_iterations-iterations(phases);

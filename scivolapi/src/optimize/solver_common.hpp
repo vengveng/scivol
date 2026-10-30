@@ -14,6 +14,27 @@ constexpr double unavailable = std::numeric_limits<double>::quiet_NaN();
 // the objective are enforced exactly; this allowance also covers c(x) >= 0.
 constexpr double feasibility_tolerance = 64 * std::numeric_limits<double>::epsilon();
 
+// Objective progress over the last `window` accepted iterates. A phase whose
+// objective has changed by no more than its accuracy (relative, floor one)
+// across the window has reached the objective's resolution (SLSQP's objective
+// may rise while it restores feasibility, which is not stagnation); an uncertified
+// phase stops there (Termination::stalled) instead of spending the rest of its
+// budget, as on a likelihood rising toward an excluded limit along a curve.
+// Problems that can have gradient kinks keep their own stagnation rules.
+struct Progress {
+    static constexpr int window = 10;
+    double values[window] = {};
+    int count = 0;
+    // Records an accepted iterate's value; true once the window shows no progress.
+    bool stalled(double value, double accuracy) noexcept
+    {
+        const double oldest = values[count % window];
+        values[count % window] = value;
+        ++count;
+        return count > window && std::abs(oldest - value) <= accuracy * std::max(1.0, std::abs(value));
+    }
+};
+
 inline bool finite(const double* x, std::size_t count)
 {
     return std::all_of(x, x + count, [](double v) { return std::isfinite(v); });
