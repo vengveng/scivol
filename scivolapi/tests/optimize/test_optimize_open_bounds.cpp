@@ -74,6 +74,18 @@ int main()
         check(step[1] == 0.0 && std::abs(step[0] + 1e-6) <= 1e-20, "held: closed coordinate fixed");
         check(crosses_open_bound(p, xb, step), "held: Newton crosses");
     }
+    // A z chart only approaches a closed bound (alpha = 1e-13). The free step
+    // would carry that coordinate across it and, through the coupling, the
+    // open coordinate across its bound; the crossed closed bound is held
+    // instead, and the step stays inside.
+    {
+        Problem p = open_first(2);
+        p.lower[1] = 0.0;
+        const std::vector<double> xa = {1e-3, 1e-13}, ga = {0.0, 5.0};
+        check(face_newton_step(p, xa, ga, std::vector<double>{1, -0.5, -0.5, 1}, 1e-8, work), "approach: definite");
+        check(step[1] == 0.0 && step[0] == 0.0, "approach: the crossed closed bound is held");
+        check(!crosses_open_bound(p, xa, step), "approach: Newton stays inside");
+    }
     // An active constraint x1 + x2 <= 1 is kept as an equality: the step stays
     // on the face, and only the open coordinate moves.
     {

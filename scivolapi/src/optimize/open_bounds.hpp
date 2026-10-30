@@ -22,6 +22,7 @@ constexpr int open_bound_streak = 5;
 // Caller-owned scratch, sized once for a dimension and constraint count.
 struct FaceWorkspace {
     std::vector<std::size_t> free;
+    std::vector<char> held;
     std::vector<double> basis, hz, reduced, rhs, scale, factor, solution, values, jacobian, step;
     void reserve(std::size_t dimension, std::size_t constraints);
 };
@@ -29,8 +30,9 @@ struct FaceWorkspace {
 // True where the problem declares any open bound.
 bool has_open_bound(const Problem& problem);
 // The Newton step of the local quadratic model at x (gradient g, dense
-// Hessian h): coordinates on closed bounds are held, constraints within
-// `active` of binding are linearized as equalities. The step is left in
+// Hessian h): coordinates on closed bounds, and closed bounds the step would
+// cross, are held; constraints within `active` of binding are linearized as
+// equalities. The step is left in
 // `work.step`. False where the reduced Hessian is not positive definite, so the
 // model has no minimizer to locate.
 bool face_newton_step(const Problem& problem, std::span<const double> x, std::span<const double> g,

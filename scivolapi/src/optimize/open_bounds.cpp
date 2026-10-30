@@ -29,6 +29,7 @@ bool at_endpoint(double bound, double x)
 void FaceWorkspace::reserve(std::size_t d, std::size_t m)
 {
     free.reserve(d);
+    held.assign(d, 0);
     for (auto* v : {&basis, &hz, &reduced, &factor}) v->assign(d * d, 0.0);
     for (auto* v : {&rhs, &scale, &solution, &step}) v->assign(d, 0.0);
     values.assign(m, 0.0);
@@ -41,16 +42,27 @@ bool has_open_bound(const Problem& p)
     return any(p.open_lower) || any(p.open_upper);
 }
 
-bool face_newton_step(const Problem& p, std::span<const double> x, std::span<const double> g,
-                      std::span<const double> h, double active, FaceWorkspace& work)
+namespace {
+
+bool closed_lower(const Problem& p, std::size_t i)
+{
+    return !p.lower.empty() && (p.open_lower.empty() || !p.open_lower[i]) && std::isfinite(p.lower[i]);
+}
+
+bool closed_upper(const Problem& p, std::size_t i)
+{
+    return !p.upper.empty() && (p.open_upper.empty() || !p.open_upper[i]) && std::isfinite(p.upper[i]);
+}
+
+// The Newton step on the face of the held coordinates and the active
+// constraints (evaluated into work.values and work.jacobian).
+bool solve_face(const Problem& p, std::span<const double> x, std::span<const double> g,
+                std::span<const double> h, double active, FaceWorkspace& work)
 {
     const std::size_t d = x.size();
     work.free.clear();
-    for (std::size_t i = 0; i < d; ++i) {
-        const bool closed_lower = !p.lower.empty() && (p.open_lower.empty() || !p.open_lower[i]) && on_bound(p.lower[i], x[i]);
-        const bool closed_upper = !p.upper.empty() && (p.open_upper.empty() || !p.open_upper[i]) && on_bound(p.upper[i], x[i]);
-        if (!closed_lower && !closed_upper) work.free.push_back(i);
-    }
+    for (std::size_t i = 0; i < d; ++i)
+        if (!work.held[i]) work.free.push_back(i);
     const std::size_t k = work.free.size();
     // Orthonormal rows: the active constraints' normals, then a basis of their
     // complement (modified Gram-Schmidt, twice; k is small).
@@ -69,7 +81,6 @@ bool face_newton_step(const Problem& p, std::span<const double> x, std::span<con
         ++rows;
     };
     if (p.constraint_count) {
-        if (!p.constraints(x.data(), work.values.data(), work.jacobian.data())) return false;
         for (std::size_t m = 0; m < p.constraint_count && rows < k; ++m) {
             if (!(work.values[m] <= active)) continue;
             double* v = work.basis.data() + rows * k;
@@ -136,6 +147,35 @@ bool face_newton_step(const Problem& p, std::span<const double> x, std::span<con
         for (std::size_t a = 0; a < q; ++a) work.step[work.free[j]] += z(j, a) * e[a] * y[a];
     return std::all_of(work.step.begin(), work.step.begin() + static_cast<std::ptrdiff_t>(d),
                        [](double s) { return std::isfinite(s); });
+}
+
+}  // namespace
+
+bool face_newton_step(const Problem& p, std::span<const double> x, std::span<const double> g,
+                      std::span<const double> h, double active, FaceWorkspace& work)
+{
+    const std::size_t d = x.size();
+    for (std::size_t i = 0; i < d; ++i)
+        work.held[i] = (closed_lower(p, i) && on_bound(p.lower[i], x[i])) || (closed_upper(p, i) && on_bound(p.upper[i], x[i]));
+    if (p.constraint_count && !p.constraints(x.data(), work.values.data(), work.jacobian.data())) return false;
+    // A closed bound the step crosses bounds the local model's minimum as
+    // well (a coordinate a chart only approaches, such as alpha = 1e-13): hold
+    // the first one the step meets where it is, and solve again.
+    while (true) {
+        if (!solve_face(p, x, g, h, active, work)) return false;
+        std::size_t block = d;
+        double first = std::numeric_limits<double>::infinity();
+        for (std::size_t i = 0; i < d; ++i) {
+            if (work.held[i]) continue;
+            const double s = work.step[i];
+            double reach = first;
+            if (s < 0.0 && closed_lower(p, i) && x[i] + s < p.lower[i]) reach = (p.lower[i] - x[i]) / s;
+            if (s > 0.0 && closed_upper(p, i) && x[i] + s > p.upper[i]) reach = (p.upper[i] - x[i]) / s;
+            if (reach < first) { first = reach; block = i; }
+        }
+        if (block == d) return true;
+        work.held[block] = 1;
+    }
 }
 
 bool crosses_open_bound(const Problem& p, std::span<const double> x, std::span<const double> step)
