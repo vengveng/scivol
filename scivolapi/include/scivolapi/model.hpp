@@ -14,6 +14,13 @@ namespace scivolapi {
 
 // constant: h_t = sigma2, the mean model alone (p = q = 0).
 enum class VolatilityKind { garch, gjr, egarch, aparch, constant };
+// The declared stationarity domain of the variance recursion.
+//   covariance  GARCH, GJR, APARCH persistence < 1; EGARCH a stable beta
+//               polynomial (the textbook domains, the default);
+//   integrated  GARCH, GJR, APARCH persistence <= 1 (IGARCH admitted);
+//   none        no stationarity condition: positivity only (GARCH, GJR,
+//               APARCH), any finite beta (EGARCH).
+enum class Stationarity { covariance, integrated, none };
 enum class DensityKind {
     normal,
     student_t,
@@ -75,6 +82,7 @@ struct ModelSpec {
     VolatilityKind volatility = VolatilityKind::garch;
     std::size_t p = 1;  // ARCH (squared-residual) lags; zero orders are supported
     std::size_t q = 1;  // GARCH (variance) lags; zero gives an ARCH recursion
+    Stationarity stationarity = Stationarity::covariance;
     DensityKind density = DensityKind::normal;
     bool operator==(const ModelSpec&) const = default;
 };

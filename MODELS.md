@@ -35,6 +35,21 @@ most 8 for `p`, `q` and the AR and MA parts; HAR windows at most 256.
 For APARCH with StudentT or SkewT, the power moment also requires
 `delta * eta < 1`; this constraint is inactive at `eta = 0`.
 
+The volatility domains above are the default `stationarity="covariance"`.
+Each volatility component can declare another:
+
+| `stationarity` | GARCH, GJR, APARCH | EGARCH |
+|---|---|---|
+| `"covariance"` (default) | persistence `< 1` | stable beta polynomial |
+| `"integrated"` | persistence `<= 1` (IGARCH admitted) | not available |
+| `"none"` | positivity only; no persistence or power-moment condition | any finite beta |
+
+Under `"integrated"`, persistence one is a closed face of the domain. Under
+`"none"`, the z chart takes the persistence contributions on the orthant,
+`v_j = exp(z_j)`, and APARCH's chart no longer weights by its power moment. A
+nonstationary estimate has an infinite unconditional variance; simulation
+needs a stationary theta to start from.
+
 ## Sample conventions
 
 - The likelihood scores the rows from `max(hold_back, lags)` on (`lags`: the

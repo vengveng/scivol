@@ -68,11 +68,16 @@ These rules exist because earlier agents broke every one of them.
 - **Explicit domains.** Each model owns one domain definition used for constraints,
   transforms, starts, feasibility checks and reporting. Trial points outside hard
   bounds (`omega <= 0`, Student-t `nu <= 2`, and so on) are rejected before the
-  likelihood is evaluated.
+  likelihood is evaluated. Defaults are the textbook domains; where a bound is a
+  modelling choice (the volatility `stationarity`: covariance, integrated,
+  none), the user declares it visibly on the component.
 - **Honest results.** `result.success` requires finite values, feasibility, solver
   termination and a passed stationarity (KKT) check in the original parameter
   domain (projected gradient at bounds; default tolerance
-  `max(sqrt(solver_accuracy), sqrt(machine_epsilon))`). A finite, feasible but
+  `max(sqrt(solver_accuracy), sqrt(machine_epsilon))`): a local maximum over the
+  closure of the declared domain. Report facts, not verdicts: an estimate at an
+  excluded boundary has status `at_excluded_boundary` and names the conditions
+  (`fit_info.excluded_boundary`); it is reported, not refused. A finite, feasible but
   uncertified estimate is returned with a warning and a clear status. No finite,
   feasible estimate is a fit failure. Do not report ordinary Hessian standard errors
   as reliable at a kink or an ill-conditioned point.

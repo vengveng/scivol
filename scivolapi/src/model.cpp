@@ -30,11 +30,19 @@ void check_size(std::span<const double> values, std::size_t expected)
     require(values.size() == expected, "parameter vector has the wrong length");
 }
 
-// Student-t and Skew-t need delta * eta < 1 for APARCH's power moment to exist.
+// Student-t and Skew-t need delta * eta < 1 for APARCH's power moment to
+// exist, which only a stationarity condition (on the persistence) needs.
 bool power_moment_has_tail_bound(const ModelSpec& spec)
 {
-    return spec.volatility == VolatilityKind::aparch
+    return spec.volatility == VolatilityKind::aparch && spec.stationarity != Stationarity::none
         && (spec.density == DensityKind::student_t || spec.density == DensityKind::skew_t);
+}
+
+// GARCH, GJR and APARCH declare a persistence condition (< 1 or <= 1).
+bool bounds_persistence(const ModelSpec& spec)
+{
+    return spec.volatility != VolatilityKind::egarch && spec.volatility != VolatilityKind::constant
+        && spec.stationarity != Stationarity::none;
 }
 
 // Where the recursion and the density are defined. Mean entries need only be finite.
@@ -136,6 +144,11 @@ Model::Model(const ModelSpec& spec) : spec_(spec)
     if (spec.volatility == VolatilityKind::constant)
         require(spec.p == 0 && spec.q == 0, "constant variance has no orders: p and q must be 0");
     require(spec.p <= Layout::max_order && spec.q <= Layout::max_order, "orders p and q must be at most 8");
+    require(spec.volatility != VolatilityKind::constant || spec.stationarity == Stationarity::covariance,
+            "constant variance has no stationarity condition to declare");
+    // The closed stable region's unit-root boundary has no reflection-coefficient chart.
+    require(spec.volatility != VolatilityKind::egarch || spec.stationarity != Stationarity::integrated,
+            "EGARCH declares a covariance (stable beta) or no stationarity condition");
     const MeanSpec& mean = spec.mean;
     require(mean.ar <= Layout::max_order && mean.ma <= Layout::max_order, "AR and MA orders must be at most 8");
     for (std::size_t k = 0; k < mean.har.size(); ++k)
@@ -239,8 +252,9 @@ bool Model::evaluable(std::span<const double> theta) const
 }
 
 // The declared domain: stationary AR (and HAR), invertible MA; GARCH, GJR and
-// APARCH persistence < 1 (with APARCH's moment existing), EGARCH a stable lag
-// polynomial.
+// APARCH persistence < 1 (<= 1 integrated; with APARCH's moment existing),
+// EGARCH a stable lag polynomial; no persistence condition when none is
+// declared.
 bool Model::feasible(std::span<const double> theta) const
 {
     if (!evaluable(theta)) return false;
@@ -251,10 +265,11 @@ bool Model::feasible(std::span<const double> theta) const
         if (!StableChart::step_down(coefficients, layout.stable[b].count, kappa)) return false;
     }
     if (!har_stationary(spec_.mean, theta.data() + layout.har)) return false;
-    if (layout.egarch()) return true;
+    if (!bounds_persistence(spec_)) return true;
     if (power_moment_has_tail_bound(spec_) && !(theta[layout.delta] * theta[layout.shapes] < 1.0)) return false;
     double persistence = 0.0;
-    return layout.persistence(theta.data(), 0, persistence, nullptr) && persistence < 1.0;
+    if (!layout.persistence(theta.data(), 0, persistence, nullptr)) return false;
+    return spec_.stationarity == Stationarity::integrated ? persistence <= 1.0 : persistence < 1.0;
 }
 
 void Model::bounds(std::span<double> lower, std::span<double> upper) const
@@ -323,6 +338,14 @@ std::vector<double> Model::closed_face_normals(std::span<const double> theta) co
                 coordinate(layout.alpha + k);
                 normals[normals.size() - d + layout.gamma + k] = 1.0;
             }
+    if (spec_.stationarity == Stationarity::integrated && bounds_persistence(spec_)) {
+        std::vector<double> gradient(d);
+        double persistence = 0.0;
+        if (layout.persistence(theta.data(), 1, persistence, gradient.data()) && persistence >= 1.0) {
+            for (double& g : gradient) g = -g;  // the inward normal of 1 - persistence >= 0
+            normals.insert(normals.end(), gradient.begin(), gradient.end());
+        }
+    }
     return normals;
 }
 
@@ -363,7 +386,7 @@ std::size_t Model::constraint_count() const noexcept
         if (layout.stable[b].count >= 2) count += layout.stable[b].count;
     if (!spec_.mean.har.empty()) count += spec_.mean.har.back();
     if (layout.egarch()) return count;
-    count += 1;  // persistence
+    if (bounds_persistence(spec_)) count += 1;
     if (spec_.volatility == VolatilityKind::gjr) count += spec_.p;
     if (power_moment_has_tail_bound(spec_)) count += 1;
     return count;
@@ -373,7 +396,8 @@ std::size_t Model::constraint_count() const noexcept
 //   stable blocks of order >= 2   1 - kappa_k^2 >= 0, kappa the reflection coefficients
 //                                 (AR, MA, EGARCH's beta);
 //   HAR                           1 - kappa_k^2 >= 0 for the implied AR polynomial;
-//   GARCH, GJR, APARCH            L - persistence >= 0, L the simplex chart's floating-point margin;
+//   GARCH, GJR, APARCH            L - persistence >= 0, L the simplex chart's floating-point margin
+//                                 (1 - persistence >= 0 integrated; absent without a condition);
 //   GJR                           alpha_i + gamma_i >= 0;
 //   APARCH, t family              1 - delta * eta >= 0.
 void Model::constraints(std::span<const double> theta, std::span<double> values,
@@ -411,16 +435,20 @@ void Model::constraints(std::span<const double> theta, std::span<double> values,
     }
     if (layout.egarch()) return;
 
-    double* persistence_row = jacobian.data() + row * d;
-    double persistence = 0.0;
-    if (layout.persistence(theta.data(), 1, persistence, persistence_row)) {
-        values[row] = detail::SimplexChart::limit(layout.simplex_count) - persistence;
-        for (std::size_t k = 0; k < d; ++k) persistence_row[k] = -persistence_row[k];
-    } else {
-        values[row] = -1.0;  // the moment does not exist here: report violation
-        std::fill_n(persistence_row, d, 0.0);
+    if (bounds_persistence(spec_)) {
+        double* persistence_row = jacobian.data() + row * d;
+        double persistence = 0.0;
+        if (layout.persistence(theta.data(), 1, persistence, persistence_row)) {
+            const double limit = spec_.stationarity == Stationarity::integrated
+                ? 1.0 : detail::SimplexChart::limit(layout.simplex_count);
+            values[row] = limit - persistence;
+            for (std::size_t k = 0; k < d; ++k) persistence_row[k] = -persistence_row[k];
+        } else {
+            values[row] = -1.0;  // the moment does not exist here: report violation
+            std::fill_n(persistence_row, d, 0.0);
+        }
+        ++row;
     }
-    ++row;
     if (spec_.volatility == VolatilityKind::gjr)
         for (std::size_t i = 0; i < spec_.p; ++i, ++row) {
             values[row] = theta[layout.alpha + i] + theta[layout.gamma + i];
@@ -456,7 +484,10 @@ std::vector<ConstraintRow> constraint_rows(const ModelSpec& spec)
     }
     if (!spec.mean.har.empty()) rows.insert(rows.end(), spec.mean.har.back(), {"stationary HAR polynomial", true});
     if (layout.egarch()) return rows;
-    rows.push_back({"persistence < 1", true});
+    if (bounds_persistence(spec)) {
+        const bool integrated = spec.stationarity == Stationarity::integrated;
+        rows.push_back({integrated ? "persistence <= 1" : "persistence < 1", !integrated});
+    }
     if (spec.volatility == VolatilityKind::gjr)
         for (std::size_t i = 1; i <= spec.p; ++i)
             rows.push_back({"alpha[" + std::to_string(i) + "] + gamma[" + std::to_string(i) + "] >= 0", false});

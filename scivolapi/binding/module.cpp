@@ -169,20 +169,22 @@ std::span<const double> view(const Matrix& m) { return {m.data(), m.shape(0) * m
 
 // Pickle state of a specification (Models are rebuilt from it).
 using SpecState = std::tuple<bool, std::size_t, std::vector<std::size_t>, std::size_t, std::size_t, int, std::size_t,
-                             std::size_t, int>;
+                             std::size_t, int, int>;
 
 SpecState spec_state(const ModelSpec& s)
 {
     return {s.mean.constant, s.mean.ar, s.mean.har, s.mean.exog, s.mean.ma, static_cast<int>(s.volatility), s.p, s.q,
-            static_cast<int>(s.density)};
+            static_cast<int>(s.density), static_cast<int>(s.stationarity)};
 }
 
 ModelSpec spec_from(const SpecState& t)
 {
     ModelSpec s;
-    std::tie(s.mean.constant, s.mean.ar, s.mean.har, s.mean.exog, s.mean.ma, std::ignore, s.p, s.q, std::ignore) = t;
+    std::tie(s.mean.constant, s.mean.ar, s.mean.har, s.mean.exog, s.mean.ma, std::ignore, s.p, s.q, std::ignore,
+             std::ignore) = t;
     s.volatility = static_cast<VolatilityKind>(std::get<5>(t));
     s.density = static_cast<DensityKind>(std::get<8>(t));
+    s.stationarity = static_cast<Stationarity>(std::get<9>(t));
     return s;
 }
 
@@ -325,6 +327,10 @@ NB_MODULE(_scivolapi, m)
         .value("egarch", VolatilityKind::egarch)
         .value("aparch", VolatilityKind::aparch)
         .value("constant", VolatilityKind::constant);
+    nb::enum_<Stationarity>(m, "Stationarity")
+        .value("covariance", Stationarity::covariance)
+        .value("integrated", Stationarity::integrated)
+        .value("none", Stationarity::none);
     nb::enum_<DensityKind>(m, "DensityKind")
         .value("normal", DensityKind::normal)
         .value("student_t", DensityKind::student_t)
@@ -361,6 +367,7 @@ NB_MODULE(_scivolapi, m)
         .def_rw("volatility", &ModelSpec::volatility)
         .def_rw("p", &ModelSpec::p)
         .def_rw("q", &ModelSpec::q)
+        .def_rw("stationarity", &ModelSpec::stationarity)
         .def_rw("density", &ModelSpec::density)
         .def("__eq__", [](const ModelSpec& a, const ModelSpec& b) { return a == b; });
 
@@ -373,6 +380,12 @@ NB_MODULE(_scivolapi, m)
         .def_prop_ro("residual_degrees_of_freedom", &Model::residual_degrees_of_freedom)
         .def("feasible", [](const Model& m, const Vector& theta) { return m.feasible(view(theta)); })
         .def("at_open_bound", [](const Model& m, const Vector& theta) { return m.at_open_bound(view(theta)); })
+        .def_prop_ro("constraint_names", &Model::constraint_names)
+        .def("open_constraints", [](const Model& m) {
+            std::vector<char> open(m.constraint_count());
+            m.open_constraints(open);
+            return std::vector<bool>(open.begin(), open.end());
+        })
         .def("bounds", [](const Model& m) {
             std::vector<double> lower(m.dimension()), upper(m.dimension());
             m.bounds(lower, upper);
@@ -742,7 +755,7 @@ NB_MODULE(_scivolapi, m)
             const auto& s = m.spec();
             return nb::make_tuple(s.mean.constant, s.mean.ar, nb::tuple(nb::cast(s.mean.har)),
                                   s.mean.exog, s.mean.ma, static_cast<int>(s.volatility), s.p, s.q,
-                                  static_cast<int>(s.density));
+                                  static_cast<int>(s.density), static_cast<int>(s.stationarity));
         })
         .def_prop_ro("constant_variance", &Model::constant_variance)
         .def_prop_ro("components", [](const Model& m) {
@@ -761,7 +774,12 @@ NB_MODULE(_scivolapi, m)
                 case VolatilityKind::aparch: vol = "APARCH"; break;
                 case VolatilityKind::constant: break;
             }
-            if (vol) out.append(nb::make_tuple(vol, nb::make_tuple(s.p, s.q), nb::dict()));
+            if (vol) {
+                nb::dict settings;
+                if (s.stationarity == Stationarity::integrated) settings["stationarity"] = "integrated";
+                if (s.stationarity == Stationarity::none) settings["stationarity"] = "none";
+                out.append(nb::make_tuple(vol, nb::make_tuple(s.p, s.q), settings));
+            }
             const char* density = nullptr;
             switch (s.density) {
                 case DensityKind::normal: density = "Normal"; break;

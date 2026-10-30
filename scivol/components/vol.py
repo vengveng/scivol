@@ -4,6 +4,19 @@ from ..roles import Role
 import numpy as np
 from ..components.base import Component
 
+STATIONARITY = ("covariance", "integrated", "none")
+
+
+def stationarity_setting(value: str, name: str, allowed: tuple[str, ...] = STATIONARITY) -> str:
+    """The declared stationarity domain of a variance recursion."""
+    if value not in allowed:
+        raise ValueError(f"{name} stationarity must be one of {', '.join(map(repr, allowed))}.")
+    return value
+
+
+def stationarity_suffix(value: str) -> str:
+    return "" if value == "covariance" else f",{value}"
+
 
 class APARCH(Component):
     """Asymmetric Power ARCH volatility component.
@@ -16,23 +29,24 @@ class APARCH(Component):
 
     role = Role.VOLATILITY
 
-    def __init__(self, p: int = 1, q: int = 1):
+    def __init__(self, p: int = 1, q: int = 1, stationarity: str = "covariance"):
         if any(type(order) is not int or order < 0 for order in (p, q)):
             raise ValueError("APARCH orders must be non-negative integers.")
         self.p = p
         self.q = q
+        self.stationarity = stationarity_setting(stationarity, "APARCH")
         self.fitted_params = None
         self.fitted_values = None
         self._data = None
 
     @classmethod
-    def up_to(cls, p: int, q: int):
+    def up_to(cls, p: int, q: int, stationarity: str = "covariance"):
         """Declare a maximal generator; native restrictions supply descendants."""
-        return cls(p, q)
+        return cls(p, q, stationarity)
 
     @property
     def signature(self) -> str:
-        return f"APARCH({self.p},{self.q})"
+        return f"APARCH({self.p},{self.q}{stationarity_suffix(self.stationarity)})"
 
     @property
     def n_params(self) -> int:
@@ -67,21 +81,22 @@ class GJRGARCH(Component):
 
     role = Role.VOLATILITY
 
-    def __init__(self, p: int = 1, q: int = 1):
+    def __init__(self, p: int = 1, q: int = 1, stationarity: str = "covariance"):
         if any(type(order) is not int or order < 0 for order in (p, q)):
             raise ValueError("orders must be non-negative integers")
         self.p, self.q = p, q
+        self.stationarity = stationarity_setting(stationarity, "GJR-GARCH")
         self.fitted_params = None
         self.fitted_values = None
         self._data = None
 
     @classmethod
-    def up_to(cls, p: int, q: int):
+    def up_to(cls, p: int, q: int, stationarity: str = "covariance"):
         """Declare a maximal generator; native restrictions supply descendants."""
-        return cls(p, q)
+        return cls(p, q, stationarity)
 
     @property
-    def signature(self): return f"GJR-GARCH({self.p},{self.q})"
+    def signature(self): return f"GJR-GARCH({self.p},{self.q}{stationarity_suffix(self.stationarity)})"
 
     @property
     def n_params(self): return 1 + 2 * self.p + self.q  # omega + p alphas + p gammas + q betas
@@ -120,23 +135,24 @@ class EGARCH(Component):
     """
     role = Role.VOLATILITY
 
-    def __init__(self, p: int = 1, q: int = 1):
+    def __init__(self, p: int = 1, q: int = 1, stationarity: str = "covariance"):
         if any(type(order) is not int or order < 0 for order in (p, q)):
             raise ValueError("EGARCH orders must be non-negative integers.")
         self.p = int(p)
         self.q = int(q)
+        self.stationarity = stationarity_setting(stationarity, "EGARCH", ("covariance", "none"))
         self.fitted_params = None
         self.fitted_values = None
         self._data = None
 
     @classmethod
-    def up_to(cls, p: int, q: int):
+    def up_to(cls, p: int, q: int, stationarity: str = "covariance"):
         """Declare a maximal generator; native restrictions supply descendants."""
-        return cls(p, q)
+        return cls(p, q, stationarity)
 
     @property
     def signature(self) -> str:
-        return f"EGARCH({self.p},{self.q})"
+        return f"EGARCH({self.p},{self.q}{stationarity_suffix(self.stationarity)})"
 
     @property
     def n_params(self) -> int:
@@ -169,21 +185,22 @@ class GARCH(Component):
 
     role = Role.VOLATILITY
 
-    def __init__(self, p: int = 1, q: int = 1):
+    def __init__(self, p: int = 1, q: int = 1, stationarity: str = "covariance"):
         if any(type(order) is not int or order < 0 for order in (p, q)):
             raise ValueError("orders must be non-negative integers")
         self.p, self.q = p, q
+        self.stationarity = stationarity_setting(stationarity, "GARCH")
         self.fitted_params = None
         self.fitted_values = None
         self._data = None
 
     @classmethod
-    def up_to(cls, p: int, q: int):
+    def up_to(cls, p: int, q: int, stationarity: str = "covariance"):
         """Declare a maximal generator; native restrictions supply descendants."""
-        return cls(p, q)
+        return cls(p, q, stationarity)
 
     @property
-    def signature(self): return f"GARCH({self.p},{self.q})"
+    def signature(self): return f"GARCH({self.p},{self.q}{stationarity_suffix(self.stationarity)})"
 
     @property
     def n_params(self): return 1 + self.p + self.q

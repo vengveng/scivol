@@ -95,6 +95,8 @@ def native_spec(spec: Any, exog: int = 0) -> Optional[api.ModelSpec]:
     native.mean = mean
     native.volatility = volatility_kind
     native.p, native.q = (0, 0) if volatility is None else (int(volatility.p), int(volatility.q))
+    if volatility is not None:
+        native.stationarity = getattr(api.Stationarity, volatility.stationarity)
     native.density = kind
     return native
 

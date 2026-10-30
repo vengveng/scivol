@@ -222,16 +222,21 @@ Simulation simulate_series(const Model& model, std::span<const double> theta, st
     for (std::size_t k = 0; k < spec.mean.har.size(); ++k) ar += theta[layout.har + k];
     level /= 1.0 - ar;
 
-    // Unconditional variance.
+    // Unconditional variance. A nonstationary recursion (admitted by an
+    // integrated or absent stationarity declaration) has none to start from.
+    const char* nonstationary = "theta is nonstationary: there is no unconditional variance to start the simulation from";
     double seed = 0.0;
     if (spec.volatility == VolatilityKind::egarch) {
-        double beta = 0.0;
+        double reflection[detail::StableChart::max_order], beta = 0.0;
+        if (!detail::StableChart::step_down(theta.data() + layout.beta, spec.q, reflection))
+            throw std::domain_error(nonstationary);
         for (std::size_t j = 0; j < spec.q; ++j) beta += theta[layout.beta + j];
         seed = std::exp(theta[layout.omega] / (1.0 - beta));
     } else {
         double persistence = 0.0;
         if (!layout.persistence(theta.data(), 0, persistence, nullptr))
             throw std::domain_error("the persistence is not available at theta");
+        if (!(persistence < 1.0)) throw std::domain_error(nonstationary);
         const double level_power = theta[layout.omega] / (1.0 - persistence);
         seed = spec.volatility == VolatilityKind::aparch ? std::pow(level_power, 2.0 / theta[layout.delta]) : level_power;
     }

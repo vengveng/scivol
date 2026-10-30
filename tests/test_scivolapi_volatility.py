@@ -366,6 +366,111 @@ def test_aparch_domain_needs_the_power_moment():
 
 
 # --------------------------------------------------------------------------- #
+# Stationarity declarations
+# --------------------------------------------------------------------------- #
+
+def declared(kind: str, density: str, p: int, q: int, stationarity: str) -> "api.Model":
+    spec = api.ModelSpec()
+    spec.volatility = getattr(api.VolatilityKind, kind)
+    spec.p, spec.q = p, q
+    spec.density = getattr(api.DensityKind, density)
+    spec.stationarity = getattr(api.Stationarity, stationarity)
+    return api.Model(spec)
+
+
+def test_declared_stationarity_sets_the_domain_and_its_constraints():
+    point = np.array([0.05, 0.3, 0.7])  # persistence exactly one
+    beyond = np.array([0.05, 0.3, 0.9])
+    covariance, integrated, none = (declared("garch", "normal", 1, 1, s) for s in ("covariance", "integrated", "none"))
+    assert not covariance.feasible(point) and integrated.feasible(point) and none.feasible(point)
+    assert not integrated.feasible(beyond) and none.feasible(beyond)
+    assert covariance.constraint_names == ["persistence < 1"] and covariance.open_constraints() == [True]
+    assert integrated.constraint_names == ["persistence <= 1"] and integrated.open_constraints() == [False]
+    assert none.constraint_names == [] and none.open_constraints() == []
+    gjr = declared("gjr", "normal", 1, 1, "none")
+    assert gjr.constraint_names == ["alpha[1] + gamma[1] >= 0"] and gjr.open_constraints() == [False]
+    assert not gjr.feasible(np.array([0.05, 0.1, -0.2, 0.95]))  # positivity remains
+    aparch = declared("aparch", "student_t", 1, 1, "none")
+    assert aparch.constraint_names == []
+    assert aparch.feasible(np.array([0.05, 0.08, 0.3, 0.95, 6.5, 1/6.0]))  # no moment needed
+    egarch = declared("egarch", "normal", 1, 2, "none")
+    assert egarch.feasible(np.array([0.0, 0.1, -0.05, 0.5, 0.6])) and egarch.constraint_names == []
+    with pytest.raises(ValueError, match="EGARCH"):
+        declared("egarch", "normal", 1, 1, "integrated")
+
+
+def check_declared_chart(series, model, theta, chart, tolerance=1e-11):
+    jax, jnp, _ = _jax_modules()
+    jet = api.Jet(model, series)
+    z = model.to_z(theta)
+    assert np.allclose(model.to_theta(z), theta, rtol=1e-13, atol=1e-15)
+    assert np.allclose(np.asarray(chart(jnp.asarray(z))), theta, rtol=1e-13, atol=1e-15)
+    full = jet.theta(theta, api.GRADIENT | api.HESSIAN)
+    jac = np.asarray(jax.jacfwd(chart)(jnp.asarray(z)))
+    curvature = np.asarray(jax.hessian(lambda u: jnp.dot(jnp.asarray(full["gradient"]), chart(u)))(jnp.asarray(z)))
+    out = jet.z(z, api.GRADIENT | api.HESSIAN)
+    assert out["status"] == "ok"
+    assert_close(out["gradient"], jac.T @ full["gradient"], tolerance)
+    assert_close(out["hessian"], jac.T @ full["hessian"] @ jac + curvature, tolerance)
+
+
+def test_orthant_chart_without_a_stationarity_condition(series):
+    """Persistence coefficients v_j = exp(z_j), here beyond persistence one."""
+    jax, jnp, _ = _jax_modules()
+    tiny = np.finfo(float).tiny
+    check_declared_chart(series, declared("garch", "normal", 1, 2, "none"), np.array([0.08, 0.3, 0.5, 0.4]),
+                         lambda u: jnp.concatenate([tiny + jnp.exp(u[:1]), jnp.exp(u[1:])]))
+    kappa = 0.5  # GJR keeps c+ = (1 - k) alpha, c- = k (alpha + gamma) for positivity
+
+    def gjr(u):
+        e = jnp.exp(u[1:])
+        alpha = e[0] / (1.0 - kappa)
+        return jnp.stack([tiny + jnp.exp(u[0]), alpha, e[1] / kappa - alpha, e[2]])
+    check_declared_chart(series, declared("gjr", "normal", 1, 1, "none"), np.array([0.08, 0.1, 0.2, 0.9]), gjr)
+
+
+def test_aparch_chart_without_a_stationarity_condition_needs_no_moment(series):
+    """The map is the identity, so delta * eta >= 1 (no power moment) is charted."""
+    jax, jnp, _ = _jax_modules()
+    tiny, bound = np.finfo(float).tiny, np.nextafter(1.0, 0.0)
+
+    def chart(u):
+        return jnp.stack([tiny + jnp.exp(u[0]), jnp.exp(u[1]), bound * jnp.tanh(u[2]), jnp.exp(u[3]),
+                          tiny + jnp.exp(u[4]), np.nextafter(0.5, 0.0) * jax.nn.sigmoid(u[5])])
+    check_declared_chart(series, declared("aparch", "student_t", 1, 1, "none"),
+                         np.array([0.05, 0.08, 0.3, 0.95, 6.5, 1/6.0]), chart, 1e-10)
+
+
+def test_egarch_beta_is_free_without_a_stationarity_condition(series):
+    jax, jnp, _ = _jax_modules()
+    check_declared_chart(series, declared("egarch", "normal", 1, 2, "none"), np.array([-0.05, 0.12, -0.06, 0.5, 0.6]),
+                         lambda u: u)
+
+
+def test_simulation_needs_a_stationary_start():
+    model = declared("garch", "normal", 1, 1, "none")
+    z = np.random.default_rng(0).standard_normal((1, 100))
+    with pytest.raises(ValueError, match="nonstationary"):
+        api.simulate_series(model, np.array([0.05, 0.3, 0.9]), z)
+    assert np.isinf(model.unconditional_variance(np.array([0.05, 0.3, 0.9])))
+    assert api.simulate_series(model, np.array([0.05, 0.1, 0.8]), z) is not None
+
+
+def test_declared_stationarity_reaches_fits_signatures_and_children():
+    import pickle
+    from scivol import EGARCH, GARCH, Normal
+    from scivol._fit import native_spec
+
+    assert GARCH(1, 1, "integrated") != GARCH(1, 1) and str(GARCH(1, 1, "none").signature) == "GARCH(1,1,none)"
+    with pytest.raises(ValueError, match="stationarity"):
+        EGARCH(1, 1, "integrated")
+    model = api.Model(native_spec(GARCH(1, 2, "integrated") + Normal(), 0))
+    assert pickle.loads(pickle.dumps(model)).spec.stationarity == api.Stationarity.integrated
+    assert model.components[0] == ("GARCH", (1, 2), {"stationarity": "integrated"})
+    assert all(r.child.stationarity == api.Stationarity.integrated for r in model.restrictions())
+
+
+# --------------------------------------------------------------------------- #
 # Complete fits through the public API
 # --------------------------------------------------------------------------- #
 

@@ -2919,5 +2919,22 @@ def test_garch_maximum_at_the_excluded_stationarity_boundary_is_reported(coordin
     assert fitted.fit_info.excluded_boundary == ('persistence < 1',)
     assert fitted.std_errors is None
 
+
+def test_declared_stationarity_decides_where_the_level_shift_maximum_lies():
+    from scivol import GARCH, Normal
+
+    # The same data under the three declarations: the maximum on the excluded
+    # edge (covariance), on the admitted IGARCH face (integrated), and inside
+    # beyond persistence one (none), with a higher likelihood.
+    rng = np.random.default_rng(3)
+    y = np.concatenate([rng.standard_normal(1000), 3*rng.standard_normal(1000)])
+    fits = {s: (GARCH(1, 1, s)+Normal()).fit(y) for s in ("covariance", "integrated", "none")}
+    assert fits["integrated"].success and fits["integrated"].fit_info.inference_status == "at_boundary"
+    assert fits["integrated"].params[1] + fits["integrated"].params[2] == pytest.approx(1.0, abs=1e-15)
+    assert fits["none"].success and fits["none"].fit_info.inference_status == "available"
+    assert fits["none"].params[1] + fits["none"].params[2] > 1.0
+    assert fits["none"].log_likelihood > fits["integrated"].log_likelihood
+    assert fits["integrated"].log_likelihood == pytest.approx(fits["covariance"].log_likelihood, abs=1e-8)
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

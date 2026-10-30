@@ -50,6 +50,20 @@ covariance. A shaped density adds a staged shape fit and two-step sandwich
 covariance. Inspect `result.fit_info` for optimizer phases, stationarity,
 inference status and warnings. A finite estimate can remain uncertified;
 `result.success` reports certification.
+An estimate at a boundary the declared domain excludes, such as persistence
+one under covariance stationarity, has inference status `at_excluded_boundary`;
+`fit_info.excluded_boundary` names the conditions.
+
+Volatility components ship with the textbook covariance-stationary domain.
+`stationarity="integrated"` admits persistence one (IGARCH), and
+`stationarity="none"` drops the stationarity condition (positivity only; any
+finite beta for EGARCH, which has no integrated declaration):
+
+```python
+GARCH(1, 1, stationarity="integrated") + StudentT()
+GJRGARCH(1, 1, stationarity="none") + SkewT()
+```
+
 At a certified residual kink, `fit_info.kink_point` and `active_kink_rows`
 identify the nonsmooth estimate. Its inference status is `at_kink`; ordinary
 Hessian standard errors and restriction LR calibration are unavailable.

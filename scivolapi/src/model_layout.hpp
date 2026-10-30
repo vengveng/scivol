@@ -32,11 +32,14 @@ namespace scivolapi::detail {
 //              GJR     v = (c+, c-, beta) with c+_i = (1 - kappa) alpha_i,
 //                      c-_i = kappa (alpha_i + gamma_i), kappa = E[z^2 1(z<0)];
 //              APARCH  v = (M_i alpha_i, beta), M_i = E[(|z| - gamma_i z)^delta];
-//            so persistence = sum v < 1 is the declared stationarity condition;
+//            so persistence = sum v < 1 is the declared stationarity condition
+//            (covariance and integrated declarations); without a stationarity
+//            condition the chart is the orthant v_j = exp(z_j) instead, and
+//            APARCH's map is the identity (its moments need not exist);
 //   stable   lag polynomials with all roots outside the unit circle, via
 //            reflection coefficients: the AR coefficients (1 - sum phi_i L^i), the
 //            MA coefficients (1 + sum theta_j L^j, so -theta is charted) and
-//            EGARCH's beta.
+//            EGARCH's beta (free scalars without a stationarity condition).
 // The weights depend on other entries (the shapes, APARCH's gamma_i and delta);
 // the chart's Jacobian and curvature include those cross terms exactly.
 // The single definition used by Model (maps, bounds, starts) and Jet (z-space).
@@ -69,6 +72,8 @@ struct Layout {
 
     VolatilityKind kind;
     DensityKind density;
+    Stationarity stationarity;
+    bool orthant = false;  // the persistence coefficients charted on the orthant (no stationarity condition)
     std::size_t p = 0, q = 0;
     std::size_t mean = 0;                                    // mean entries, from index 0
     std::size_t ar = 0, har = 0, exog = 0, ma = 0;           // mean block starts
@@ -84,9 +89,11 @@ struct Layout {
     std::array<bool, max_dimension> scalar_entry{};
 
     explicit Layout(const ModelSpec& spec) noexcept
-        : kind(spec.volatility), density(spec.density), p(spec.p), q(spec.q), mean(spec.mean.width()),
-          shape_domain(shape_domains(spec.density))
+        : kind(spec.volatility), density(spec.density), stationarity(spec.stationarity), p(spec.p), q(spec.q),
+          mean(spec.mean.width()), shape_domain(shape_domains(spec.density))
     {
+        orthant = stationarity == Stationarity::none && kind != VolatilityKind::egarch
+                  && kind != VolatilityKind::constant;
         const double inf = std::numeric_limits<double>::infinity();
         shape_count = shape_domain.size();
         if (mean > max_mean) return;  // rejected by Model
@@ -136,7 +143,10 @@ struct Layout {
         add_stable(ma, spec.mean.ma, -1.0);
         if (kind == VolatilityKind::egarch) {
             for (std::size_t k = omega; k < beta; ++k) set_scalar(k, -inf, inf);
-            add_stable(beta, q, 1.0);
+            if (stationarity == Stationarity::none)
+                for (std::size_t j = 0; j < q; ++j) set_scalar(beta + j, -inf, inf);
+            else
+                add_stable(beta, q, 1.0);
         } else {
             set_scalar(omega, 0.0, inf);
             add_simplex(alpha, p);
@@ -152,6 +162,11 @@ struct Layout {
     }
 
     [[nodiscard]] bool egarch() const noexcept { return kind == VolatilityKind::egarch; }
+    // Whether the simplex map theta = M(w) v uses the moment weights.
+    [[nodiscard]] bool map_weighted() const noexcept
+    {
+        return kind == VolatilityKind::gjr || (kind == VolatilityKind::aparch && !orthant);
+    }
     [[nodiscard]] std::size_t weight_count() const noexcept
     {
         return kind == VolatilityKind::gjr ? 1 : kind == VolatilityKind::aparch ? p : 0;
@@ -203,7 +218,7 @@ struct Layout {
             t[1] = {i, -a, -a * a, -2.0 * a * a * a};
             return 2;
         }
-        if (kind == VolatilityKind::aparch && k < p) {  // alpha_i = v_i / M_i
+        if (kind == VolatilityKind::aparch && !orthant && k < p) {  // alpha_i = v_i / M_i
             r = k;
             const double b = 1.0 / w[k].value;
             t[0] = {k, b, -b * b, 2.0 * b * b * b};
@@ -239,18 +254,21 @@ struct Layout {
         return std::isfinite(value);
     }
 
-    // The simplex point at z: shares, v = L s, and the moment weights at
-    // theta(z) with derivatives to `order`. Prepared once per z and shared by
-    // theta, jacobian and curvature (the weights are quadratures for most
-    // densities). A weight's value does not depend on the order prepared.
+    // The simplex point at z: shares, v = L s (on the orthant v = exp(z)), and
+    // the moment weights at theta(z) with derivatives to `order`. Prepared once
+    // per z and shared by theta, jacobian and curvature (the weights are
+    // quadratures for most densities). A weight's value does not depend on the
+    // order prepared.
     struct ChartPoint {
         Weight w[max_weights];
         double share[max_simplex], v[max_simplex];
         double limit = 1.0;
         std::size_t count = 0;
-        // d v_j / d z_jj = L s_j (delta - s_jj)
+        bool orthant = false;
+        // d v_j / d z_jj = L s_j (delta - s_jj); on the orthant delta v_j
         [[nodiscard]] double dv(std::size_t j, std::size_t jj) const noexcept
         {
+            if (orthant) return j == jj ? v[j] : 0.0;
             return limit * share[j] * ((j == jj ? 1.0 : 0.0) - share[jj]);
         }
     };
@@ -259,11 +277,16 @@ struct Layout {
     {
         double theta[max_dimension];
         for (std::size_t k = 0; k < dimension; ++k) theta[k] = scalar_entry[k] ? chart[k].theta(z[k]) : 0.0;
-        if (!weights(theta, order, s.w)) return false;
+        if (map_weighted() && !weights(theta, order, s.w)) return false;
         double zs[max_simplex];
         for (std::size_t k = 0; k < simplex_count; ++k) zs[k] = z[simplex_index[k]];
-        SimplexChart::shares(zs, simplex_count, s.share);
         s.count = simplex_count;
+        s.orthant = orthant;
+        if (orthant) {
+            for (std::size_t k = 0; k < simplex_count; ++k) s.v[k] = s.share[k] = std::exp(zs[k]);
+            return true;
+        }
+        SimplexChart::shares(zs, simplex_count, s.share);
         s.limit = SimplexChart::limit(simplex_count);
         for (std::size_t k = 0; k < simplex_count; ++k) s.v[k] = s.limit * s.share[k];
         return true;
@@ -306,10 +329,10 @@ struct Layout {
         }
         if (!simplex_count) return true;
         Weight w[max_weights];
-        if (!weights(theta, 0, w)) return false;
+        if (map_weighted() && !weights(theta, 0, w)) return false;
         double v[max_simplex], zs[max_simplex];
         for (std::size_t k = 0; k < simplex_count; ++k) {  // v = persistence contributions
-            const std::size_t r = persistence_weight(k);
+            const std::size_t r = map_weighted() ? persistence_weight(k) : weight_count();
             v[k] = (r < weight_count() ? w[r].value : 1.0) * theta[simplex_index[k]];
         }
         if (kind == VolatilityKind::gjr)
@@ -317,7 +340,14 @@ struct Layout {
                 v[i] = (1.0 - w[0].value) * theta[alpha + i];
                 v[p + i] = w[0].value * (theta[alpha + i] + theta[gamma + i]);
             }
-        if (!SimplexChart::z(v, simplex_count, unit, zs)) return false;
+        if (orthant) {
+            for (std::size_t k = 0; k < simplex_count; ++k) {
+                if (!(v[k] > 0.0) || !std::isfinite(v[k])) return false;
+                zs[k] = std::log(v[k]);
+            }
+        } else if (!SimplexChart::z(v, simplex_count, unit, zs)) {
+            return false;
+        }
         for (std::size_t k = 0; k < simplex_count; ++k) z[simplex_index[k]] = zs[k];
         return true;
     }
@@ -387,7 +417,10 @@ struct Layout {
             for (std::size_t n = row(k, s.w, r, t), m = 0; m < n; ++m) gt[t[m].j] += g[simplex_index[k]] * t[m].c;
         }
         double block[max_simplex * max_simplex] = {};
-        SimplexChart::curvature(s.share, gt, simplex_count, unit, 0, simplex_count, block);
+        if (orthant)  // d^2 v_j / dz_j^2 = v_j
+            for (std::size_t j = 0; j < simplex_count; ++j) block[j * simplex_count + j] = gt[j] * s.v[j];
+        else
+            SimplexChart::curvature(s.share, gt, simplex_count, unit, 0, simplex_count, block);
         for (std::size_t a = 0; a < simplex_count; ++a)
             for (std::size_t b = 0; b < simplex_count; ++b)
                 out[simplex_index[a] * d + simplex_index[b]] += block[a * simplex_count + b];
