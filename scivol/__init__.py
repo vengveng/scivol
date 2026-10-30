@@ -42,6 +42,7 @@ from .dcc import (
     RollingDCCWindow,
 )
 from .batch import BatchFitFailure, BatchFitResult, FitTimeoutError, RollingFitResult, RollingFitWindow
+from ._fit import FitError
 
 __all__: list[str] = [
     "ARMA",
@@ -58,6 +59,7 @@ __all__: list[str] = [
     "DCCParams",
     "DCCResult",
     "EGARCH",
+    "FitError",
     "GED",
     "GARCH",
     "GJRGARCH",

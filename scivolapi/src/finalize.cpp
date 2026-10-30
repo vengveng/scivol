@@ -253,7 +253,8 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
     }
     const JetResult reported = data_jet.theta(r.theta, request, out);
     if (!(reported.valid & value) || ((request & paths) && !(reported.valid & paths))) {
-        r.warnings.push_back("the likelihood is not finite at the estimate in the data's units");
+        r.warnings.push_back("the likelihood at the estimate is not representable in double precision in the data's units"
+                             " (the variance path leaves the double range)");
         return r;
     }
     r.estimate_available = true;

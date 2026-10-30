@@ -165,6 +165,21 @@ def prepare_sample(spec: Any, data: Any, x: Any = None, hold_back: int = 0,
     )
 
 
+class FitError(RuntimeError):
+    """A fit that produced no finite, feasible estimate."""
+
+
+def failure_message(warnings: Any, y: Optional[NDArray[np.float64]] = None) -> str:
+    """The reasons for a fit failure, and the sample's share of exact zeros when it is large."""
+    message = "no finite, feasible estimate: " + "; ".join(warnings)
+    if y is not None and y.size:
+        zeros = float(np.mean(np.asarray(y) == 0.0))
+        if zeros >= 0.05:
+            message += (f". {zeros:.0%} of the observations are exactly zero; with exact zeros, peaked densities"
+                        " and collapsing variances can leave the likelihood without a maximum")
+    return message
+
+
 def selected_path(native_result: api.FitResult) -> list[str]:
     """The phases of the start that produced the estimate (fit_info.solver); every
     start's phases, labelled "start k: ", stay in optimizer_phases."""
@@ -293,7 +308,7 @@ def present_fit(spec, sample: PreparedSample, native_result: api.FitResult, *,
     original_n_obs, scale_factor = sample.original_n_obs, sample.scale
     model = api.Model(native)
     if not native_result.estimate_available:
-        raise RuntimeError("Fit failed: " + "; ".join(native_result.warnings))
+        raise FitError(failure_message(native_result.warnings, y))
 
     theta = np.array(native_result.theta)
     phases = tuple(native_result.phases)

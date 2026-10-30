@@ -83,3 +83,15 @@ def test_correlation_fits_race_their_candidate_starts():
     single = DCC().fit_from_residuals(eps, starts=1)
     assert len(single.starts) == 1 and single.path == auto.path
     assert auto.nll <= single.nll + 1e-12
+
+
+def test_a_fit_without_an_estimate_raises_a_fit_error_with_its_reasons():
+    from scivol import FitError
+    from scivol._fit import failure_message
+
+    assert issubclass(FitError, RuntimeError)
+    y = np.r_[np.zeros(30), np.ones(70)]
+    message = failure_message(["no phase produced a finite, feasible estimate"], y)
+    assert message.startswith("no finite, feasible estimate: no phase produced")
+    assert "30% of the observations are exactly zero" in message
+    assert "exactly zero" not in failure_message(["x"], np.ones(100))

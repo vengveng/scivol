@@ -892,7 +892,8 @@ class DCC:
         r = api.fit_correlation(model, eps, options, target, list(marginals or []))
         elapsed = time.perf_counter() - started
         if not r.estimate_available:
-            raise RuntimeError("DCC fit failed: " + "; ".join(r.warnings))
+            from ._fit import FitError, failure_message
+            raise FitError(failure_message(r.warnings))
         theta = np.array(r.theta)
         jet = api.CorrelationJet(model, eps, target, list(marginals or []))
         return DCCResult(
