@@ -2,11 +2,11 @@
 
 This page compares scivol with Python's `arch` and R's `rugarch` and `rmgarch` on real stock returns. It reports two things for each library: how long a fit takes, and whether the fit reaches the maximum of that library's own likelihood. A fast fit that stops short of the maximum is not a good fit, so the second measure matters as much as the first.
 
-The results describe one machine, one data source and each library's default settings. They are evidence, not a universal speed ratio.
+The results describe one machine, one data source and each library's default settings; the [last section](#limits-of-this-comparison) lists what that leaves out.
 
 ## Setup
 
-| | |
+| Item | Setting |
 | --- | --- |
 | Machine | Apple M4 Mac mini (4 performance cores), macOS |
 | Parallelism | 4 worker processes, one fit at a time per process, single-threaded BLAS |
@@ -22,13 +22,13 @@ The results describe one machine, one data source and each library's default set
 
 ## How likelihoods are compared
 
-The libraries start their variance recursions differently (scivol uses the sample mean square, arch a backcast, rugarch the mean of squared residuals), so their reported log-likelihoods differ by amounts unrelated to fit quality. Raw likelihoods are therefore not compared.
+The libraries start their variance recursions differently (scivol uses the sample mean square, arch a backcast, rugarch the mean of squared residuals), so their reported log-likelihoods differ by amounts unrelated to fit quality.
 
-Instead, every estimate is translated into each other library's parameterization and evaluated in that library's own likelihood. A library **missed its own maximum** on a fit when another library's estimate scores more than 0.01 higher in the first library's likelihood than its own reported estimate. A rival estimate counts only if it lies in the closure of scivol's declared domain; for example, an estimate with persistence above one does not count against scivol's covariance-stationary model.
+Instead of comparing raw likelihoods, this page translates every estimate into each other library's parameterization and evaluates it in that library's own likelihood. A library **missed its own maximum** on a fit when another library's estimate scores more than 0.01 higher in the first library's likelihood than its own reported estimate. A rival estimate counts only if it lies in the closure of scivol's declared domain; for example, an estimate with persistence above one does not count against scivol's covariance-stationary model.
 
-A miss is evidence that a better point exists, not a measure of how far a fit is from the global maximum, which none of the libraries can guarantee.
+A miss shows that a better point exists; it does not measure the distance to the global maximum.
 
-"Certified" (scivol) and "converged" (arch, rugarch) mean different things. scivol certifies a fit only when the first-order conditions hold in the original parameter domain; the other libraries report their optimizers' termination codes.
+scivol's `success` and the other libraries' convergence flags report different things. scivol sets `success` only when the first-order conditions hold in the original parameter domain, while arch and rugarch report their optimizers' termination codes.
 
 ## Liquid panel
 
@@ -54,13 +54,13 @@ Median time per fit in milliseconds, and the share of fits that missed the libra
 
 Across the shared fits, the median per-fit time ratio to scivol is 4.9 for arch and 53 for rugarch.
 
-scivol certified every fit for nine of the ten models and 73% of GARCH-GH fits; the uncertified GH fits are mostly likelihoods that keep rising toward a limit outside the parameter space. arch reported convergence on 98–100% of fits per model, rugarch on 99–100%.
+scivol reported `success` on every fit for nine of the ten models and on 73% of GARCH-GH fits; the remaining GH fits are mostly likelihoods that keep rising toward a limit outside the parameter space. arch reported convergence on 98–100% of fits per model, rugarch on 99–100%.
 
 Most of scivol's remaining misses are separate local maxima that its candidate starts do not reach (see [multi-start](estimation.md#multi-start)). Before multi-start, scivol missed its maximum on about 4% of GARCH-Normal and GJR-t fits; the automatic start race reduced the misses on this panel from 114 to 38 of 5,000 fits, at 17% more total time.
 
 ## Illiquid panel
 
-Stocks that rarely trade have many returns of exactly zero. With exact zeros, peaked densities and collapsing variances can make the likelihood unbounded, so many of these fits have no maximum to find. scivol reports such fits as uncertified (or, when no finite estimate exists, raises [`FitError`](api.md)). arch and rugarch usually report convergence on the same fits while missing their own maxima on up to 48% (arch) and 91% (rugarch) of fits per model. rugarch's solver could run for an hour on a single fit and needed a hard 60-second limit; 28 EGARCH-GED fits reached it.
+Stocks that rarely trade have many returns of exactly zero. With exact zeros, peaked densities and collapsing variances can make the likelihood unbounded, so many of these fits have no maximum to find. scivol reports such fits with `success=False`, or raises [`FitError`](api.md) when no finite estimate exists. arch and rugarch usually report convergence on the same fits while missing their own maxima on up to 48% (arch) and 91% (rugarch) of fits per model. rugarch's solver could run for an hour on a single fit and needed a hard 60-second limit; 28 EGARCH-GED fits reached it.
 
 These fits are not a fair speed test, so no timings are reported for them.
 
@@ -88,7 +88,7 @@ Median total time in seconds; ">1200" means the run did not finish within the 20
 | 50 | 3.97 | 87.3 | 6.03 | 193 |
 | 100 | 30.4 | >1200 | 42.4 | >1200 |
 
-Every scivol DCC fit and every marginal certified. rmgarch's estimates were evaluated in scivol's correlation likelihood; none scored higher than scivol's. The Gaussian-copula likelihood often has two maxima in the persistence parameter b (near 0.8 and near 0.98), which is why scivol's DCC [candidate starts](estimation.md#multi-start) include both regions.
+Every scivol DCC fit and every marginal fit reported `success`. rmgarch's estimates were evaluated in scivol's correlation likelihood; none scored higher than scivol's. The Gaussian-copula likelihood often has two maxima in the persistence parameter b (near 0.8 and near 0.98), which is why scivol's DCC [candidate starts](estimation.md#multi-start) include both regions.
 
 ## Limits of this comparison
 

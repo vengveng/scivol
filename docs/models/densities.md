@@ -1,82 +1,118 @@
 # Innovation densities
 
-Every density describes $z_t=e_t/\sqrt{h_t}$, standardized so that $E[z_t]=0$ and $E[z_t^2]=1$. Its observation log density is
+A density component describes the standardized innovation $z_t=e_t/\sqrt{h_t}$. Every density is standardized to $E[z_t]=0$ and $E[z_t^2]=1$, so that $h_t$ is the conditional variance whatever the density, and each observation contributes
 
-$$\ell_t=\log f(z_t)-\tfrac12\log h_t.$$
+$$\ell_t=\log f(z_t)-\tfrac12\log h_t$$
 
-The likelihood includes every normalization constant. Shapes are constant across observations and follow the mean and volatility blocks in theta. Constructors take no shape arguments; supply shapes through fixed parameters, simulation parameters or estimation starts.
+to the log-likelihood, including every normalization constant. Shape parameters are constant over time and come last in the parameter vector. The constructors take no arguments; shapes are estimated, or supplied as part of the parameters for `fix` and `simulate`.
 
-| Component | Shape names in theta order | Declared domain |
+| Component | Shape parameters, in order | Domain |
 | --- | --- | --- |
-| `Normal()` | None | No shapes |
+| `Normal()` | none | none |
 | `StudentT()` | `eta` | $0\le\eta<1/2$ |
-| `SkewT()` | `eta`, `lam` | $0\le\eta<1/2$, $\vert \mathrm{lam}\vert <1$ |
+| `SkewT()` | `eta`, `lam` | $0\le\eta<1/2$, $\vert\lambda\vert<1$ |
 | `GED()` | `nu` | $\nu>0$ |
-| `GeneralizedHyperbolic()` | `rho`, `zeta`, `lambda` | $\vert \rho\vert <1$, $\zeta>0$, $\lambda\in\mathbb R$ |
-| `NormalInverseGaussian()` | `rho`, `zeta` | $\vert \rho\vert <1$, $\zeta>0$; fixed GH index $-1/2$ |
-| `Hyperbolic()` | `rho`, `zeta` | $\vert \rho\vert <1$, $\zeta>0$; fixed GH index $1$ |
-| `VarianceGamma()` | `rho`, `lambda` | $\vert \rho\vert <1$, $\lambda>3/2$ |
+| `GeneralizedHyperbolic()` | `rho`, `zeta`, `lambda` | $\vert\rho\vert<1$, $\zeta>0$, $\lambda$ real |
+| `NormalInverseGaussian()` | `rho`, `zeta` | $\vert\rho\vert<1$, $\zeta>0$ |
+| `Hyperbolic()` | `rho`, `zeta` | $\vert\rho\vert<1$, $\zeta>0$ |
+| `VarianceGamma()` | `rho`, `lambda` | $\vert\rho\vert<1$, $\lambda>3/2$ |
 
-All estimated values must be finite. The GH name `lambda` and Hansen canonical name `lam` refer to different parameters. Default summaries display Hansen `lam` as `lambda`; its component dictionary still uses `lam`. `result.dist_params.shape_lambda` stores the GH/VG index; `result.dist_params.lam` stores Hansen skewness. `nu` in Student-t output is derived degrees of freedom, while GED's `nu` is an estimated exponent.
+Normal is the default when a specification has no density component.
+
+## Reading fitted shapes
+
+A fitted result collects the shapes in `result.dist_params`. Two names need care. Hansen's skewness parameter is `lam`, shown as `lambda` in the summary report, while the index of the generalized hyperbolic family is `shape_lambda`. And `nu` means the degrees of freedom $1/\eta$ for the Student-t densities but the estimated exponent for GED.
+
+```python
+from scivol import GJRGARCH, SkewT, GeneralizedHyperbolic, NormalInverseGaussian
+
+true_model = GJRGARCH(1, 1) + SkewT()
+y = true_model.simulate(2000, [0.05, 0.03, 0.1, 0.88, 0.12, -0.15], seed=11).data
+
+skew = true_model.fit(y)
+print(skew.dist_params.eta, skew.dist_params.nu, skew.dist_params.lam)
+
+nig = (GJRGARCH(1, 1) + NormalInverseGaussian()).fit(y)
+print(nig.dist_params.rho, nig.dist_params.zeta, nig.dist_params.shape_lambda)
+print(skew.log_likelihood, nig.log_likelihood)
+```
+
+```text
+0.10725280236603035 9.323765700659445 -0.12973590131998786
+-0.19626034673602827 3.256231711049524 -0.5
+-2802.2958522410854 -2803.2378632053415
+```
+
+The skewed-t estimates are close to the simulated `eta = 0.12` and `lam = -0.15`. The NIG density, which has the same number of parameters, fits almost as well, with negative skewness in `rho`.
+
+The full generalized hyperbolic density on the same data runs to the edge of its domain. Its estimate has $\zeta$ at the smallest positive double, which is the variance-gamma end of the family, and scivol reports it as such:
+
+```python
+gh = (GJRGARCH(1, 1) + GeneralizedHyperbolic()).fit(y)
+print(gh.success, gh.fit_info.inference_status, gh.fit_info.excluded_boundary)
+```
+
+```text
+True at_excluded_boundary ('zeta > 0',)
+```
 
 ## Normal
 
-$$f(z)=(2\pi)^{-1/2}\exp(-z^2/2).$$
+$$f(z)=(2\pi)^{-1/2}\exp(-z^2/2)$$
 
-Normal has no shape parameters. It is the default density when none is supplied. It has all polynomial and exponential moments used by the model interface.
+The Normal density has no shape parameters and has every polynomial and exponential moment.
 
 ## Student-t
 
-For `eta>0`, set $\nu=1/\eta>2$. scivol uses the unit-variance density
+For $\eta>0$, let $\nu=1/\eta>2$. The unit-variance Student-t density is
 
 $$
 f(z)=c_\nu\left(1+\frac{z^2}{\nu-2}\right)^{-(\nu+1)/2},\qquad
-c_\nu=\frac{\Gamma((\nu+1)/2)}{\sqrt{\pi(\nu-2)}\Gamma(\nu/2)}.
+c_\nu=\frac{\Gamma((\nu+1)/2)}{\sqrt{\pi(\nu-2)}\,\Gamma(\nu/2)},
 $$
 
-At `eta=0`, $f$ is exactly Normal and derived `nu` is infinity. This is an admitted closed face, not a large finite degrees-of-freedom cap. A polynomial absolute moment of order $r$ requires $r<\nu$. Positive exponential tail moments diverge for finite nu. See [Bollerslev (1987)](../references.md#bollerslev-1987).
+and at $\eta=0$ it is exactly the Normal density, with `nu` reported as infinity. Parameterizing by $\eta$ makes the Normal a point of the domain rather than a limit that an optimizer can only approach, so a fit to Normal data can reach it, and a test of Normal against Student-t innovations has a well-defined null. An absolute moment of order $r$ exists when $r<\nu$, and positive exponential moments do not exist for any finite $\nu$. The GARCH-t model is due to [Bollerslev (1987)](../references.md#bollerslev-1987).
 
 ```python
 from scivol import GARCH, StudentT
+
 spec = GARCH() + StudentT()
-# omega, alpha[1], beta[1], eta; nu=8
+# omega, alpha[1], beta[1], eta = 1/8, so nu = 8
 sample = spec.simulate(1000, [0.1, 0.1, 0.8, 1/8], seed=10)
 ```
 
-## Hansen skew-t
+## Hansen's skewed t
 
-Let $c=c_\nu$, $\lambda=\mathrm{lam}$,
+The skewed t of [Hansen (1994)](../references.md#hansen-1994) joins two Student-t halves with different scales. With $c=c_\nu$ and $\lambda$ the parameter `lam`,
 
 $$
-a=4\lambda c\frac{\nu-2}{\nu-1},\qquad
+a=4\lambda c\,\frac{\nu-2}{\nu-1},\qquad
 b^2=1+3\lambda^2-a^2,\qquad
-v(z)=\frac{bz+a}{1+\lambda\mathrm{sign}(bz+a)}.
+v(z)=\frac{bz+a}{1+\lambda\,\mathrm{sign}(bz+a)},
 $$
 
-For `eta>0`,
+and for $\eta>0$
 
 $$f(z)=bc\left(1+\frac{v(z)^2}{\nu-2}\right)^{-(\nu+1)/2}.$$
 
-This is [Hansen's (1994)](../references.md#hansen-1994) standardized two-piece density. `lam=0` gives the symmetric Student-t. At `eta=0`, use $c=(2\pi)^{-1/2}$, $a=4\lambda c$, the same expression for $b$, and $f(z)=bc\exp[-v(z)^2/2]$. This is a two-piece Normal limit, generally skewed. It is Normal when `lam=0` as well.
-
-The branch join is $z=-a/b$. With nonzero skewness the first derivative joins but the second derivatives need not exist there. Polynomial tail moments have the same existence threshold as the symmetric Student-t. GJR persistence uses the density's actual lower partial second moment. Other libraries' "skewed t" densities, for example the [Fernández and Steel (1998)](../references.md#fernandez-steel-1998) form used by `rugarch`, are different distributions.
+`lam = 0` gives the symmetric Student-t, and negative values put more weight in the left tail. At $\eta=0$ the density becomes a two-piece Normal, with $c=(2\pi)^{-1/2}$, $a=4\lambda c$ and $f(z)=bc\exp[-v(z)^2/2]$, which is the Normal density when `lam = 0` as well. Moments exist under the same conditions as for the symmetric t. Where the two halves join, at $z=-a/b$, the density has a continuous first derivative but no second derivative. The skewed t in some other libraries, such as the [Fernández and Steel (1998)](../references.md#fernandez-steel-1998) form in `rugarch`, is a different distribution.
 
 ## GED
 
-For the reported exponent $\nu>0$, define
+For the exponent $\nu>0$,
 
 $$
 s^2=\frac{\Gamma(1/\nu)}{\Gamma(3/\nu)},\qquad
-f(z)=\frac{\nu}{2s\Gamma(1/\nu)}\exp\left[-\left|\frac zs\right|^\nu\right].
+f(z)=\frac{\nu}{2s\,\Gamma(1/\nu)}\exp\left[-\left|\frac zs\right|^\nu\right].
 $$
 
-`nu=2` is Normal. This exponent is not reciprocal Student-t degrees of freedom. The GED used with EGARCH is discussed by [Nelson (1991)](../references.md#nelson-1991). All polynomial moments exist. Exponential moments depend on the exponent and requested slopes; the native moment routine checks their existence.
+`nu = 2` is the Normal density, smaller values give heavier tails and larger values lighter ones. [Nelson (1991)](../references.md#nelson-1991) introduced the GED for EGARCH. All polynomial moments exist, and the exponential moments needed by EGARCH exist for a range of slopes that depends on $\nu$. The density has a cusp at zero when $\nu\le1$, and no second derivative there when $\nu<2$.
 
-At zero, raw first derivatives require `nu>1`, and second derivatives require `nu>=2`. Products needed only for variance or shape derivatives can exist when raw residual derivatives do not. scivol does not insert a finite slope at a cusp.
+## Generalized hyperbolic family
 
-## Generalized hyperbolic parameterization
+The generalized hyperbolic (GH) distribution of [Barndorff-Nielsen (1977)](../references.md#barndorff-nielsen-1977) is usually written with five parameters $(\alpha,\beta,\delta,\mu,\lambda)$. Two of them are fixed by the standardization, which leaves three shapes, and scivol estimates them as $\rho=\beta/\alpha$, which sets the skewness, $\zeta=\delta\sqrt{\alpha^2-\beta^2}$, which sets the tail weight, and the index $\lambda$. These $\alpha$, $\beta$ and $\delta$ are density parameters, unrelated to the volatility coefficients of the same names.
 
-The public shapes are $(\rho,\zeta,\lambda)$, not $(\alpha,\beta,\delta,\mu,\lambda)$. Let $K_\lambda$ be the modified Bessel function of the second kind. The mapping implemented in `scivolapi/src/density/gh.hpp` is
+With $K_\lambda$ the modified Bessel function of the second kind, the standardization gives
 
 $$
 q=1-\rho^2,\quad
@@ -92,9 +128,7 @@ $$
 \mu=-\frac{\rho R}{\alpha q}.
 $$
 
-Thus $\rho=\beta/\alpha$ and $\zeta=\delta\sqrt{\alpha^2-\beta^2}$. Location and scale are derived to give zero mean and unit variance. They are not additional free parameters. These density-level alpha, beta and delta must not be confused with volatility parameters.
-
-For $c=z-\mu$, $r=\sqrt{\delta^2+c^2}$ and $\gamma=\sqrt{\alpha^2-\beta^2}$, the equivalent GH density is
+With $c=z-\mu$, $r=\sqrt{\delta^2+c^2}$ and $\gamma=\sqrt{\alpha^2-\beta^2}$, the density is
 
 $$
 f(z)=\frac{(\gamma/\delta)^\lambda}{\sqrt{2\pi}\,K_\lambda(\delta\gamma)}
@@ -102,46 +136,32 @@ f(z)=\frac{(\gamma/\delta)^\lambda}{\sqrt{2\pi}\,K_\lambda(\delta\gamma)}
 K_{\lambda-1/2}(\alpha r)\exp(\beta c).
 $$
 
-The implementation evaluates this expression with scaled Bessel functions and cancellation-free algebra. GH originates in [Barndorff-Nielsen (1977)](../references.md#barndorff-nielsen-1977).
+An equivalent description is a normal mixture. Let $U$ follow the generalized inverse Gaussian distribution with density proportional to $u^{\lambda-1}\exp[-\zeta(u+1/u)/2]$, with mean $m$ and variance $v$, let $N$ be an independent standard Normal, and let $D=mq+\rho^2\zeta v$. Then
 
-An equivalent standardized mixture, also specified in `gh.hpp`, is useful for identifying the parameterization. Let $U\sim\mathrm{GIG}(\lambda,\zeta,\zeta)$ with density proportional to $u^{\lambda-1}\exp[-\zeta(u+1/u)/2]$ and let $N\sim N(0,1)$ be independent. Write $m=E[U]$, $v=\mathrm{Var}(U)$ and $D=mq+\rho^2\zeta v$. Then
+$$z=\rho\sqrt{\zeta/D}\,(U-m)+\sqrt{qU/D}\,N,$$
 
-$$z=\rho\sqrt{\zeta/D}(U-m)+\sqrt{qU/D}\,N.$$
+which shows the role of $\rho$ directly: it scales the skewing term, and $\rho=0$ gives a symmetric density.
 
-It makes the standardization and the role of $\rho$ explicit: $\rho$ scales the skewing term, and $\rho = 0$ gives a symmetric density.
+`NormalInverseGaussian()` fixes $\lambda=-1/2$ ([Barndorff-Nielsen, 1997](../references.md#barndorff-nielsen-1997)) and `Hyperbolic()` fixes $\lambda=1$ ([Eberlein and Keller, 1995](../references.md#eberlein-keller-1995)); both estimate $\rho$ and $\zeta$.
 
-### NIG and Hyperbolic
+## Variance-gamma
 
-`NormalInverseGaussian()` fixes $\lambda=-1/2$ in the same standardized GH mapping. See [Barndorff-Nielsen (1997)](../references.md#barndorff-nielsen-1997).
-
-`Hyperbolic()` fixes $\lambda=1$. See [Eberlein and Keller (1995)](../references.md#eberlein-keller-1995) for the finance application. Neither constructor estimates the fixed index. Both estimate `rho, zeta` with the GH domain above.
-
-## Variance-Gamma
-
-scivol uses the standardized normal-gamma mixture and the GH zero-concentration limit. Let
+The variance-gamma distribution of [Madan and Seneta (1990)](../references.md#madan-seneta-1990) and [Madan, Carr and Chang (1998)](../references.md#madan-carr-chang-1998) is the GH limit $\zeta\to0$ with $\lambda>0$. scivol writes it as a normal-gamma mixture. With
 
 $$
-\vartheta=\frac{\sqrt2\rho}{\sqrt{1-\rho^2}},\quad
+\vartheta=\frac{\sqrt2\,\rho}{\sqrt{1-\rho^2}},\quad
 s=\sqrt{\lambda(1+\vartheta^2)},\quad
-U\sim\mathrm{Gamma}(\lambda,\text{rate}=1),\quad N\sim N(0,1),
+U\sim\mathrm{Gamma}(\lambda,1),\quad N\sim N(0,1)
 $$
 
-independently. Then
+independent,
 
-$$z=\frac{\vartheta(U-\lambda)+\sqrt U\,N}{s}.$$
+$$z=\frac{\vartheta(U-\lambda)+\sqrt U\,N}{s},$$
 
-Equivalently, its GH-type density has
+which in the GH notation above has $\delta=0$, $\beta=\vartheta s$, $\alpha=s\sqrt{\vartheta^2+2}$, $\mu=-\vartheta\lambda/s$ and Bessel index $\lambda-1/2$. The free parameters are $\rho$ and $\lambda$. The domain $\lambda>3/2$ keeps the density twice differentiable at its center, which the likelihood's Hessian needs. For smaller $\lambda$ the second derivative is unbounded at the center, and for $\lambda\le1/2$ so is the density itself.
 
-$$
-\delta=0,\quad\beta=\vartheta s,\quad
-\alpha=s\sqrt{\vartheta^2+2},\quad
-\mu=-\vartheta\lambda/s,\quad\text{Bessel index }\lambda-1/2.
-$$
+The GH, NIG, hyperbolic and variance-gamma densities have exponential tails, so all their polynomial moments exist, and their exponential moments exist for slopes in a bounded interval. Their EGARCH variance and APARCH persistence are therefore finite for moderate coefficients.
 
-The mixture equation defines the normalized density also at its center, where a direct Bessel expression needs a limit. The free parameters are `rho, lambda`; the library deliberately restricts `lambda>3/2` so the observed density Hessian is finite at the center. It does not expose the full positive-index VG family. See [Madan and Seneta (1990)](../references.md#madan-seneta-1990) and [Madan, Carr and Chang (1998)](../references.md#madan-carr-chang-1998).
+## Quantiles and forecasts
 
-Interior GH, NIG, Hyperbolic and VG densities have exponentially decreasing tails and all polynomial moments. Their exponential moments still have a finite strip of admissible slopes. Use the model's moment calculations when assessing EGARCH forecasts or APARCH persistence.
-
-## Forecasts, simulation and initial conditions
-
-Densities supply the standardized CDF, quantile and moments. One-step observation quantiles are $m+\sqrt h\,F^{-1}(u)$. Later quantiles mix over future volatility and mean paths and use simulation. Variance-forecast exactness is a property of the full volatility-density composition; see [Forecasting and simulation](../forecasting-and-simulation.md). A density adds no separate recursion initialization; it uses the mean and volatility sample conventions.
+Each density also provides its distribution function, quantile function and moments. A one-step-ahead quantile of the observation is $m_{T+1}+\sqrt{h_{T+1}}\,F^{-1}(u)$; quantiles further ahead mix over future means and variances and are simulated. [Forecasting and simulation](../forecasting-and-simulation.md) covers both.

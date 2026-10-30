@@ -2,52 +2,71 @@
 
 ## Univariate forecasts
 
-```python
-from scivol import ARMA, GARCH, StudentT
+`result.forecast(horizon=10, x=None, simulations=10000, seed=0)` forecasts from the end of the fitted sample, at the estimated parameters:
 
-source = GARCH() + StudentT()
-y = source.simulate(1200, [0.1, 0.15, 0.7, 0.15], seed=62).data
-result = (ARMA(1, 0) + GARCH() + StudentT()).fit(y)
-forecast = result.forecast(5, simulations=2000, seed=5)
-print(forecast.mean, forecast.variance, forecast.residual_variance)
-print(forecast.quantile([0.01, 0.05, 0.5]))
+```python
+from scivol import ARMA, GJRGARCH, SkewT
+
+true_model = GJRGARCH(1, 1) + SkewT()
+y = true_model.simulate(2000, [0.05, 0.03, 0.1, 0.88, 0.12, -0.15], seed=11).data
+result = (ARMA(1, 0) + GJRGARCH(1, 1) + SkewT()).fit(y)
+
+forecast = result.forecast(5, simulations=20000, seed=5)
+print(forecast.residual_variance.round(4))
+print(forecast.variance.round(4))
+print(forecast.quantile([0.01, 0.05]).round(4))
 ```
 
-`result.forecast(horizon=10, *, x=None, simulations=10000, seed=0)` conditions on the stored sample and parameters. It returns arrays of length `horizon`. There is no parameter-uncertainty adjustment.
+```text
+[1.708  1.6797 1.6527 1.627  1.6025]
+[1.708  1.6801 1.6531 1.6274 1.6028]
+[[-3.5063 -2.2333]
+ [-3.4848 -2.2165]
+ [-3.4436 -2.2074]
+ [-3.4982 -2.1707]
+ [-3.5277 -2.1309]]
+```
+
+The variance decays from its current level toward the unconditional variance. The forecast-error variance of $y$ is slightly larger than the residual variance after the first step, because the AR term carries earlier shocks forward. The quantiles are of $y$ itself, at the 1% and 5% levels.
 
 | Output | Meaning |
 | --- | --- |
 | `mean` | $E_T[y_{T+h}]$ |
-| `residual_variance`, alias `sigma2` | $E_T[h_{T+h}]$ |
+| `residual_variance` (alias `sigma2`) | $E_T[h_{T+h}]$ |
 | `variance` | $\mathrm{Var}_T(y_{T+h})$ |
-| `volatility` | Square root of `variance` |
-| `residual_volatility` | Square root of `residual_variance` |
+| `volatility`, `residual_volatility` | square roots of the two variances |
+| `quantile(level)` | quantiles of $y_{T+h}$ for a level or an array of levels |
+| `var(level)` | value at risk, `-quantile(level)`, a positive number for a loss on a return series |
 
-For ARMA and HAR implied AR dynamics, let $\psi_0=1,\psi_1,\ldots$ be the innovation-response coefficients. Observation forecast error variance propagates residual variances as
+Each array has length `horizon`, and `quantile` returns shape `(horizon, n_levels)` for an array of levels. Forecasts condition on the estimated parameters and do not include parameter uncertainty.
 
-$$\mathrm{Var}_T(y_{T+h})=\sum_{j=0}^{h-1}\psi_j^2E_T[h_{T+h-j}].$$
+With mean dynamics, the forecast-error variance combines the future residual variances through the moving-average weights $\psi_0=1,\psi_1,\ldots$ of the mean model:
 
-The psi calculation is exact. If residual variances are simulated, the propagated variance inherits that simulation approximation.
+$$\mathrm{Var}_T(y_{T+h})=\sum_{j=0}^{h-1}\psi_j^2\,E_T[h_{T+h-j}].$$
 
-## Exact horizons and moment existence
+## Exact and simulated horizons
 
-| Quantity | Computation |
+Where a closed form exists scivol uses it, and otherwise it averages simulated paths:
+
+| Quantity | How it is computed |
 | --- | --- |
-| Mean, given future exogenous values | Exact at all horizons |
-| Constant, GARCH, GJR residual variance | Exact at all horizons |
-| EGARCH residual variance | Exact through native $E\exp(a\vert z\vert +bz)$ at every horizon where the moments exist and are representable |
-| APARCH residual variance | Exact at one step; simulation averages beyond one step |
-| Observation quantiles | Innovation quantile at one step; simulated observation paths afterwards |
+| Mean, given future regressors | exact at every horizon |
+| Variance for constant variance, GARCH and GJR-GARCH | exact at every horizon |
+| Variance for EGARCH | exact at every horizon where the moments $E[\exp(a\vert z\vert+bz)]$ exist |
+| Variance for APARCH | exact one step ahead, simulated afterwards |
+| Quantiles | exact one step ahead, simulated afterwards |
 
-For finite-nu Student-t and skew-t innovations, a required positive exponential tail slope gives an infinite EGARCH variance forecast. A stable beta polynomial does not avoid this. Such requests raise instead of returning a finite simulation substitute. Nonpositive tail slopes can have finite moments. GED and GH-family exponential moments also have existence conditions; a fitted density with finite variance is not sufficient for every EGARCH expectation.
+One step ahead, the quantile is $m_{T+1}+\sqrt{h_{T+1}}\,F^{-1}(u)$. Further ahead, scivol simulates the observation paths, including the mean dynamics, and caches them in the `ForecastResult`, so repeated `quantile` calls reuse the same paths. A simulated variance makes the moving-average combination above simulated as well.
 
-One-step quantiles are $m_{T+1}+\sqrt{h_{T+1}}F^{-1}(u)$. `quantile(level)` accepts a scalar, returning `(horizon,)`, or a one-dimensional probability array, returning `(horizon, n_levels)`. Levels must lie strictly between zero and one. Later horizons simulate the full observation path, including mean dynamics. Reusing the same `ForecastResult` caches the simulated paths used for its later quantiles.
+An EGARCH variance forecast beyond one step needs the exponential moments of the density, which do not exist for a Student-t. In that case `forecast` raises an error that names the horizon, rather than returning a simulated average of a quantity whose expectation is infinite:
 
-`var(level)` is `-quantile(level)`. A positive value is a loss under the convention that the input is a return. Choose levels and units accordingly.
+```text
+ValueError: the EGARCH variance forecast 2 steps ahead does not exist: E exp(a|z| + b z) is infinite under this density
+```
 
-## Exogenous regressors
+## Regressors
 
-An ARX/HARX forecast with $k$ fitted regressors requires future `x` of shape `(horizon, k)`. The future values are treated as given. A one-column array can also be supplied in one dimension. The library does not model regressor uncertainty.
+A model with regressors needs their future values. For an ARX or HARX model with $k$ regressors, pass `x` with shape `(horizon, k)`, or a one-dimensional array when $k=1$. The values are taken as known.
 
 ```python
 import numpy as np
@@ -60,9 +79,9 @@ result = (ARX(1) + GARCH()).fit(y, x=x)
 forecast = result.forecast(5, x=np.zeros((5, 2)))
 ```
 
-## New-series simulation
+## Simulating new series
 
-`spec.simulate(n_obs, params, *, burn=500, seed=None, x=None)` returns `SimulationResult` with `data`, `mean`, `residuals`, `sigma2`, `innovations`, all of length `n_obs`. Parameters can be a theta array or a mapping with canonical parameter names. Grouped lag arrays such as `alpha=[...]` are accepted by fixed evaluation and simulation.
+`spec.simulate(n_obs, params, burn=500, seed=None, x=None)` generates a new series from given parameters. It returns a `SimulationResult` with the arrays `data`, `mean`, `residuals`, `sigma2` and `innovations`, each of length `n_obs`. `params` can be a parameter vector or a mapping by name, where lag blocks can be given as lists:
 
 ```python
 from scivol import GARCH, StudentT
@@ -74,43 +93,38 @@ simulation = spec.simulate(
 )
 ```
 
-The native initialization uses stationary mean and scale values before burn-in. For general APARCH, the initial scale is based on its stationary power moment; it is not a claim that an exact unconditional variance is known for arbitrary delta. EGARCH initialization uses its stationary log-variance location. `burn` reduces dependence on that deterministic initialization; it is not an exact draw from the stationary distribution. With exogenous regressors, `x` must cover `n_obs+burn` rows. The initial response level uses the average of the supplied regressor path with the mean coefficients; it does not estimate a probability law for the regressors. New-series simulation rejects a nonstationary initialization or a nonrepresentable starting scale.
+The recursion starts at the unconditional mean and variance (for EGARCH the unconditional mean of $\log h_t$, for APARCH the unconditional mean of $\sigma_t^\delta$) and runs `burn` steps before the returned sample, so that the start has little influence. Parameters without a stationary starting point, such as GARCH persistence above one, raise an error. With regressors, `x` must cover `n_obs + burn` rows, and the starting mean uses the average regressor values. A given `seed` makes the draws reproducible.
 
-NumPy owns the random draws in the Python workflow. Native density quantiles and recursions construct the innovations and paths. A supplied seed fixes the draw stream for that request. No fitting occurs in `spec.simulate`.
+## Forecasting from given parameters
 
-## Fixed-parameter forecasts
+A fixed result from `spec.fix` forecasts in the same way as a fitted one:
 
 ```python
 from scivol import GARCH
 
 spec = GARCH()
 y = spec.simulate(800, [0.1, 0.1, 0.8], seed=7).data
-fixed = spec.fix(y, [0.1, 0.1, 0.8])
-print(fixed.forecast(3).residual_variance)
+print(spec.fix(y, [0.1, 0.1, 0.8]).forecast(3).residual_variance)
 ```
 
-A fixed result supports forecasting and diagnostics using the supplied parameters. It has no optimization certificate or estimated covariance.
+## Multivariate forecasts
 
-## Multivariate forecasts and scenarios
-
-DCC/CCC result methods need stored univariate fits. Use `DCC.fit(returns, ...)` or `CCC.fit(returns, ...)`; a bare `fit_from_residuals` result has no marginal variance histories and these methods raise.
+DCC and CCC results from `fit` forecast the correlations, the marginal means and variances, and the residual covariances, and simulate continuations and one-step scenarios:
 
 ```python
 import numpy as np
-from scivol import DCC, GARCH, Normal
+from scivol import DCC
 
 returns = np.random.default_rng(17).standard_normal((800, 3))
-result = DCC().fit(returns, univariate_spec=GARCH() + Normal(), n_jobs=1)
+result = DCC().fit(returns)
 correlation = result.forecast_correlation(3, simulations=500, seed=5)
 forecast = result.forecast(3, simulations=500, seed=5)
 continuation = result.simulate(20, seed=6)
 scenarios = result.scenarios(1000, seed=7, innovations="parametric")
 ```
 
-`forecast_correlation` returns `(horizon, N, N)`. Its one-step correlation is exact; subsequent correlations average simulated paths. `forecast` returns marginal mean, variance and residual variance arrays `(horizon, N)`, and correlation and residual covariance arrays `(horizon, N, N)`. Its residual covariance is the average residual outer product from joint paths, including at one step. That estimate has Monte Carlo error. Future volatility and correlation are simulated jointly for this covariance.
+`forecast_correlation` returns an array of shape `(horizon, N, N)`. The first step is exact, and later steps average simulated paths. `forecast` returns the marginal means and variances with shape `(horizon, N)` and the correlation and residual covariance with shape `(horizon, N, N)`. The residual covariance is the average outer product of jointly simulated residuals, so it carries simulation error even at the first step. The correlations are those of the copula scores, as described under [interpreting the correlations](models/dcc.md#interpreting-the-correlations).
 
-A DCC matrix $R$ parameterizes copula scores. With non-Normal marginal transforms it need not equal the Pearson correlation of the marginal innovations. The `correlation` output describes this score correlation. Interpret the implementation's `R*outer(sigma,sigma)` fields in `simulate` and `scenarios` with that distinction in mind.
+`simulate(n_obs, seed=None, x=None)` returns one path that continues from the end of the sample. `scenarios(n_draws, seed=None, x=None, innovations="parametric")` draws one-step-ahead outcomes from the same starting point. With `innovations="empirical"`, scenarios map the copula probabilities through each marginal's empirical distribution of standardized residuals, centered and scaled, which needs at least ten residuals per series. For models with regressors, `x` holds each marginal's future regressors, as a mapping keyed by series name or position or as a sequence in column order.
 
-`simulate(n_obs, seed=None, x=None)` returns one continuation from the observed state, without a new-series burn-in. `scenarios(n_draws, seed=None, x=None, innovations="parametric")` draws one-step outcomes from a common origin. `innovations="empirical"` maps the copula probabilities through each marginal's empirical standardized-residual quantiles, after centering and scaling those residuals. This option requires at least ten residuals per marginal.
-
-Future `x` for these methods is a mapping keyed by series name/index or a sequence with one entry per series. Each entry contains that marginal's horizon regressors. The ordinary univariate forecast requirements still apply.
+These methods need the marginal models, so they are unavailable on a result from `fit_from_residuals`.

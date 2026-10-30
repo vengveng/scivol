@@ -14,7 +14,7 @@ Different libraries start their variance recursions differently, so their log-li
 
 ## Fit options
 
-```python
+```text
 result = spec.fit(y, method="mle", coordinates="automatic", starts="auto", maxiter=1000, accuracy=1e-10)
 ```
 
@@ -50,7 +50,7 @@ Most parameters have a restricted domain: variances must be positive, GARCH pers
 
 The theta and z paths are independent formulations; scivol never runs one and reports it under the other's name. When they disagree on a data set, that is information: a local maximum, a boundary, or a numerically difficult likelihood.
 
-A trust region that stalls, typically against a likelihood kink (see below), hands over to SLSQP, whose line search tolerates kinks. On the automatic path, an uncertified fit is restarted once in theta from the model's default start, unless its refinement has already shown the likelihood to be flat.
+A trust region that stalls, typically against a likelihood kink (see below), hands over to SLSQP, whose line search tolerates kinks. On the automatic path, a fit that fails its first-order check is restarted once in theta from the model's default start, unless its refinement has already shown the likelihood to be flat.
 
 `fit_info.solver` and `fit_info.optimizer_phases` record exactly what ran. The trust-region method follows [Moré and Sorensen (1983)](references.md#more-sorensen-1983) with the scaling of [Moré (1978)](references.md#more-1978); SLSQP is [Kraft's (1988)](references.md#kraft-1988) algorithm; the first-order check projects onto the domain by least-distance programming ([Lawson and Hanson, 1995](references.md#lawson-hanson-1995)).
 
@@ -75,11 +75,16 @@ The `starts` option decides how they are used:
 | `n` | The first `n` candidates each run in full; `starts=1` is a single start. |
 | a list of parameter vectors | Each vector runs in full. |
 
-Because the optimizer never lowers the likelihood, a finished start always ends at least as high as the start it beat. The reported estimate is the best finished start, preferring a certified one. On 500 liquid stocks and ten models, the automatic race reduced the number of fits that stopped below the best known maximum from 114 to 38 out of 5,000, at 17% more total time ([benchmarks](benchmarks.md)). It does not guarantee the global maximum: a region the candidates do not cover, or a start whose probe does not yet look promising, can still be missed.
+Because the optimizer never lowers the likelihood, a finished start always ends at least as high as the start it beat. The reported estimate is the best finished start, preferring one that passes its first-order check. On 500 liquid stocks and ten models, the automatic race reduced the number of fits that stopped below the best known maximum from 114 to 38 out of 5,000, at 17% more total time ([benchmarks](benchmarks.md)). A maximum in a region the candidates do not cover, or one whose probe does not yet look promising after five iterations, can still be missed.
 
 `initial_params` is a single explicit start and replaces the candidates; it cannot be combined with another `starts` choice. A previous result must come from the same model. Starts are in the units of the data as fitted, including any `scale`.
 
 ```python
+from scivol import GARCH, StudentT
+
+spec = GARCH(1, 1) + StudentT()
+y = spec.simulate(2000, [0.05, 0.08, 0.9, 0.1], seed=4).data
+
 first = spec.fit(y, starts=1)
 warm = spec.fit(y, initial_params=first)
 every = spec.fit(y, starts=3)
@@ -87,7 +92,7 @@ mine = spec.fit(y, starts=[first.params, [0.05, 0.05, 0.9, 0.1]])
 print(every.fit_info.starts)
 ```
 
-`fit_info.starts` lists every start with its starting point (`theta`), whether it is a model candidate, whether it was finished, the log-likelihood it reached, whether it was certified, and whether it was selected.
+`fit_info.starts` lists every start with its starting point (`theta`), whether it is a model candidate, whether it was finished, the log-likelihood it reached, whether it passed the first-order check (`success`), and whether it was selected.
 
 ## What `success` means
 
@@ -95,13 +100,31 @@ print(every.fit_info.starts)
 
 $$\tau = \max\{\sqrt{\text{accuracy}}, \sqrt{\epsilon_{\text{machine}}}\} = 10^{-5} \text{ by default}.$$
 
-The check is made in the original parameters on the per-observation objective $F/n$ of the internally scaled data, which is why `fit_info.kkt_residual` is not the raw gradient in your units. A certified estimate is a local maximum over the closure of the declared domain; it is not a proof of global optimality.
+The check is made in the original parameters on the per-observation objective $F/n$ of the internally scaled data, which is why `fit_info.kkt_residual` is not the raw gradient in your units. A successful fit is therefore a local maximum over the closure of the declared domain.
 
-An estimate can sit on a boundary that the declared domain excludes, for example GARCH persistence exactly one under the default covariance-stationary domain, or a Student-t with $\eta \to 1/2$. Such a fit can still be certified as the maximum over the closure; scivol reports it with `fit_info.inference_status = "at_excluded_boundary"` and names the conditions in `fit_info.excluded_boundary`, for example `("persistence < 1",)`. Standard errors are withheld there. If you want persistence one to be part of the model, declare it on the volatility component with `stationarity="integrated"` (or `"none"` to drop the condition); see [volatility models](models/volatility.md#declaring-stationarity).
+An estimate can sit on a boundary that the declared domain excludes, for example GARCH persistence exactly one under the default covariance-stationary domain, or a Student-t with $\eta \to 1/2$. Such a fit can still be the maximum over the closure of the domain, and scivol reports it as found. In the example below the variance level of the data shifts halfway through the sample, a common way for GARCH persistence to run to one:
 
-A likelihood can also keep rising toward a limit outside the parameter space without any single parameter reaching a bound, as when a generalized hyperbolic density approaches its skewed-t limit ($|\rho| \to 1$ and $\zeta \to 0$ together). An optimizer phase that is not certified stops once its objective has changed by no more than the solver accuracy over ten iterations, reports `stalled`, and returns the estimate uncertified rather than after the whole budget.
+```python
+import numpy as np
+from scivol import GARCH
 
-An uncertified fit is returned with warnings that explain what failed. If no finite estimate in the domain exists at all, the fit raises `scivol.FitError`, whose message gives the reasons; if many observations are exactly zero, it says so, since exact zeros are the usual cause of likelihoods without a maximum on real returns.
+rng = np.random.default_rng(3)
+y = np.concatenate([rng.standard_normal(1000), 2.5 * rng.standard_normal(1000)])
+result = GARCH(1, 1).fit(y)
+print(result.success, result.fit_info.inference_status, result.fit_info.excluded_boundary)
+print(result.warnings)
+```
+
+```text
+True at_excluded_boundary ('persistence < 1',)
+('the estimate is at the excluded boundary of the declared domain (persistence < 1); standard errors are not reported', 'persistence is very close to one')
+```
+
+The fit succeeds, `fit_info.excluded_boundary` names the condition the estimate reaches, and standard errors are not reported, since the estimate is not an interior point of the model. If persistence one belongs in your model, declare it on the volatility component: `GARCH(1, 1, stationarity="integrated")` fits the same likelihood with persistence one inside the domain and reports this estimate with status `at_boundary`. `stationarity="none"` drops the condition altogether. [Volatility models](models/volatility.md#declaring-stationarity) describes the three declarations.
+
+A likelihood can also keep rising toward a limit outside the parameter space without any single parameter reaching a bound, as when a generalized hyperbolic density approaches its skewed-t limit ($|\rho| \to 1$ and $\zeta \to 0$ together). An optimizer phase that has not met the first-order conditions stops once its objective has changed by no more than the solver accuracy over ten iterations, and reports `stalled` in `fit_info.optimizer_phases`. The estimate is then returned with `success=False` without spending the rest of the iteration budget.
+
+Whenever `success` is `False`, `result.warnings` explains what failed. If no finite estimate in the domain exists at all, the fit raises `scivol.FitError`, whose message gives the reasons. When many observations are exactly zero, the message says so, since exact zeros are the usual cause of likelihoods without a maximum on real returns.
 
 ## Data scaling and hold-back
 
@@ -113,4 +136,4 @@ The likelihood scores observations from `max(hold_back, mean lags)` onward. Earl
 
 ## Likelihood kinks
 
-With an estimated mean, a residual can pass through exactly zero as the mean parameters change. EGARCH's $|z|$ term then makes the likelihood non-differentiable at that point, and APARCH with $\delta \le 1$ or a GED with $\nu \le 1$ create sharper cusps. scivol does not smooth these. Its theta refinement identifies the residuals sitting exactly at zero, optimizes on that face, and checks the first-order conditions there, following the active-manifold approach of [Lewis (2002)](references.md#lewis-2002). A certified kink is reported with `fit_info.kink_point = True`, the affected observations in `fit_info.active_kink_rows`, and inference status `at_kink`; the ordinary gradient, Hessian and standard errors are withheld because they do not exist there. For APARCH with $\delta \le 1$ and GED with $\nu \le 1$, the one-sided slopes are unbounded and no finite certificate is available.
+With an estimated mean, a residual can pass through exactly zero as the mean parameters change. EGARCH's $|z|$ term then makes the likelihood non-differentiable at that point, and APARCH with $\delta \le 1$ or a GED with $\nu \le 1$ create sharper cusps. scivol does not smooth these. Its theta refinement identifies the residuals sitting exactly at zero, optimizes on that face, and checks the first-order conditions there, following the active-manifold approach of [Lewis (2002)](references.md#lewis-2002). A kink point that passes this check is reported with `fit_info.kink_point = True`, the affected observations in `fit_info.active_kink_rows`, and inference status `at_kink`; the ordinary gradient, Hessian and standard errors do not exist there and are not reported. For APARCH with $\delta \le 1$ and GED with $\nu \le 1$ the one-sided slopes are unbounded, so a fit that ends at such a cusp reports `success=False`.

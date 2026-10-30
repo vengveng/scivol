@@ -6,7 +6,7 @@ scivol fits univariate conditional volatility models and dynamic conditional cor
 from scivol import ARMA, GJRGARCH, SkewT
 
 result = (ARMA(1, 0) + GJRGARCH(1, 1) + SkewT()).fit(returns)
-result.summary()
+print(result.summary())
 forecast = result.forecast(10)
 ```
 
@@ -26,7 +26,7 @@ Conditional correlations among five of those stocks from a DCC model; the line i
 
 **Models.** ARMA, ARX and HARX means; GARCH, GJR-GARCH, EGARCH and APARCH volatility; Normal, Student-t, Hansen's skewed t, GED, generalized hyperbolic, NIG, hyperbolic and variance-gamma innovations; DCC with Gaussian or Student-t copulas. Every combination is one model with one likelihood.
 
-**Estimation you can check.** Each likelihood and its derivatives are tested against an automatic-differentiation reference. A fit is reported as successful only when the first-order conditions hold in the model's parameter domain; otherwise the estimate comes back with a status that says why. Standard errors are withheld where ordinary inference does not apply. Several starting points are tried by default, because volatility likelihoods often have more than one local maximum.
+**Estimation you can check.** Each likelihood and its derivatives are tested against an automatic-differentiation reference. A fit is reported as successful only when the first-order conditions hold in the model's parameter domain; otherwise the estimate comes back with a status that says why. Standard errors are reported where ordinary likelihood inference applies. Several starting points are tried by default, because volatility likelihoods often have more than one local maximum.
 
 **Speed.** On 500 liquid US stocks and ten models, a fit took a median 1–6 ms, 4.9 times faster than `arch` and 53 times faster than `rugarch` per fit, while missing its own likelihood maximum less often than either; DCC fits were 20–50 times faster than `rmgarch`. See [the benchmarks](https://github.com/vengveng/scivol/blob/main/docs/benchmarks.md) for the method and its limits.
 
@@ -41,8 +41,6 @@ Wheels for CPython 3.10–3.12 on Linux (x86-64), macOS (Apple Silicon) and Wind
 ## Documentation
 
 [Getting started](https://github.com/vengveng/scivol/blob/main/docs/getting-started.md) · [Models](https://github.com/vengveng/scivol/blob/main/docs/models/volatility.md) · [Estimation](https://github.com/vengveng/scivol/blob/main/docs/estimation.md) · [Inference](https://github.com/vengveng/scivol/blob/main/docs/inference.md) · [Forecasting](https://github.com/vengveng/scivol/blob/main/docs/forecasting-and-simulation.md) · [Diagnostics](https://github.com/vengveng/scivol/blob/main/docs/diagnostics.md) · [Model selection](https://github.com/vengveng/scivol/blob/main/docs/selection.md) · [API](https://github.com/vengveng/scivol/blob/main/docs/api.md) · [References](https://github.com/vengveng/scivol/blob/main/docs/references.md)
-
-The defaults of the automatic model-selection procedures have not yet been calibrated by simulation.
 
 ## License
 

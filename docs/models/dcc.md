@@ -1,117 +1,143 @@
 # DCC and CCC
 
-## Copula scores and likelihood
+scivol estimates correlation models in two stages. It first fits a univariate model to each series, then fits the correlation of the standardized residuals with a copula. Both stages are maximum likelihood, and the standard errors of the second stage treat the first stage as given.
 
-Let $e_{ti}$ be marginal residuals and $h_{ti}$ their conditional variances. Write $\epsilon_{ti}=e_{ti}/\sqrt{h_{ti}}$ for standardized residuals and $F_i$ for the fitted standardized innovation CDF. scivol fixes the marginal probabilities
+## A first fit
 
-$$u_{ti}=F_i(\epsilon_{ti})$$
+The three series below share a common factor whose volatility changes over time, so their correlation changes too:
 
-and transforms them into copula scores $x_{ti}=G_\eta^{-1}(u_{ti})$. For a Gaussian copula, $G$ is the Normal CDF. For a Student-t copula, $G_\eta$ is the unit-variance Student-t CDF, with $\eta=1/\nu$. Normal marginals with a Gaussian copula preserve $x=\epsilon$ exactly.
+```python
+import numpy as np
+from scivol import DCC, GARCH, StudentT
 
-The copula log-likelihood contribution is
+garch = GARCH(1, 1)
+factor = garch.simulate(2000, [0.05, 0.1, 0.85], seed=1).data
+returns = np.column_stack([0.7 * factor + garch.simulate(2000, [0.05, 0.1, 0.85], seed=s).data
+                           for s in (2, 3, 4)])
 
-$$\ell_t^c=\log g_{\eta,R_t}(x_t)-\sum_{i=1}^{N}\log g_\eta(x_{ti}).$$
+result = DCC(1, 1).fit(returns, univariate_spec=GARCH(1, 1) + StudentT())
+print(result.summary())
+```
 
-Here $g_{\eta,R_t}$ is the multivariate Gaussian or standardized Student-t density, and $g_\eta$ its univariate margin. Correlation-stage likelihoods reported by DCC/CCC are copula contributions. They do not add the marginal fit likelihoods. Correlation-stage AIC/BIC count only that stage's free parameters.
+```text
+========================================================================
+                      DCC(1,1) Estimation Results
+========================================================================
+  Model: DCC(1,1)
+  Method: Gaussian correlation MLE
+  Obs: 2000  Series: 3  Success: True
+  Time: 0.0128s  Iterations: 12
+  Log-lik: 235.6575  AIC: -467.3150  BIC: -456.1132
+  Marginals stored: Yes
+------------------------------------------------------------------------
+Param      Estimate     MLE SE     Rob SE     t-stat
+------------------------------------------------------------------------
+a[1]       0.011650   0.005845   0.005691       1.99
+b[1]       0.946516   0.035545   0.037542      26.63
 
-For Gaussian scores the expression is
+  Persistence: 0.958166  Inference: available
+========================================================================
+```
 
-$$\ell_t^c=-\tfrac12\log|R_t|-\tfrac12x_t^{\mathsf T}(R_t^{-1}-I)x_t.$$
+`returns` is a `(T, N)` array or DataFrame. `result.univariate_results` holds the fitted marginal models, `result.Rt` the `(T, N, N)` path of conditional correlation matrices, and `result.corr(0, 1)` the path for one pair, which here moves between 0.17 and 0.42. The log-likelihood in the report is that of the correlation stage alone, and AIC and BIC count only its parameters.
 
-For a Student-t copula, the multivariate term uses
+## The copula likelihood
+
+Let $\epsilon_{ti}=e_{ti}/\sqrt{h_{ti}}$ be the standardized residuals of the marginal fits and $F_i$ their fitted innovation distribution functions. scivol maps each residual to a probability $u_{ti}=F_i(\epsilon_{ti})$ and then to a copula score $x_{ti}=G_\eta^{-1}(u_{ti})$, where $G$ is the standard Normal distribution function for a Gaussian copula and the unit-variance Student-t distribution function with $\eta=1/\nu$ for a Student-t copula. With Normal marginals and a Gaussian copula the scores are the standardized residuals themselves.
+
+Each row contributes
+
+$$\ell_t^c=\log g_{\eta,R_t}(x_t)-\sum_{i=1}^{N}\log g_\eta(x_{ti}),$$
+
+where $g_{\eta,R_t}$ is the multivariate Normal or standardized Student-t density with correlation matrix $R_t$, and $g_\eta$ its univariate margin. For the Gaussian copula this is
+
+$$\ell_t^c=-\tfrac12\log|R_t|-\tfrac12x_t^{\mathsf T}(R_t^{-1}-I)x_t,$$
+
+and for the Student-t copula the multivariate density is
 
 $$
 g_{\nu,R}(x)=\frac{\Gamma((\nu+N)/2)}{\Gamma(\nu/2)[\pi(\nu-2)]^{N/2}|R|^{1/2}}
 \left(1+\frac{x^{\mathsf T}R^{-1}x}{\nu-2}\right)^{-(\nu+N)/2}.
 $$
 
-Marginal and copula Student-t degrees of freedom are separate estimates. A Student-t copula can be paired with different marginal densities.
+The copula's degrees of freedom are estimated separately from those of the marginals, and a Student-t copula can be combined with any marginal densities.
 
 ## Dynamic conditional correlation
 
-`DCC(p=1, q=1, distribution="gaussian")` follows
+`DCC(p=1, q=1, distribution="gaussian")` is the model of [Engle (2002)](../references.md#engle-2002):
 
 $$
-\overline Q=T^{-1}\sum_{t=0}^{T-1}x_tx_t^{\mathsf T},\qquad Q_0=\overline Q,
+\overline Q=\frac1T\sum_{t=0}^{T-1}x_tx_t^{\mathsf T},\qquad Q_0=\overline Q,
 $$
 
 $$
-Q_t=\left(1-\sum_{i=1}^{p}a_i-\sum_{j=1}^{q}b_j\right)\overline Q
+Q_t=\Bigl(1-\sum_{i=1}^{p}a_i-\sum_{j=1}^{q}b_j\Bigr)\overline Q
 +\sum_{i=1}^{\min(p,t)}a_ix_{t-i}x_{t-i}^{\mathsf T}
 +\sum_{j=1}^{\min(q,t)}b_jQ_{t-j},
 $$
 
-$$R_t=\mathrm{diag}(Q_t)^{-1/2}Q_t\mathrm{diag}(Q_t)^{-1/2}.$$
+$$R_t=\mathrm{diag}(Q_t)^{-1/2}\,Q_t\,\mathrm{diag}(Q_t)^{-1/2}.$$
 
-Every supplied row is scored. The first row uses the target. For rows after the first, only available shock and Q lags enter the sums. Unavailable lags are omitted; the target coefficient remains $1-\sum a-\sum b$. An explicitly supplied `Qbar` remains fixed. An estimated target is formed from the scores, not automatically from the untransformed residuals. The DCC precedent is [Engle (2002)](../references.md#engle-2002).
+Every row is scored, and the first uses $Q_0=\overline Q$. Early rows use only the lags that exist, while the weight on $\overline Q$ stays $1-\sum a-\sum b$. The target $\overline Q$ is computed from the copula scores, so for a Student-t copula it depends on $\eta$, and the gradient and Hessian include that dependence. You can instead pass a fixed target as `Qbar` to `fit_from_residuals`.
 
-| Item | Specification |
+| Item | Value |
 | --- | --- |
-| Orders | `1<=p<=8`, `1<=q<=8` |
-| Gaussian parameter names | `a[1]` through `a[p]`, then `b[1]` through `b[q]` |
-| Student-t parameter names | Same, then `eta` |
-| Domain | $a_i,b_j\ge0$, $\sum_i a_i+\sum_j b_j<1$; Student-t additionally $0\le\eta<1/2$ |
-| Derived persistence | Sum of the a and b blocks |
-| Derived Student-t degrees of freedom | $1/\eta$; infinity at `eta=0` |
+| Orders | `p` and `q` from 1 to 8 |
+| Parameters | `a[1]` to `a[p]`, `b[1]` to `b[q]`, then `eta` for a Student-t copula |
+| Domain | $a_i,b_j\ge0$ and $\sum_ia_i+\sum_jb_j<1$; $0\le\eta<1/2$ |
+| Copula | `distribution="gaussian"` (alias `"normal"`) or `"studentt"` (alias `"t"`) |
 
-`distribution="studentt"` selects the Student-t copula. Aliases include `"t"` and `"normal"` for the corresponding canonical choices. The Student-t score transform, shocks and estimated target depend on eta. Native gradients and Hessians include all these derivatives. A fixed target still stays fixed.
+`result.params.persistence` is the sum of the a and b coefficients, and for a Student-t copula `result.params.eta` gives the copula's $\eta$.
 
-## Fit from returns
+## Fitting from returns
 
-```python
-import numpy as np
-from scivol import DCC, GARCH, StudentT
+`DCC.fit(returns, univariate_spec=None, ...)` fits the marginal models first, by default `GARCH(1, 1) + Normal()`, and passes their standardized residuals and fitted densities to the correlation stage. `univariate_fit_kwargs` is a dictionary of options for the marginal fits, and other keyword arguments, such as `starts` or `maxiter`, go to the correlation stage. If you have already fitted the marginals, pass them as `univariate_results`, in the column order of `returns`. scivol checks that their residuals have equal length, but the dates and the column order are yours to align.
 
-returns = np.random.default_rng(17).standard_normal((800, 3))
-result = DCC(1, 1, distribution="studentt").fit(
-    returns, univariate_spec=GARCH() + StudentT(), n_jobs=1,
-)
-print(result.theta, result.success, result.inference)
-print([m.success for m in result.univariate_results])
-print(result.corr(0, 1))
-```
+A marginal fit that raises stops the whole fit. A marginal fit with `success=False` is used like any other, so check `[m.success for m in result.univariate_results]` alongside the correlation stage's `result.success`.
 
-The returns array is `(T, N)`. Default marginals are `GARCH(1,1)+Normal()`. Marginals are estimated first, then their standardized residuals and fitted density descriptions enter the copula fit. This is a two-stage workflow. `univariate_fit_kwargs` controls marginal fits, while correlation options go to `fit_from_residuals`. Stored marginal results can be supplied instead through `univariate_results`.
+## Fitting standardized residuals
 
-The implementation checks common residual lengths for supplied marginal results. The caller must ensure common dates and the same column order; equal lengths alone do not establish alignment. A marginal fitting exception stops the pipeline. A returned uncertified marginal is still a returned result, so inspect its certificate explicitly.
-
-## Fit standardized residuals directly
+`fit_from_residuals` runs the correlation stage alone, on residuals you have already standardized:
 
 ```python
 import numpy as np
 from scivol import DCC
 
 eps = np.random.default_rng(17).standard_normal((800, 3))
-result = DCC().fit_from_residuals(eps, starts="auto")
+result = DCC().fit_from_residuals(eps)
 print(result.params.persistence, result.log_likelihood)
 ```
 
-`eps` means standardized residuals, not raw returns or unscaled residuals. Omitted marginal descriptions mean Normal. Other marginals require one native `InnovationDensity` per series through `marginals`. A native descriptor can be constructed with `scivol._scivolapi`; see [the API notes](../api.md#native-statistical-functions). The ordinary `fit` workflow passes these descriptions automatically.
+The marginals are taken to be Normal unless you describe them through `marginals`, one `InnovationDensity` per series; the [API page](../api.md#innovation-densities-for-dcc) shows how. Starting points work as in univariate fits: `starts` accepts the same values, the candidates are $(a,b)=(0.05,0.90)$ and $(0.02,0.80)$, and `theta0` or `initial_result` gives a single start. The default budget is 500 iterations at `accuracy=1e-10`. `result.starts`, `result.path` and `result.phases` record what ran.
 
-`theta0` or `initial_result` supplies one explicit correlation start; they are mutually exclusive. A warm-start result must match orders and copula distribution. The default correlation budget is 500 iterations, with `accuracy=1e-10`. `starts` has the [univariate racing semantics](../estimation.md#multi-start). DCC's candidates cover moderate- and high-b regions. `result.starts`, `path` and `phases` report the outcomes.
-
-Correlation inference treats marginal probabilities as given. It does not include first-stage marginal estimation uncertainty. A residual-only result cannot forecast or simulate full returns without stored marginal fits.
+A result from `fit_from_residuals` has correlation paths but no marginal models, so it cannot forecast or simulate returns. Those methods need a result from `fit`.
 
 ## Constant conditional correlation
 
-`CCC()` uses Gaussian copula scores and the target normalized to a correlation matrix:
+`CCC()` is the constant-correlation model of [Bollerslev (1990)](../references.md#bollerslev-1990). Its correlation matrix is the target normalized to unit diagonal,
 
-$$R_t=R=\mathrm{diag}(\overline Q)^{-1/2}\overline Q\mathrm{diag}(\overline Q)^{-1/2}.$$
+$$R_t=R=\mathrm{diag}(\overline Q)^{-1/2}\,\overline Q\,\mathrm{diag}(\overline Q)^{-1/2},$$
 
-It estimates no dynamic correlation parameters. `CCCParams.corr` is the constant matrix, `theta` is empty, `nit=0`, and standard-error arrays for dynamic parameters are empty. An optional target can be supplied to `fit_from_residuals`; otherwise it is formed from the Gaussian scores. This is the implementation's targeted constant-correlation baseline. See [Bollerslev (1990)](../references.md#bollerslev-1990).
+computed from Gaussian copula scores, so it has no parameters to optimize. The comparison below fits both models with the default GARCH-Normal marginals:
 
 ```python
-import numpy as np
 from scivol import CCC
 
-returns = np.random.default_rng(17).standard_normal((800, 3))
-constant = CCC().fit(returns, n_jobs=1)
-print(constant.params.corr, constant.params.avg_pairwise_corr)
-print(constant.summary())
+constant = CCC().fit(returns)
+dynamic = DCC().fit(returns)
+print(constant.params.corr.round(4))
+print(constant.log_likelihood, dynamic.log_likelihood)
 ```
 
-## Forecast interpretation
+```text
+[[1.     0.2874 0.2866]
+ [0.2874 1.     0.3019]
+ [0.2866 0.3019 1.    ]]
+230.8783155033909 235.70318442823225
+```
 
-`forecast_correlation` is exact one step ahead and averages joint simulation paths thereafter. CCC score correlations stay constant. Full `forecast` combines marginal forecasts with joint simulated residual covariance. Its covariance estimate has simulation error even at one step. See [Forecasting and simulation](../forecasting-and-simulation.md#multivariate-forecasts-and-scenarios).
+On these data the DCC model gains about five log-likelihood points for its two extra parameters.
 
-For non-Gaussian transformed marginals, copula score correlation need not be the Pearson correlation of marginal innovations. The `unconditional_corr` property normalizes `Qbar`; it is the target correlation, not a proof that it equals an unconditional Pearson correlation after arbitrary marginal transforms.
+## Interpreting the correlations
+
+$R_t$ is the conditional correlation of the copula scores $x_t$. With Normal marginals and a Gaussian copula these are the standardized residuals, and $R_t$ is their conditional correlation in the usual sense. With other marginal densities the scores are transformed residuals, and their correlation can differ from the Pearson correlation of the residuals themselves. The same holds for `unconditional_corr`, which normalizes $\overline Q$, and for the correlation and covariance outputs of the forecasting methods described in [forecasting and simulation](../forecasting-and-simulation.md#multivariate-forecasts).

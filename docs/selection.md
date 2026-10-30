@@ -1,134 +1,166 @@
 # Model selection
 
-The selection defaults and the complete adaptive procedure have not been calibrated. Results report the explored graph, test assumptions, unresolved decisions and fit budget. Non-rejection does not establish a true model.
+scivol selects among volatility models in three ways: a general-to-specific search that tests restrictions, ranking by an information criterion, and a model confidence set built from out-of-sample forecast losses. All three start from a `Search`, which declares the candidate models, and differ in the procedure passed to `Search.fit`.
 
-## Declare the candidates
+## Declaring the candidates
 
-`Search` takes iterables of mean, volatility and density generators. Their cross-product declares specifications. Native restrictions supply downward closure; `up_to` constructs a maximal generator, not a Python enumeration of every order.
+`Search` takes lists of mean, volatility and density components. `up_to` declares a largest model, and the search reaches the smaller ones by restricting it:
 
 ```python
-from scivol import ARX, GJRGARCH, EGARCH, APARCH, SkewT
-from scivol import Search, GeneralToSpecific
+from scivol import ARX, GJRGARCH, EGARCH, SkewT, Search, GeneralToSpecific
 
-search = Search(
-    mean=[ARX.up_to(1)],
-    volatility=[GJRGARCH.up_to(1, 1), EGARCH.up_to(1, 1), APARCH.up_to(1, 1)],
-    density=[SkewT()], constant_variance=True,
-)
-# selection = search.fit(y, procedure=GeneralToSpecific(max_fits=96), n_jobs=2)
+true_model = GJRGARCH(1, 1) + SkewT()
+y = true_model.simulate(2000, [0.05, 0.03, 0.1, 0.88, 0.12, -0.15], seed=11).data
+
+search = Search(mean=[ARX.up_to(1)],
+                volatility=[GJRGARCH.up_to(1, 1), EGARCH.up_to(1, 1)],
+                density=[SkewT()])
+selection = search.fit(y, procedure=GeneralToSpecific())
+print(selection.summary())
 ```
 
-Defaults are `mean=[None]`, no dynamic volatilities, `density=[Normal()]`, `constant_variance=True`, `closure=True`. `None` in the mean list means zero mean. With `closure=False`, only explicitly declared specifications can be selected, although a compound native restriction may connect them.
+```text
+Selection: selected; selected: GJR-GARCH(1,1)+SkewT
+Search complete: True; terminals: 2; optimizer invocations: 38
+```
 
-The comparison plan scores the same rows for every candidate. Its first scored row is the maximum declared mean conditioning span or the requested `hold_back`, whichever is larger. It preserves the input/regressor span, one parameter-independent variance seed, and zero pre-sample residuals. A constant-variance root uses its own `sigma2` on every row; a seeded zero-order dynamic model remains a distinct specification.
+The search starts from the two largest models, ARX(1) with GJR-GARCH(1,1) and with EGARCH(1,1), and from a constant-variance model, then removes terms while the data allow it. It ends at two models, and selects the one that generated the data:
 
-## General-to-specific procedure
+```python
+table = selection.table()
+print(table[table.terminal][["model", "parameters", "log_likelihood", "bic", "adequacy"]].to_string(index=False))
+```
 
-`GeneralToSpecific` starts at certified, adequate roots. It tries supported native restrictions, fits children, tests the reductions, checks child adequacy, and backtests each cumulative reduction jointly against its original root. Accepted paths can branch. Fits are memoized by native specification identity. A warm start does not hold retained parameters fixed.
+```text
+               model  parameters  log_likelihood         bic adequacy
+GJR-GARCH(1,1)+SkewT           6    -2800.897821 5647.398057 adequate
+   EGARCH(1,1)+SkewT           6    -2804.972070 5655.546554 adequate
+```
 
-| Option | Default |
-| --- | --- |
-| `reduction_level` | `0.01` |
-| `encompassing_level` | `0.01` |
-| `diagnostic_level` | `0.01` |
-| `prefer` | `"fewest_parameters"` |
-| `tie_break` | `InformationCriterion(name="bic")` |
-| `max_fits` | `96` optimizer invocations, including required deployment reserve |
-| `max_mean_order` | `5`, configurable from 1 through 8 |
+`table()` has one row for each of the 37 models fitted. `selection.selected` is the selected model fitted to the full sample, an ordinary result with `summary()`, `forecast()` and the rest.
 
-Terminals rank first by free parameter count, then the chosen tie-break IC, default BIC. `prefer="information_criterion"` ranks on that IC alone. Independent fits use a thread pool with deterministic node ordering. `n_jobs=None` or `-1` selects up to four workers. `method="qmle"` raises for GETS because the required LR calibration is unavailable.
+`Search` has the defaults `mean=[None]` (zero mean), no volatility components, `density=[Normal()]`, `constant_variance=True` and `closure=True`. With `closure=False`, only the declared models are candidates. Every candidate scores the same observations, from the largest mean lag or `hold_back`, whichever is later, with the same starting variance, so that their likelihoods can be compared. For the same reason a constant-variance model and `GARCH(0, 0)` are different candidates: the first estimates one variance for every row, the second starts from the common starting variance.
 
-Adequacy combines residual Ljung-Box, estimation-corrected absolute Li-Mak and absolute sign/size-bias checks with Holm's rule. It does not use in-sample PIT tests to certify a root or child. [Diagnostics](diagnostics.md#absolute-residual-adequacy-checks) gives formulas and assumptions.
+## General-to-specific search
 
-## Automatic mean widening
+`GeneralToSpecific` starts from the largest models that pass the adequacy checks described below. At each model it tries every supported one-step restriction, such as dropping the last lag or setting a skewness parameter to zero, fits the restricted model, and accepts the restriction when a likelihood-ratio test does not reject it and the restricted model is still adequate. Each accepted path is also tested jointly against its starting model. Paths can branch, and the search stops at models that admit no further accepted restriction. Fits are shared between paths, and restricted models start from their parent's estimates.
 
-When every diagnostically evaluated root rejects and each has a Holm-rejected residual Ljung-Box test, GETS asks each widenable mean template for one more AR lag. ARX retains its intercept and regressors. ARMA retains its MA order. An adequate or unresolved root prevents widening. Uncertified roots supply no diagnostic evidence. Volatility or density rejection alone does not trigger it.
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `reduction_level` | `0.01` | Level of the restriction tests |
+| `encompassing_level` | `0.01` | Level of the joint test of each path against its starting model |
+| `diagnostic_level` | `0.01` | Level of the adequacy checks |
+| `prefer` | `"fewest_parameters"` | How to choose among final models; or `"information_criterion"` |
+| `tie_break` | `InformationCriterion("bic")` | Criterion that breaks ties in the parameter count |
+| `max_fits` | `96` | Budget of optimizer runs |
+| `max_mean_order` | `5` | Largest AR order that mean widening may reach, from 1 to 8 |
 
-Each wider root is refitted and counts against the fit budget. Its descendants share a new common comparison span; likelihoods across different spans are not compared. Widening stops at `max_mean_order`. `widenings` records order, triggering test, p-value, root evidence, counts and completion. Statuses can include `mean_order_cap_reached`, `mean_widening_unavailable` and `budget_exhausted`.
+A model is adequate when none of three checks rejects under Holm's correction ([Holm, 1979](references.md#holm-1979)) at `diagnostic_level`: the Ljung-Box test on the standardized residuals and the absolute-residual Li-Mak test, each at lags $\min(10, n/5)$ and $\min(20, n/5)$, and the absolute sign-bias test. These tests need only finite second moments of the innovations; [diagnostics](diagnostics.md#absolute-residual-tests) gives their formulas. When a check cannot be evaluated, the model's adequacy is unresolved and it cannot serve as a starting point.
 
-`Auto(max_mean_order=5).fit(y, x=None, **options)` constructs an ARX(1) mean with selectable intercept, crossed with GJR, EGARCH and APARCH(1,1) and SkewT, plus constant variance. It runs GETS with the chosen mean cap. Configure a different procedure through `Search`, rather than passing another `procedure` to `Auto.fit`.
+Independent fits run in parallel with `n_jobs` workers, by default up to four, and the result does not depend on the number of workers. The search requires maximum-likelihood fits, because the restriction tests use likelihood ratios, so `method="qmle"` raises.
+
+### Widening the mean
+
+If every starting model fails the adequacy checks, and each fails the residual Ljung-Box test, the remaining autocorrelation points to the mean. The search then adds one AR lag to each mean, keeping any intercept, regressors and MA terms, and starts again, up to `max_mean_order`. A starting model that is adequate, or whose adequacy is unresolved, prevents widening. Each wider model is fitted on a new common sample and counts against the budget. `selection.widenings` records each step and the test that triggered it.
+
+### Automatic selection
+
+`Auto(max_mean_order=5).fit(y, x=None)` runs the general-to-specific search over a fixed set of starting models: an ARX(1) mean, with regressors if you pass `x`, combined with GJR-GARCH(1,1), EGARCH(1,1) and APARCH(1,1), each with skewed-t innovations, plus a constant-variance model. To change the starting models or the procedure, use `Search` directly.
 
 ## Restriction tests
 
-For a parent likelihood $\ell_P$ and child likelihood $\ell_C$, the LR statistic is $2(\ell_P-\ell_C)$. Parent and child must be certified MLE fits on the same immutable comparison plan. A negative statistic requests parent refitting; it is not clamped to zero.
+The likelihood-ratio statistic for a parent model with log-likelihood $\ell_P$ and a restricted child with $\ell_C$ is $2(\ell_P-\ell_C)$, computed on the common sample. Both fits must have `success=True`. A negative statistic means that the parent's fit stopped short of its maximum, and scivol then refits the parent rather than setting the statistic to zero.
 
-| Native restriction | Calibration/limit |
+| Restriction | Reference distribution |
 | --- | --- |
-| Remove intercept, last AR/MA/exogenous coefficient, or one HAR window | Interior equality when identification holds |
-| GARCH last shock or variance lag | Closed nonnegative face |
-| GJR last shock pair | Two nonnegative sign-loadings, `alpha` and `alpha+gamma` |
-| GJR last variance lag | Nonnegative face |
-| All GJR gamma coefficients zero, child GARCH | Interior equality when both common sign-loadings are positive |
-| EGARCH last alpha/gamma pair or variance lag | Interior equality; no-shock variance-lag nuisance can be unidentified |
-| APARCH last shock/asymmetry pair | Listed, but asymmetry is unidentified under the null; no ordinary LR law |
-| APARCH last variance lag | Nonnegative face when identified |
-| SkewT `lam=0` | StudentT child, interior equality |
-| StudentT `eta=0` | Normal child, closed nonnegative face |
-| GED `nu=2` | Normal child, interior equality |
+| Drop the intercept, the last AR, MA or regressor coefficient, or one HAR window | chi-square |
+| GARCH: drop the last shock or variance lag | chi-bar-square (the coefficient is on its bound under the null) |
+| GJR-GARCH: drop the last shock lag | chi-bar-square, for the two sign responses `alpha` and `alpha + gamma` |
+| GJR-GARCH: drop the last variance lag | chi-bar-square |
+| GJR-GARCH to GARCH: all `gamma` zero | chi-square, when both sign responses are positive |
+| EGARCH: drop the last shock pair or variance lag | chi-square |
+| APARCH: drop the last shock pair | none: the asymmetry is not identified under the null |
+| APARCH: drop the last variance lag | chi-bar-square |
+| Skewed t to Student-t: `lam = 0` | chi-square |
+| Student-t to Normal: `eta = 0` | chi-bar-square |
+| GED to Normal: `nu = 2` | chi-square |
 
-Interior equalities use chi-square. Supported closed faces use chi-bar-square after profiling signed directions and nuisance. One through three boundary weights use closed forms. Larger blocks use deterministic orthant integration, factoring independent blocks. The requested absolute probability error is `1e-6`; a failed error bound or decision interval crossing the requested level yields `unresolved`. Enumeration is bounded to twelve boundary directions.
+When the null puts a parameter on the boundary of its domain, the statistic follows a chi-bar-square distribution, a mixture of chi-squares whose weights depend on the information matrix ([Self and Liang, 1987](references.md#self-liang-1987); [Andrews, 2001](references.md#andrews-2001)). scivol computes the weights in closed form for up to three boundary parameters and by numerical integration, to an absolute error of $10^{-6}$, for more. When other parameters also sit on their bounds, the distribution is no longer a chi-bar-square, and scivol simulates it with a fixed seed and reports the simulation error. A test whose p-value cannot be separated from the level within these errors is reported as unresolved.
 
-With retained boundary nuisance, the LR law is a difference of squared information-metric distances to parent and child tangent cones. It need not be a chi-bar mixture. Orthogonal blocks can reduce to simpler laws; other regular polyhedral cases use fixed-seed Gaussian projection simulation with explicit error intervals and draw budgets. The reported `cone_projection` error is a 99.99% Bernoulli Chernoff Monte Carlo interval radius at each prespecified look. The three looks have at least 99.97% simultaneous coverage by the union bound. These are numerical error statements, not finite-sample size guarantees for the LR test. See [Self and Liang (1987)](references.md#self-liang-1987) and [Andrews (2001)](references.md#andrews-2001).
+The search accepts only restrictions that have a reference distribution, which excludes restrictions at a kink, those whose information matrix is singular, and those that remove a parameter not identified under the null, such as the APARCH asymmetry. Each entry of `selection.tests` records the statistic, the distribution used, its weights or simulation error, the assumptions, the decision, and the reason for any failure.
 
-Singular information, nonminimal ARMA/GARCH representations, unidentified nuisance and kink fits cannot authorize an ordinary calibrated reduction. The implementation uses parent row-score information at the embedded child for retained-boundary calibration. Tests record the law, weights or projection method, error, assumptions and failure reason.
+## Information criteria
 
-## Information-criterion ranking
-
-An IC procedure requires an explicit adequacy choice.
+`InformationCriterion(name="bic", adequacy=...)` fits every declared model and ranks them by AIC, BIC or HQIC. You must choose whether the adequacy checks apply: `adequacy=True` ranks only the models that pass them, and `adequacy=False` ranks every model with `success=True`.
 
 ```python
-from scivol import Search, GARCH, Normal, StudentT, InformationCriterion
+from scivol import GARCH, GJRGARCH, Normal, StudentT, SkewT, InformationCriterion
 
-comparison = Search(
-    volatility=[GARCH()], density=[Normal(), StudentT()],
-    constant_variance=False, closure=False,
-)
-# ranked = comparison.fit(y, procedure=InformationCriterion("bic", adequacy=False))
+comparison = Search(volatility=[GARCH(), GJRGARCH()],
+                    density=[Normal(), StudentT(), SkewT()],
+                    constant_variance=False, closure=False)
+ranked = comparison.fit(y, procedure=InformationCriterion("bic", adequacy=False))
+print(ranked.table()[["model", "parameters", "log_likelihood", "bic"]].sort_values("bic").to_string(index=False))
 ```
 
-`adequacy=False` ranks certified fits without an adequacy claim. `adequacy=True` also requires the adequacy battery. Options are `name="aic" | "bic" | "hqic"`, `max_fits=96`, and `diagnostic_level=0.01`. For $k$ free parameters and $n$ scored rows,
+```text
+                  model  parameters  log_likelihood         bic
+       GARCH(1,1)+SkewT           5    -2805.828435 5649.661382
+   GJR-GARCH(1,1)+SkewT           6    -2802.295852 5650.197119
+GJR-GARCH(1,1)+StudentT           5    -2811.082195 5660.168902
+    GARCH(1,1)+StudentT           4    -2814.982518 5660.368645
+  GJR-GARCH(1,1)+Normal           4    -2832.625323 5695.654256
+      GARCH(1,1)+Normal           3    -2838.548752 5699.900211
+```
 
-$$AIC=-2\ell+2k,\qquad BIC=-2\ell+k\log n,\qquad HQIC=-2\ell+2k\log\log n.$$
+BIC narrowly prefers GARCH over the true GJR-GARCH model here, because the leverage effect in the simulation is small. With $k$ parameters and $n$ scored observations, the criteria are
 
-The underlying criteria are [Akaike (1974)](references.md#akaike-1974), [Schwarz (1978)](references.md#schwarz-1978) and [Hannan and Quinn (1979)](references.md#hannan-quinn-1979). Only likelihoods on a common comparison plan enter this ranking.
+$$\mathrm{AIC}=-2\ell+2k,\qquad \mathrm{BIC}=-2\ell+k\log n,\qquad \mathrm{HQIC}=-2\ell+2k\log\log n,$$
+
+from [Akaike (1974)](references.md#akaike-1974), [Schwarz (1978)](references.md#schwarz-1978) and [Hannan and Quinn (1979)](references.md#hannan-quinn-1979). The options `max_fits=96` and `diagnostic_level=0.01` work as for the general-to-specific search.
 
 ## Predictive confidence sets
 
-`ConfidenceSet` freezes the training procedure's terminal specifications, then compares chronological one-step holdout losses. The holdout must have at least 500 observations.
+`ConfidenceSet` compares models by their one-step-ahead forecasts on a holdout sample at the end of the data. A training procedure, by default a general-to-specific search, selects candidates on the data before the holdout; scivol then forecasts through the holdout, refitting every `refit_every` observations on all data up to that point, and computes the model confidence set of [Hansen, Lunde and Nason (2011)](references.md#hansen-lunde-nason-2011) from the forecast losses. The holdout must contain at least 500 observations.
 
 ```python
-from scivol import GARCH, Normal, StudentT, Search, InformationCriterion, ConfidenceSet
+from scivol import ConfidenceSet
 
-source = GARCH() + StudentT()
-y = source.simulate(2600, [0.1, 0.15, 0.7, 0.15], seed=62).data
-search = Search(volatility=[GARCH()], density=[Normal(), StudentT()],
-                constant_variance=False, closure=False)
-selected = search.fit(
-    y, procedure=ConfidenceSet(
-        reduction=InformationCriterion("bic", adequacy=False),
-        holdout=0.2, confidence=0.90, loss="log_score", refit_every=100,
-        bootstrap_draws=4999, seed=44,
-    ), n_jobs=1,
-)
-print(selected.summary())
+y = true_model.simulate(2500, [0.05, 0.03, 0.1, 0.88, 0.12, -0.15], seed=11).data
+procedure = ConfidenceSet(reduction=InformationCriterion("bic", adequacy=False),
+                          holdout=0.2, confidence=0.90, loss="log_score", seed=44)
+predictive = comparison.fit(y, procedure=procedure)
+print([str(c.specification) for c in predictive.confidence_set])
+print(predictive.summary())
 ```
 
-`loss="log_score"` uses negative predictive log density. `loss="qlike"` uses $\log h_t+e_t^2/h_t$. Expanding refits use observations available at each forecast origin; within each block, realized observations update the filter before subsequent one-step losses. The training variance seed stays fixed. A predictive refit must certify or the workflow reports `predictive_fit_failed`.
+```text
+['GARCH(1,1)+SkewT', 'GJR-GARCH(1,1)+SkewT', 'GJR-GARCH(1,1)+Normal', 'GARCH(1,1)+Normal']
+Selection: predictive_confidence_set; selected: GARCH(1,1)+Normal
+Search complete: True; terminals: 6; optimizer invocations: 151
+```
 
-The native [Hansen-Lunde-Nason (2011)](references.md#hansen-lunde-nason-2011) MCS uses the range statistic and a circular block bootstrap of jointly aligned loss rows. NumPy `Generator(PCG64(seed))` supplies uniforms. Resampling requires no additional fits. The block-length rule comes from `mcs_block_length`; sensitivity to that rule remains the caller's responsibility.
+With 500 forecasts, the bootstrap eliminates only the two Student-t models, and four models remain in the 90% set. scivol then deploys the smallest model in the set, breaking ties by training BIC, and refits it on the full sample. Here that is GARCH-Normal, the model with the fewest parameters that the holdout cannot reject. A longer holdout, or a different `loss`, would separate the models more sharply.
 
-The complete confidence set is returned. Deployment chooses its smallest model, breaking ties with training BIC, then refits on all data. That refit provides no new holdout performance estimate. Coverage concerns the best member of the frozen candidate set under MCS assumptions, not all possible models.
+`loss="log_score"` is the negative log predictive density, and `loss="qlike"` is $\log h_t+e_t^2/h_t$. Within a refit block, each new observation updates the variance recursion before the next forecast. The confidence set uses the range statistic and a circular block bootstrap of the aligned loss rows, with `bootstrap_draws=4999` resamples from NumPy's PCG64 generator seeded by `seed`. `selection.predictive` holds the losses, the bootstrap block length, the p-values and the included and eliminated models.
 
-## Result inspection
+## Reading the result
 
-`SelectionResult.selected` is an ordinary full-sample `EstimationResult` or `None`. `selected_model` is its specification. An identical comparison-plan fit can be reused; otherwise deployment uses an explicit full-sample fit. A failed deployment certificate reports `full_sample_refit_uncertified`.
+| Attribute | Contents |
+| --- | --- |
+| `status` | `selected`, `predictive_confidence_set`, `no_adequate_model`, `adequacy_unresolved`, `budget_exhausted`, ... |
+| `selected`, `selected_model` | The selected model fitted to the full sample, and its specification; `None` when nothing qualifies |
+| `terminals` | The models at which the search stopped |
+| `candidates`, `table()` | Every model fitted, with likelihood, criteria, `success`, adequacy and failure reason |
+| `tests` | Every restriction test, with its decision and reference distribution |
+| `paths` | The accepted restriction paths |
+| `confidence_set`, `predictive` | The model confidence set and its holdout results |
+| `widenings` | The mean-widening steps |
+| `search_complete`, `frontier` | Whether the budget sufficed, and the models left unexplored if it did not |
+| `fit_counts` | Optimizer runs, reused fits, warm starts, refits |
 
-`terminals`, `paths`, `tests`, `candidates`, `confidence_set`, `predictive`, `widenings`, `status`, `search_complete`, `frontier` and `fit_counts` retain the decisions and remaining work. `summary()` returns text. `table()` returns a pandas DataFrame when available, otherwise a list of records. When no eligible fit is found, `selected` remains `None` and status can be `no_adequate_model` or `adequacy_unresolved`.
-
-On budget exhaustion, `search_complete=False` identifies an unexplored frontier and the best eligible fit found so far can still be returned. Counts distinguish optimizer calls, unique fits, exact child reuse, warm starts, parent refits, widening and full-sample refits. A count of optimizer invocations is not a count of individual candidate-start runs.
+When the budget runs out, `search_complete` is `False`, `frontier` lists the models not yet explored, and the best eligible model found so far is still returned. `table()` returns a pandas DataFrame, or a list of dictionaries when pandas is not installed.
 
 ## Limitations
 
-The defaults and the adaptive procedure have not been calibrated. Missing graph edges include APARCH fixed-power/asymmetry, skew-Gaussian and finite GH restrictions. Cross-terminal union tests and equivalence deduplication beyond native specification identity are absent. ARMA order searches require a minimal nonsingular representation and are opt-in.
-
-The selection procedures do not cover DCC, structural breaks, long memory, infinite-variance models, GH closure limits, unidentified no-shock hypotheses, singular simultaneous reductions or post-selection confidence intervals. A budget limits parsimony claims to the explored graph. An unresolved edge is not an accepted restriction.
+The default levels, lag choices and budgets of these procedures have not yet been calibrated by simulation, so their error rates in finite samples are unknown. Some restrictions are missing from the search: fixing the APARCH power or removing its asymmetry, a skewed Normal, and the limits of the generalized hyperbolic family. ARMA order searches need a minimal, nonsingular representation and must be requested explicitly. The procedures do not cover DCC models, structural breaks, long memory or infinite-variance models, and they report no confidence intervals that account for the selection itself.

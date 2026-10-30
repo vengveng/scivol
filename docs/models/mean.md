@@ -1,51 +1,42 @@
 # Mean models and constant variance
 
-## Common observation equation
-
-For every univariate composition,
+Every univariate model in scivol has the same observation equation,
 
 $$
-y_t=m_t+e_t,\qquad e_t=\sqrt{h_t}z_t,\qquad E[z_t]=0,\quad E[z_t^2]=1.
+y_t=m_t+e_t,\qquad e_t=\sqrt{h_t}\,z_t,\qquad E[z_t]=0,\quad E[z_t^2]=1,
 $$
 
-Here $m_t$ is the conditional mean and $h_t$ the conditional residual variance. Innovations use the [selected density](densities.md). With no mean component, $m_t=0$. An intercept `const` is a conditional-mean intercept, not the unconditional mean.
+where $m_t$ is the conditional mean, $h_t$ the conditional variance of the residual $e_t$, and $z_t$ an innovation drawn from the [chosen density](densities.md). This page covers the mean components, which define $m_t$, and the constant-variance model, which applies when no volatility component is given. Without a mean component, $m_t=0$.
 
-The full parameter vector is `[mean | volatility | density shapes]`. Canonical native names use one-based lags, for example `ar[1]`. Default summaries display `phi[1]` for AR, `theta[1]` for MA, and `x[1]` for exogenous coefficients; parameter mappings and component dictionaries retain `ar`, `ma` and `exog`. HAR coefficients use window lengths, for example `har[22]`. Component `unpack()` dictionaries use list keys `ar`, `ma`, `har` and `exog`.
+The parameter vector is ordered `[mean | volatility | density shapes]`. Parameter names use one-based lags, such as `ar[1]`, and the summary report shows the conventional symbols instead: `phi[1]` for AR coefficients, `theta[1]` for MA coefficients and `x[1]` for regressor coefficients. Parameter mappings passed to `fix` or `simulate` accept the names `ar`, `ma` and `exog`.
 
 ## ARMA
 
-```python
-from scivol import ARMA, GARCH, StudentT
-spec = ARMA(1, 1, constant=True) + GARCH() + StudentT()
-```
-
-`ARMA(p, q, *, constant=True)` specifies
+`ARMA(p, q, constant=True)` specifies
 
 $$
 m_t=c+\sum_{i=1}^{p}\phi_i y_{t-i}+\sum_{j=1}^{q}\vartheta_j e_{t-j}.
 $$
 
-| Reported parameters, in order | Declared domain |
-| --- | --- |
-| `const` when included, `ar[1]` through `ar[p]`, `ma[1]` through `ma[q]` | Finite coefficients; stationary AR and invertible MA polynomials |
+Its parameters are `const`, then `ar[1]` through `ar[p]`, then `ma[1]` through `ma[q]`, and `constant=False` removes `const`. Both orders run from 0 to 8. The AR polynomial $1-\sum_i\phi_iL^i$ must be stationary and the MA polynomial $1+\sum_j\vartheta_jL^j$ invertible, which means that the roots of both lie outside the unit circle. The MA terms enter with a plus sign, which matters when you compare estimates with a library that uses the opposite convention.
 
-The AR polynomial is $1-\sum_i\phi_i L^i$ and the MA polynomial is $1+\sum_j\vartheta_jL^j$. Their roots must lie outside the unit circle. The plus sign on the MA contribution matters when transferring parameters from another implementation. Orders are integers from 0 through 8. `constant=False` removes the intercept parameter.
+```python
+from scivol import ARMA, GARCH, StudentT
 
-The required conditioning span is the largest observed-data lag, $p$. Pre-sample residuals are zero, including the missing MA lags. With no exogenous variables the stationary mean is $c/(1-\sum_i\phi_i)$; MA coefficients do not change it. Exact conditional-mean forecasts and their psi-weight variance propagation are supported at every horizon, subject to the residual variance forecasts existing.
+spec = ARMA(1, 1) + GARCH(1, 1) + StudentT()
+```
 
-The standard reference is [Box and Jenkins (1970)](../references.md#box-jenkins-1970). In z coordinates, stationary and invertible polynomials are parameterized by their partial autocorrelations ([Barndorff-Nielsen and Schou, 1973](../references.md#barndorff-nielsen-schou-1973)), which map the stationary region one-to-one onto a box.
+The first $p$ observations supply lags, and residuals before the sample are zero. With no regressors the unconditional mean is $c/(1-\sum_i\phi_i)$, which the MA coefficients do not affect. Mean forecasts are exact at every horizon. The model is the ARMA model of [Box and Jenkins (1970)](../references.md#box-jenkins-1970). In unconstrained coordinates, scivol represents the stationary and invertible polynomials by their partial autocorrelations, which map the stationary region one-to-one onto a box ([Barndorff-Nielsen and Schou, 1973](../references.md#barndorff-nielsen-schou-1973)).
 
 ## ARX
 
-`ARX(lags=0, *, constant=True)` specifies
+`ARX(lags=0, constant=True)` adds contemporaneous regressors $x_t$ to an autoregression of order $k$:
 
 $$
 m_t=c+\sum_{i=1}^{k}\phi_i y_{t-i}+x_t^{\mathsf T}\xi.
 $$
 
-`x_t` contains contemporaneous, user-supplied regressors. The parameter order is `const` when included, `ar[1]` through `ar[k]`, then `exog[1]` through the number of columns. The AR polynomial must be stationary. Intercept and exogenous coefficients are unrestricted finite values. `k` is from 0 through 8; `constant=False` removes `const`.
-
-The required mean conditioning is $k$. Future mean forecasts require a `(horizon, n_exog)` array of future regressors. scivol does not forecast those regressors. The unconditional mean is unavailable, reported as NaN, if exogenous means have not been specified, as is the case for this API.
+The parameters are `const`, `ar[1]` through `ar[k]`, then `exog[1]` up to the number of regressor columns, which scivol takes from the `x` you pass to `fit`. The AR polynomial must be stationary, and the intercept and regressor coefficients are unrestricted. Forecasting requires the future regressor values as a `(horizon, n_exog)` array, since scivol does not model the regressors. For the same reason the unconditional mean of an ARX model with regressors is reported as NaN.
 
 ```python
 import numpy as np
@@ -60,41 +51,41 @@ forecast = result.forecast(3, x=np.zeros((3, 2)))
 
 ## HARX
 
-`HARX(horizons, *, constant=True)` uses lag averages:
+`HARX(horizons, constant=True)` regresses on averages of past observations over several windows:
 
 $$
 \overline y_{t-1}^{(w)}=\frac1w\sum_{j=1}^{w}y_{t-j},\qquad
 m_t=c+\sum_{w\in\mathcal W}\phi_w\overline y_{t-1}^{(w)}+x_t^{\mathsf T}\xi.
 $$
 
-`horizons` is a nonempty, increasing sequence of unique positive integer windows, each at most 256. For `HARX([1, 5, 22])`, names are `const`, `har[1]`, `har[5]`, `har[22]`, then `exog[1]`, etc. Omitting the constant removes that parameter. Exogenous columns have the same input and forecast requirements as ARX.
+`horizons` is an increasing sequence of distinct window lengths between 1 and 256. `HARX([1, 5, 22])` has parameters `const`, `har[1]`, `har[5]` and `har[22]`, followed by `exog[1]` and so on when regressors are given. Regressors work as in ARX.
 
-The implied AR coefficient at lag $j$ is $\sum_{w\ge j}\phi_w/w$. The implied AR polynomial must be stationary. The mean's conditioning span is $\max\mathcal W$. The unconditional mean, when no regressors are present, is $c/(1-\sum_w\phi_w)$. Conditional means and psi-weight propagation are exact at every horizon given future regressors and the necessary residual variances.
-
-The lag averages follow the heterogeneous autoregressive (HAR) model of [Corsi (2009)](../references.md#corsi-2009). scivol applies them to whatever series you fit; it does not compute realized volatility from intraday data.
+The model is an autoregression of order $\max\mathcal W$ whose coefficient at lag $j$ is $\sum_{w\ge j}\phi_w/w$; this implied polynomial must be stationary. Without regressors the unconditional mean is $c/(1-\sum_w\phi_w)$, and mean forecasts are exact at every horizon. The window structure is the heterogeneous autoregressive (HAR) model of [Corsi (2009)](../references.md#corsi-2009). scivol applies it to whatever series you fit, so a realized-volatility HAR needs the realized measure as its input.
 
 ```python
 from scivol import HARX, GARCH
+
 spec = HARX([1, 5, 22]) + GARCH()
 ```
 
 ## Constant variance
 
-A specification with no volatility component estimates
+A specification without a volatility component has a constant conditional variance,
 
-$$h_t=\sigma^2,\qquad \sigma^2>0.$$
+$$h_t=\sigma^2,\qquad \sigma^2>0,$$
 
-The parameter `sigma2` follows the mean block and precedes the density shapes. This variance applies to every scored row, including the first. There is no public constant-variance component constructor; omit the volatility component:
+and its parameter `sigma2` follows the mean block and precedes any density shapes. There is no separate constant-variance component; you omit the volatility component instead:
 
 ```python
 from scivol import ARX, Normal
-spec = ARX(0) + Normal()  # const, sigma2
+
+spec = ARX(0) + Normal()  # parameters: const, sigma2
 ```
 
-Residual variance forecasts equal `sigma2` at every horizon. A zero-order dynamic model such as `GARCH(0, 0)` retains dynamic initialization and is a different finite-sample likelihood.
+Variance forecasts equal `sigma2` at every horizon. `GARCH(0, 0)` is a different model with the same parameter count, because it starts its recursion from the variance seed described below.
 
 ## Sample and initialization
 
-If $c_0$ is the mean conditioning span, the original first scored row is `max(hold_back, c_0)`, using zero-based indexing. Earlier rows provide mean lags. They do not advance the residual or volatility recursion. For an ordinary Python fit, rows before `max(hold_back-c_0, 0)` are removed before native preparation. Dynamic variance initialization is the mean square of the remaining native input span, including its conditioning rows. [Selection](../selection.md) instead gives all candidates a common comparison span and variance seed.
+The likelihood scores observations from row $\max(\text{hold\_back}, c_0)$ on, counting from zero, where $c_0$ is the number of lags the mean needs ($p$ for ARMA, $k$ for ARX, $\max\mathcal W$ for HARX). Earlier rows supply those lags and nothing else. Dynamic volatility models start their first scored variance at the mean of $y_t^2$ over the scored rows and the $c_0$ lag rows before them, and residuals before the sample are zero. The fitted paths in a result cover the scored rows.
 
-Dynamic models start the first scored variance at this seed. Pre-sample residuals are zero. Missing GARCH/GJR/APARCH variance lags contribute zero; EGARCH pre-sample log variances equal the log seed. Returned paths cover the scored rows.
+`hold_back` lets several models score the same rows, which their likelihoods need to be comparable. [Model selection](../selection.md) sets this up automatically for all candidates.

@@ -1,6 +1,6 @@
 # References
 
-This bibliography is shared by all pages. Entries are alphabetical by author. Journal volume, issue and pages refer to the original publication, not the date on which a publisher digitized it. DOI links identify the cited work. Books and reports give publisher, edition/report number and pagination where available. Bibliographic details were checked through web searches against publisher pages, author-hosted papers and institutional catalogues. These references identify model and method precedents; the equations and declared domains implemented by scivol are specified in the model pages and repository sources.
+The papers and books cited throughout these pages, in alphabetical order by author. Volume, issue and pages refer to the original publication, and DOI links identify the cited work.
 
 <a id="akaike-1974"></a>
 
