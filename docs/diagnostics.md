@@ -47,7 +47,7 @@ Berkowitz uses a conditional Gaussian AR(1) likelihood, conditioning both null a
 The squared Li-Mak calculation uses $v_t=z_t^2-1$ and moments $m_{tk}=v_tv_{t-k}$. It estimates the full influence covariance, including the estimator's scores and moment-score cross terms. For negative-log scores $\psi_t$, mean Hessian $A$, and moment derivative $D$,
 
 $$w_t=m_t-DA^{-1}\psi_t,\qquad
-Q=n\bar m^{\mathsf T}\widehat{\operatorname{Cov}}(w_t)^{-1}\bar m.$$
+Q=n\bar m^{\mathsf T}\widehat{\mathrm{Cov}}(w_t)^{-1}\bar m.$$
 
 The reference is chi-square with the number of lag moments when regularity holds. Mean, volatility and shape scores remain in the MLE correction. QMLE uses its Gaussian first-stage scores where the recursion is shape-independent. Active closed-face normal coordinates are held fixed. A scalar degrees-of-freedom subtraction is not a substitute for this correction.
 
@@ -57,7 +57,7 @@ Squared Li-Mak, squared sign/size bias and ARCH-LM need appropriate fourth-momen
 
 Selection uses `absolute_li_mak` and `absolute_sign_bias`, not squared tests, in its required adequacy battery. They are available through the native binding but are not extra keys returned by `result.diagnostic_tests()`.
 
-Write $\mu=E|z|$, $u_t=|z_t|-\mu$, $s=E[\operatorname{sign}(z)]$, $a_t=(\partial e_t/\partial\theta)/\sqrt{h_t}$, and $b_t=\partial\log h_t/\partial\theta$. Instruments $r_t$ are centered lagged absolute residuals or the centered sign/size vector
+Write $\mu=E|z|$, $u_t=|z_t|-\mu$, $s=E[\mathrm{sign}(z)]$, $a_t=(\partial e_t/\partial\theta)/\sqrt{h_t}$, and $b_t=\partial\log h_t/\partial\theta$. Instruments $r_t$ are centered lagged absolute residuals or the centered sign/size vector
 
 $$[I(z_{t-1}<0),\ z_{t-1}I(z_{t-1}<0),\ z_{t-1}I(z_{t-1}\ge0)].$$
 

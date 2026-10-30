@@ -50,7 +50,7 @@ Let $c=c_\nu$, $\lambda=\mathrm{lam}$,
 $$
 a=4\lambda c\frac{\nu-2}{\nu-1},\qquad
 b^2=1+3\lambda^2-a^2,\qquad
-v(z)=\frac{bz+a}{1+\lambda\operatorname{sign}(bz+a)}.
+v(z)=\frac{bz+a}{1+\lambda\mathrm{sign}(bz+a)}.
 $$
 
 For `eta>0`,
@@ -104,7 +104,7 @@ $$
 
 The implementation evaluates this expression with scaled Bessel functions and cancellation-free algebra. GH originates in [Barndorff-Nielsen (1977)](../references.md#barndorff-nielsen-1977).
 
-An equivalent standardized mixture, also specified in `gh.hpp`, is useful for identifying the parameterization. Let $U\sim\operatorname{GIG}(\lambda,\zeta,\zeta)$ with density proportional to $u^{\lambda-1}\exp[-\zeta(u+1/u)/2]$ and let $N\sim N(0,1)$ be independent. Write $m=E[U]$, $v=\operatorname{Var}(U)$ and $D=mq+\rho^2\zeta v$. Then
+An equivalent standardized mixture, also specified in `gh.hpp`, is useful for identifying the parameterization. Let $U\sim\mathrm{GIG}(\lambda,\zeta,\zeta)$ with density proportional to $u^{\lambda-1}\exp[-\zeta(u+1/u)/2]$ and let $N\sim N(0,1)$ be independent. Write $m=E[U]$, $v=\mathrm{Var}(U)$ and $D=mq+\rho^2\zeta v$. Then
 
 $$z=\rho\sqrt{\zeta/D}(U-m)+\sqrt{qU/D}\,N.$$
 
@@ -123,7 +123,7 @@ scivol uses the standardized normal-gamma mixture and the GH zero-concentration 
 $$
 \vartheta=\frac{\sqrt2\rho}{\sqrt{1-\rho^2}},\quad
 s=\sqrt{\lambda(1+\vartheta^2)},\quad
-U\sim\operatorname{Gamma}(\lambda,\text{rate}=1),\quad N\sim N(0,1),
+U\sim\mathrm{Gamma}(\lambda,\text{rate}=1),\quad N\sim N(0,1),
 $$
 
 independently. Then

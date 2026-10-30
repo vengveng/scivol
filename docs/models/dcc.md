@@ -41,7 +41,7 @@ Q_t=\left(1-\sum_{i=1}^{p}a_i-\sum_{j=1}^{q}b_j\right)\overline Q
 +\sum_{j=1}^{\min(q,t)}b_jQ_{t-j},
 $$
 
-$$R_t=\operatorname{diag}(Q_t)^{-1/2}Q_t\operatorname{diag}(Q_t)^{-1/2}.$$
+$$R_t=\mathrm{diag}(Q_t)^{-1/2}Q_t\mathrm{diag}(Q_t)^{-1/2}.$$
 
 Every supplied row is scored. The first row uses the target. For rows after the first, only available shock and Q lags enter the sums. Unavailable lags are omitted; the target coefficient remains $1-\sum a-\sum b$. An explicitly supplied `Qbar` remains fixed. An estimated target is formed from the scores, not automatically from the untransformed residuals. The DCC precedent is [Engle (2002)](../references.md#engle-2002).
 
@@ -96,7 +96,7 @@ Correlation inference treats marginal probabilities as given. It does not includ
 
 `CCC()` uses Gaussian copula scores and the target normalized to a correlation matrix:
 
-$$R_t=R=\operatorname{diag}(\overline Q)^{-1/2}\overline Q\operatorname{diag}(\overline Q)^{-1/2}.$$
+$$R_t=R=\mathrm{diag}(\overline Q)^{-1/2}\overline Q\mathrm{diag}(\overline Q)^{-1/2}.$$
 
 It estimates no dynamic correlation parameters. `CCCParams.corr` is the constant matrix, `theta` is empty, `nit=0`, and standard-error arrays for dynamic parameters are empty. An optional target can be supplied to `fit_from_residuals`; otherwise it is formed from the Gaussian scores. This is the implementation's targeted constant-correlation baseline. See [Bollerslev (1990)](../references.md#bollerslev-1990).
 

@@ -1,6 +1,6 @@
 # Volatility models
 
-Throughout, $e_t = y_t - m_t$ is the residual, $h_t = \operatorname{Var}(e_t \mid \mathcal F_{t-1})$ its conditional variance, and $z_t = e_t/\sqrt{h_t}$ the standardized innovation, with zero mean and unit variance. In every component, `p` is the number of shock lags and `q` the number of variance lags; both can be 0 to 8.
+Throughout, $e_t = y_t - m_t$ is the residual, $h_t = \mathrm{Var}(e_t \mid \mathcal F_{t-1})$ its conditional variance, and $z_t = e_t/\sqrt{h_t}$ the standardized innovation, with zero mean and unit variance. In every component, `p` is the number of shock lags and `q` the number of variance lags; both can be 0 to 8.
 
 Each component is constructed as `Family(p=1, q=1, stationarity="covariance")`. The `stationarity` declaration sets the parameter domain of the model (see [declaring stationarity](#declaring-stationarity)); it is part of the model, not an optimizer setting.
 

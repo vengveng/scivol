@@ -4,8 +4,8 @@
 
 Let $F=-\sum_t\ell_t$, $H=\partial^2F/\partial\theta\partial\theta^{\mathsf T}$ and $s_t=\partial(-\ell_t)/\partial\theta$. Define $B=\sum_ts_ts_t^{\mathsf T}$. At a regular interior MLE,
 
-$$\widehat{\operatorname{Cov}}_{\mathrm{MLE}}=H^{-1},\qquad
-\widehat{\operatorname{Cov}}_{\mathrm{sandwich}}=H^{-1}BH^{-1}.$$
+$$\widehat{\mathrm{Cov}}_{\mathrm{MLE}}=H^{-1},\qquad
+\widehat{\mathrm{Cov}}_{\mathrm{sandwich}}=H^{-1}BH^{-1}.$$
 
 These matrices use full sums, so no additional sample-size division is needed.
 

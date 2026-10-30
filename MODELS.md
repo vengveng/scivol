@@ -331,7 +331,7 @@ fitted in-sample PITs have no calibrated reference: they are part of each
 estimation result's diagnostics, not of the adequacy battery.
 
 For the absolute tests, let $\mu=E|z|$, $u_t=|z_t|-\mu$,
-$s=E[\operatorname{sign}(z)]$, $a_t=(\partial e_t/\partial\theta)/\sqrt{h_t}$
+$s=E[\mathrm{sign}(z)]$, $a_t=(\partial e_t/\partial\theta)/\sqrt{h_t}$
 and $b_t=\partial\log h_t/\partial\theta$. The predictable instruments $r_t$
 are the centered lagged absolute residuals, or the centered Engle-Ng vector
 $(I(z_{t-1}<0),z_{t-1}I(z_{t-1}<0),z_{t-1}I(z_{t-1}\ge0))$. Under the iid null,
@@ -356,7 +356,7 @@ The covariance retains the moment-score cross terms rather than treating fitted
 residuals as observed innovations.
 
 Only $E z^2=1$ is needed for these innovation moments: $\mu\le1$,
-$\operatorname{Var}|z|=1-\mu^2$, $|\operatorname{sign}(z)|\le1$, and every
+$\mathrm{Var}|z|=1-\mu^2$, $|\mathrm{sign}(z)|\le1$, and every
 sign/size instrument has finite second moment. Independence gives
 $E[(u_t u_{t-k})^2]=(1-\mu^2)^2$, and $E[u_t^2r_t r_t^{\mathsf T}]
 =(1-\mu^2)E[r_t r_t^{\mathsf T}]$. The sample covariance therefore estimates
@@ -391,7 +391,7 @@ variance-lag parameters are unidentified under no ARCH.
 `Model.at_open_bound(theta)` identifies floating-point endpoints of open
 scalar and order-one stability bounds. Ordinary estimated-residual diagnostic
 laws return `at_boundary` there. For example, APARCH at
-$\gamma=\operatorname{nextafter}(1,0)$ approaches the excluded leverage endpoint.
+$\gamma=\mathrm{nextafter}(1,0)$ approaches the excluded leverage endpoint.
 For powers below one, derivatives of $(1-\gamma)^\delta$ diverge there; an
 indefinite observed Hessian is not evidence of weak identification of $\delta$.
 A generalized inverse cannot give this excluded endpoint an interior MLE law.

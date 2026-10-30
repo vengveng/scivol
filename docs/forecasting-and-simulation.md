@@ -19,13 +19,13 @@ print(forecast.quantile([0.01, 0.05, 0.5]))
 | --- | --- |
 | `mean` | $E_T[y_{T+h}]$ |
 | `residual_variance`, alias `sigma2` | $E_T[h_{T+h}]$ |
-| `variance` | $\operatorname{Var}_T(y_{T+h})$ |
+| `variance` | $\mathrm{Var}_T(y_{T+h})$ |
 | `volatility` | Square root of `variance` |
 | `residual_volatility` | Square root of `residual_variance` |
 
 For ARMA and HAR implied AR dynamics, let $\psi_0=1,\psi_1,\ldots$ be the innovation-response coefficients. Observation forecast error variance propagates residual variances as
 
-$$\operatorname{Var}_T(y_{T+h})=\sum_{j=0}^{h-1}\psi_j^2E_T[h_{T+h-j}].$$
+$$\mathrm{Var}_T(y_{T+h})=\sum_{j=0}^{h-1}\psi_j^2E_T[h_{T+h-j}].$$
 
 The psi calculation is exact. If residual variances are simulated, the propagated variance inherits that simulation approximation.
 
