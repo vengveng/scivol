@@ -37,6 +37,7 @@ classifiers = [
 Homepage = "https://github.com/vengveng/scivol"
 Repository = "https://github.com/vengveng/scivol"
 Issues = "https://github.com/vengveng/scivol/issues"
+Documentation = "https://github.com/vengveng/scivol/tree/main/docs"
 
 [project.optional-dependencies]
 dev = ["jax", "scipy", "pytest", "mpmath", "statsmodels"]
