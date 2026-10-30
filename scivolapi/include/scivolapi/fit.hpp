@@ -34,8 +34,32 @@ struct FitOptions {
     Estimator estimator = Estimator::mle;
     Coordinates coordinates = Coordinates::automatic;
     double accuracy = 1e-10;        // solver stopping accuracy
-    int maximum_iterations = 1000;  // total budget across phases
-    std::vector<double> start;      // optional theta; empty = the model's start
+    int maximum_iterations = 1000;  // budget across the phases of each start
+    // Starting points (theta, in the data's units). Explicit points are each run
+    // in full: `start` alone (a warm start), or every point in `starts`. Without
+    // them the model's candidate starts are used (the model's start first, then
+    // structurally different regions where separate maxima occur): with
+    // start_count = 0 (automatic) the first runs in full and every other one is
+    // probed for `probe_iterations` iterations, then finished only if the probe
+    // already reached a higher likelihood than the best finished start (each
+    // finished start then ends at least as high); start_count = n runs the
+    // first n candidates in full.
+    std::vector<double> start;
+    std::vector<std::vector<double>> starts;
+    int start_count = 0;
+};
+
+// The race probe's length (FitOptions::start_count = 0).
+inline constexpr int probe_iterations = 5;
+
+// One starting point of a fit and what became of it.
+struct FitStart {
+    std::vector<double> theta;  // in the data's units
+    bool candidate = true;      // a model candidate start (false: an explicit one)
+    bool finished = false;      // run in full (false: probed, then not pursued)
+    double log_likelihood = std::numeric_limits<double>::quiet_NaN();  // at the probe's or the run's end
+    bool success = false;       // the finished run certified its estimate
+    bool selected = false;      // the reported estimate
 };
 
 // open_bound: the iterates ran toward a bound the domain excludes, the local
@@ -100,7 +124,8 @@ struct FitResult {
     Inference inference = Inference::not_stationary;
     bool success = false;  // finite, feasible, solver converged, and stationary
 
-    std::vector<FitPhase> phases;
+    std::vector<FitPhase> phases;  // every start's, those after the first labelled "start k: "
+    std::vector<FitStart> starts;
     std::vector<std::string> warnings;
 };
 

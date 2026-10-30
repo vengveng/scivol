@@ -651,6 +651,8 @@ class DCCResult(_CorrelationResultMixin):
     kkt_residual: float = float("nan")
     warnings: tuple[str, ...] = ()
     phases: tuple[str, ...] = ()
+    path: tuple[str, ...] = ()     # the phases of the start that produced the estimate
+    starts: tuple[dict, ...] = ()  # each starting point: theta, candidate, finished, log_likelihood, success, selected
     univariate_results: Optional[List["EstimationResult"]] = None
     _eps: Optional[NDArray[np.float64]] = field(default=None, repr=False)
     _marginals: Optional[List[api.InnovationDensity]] = field(default=None, repr=False)
@@ -863,8 +865,10 @@ class DCC:
         maxiter: Optional[int] = None,
         accuracy: float = 1e-10,
         marginals: Optional[Sequence[api.InnovationDensity]] = None,
+        starts: Any = "auto",
     ) -> DCCResult:
-        """Fit a copula on residuals, targeting its scores; omitted marginals are Normal."""
+        """Fit a copula on residuals, targeting its scores; omitted marginals are Normal.
+        `starts` is as for univariate fits; theta0 and initial_result are a single explicit start."""
         eps = _residual_input(eps)
         if theta0 is not None and initial_result is not None:
             raise ValueError("Pass either theta0 or initial_result, not both.")
@@ -881,6 +885,8 @@ class DCC:
         options.accuracy = float(accuracy)
         if theta0 is not None:
             options.start = [float(v) for v in np.asarray(theta0, dtype=np.float64).ravel()]
+        from ._fit import selected_path, set_starts
+        set_starts(options, starts, model, explicit=theta0 is not None)
         target = None if Qbar is None else np.ascontiguousarray(Qbar, dtype=np.float64)
         started = time.perf_counter()
         r = api.fit_correlation(model, eps, options, target, list(marginals or []))
@@ -914,6 +920,10 @@ class DCC:
             kkt_residual=float(r.kkt_residual),
             warnings=tuple(r.warnings),
             phases=tuple(phase.name for phase in r.phases),
+            path=tuple(selected_path(r)),
+            starts=tuple(dict(theta=np.array(s.theta), candidate=s.candidate, finished=s.finished,
+                              log_likelihood=s.log_likelihood, success=s.success, selected=s.selected)
+                         for s in r.starts),
             _eps=eps,
             _marginals=list(marginals or []),
         )

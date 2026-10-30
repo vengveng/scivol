@@ -50,6 +50,10 @@ public:
     void constraints(std::span<const double> theta, std::span<double> values,
                      std::span<double> jacobian) const;
     [[nodiscard]] std::vector<double> start() const;
+    // Candidate starts for a multi-start fit: start() (a + b = 0.95), then the
+    // less persistent region (a + b = 0.82), where the Gaussian copula's
+    // likelihood has a second maximum on stock panels.
+    [[nodiscard]] std::vector<std::vector<double>> starts() const;
     void to_theta(std::span<const double> z, std::span<double> theta) const;
     [[nodiscard]] bool to_z(std::span<const double> theta, std::span<double> z) const;
 

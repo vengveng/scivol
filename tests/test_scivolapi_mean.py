@@ -533,7 +533,7 @@ def test_har_fits_hold_the_stationarity_boundary_on_explosive_data():
     for coordinates in ("theta", "automatic"):  # automatic is the theta path for HAR means
         result = (HARX([1, 5, 22]) + GARCH(1, 1) + Normal()).fit(y, x=x, coordinates=coordinates)
         # At the sharp unit-root face the trust region may hand over to SLSQP.
-        phases = result.fit_info.optimizer_phases
+        phases = result.fit_info.solver.split("+")
         assert phases[0] == "theta:trust" and phases[-1] == "theta:newton" and result.success
         assert result._native()[0].feasible(np.asarray(result.params))
         assert sum(result.params[1:4]) == pytest.approx(1.0, abs=1e-6)  # at the unit-root boundary

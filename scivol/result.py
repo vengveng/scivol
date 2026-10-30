@@ -202,6 +202,7 @@ class FitMetadata:
     kink_point: bool = False
     active_kink_rows: tuple[int, ...] = ()
     excluded_boundary: tuple[str, ...] = ()
+    starts: tuple[dict, ...] = ()   # each starting point: theta, candidate, finished, log_likelihood, success, selected
     kkt_residual: Optional[float] = None
     kkt_tolerance: Optional[float] = None
     function_evaluations: Optional[int] = None

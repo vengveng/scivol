@@ -197,6 +197,10 @@ public:
     [[nodiscard]] std::vector<double> closed_face_normals(std::span<const double> theta) const;
 
     [[nodiscard]] std::vector<double> start(const Sample& sample) const;
+    // Candidate starts for a multi-start fit: start(sample) first, then
+    // structurally different regions where separate maxima occur (a
+    // near-integrated variance recursion). All lie inside the domain.
+    [[nodiscard]] std::vector<std::vector<double>> starts(const Sample& sample) const;
 
     // Exact data scaling: theta for data y maps to `scaled` for data y * factor
     // (exogenous regressors unchanged), with the same likelihood up to the change

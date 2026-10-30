@@ -487,6 +487,16 @@ std::vector<double> CorrelationModel::start() const
     return theta;
 }
 
+std::vector<std::vector<double>> CorrelationModel::starts() const
+{
+    std::vector<std::vector<double>> out{start()};
+    std::vector<double> theta = out.front();
+    for (std::size_t i = 0; i < spec_.p; ++i) theta[i] = 0.02 / static_cast<double>(spec_.p);
+    for (std::size_t j = 0; j < spec_.q; ++j) theta[spec_.p + j] = 0.80 / static_cast<double>(spec_.q);
+    if (feasible(theta)) out.push_back(std::move(theta));
+    return out;
+}
+
 void CorrelationModel::to_theta(std::span<const double> z, std::span<double> theta) const
 {
     require(z.size() == dimension() && theta.size() == dimension(), "coordinate vectors have the wrong length");

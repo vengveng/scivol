@@ -41,9 +41,20 @@ result.summary()
 ```
 
 `fit` accepts `method="mle"` or `"qmle"`, `coordinates="automatic"`, `"z"` or
-`"theta"`, `maxiter`, `accuracy` and `initial_params`. Data options are `x`,
-`hold_back` and `scale`. Unknown options raise. A warm start is a parameter array
-or a previous result for the same specification.
+`"theta"`, `maxiter`, `accuracy`, `initial_params` and `starts`. Data options are
+`x`, `hold_back` and `scale`. Unknown options raise. A warm start is a parameter
+array or a previous result for the same specification.
+
+Volatility likelihoods can have several local maxima: daily returns often have
+one at moderate persistence and a higher one near integration. Each model offers
+candidate starts in structurally different regions. With the default
+`starts="auto"`, the first runs in full and each other is probed for a few
+iterations, then finished only if the probe has already climbed above the best
+finished start. `starts=n` runs the first `n` candidates in full (`starts=1` is a
+single start); a list of parameter vectors runs each of them in full. Every start
+and its outcome is recorded in `fit_info.starts`, and `fit_info.solver` is the path
+of the start that produced the estimate. DCC's `fit_from_residuals` takes the same
+`starts`.
 
 QMLE estimates mean and volatility with a Gaussian quasi-likelihood and sandwich
 covariance. A shaped density adds a staged shape fit and two-step sandwich

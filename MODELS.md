@@ -138,6 +138,20 @@ finalizer, including the child's original-domain KKT check. Otherwise a new
 fit is needed. Fit bindings release the GIL; separate Model/Jet instances and
 their workspaces can be used by independent Python threads.
 
+## Starting points
+
+`Model.starts(sample)` lists candidate starts: the model start (persistence 0.9,
+a fifth of it on the shock terms), then, for recursions with both shock and
+variance lags, persistence 0.98 and 0.995 carried by beta (EGARCH: beta 0.98 and
+0.995). DCC's candidates are `(a, b) = (0.05, 0.9)` and `(0.02, 0.8)`. With `starts="auto"`, every candidate after the first is probed
+for 5 iterations on the fit's coordinate path and finished only if the probe's
+log-likelihood already exceeds the best finished start's; since the optimizer
+never lowers the likelihood, a finished start ends at least that high. The
+reported estimate is the best finished start: a certified one over an
+uncertified one, then the higher log-likelihood. Each start has the full
+iteration budget. Explicit starts (`initial_params`, a list in `starts`) are each
+run in full, without candidates.
+
 ## Inference
 
 - MLE: inverse observed information; the sandwich `H^-1 OPG H^-1` is reported

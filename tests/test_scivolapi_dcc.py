@@ -199,7 +199,7 @@ def test_fit_recovers_the_simulation_and_is_certified():
 
     eps = simulate(2000, 5)
     native = DCC(1, 1).fit_from_residuals(eps)
-    assert native.success and native.inference == "available" and native.phases == ("z:trust", "theta:newton")
+    assert native.success and native.inference == "available" and native.path == ("z:trust", "theta:newton")
     for estimate, se, truth in zip(native.theta, native.std_errors, (0.04, 0.93)):
         assert abs(estimate - truth) < 4.0 * se
     jet = api.CorrelationJet(native._correlation()[0], eps)
@@ -315,7 +315,8 @@ def test_gaussian_copula_tail_optimum_is_eta_zero(coordinates):
     normal = api.fit_correlation(correlation_model(), eps, options)
     assert student.success and normal.success
     assert student.theta[-1] == 0.0
-    assert student.phases[-1].name == "theta:newton"
+    from scivol._fit import selected_path
+    assert selected_path(student)[-1] == "theta:newton"
     assert student.log_likelihood == pytest.approx(normal.log_likelihood, rel=0.0, abs=2e-10)
     assert model.innovation_density(np.asarray(student.theta)).derived == {"nu": np.inf}
 

@@ -165,6 +165,40 @@ def prepare_sample(spec: Any, data: Any, x: Any = None, hold_back: int = 0,
     )
 
 
+def selected_path(native_result: api.FitResult) -> list[str]:
+    """The phases of the start that produced the estimate (fit_info.solver); every
+    start's phases, labelled "start k: ", stay in optimizer_phases."""
+    chosen = next((k for k, s in enumerate(native_result.starts) if s.selected), 0)
+    label = f"start {chosen + 1}: "
+    names = [phase.name for phase in native_result.phases]
+    if chosen == 0:
+        return [n for n in names if not n.startswith("start ")]
+    return [n[len(label):] for n in names if n.startswith(label)]
+
+
+def set_starts(options: api.FitOptions, starts: Any, model: Any, explicit: bool = False) -> None:
+    """Apply a `starts` choice to native fit options (see fit_spec)."""
+    if isinstance(starts, str):
+        if starts != "auto":
+            raise ValueError("starts must be 'auto', a positive number of starts, or a list of parameter vectors")
+        return
+    if explicit:
+        raise ValueError("initial_params is a single explicit start; pass starts='auto' with it, or use starts alone")
+    if isinstance(starts, (int, np.integer)) and not isinstance(starts, bool):
+        if starts < 1:
+            raise ValueError("the number of starts must be at least 1")
+        options.start_count = int(starts)
+        return
+    points = [np.asarray(getattr(s, "params", s), dtype=np.float64).ravel() for s in starts]
+    if not points:
+        raise ValueError("starts needs at least one parameter vector")
+    for p in points:
+        if p.size != model.dimension:
+            raise ValueError(f"each start needs {model.dimension} values ({', '.join(model.parameter_names)}), "
+                             f"received {p.size}.")
+    options.starts = [[float(v) for v in p] for p in points]
+
+
 def fit_spec(
     spec: Any,
     data: NDArray[np.float64],
@@ -177,6 +211,7 @@ def fit_spec(
     maxiter: int = 1000,
     accuracy: float = 1e-10,
     initial_params: Optional[NDArray[np.float64]] = None,
+    starts: Any = "auto",
     index: Any = None,
     name: Optional[str] = None,
     **unknown: Any,
@@ -189,10 +224,16 @@ def fit_spec(
     Paths and the index cover the scored rows. `method="qmle"` fits the mean and variance
     parameters by Gaussian quasi-maximum likelihood with sandwich covariance;
     with a non-Normal density the shape parameters follow in a second stage.
+
+    `starts` chooses the starting points: "auto" (the model's candidate starts,
+    each beyond the first probed briefly and finished only if the probe already
+    beats the best finished start), a number n (the first n candidates, each in
+    full; 1 is a single start), or explicit parameter vectors (each in full).
+    `initial_params` is a single explicit start.
     """
     if unknown:
         raise TypeError(f"fit() got unexpected keyword argument(s) {', '.join(map(repr, unknown))}; its estimation "
-                        "options are method, coordinates, maxiter, accuracy and initial_params")
+                        "options are method, coordinates, maxiter, accuracy, initial_params and starts")
     sample = prepare_sample(spec, data, x, hold_back, scale)
     native, y, x_arr, skip, held = sample.native, sample.y, sample.x, sample.skip, sample.hold_back
     original_n_obs, scale_factor = sample.original_n_obs, sample.scale
@@ -217,6 +258,7 @@ def fit_spec(
             raise ValueError(f"initial_params needs {model.dimension} values ({', '.join(model.parameter_names)}), "
                              f"received {start.size}.")
         options.start = [float(v) for v in start]
+    set_starts(options, starts, model, explicit=initial_params is not None)
 
     started = time.perf_counter()
     native_result = api.fit(model, y, options, x_arr)
@@ -266,8 +308,8 @@ def present_fit(spec, sample: PreparedSample, native_result: api.FitResult, *,
         njev=sum(phase.gradient_requests for phase in phases),
     )
     fit_info = FitMetadata(
-        solver="+".join(phase.name for phase in phases),
-        optimization_space="+".join(phase.name.split(":")[0] for phase in phases),
+        solver="+".join(selected_path(native_result)),
+        optimization_space="+".join(name.removeprefix("probe ").split(":")[0] for name in selected_path(native_result)),
         optimizer_phases=tuple(phase.name for phase in phases),
         optimizer_terminated=native_result.termination == api.Termination.converged,
         stationarity_status="stationary" if native_result.stationary else "not_stationary",
@@ -275,6 +317,9 @@ def present_fit(spec, sample: PreparedSample, native_result: api.FitResult, *,
         kink_point=bool(native_result.kink_point),
         active_kink_rows=tuple(skip+row for row in native_result.active_kink_rows),
         excluded_boundary=tuple(native_result.excluded_boundary),
+        starts=tuple(dict(theta=np.array(s.theta), candidate=s.candidate, finished=s.finished,
+                          log_likelihood=s.log_likelihood, success=s.success, selected=s.selected)
+                     for s in native_result.starts),
         kkt_residual=float(native_result.kkt_residual),
         kkt_tolerance=float(native_result.kkt_tolerance),
         function_evaluations=optimization.nfev,

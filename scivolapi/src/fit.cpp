@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -160,6 +161,101 @@ void solve(const ModelT& model, JetT& unit_jet, std::span<const double> start, s
 
 }
 
+// What one start produced: its finalized result and the objective F/n_scored
+// of its estimate on the problem the optimizer solved.
+struct StartRun {
+    FitResult result;
+    double value = std::numeric_limits<double>::infinity();
+};
+
+// A certified estimate beats an uncertified one; then the higher likelihood.
+bool better(const FitResult& a, const FitResult& b)
+{
+    if (a.estimate_available != b.estimate_available) return a.estimate_available;
+    if (a.success != b.success) return a.success;
+    return a.log_likelihood > b.log_likelihood;
+}
+
+// The multi-start policy of FitOptions. `run(start)` runs one start in full and
+// finalizes it; `probe(start, phases, best)` runs probe_iterations and returns
+// its best feasible candidate; `report(start)` gives a start in the data's
+// units and `log_likelihood(value)` the data's log-likelihood at an objective
+// value. The race keeps no start that a probe has not already lifted above the
+// best finished one, so a pursued start ends at least as high as that one.
+template<class Run, class Probe, class Report, class LogLikelihood>
+FitResult multistart(const std::vector<std::vector<double>>& starts, bool candidates, bool race, Run run,
+                     Probe probe, Report report, LogLikelihood log_likelihood)
+{
+    const auto entry = [&](const std::vector<double>& start) {
+        FitStart s;
+        s.theta = report(start);
+        s.candidate = candidates;
+        return s;
+    };
+    StartRun best = run(starts.front());
+    std::vector<FitPhase> phases = best.result.phases;
+    std::vector<FitStart> record{entry(starts.front())};
+    record.front().finished = true;
+    record.front().log_likelihood = best.result.log_likelihood;
+    record.front().success = best.result.success;
+    std::size_t chosen = 0;
+    for (std::size_t k = 1; k < starts.size(); ++k) {
+        const std::string label = "start " + std::to_string(k + 1) + ": ";
+        FitStart s = entry(starts[k]);
+        std::vector<double> from = starts[k];
+        if (race) {
+            std::vector<FitPhase> probed;
+            Candidate reached;
+            const bool ok = probe(starts[k], probed, reached);
+            for (FitPhase& phase : probed) {
+                phase.name = label + "probe " + phase.name;
+                phases.push_back(std::move(phase));
+            }
+            if (ok) s.log_likelihood = log_likelihood(reached.value);
+            if (!ok || !(reached.value < best.value)) {
+                record.push_back(std::move(s));
+                continue;
+            }
+            from = reached.theta;
+        }
+        StartRun next = run(from);
+        for (FitPhase phase : next.result.phases) {
+            phase.name = label + phase.name;
+            phases.push_back(std::move(phase));
+        }
+        s.finished = true;
+        s.log_likelihood = next.result.log_likelihood;
+        s.success = next.result.success;
+        record.push_back(std::move(s));
+        if (better(next.result, best.result)) {
+            best = std::move(next);
+            chosen = k;
+        }
+    }
+    record[chosen].selected = true;
+    best.result.phases = std::move(phases);
+    best.result.starts = std::move(record);
+    return best.result;
+}
+
+// The starting points of a fit (see FitOptions): explicit points, validated in
+// the data's units and mapped by `inward`, or the model's candidates.
+template<class ModelT, class Inward>
+std::vector<std::vector<double>> explicit_starts(const ModelT& model, const FitOptions& options, Inward inward)
+{
+    std::vector<std::vector<double>> out;
+    const auto take = [&](const std::vector<double>& theta) {
+        if (theta.size() != model.dimension() || !model.feasible(theta))
+            throw std::invalid_argument("each starting point must have the model's dimension and lie in its domain");
+        out.push_back(inward(theta));
+    };
+    if (!options.start.empty() && !options.starts.empty())
+        throw std::invalid_argument("give a single start or a list of starts, not both");
+    if (!options.start.empty()) take(options.start);
+    for (const auto& theta : options.starts) take(theta);
+    return out;
+}
+
 FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const double> x,
                   const FitOptions& options, const ComparisonPlan* plan = nullptr)
 {
@@ -178,49 +274,78 @@ FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const
     Jet data_jet(model, data_sample);
 
     const std::vector<double> inside = model.start(unit_sample);
-    std::vector<double> start = inside;
-    if (!options.start.empty()) {
-        if (options.start.size() != model.dimension() || !model.feasible(options.start))
-            throw std::invalid_argument("the starting point must have the model's dimension and lie in its domain");
-        model.rescale(options.start, 1.0 / scale, start);
+    if (options.start_count < 0) throw std::invalid_argument("start_count must be 0 (automatic) or positive");
+    std::vector<std::vector<double>> starts = explicit_starts(model, options, [&](const std::vector<double>& theta) {
+        std::vector<double> unit(theta.size());
+        model.rescale(theta, 1.0 / scale, unit);
+        return unit;
+    });
+    const bool candidates = starts.empty();
+    if (candidates) {
+        starts = model.starts(unit_sample);
+        if (options.start_count > 0 && starts.size() > static_cast<std::size_t>(options.start_count))
+            starts.resize(static_cast<std::size_t>(options.start_count));
     }
 
-    std::vector<FitPhase> phases;
-    std::vector<Candidate> candidates;
-    solve(model, unit_jet, start, inside, options, phases, candidates);
-    keep_feasible(model, candidates);
-
-    FitResult result = candidates.empty()
-        ? failure(model, data_sample, scale, phases, "no phase produced a finite, feasible estimate")
-        : detail::finalize(model, unit_jet, data_jet, scale, select(candidates), phases, options.accuracy);
-
-    // Leave a poor warm-start basin or saturated z chart by restarting the
-    // original theta problem from the model start: an uncertified estimate,
-    // or one at an excluded open bound. Explicit theta/z paths never enter
-    // this policy; all phases share the original iteration budget.
+    // One start in full: the coordinate path, then, on the automatic path, a
+    // restart of the original theta problem from the model start where the
+    // estimate is uncertified or at an excluded open bound (leaving a poor
+    // basin or a saturated z chart). Explicit theta/z paths never enter that
+    // policy; its phases share the start's iteration budget.
     const std::vector<std::string> conditions = model.constraint_names();
-    const bool at_open_bound = std::any_of(result.excluded_boundary.begin(), result.excluded_boundary.end(),
-        [&](const std::string& c) { return std::find(conditions.begin(), conditions.end(), c) == conditions.end(); });
-    if (options.coordinates == Coordinates::automatic && model.capabilities().chart_covers_domain
-        && (!result.success || at_open_bound) && iterations(phases) < options.maximum_iterations) {
-        const auto problem = make_problem(model, unit_jet, false);
-        const auto same = [](const std::vector<double>& t) { return t; };
-        const int remaining = options.maximum_iterations-iterations(phases);
-        const int reserve = std::min(100, std::max(1, remaining/4));
-        const auto retry = run_phase("theta:slsqp:restart", problem, Solver::slsqp, inside,
-                                     std::max(1, remaining-reserve), options.accuracy, phases);
-        offer(retry, model.dimension(), phases.size()-1, same, candidates);
-        if (iterations(phases) < options.maximum_iterations) {
-            const auto refine = run_phase("theta:newton:restart", problem, Solver::newton, solved(retry, inside),
-                std::min(reserve, options.maximum_iterations-iterations(phases)), options.accuracy, phases);
-            offer(refine, model.dimension(), phases.size()-1, same, candidates, true);
-        }
+    const auto run = [&](const std::vector<double>& start) {
+        std::vector<FitPhase> phases;
+        std::vector<Candidate> candidates;
+        solve(model, unit_jet, start, inside, options, phases, candidates);
         keep_feasible(model, candidates);
-        if (!candidates.empty())
-            result = detail::finalize(model, unit_jet, data_jet, scale, select(candidates),
-                                      std::move(phases), options.accuracy);
-    }
-    return result;
+        if (candidates.empty())
+            return StartRun{failure(model, data_sample, scale, phases, "no phase produced a finite, feasible estimate")};
+        Candidate selected = select(candidates);
+        StartRun out{detail::finalize(model, unit_jet, data_jet, scale, selected, phases, options.accuracy), selected.value};
+        const bool at_open_bound = std::any_of(out.result.excluded_boundary.begin(), out.result.excluded_boundary.end(),
+            [&](const std::string& c) { return std::find(conditions.begin(), conditions.end(), c) == conditions.end(); });
+        if (options.coordinates == Coordinates::automatic && model.capabilities().chart_covers_domain
+            && (!out.result.success || at_open_bound) && iterations(phases) < options.maximum_iterations) {
+            const auto problem = make_problem(model, unit_jet, false);
+            const auto same = [](const std::vector<double>& t) { return t; };
+            const int remaining = options.maximum_iterations-iterations(phases);
+            const int reserve = std::min(100, std::max(1, remaining/4));
+            const auto retry = run_phase("theta:slsqp:restart", problem, Solver::slsqp, inside,
+                                         std::max(1, remaining-reserve), options.accuracy, phases);
+            offer(retry, model.dimension(), phases.size()-1, same, candidates);
+            if (iterations(phases) < options.maximum_iterations) {
+                const auto refine = run_phase("theta:newton:restart", problem, Solver::newton, solved(retry, inside),
+                    std::min(reserve, options.maximum_iterations-iterations(phases)), options.accuracy, phases);
+                offer(refine, model.dimension(), phases.size()-1, same, candidates, true);
+            }
+            keep_feasible(model, candidates);
+            if (!candidates.empty()) {
+                selected = select(candidates);
+                out = {detail::finalize(model, unit_jet, data_jet, scale, selected, std::move(phases), options.accuracy),
+                       selected.value};
+            }
+        }
+        return out;
+    };
+    const auto probe = [&](const std::vector<double>& start, std::vector<FitPhase>& phases, Candidate& reached) {
+        FitOptions brief = options;
+        brief.maximum_iterations = std::min(probe_iterations, options.maximum_iterations);
+        std::vector<Candidate> candidates;
+        solve(model, unit_jet, start, inside, brief, phases, candidates);
+        keep_feasible(model, candidates);
+        if (candidates.empty()) return false;
+        reached = select(candidates);
+        return true;
+    };
+    // Unit-scaled y = y / scale: log f(y) = log f(y / scale) - log(scale) per scored row.
+    const double scored = static_cast<double>(unit_sample.scored());
+    return multistart(starts, candidates, candidates && options.start_count == 0, run, probe,
+        [&](const std::vector<double>& unit) {
+            std::vector<double> theta(unit.size());
+            model.rescale(unit, scale, theta);
+            return theta;
+        },
+        [&](double value) { return -value * scored - scored * std::log(scale); });
 }
 
 // Second stage of a staged qmle fit: the shapes by maximum likelihood with the
@@ -421,21 +546,42 @@ FitResult fit(const CorrelationModel& model, std::span<const double> eps, std::s
         throw std::invalid_argument("accuracy must be positive and maximum_iterations at least 1");
     if (options.estimator != Estimator::mle)
         throw std::invalid_argument("correlation models are fitted by maximum likelihood");
+    if (options.start_count < 0) throw std::invalid_argument("start_count must be 0 (automatic) or positive");
     const CorrelationSample sample = model.prepare(eps, series, target, marginals);
     CorrelationJet jet(model, sample);
-    const std::vector<double> start = options.start.empty() ? model.start() : options.start;
-    if (start.size() != model.dimension() || !model.feasible(start))
-        throw std::invalid_argument("the starting point must have the model's dimension and lie in its domain");
-
-    std::vector<FitPhase> phases;
-    std::vector<Candidate> candidates;
-    solve(model, jet, start, model.start(), options, phases, candidates);
-    keep_feasible(model, candidates);
-    if (candidates.empty())
-        return failure(model, sample, 1.0, std::move(phases), "no phase produced a finite, feasible estimate");
+    const std::vector<double> inside = model.start();
+    std::vector<std::vector<double>> starts = explicit_starts(model, options, [](const std::vector<double>& t) { return t; });
+    const bool candidates = starts.empty();
+    if (candidates) {
+        starts = model.starts();
+        if (options.start_count > 0 && starts.size() > static_cast<std::size_t>(options.start_count))
+            starts.resize(static_cast<std::size_t>(options.start_count));
+    }
     // Standardized residuals need no internal scaling: the solved and the
     // reported problem are the same.
-    return detail::finalize(model, jet, jet, 1.0, select(candidates), std::move(phases), options.accuracy);
+    const auto run = [&](const std::vector<double>& start) {
+        std::vector<FitPhase> phases;
+        std::vector<Candidate> candidates;
+        solve(model, jet, start, inside, options, phases, candidates);
+        keep_feasible(model, candidates);
+        if (candidates.empty())
+            return StartRun{failure(model, sample, 1.0, std::move(phases), "no phase produced a finite, feasible estimate")};
+        const Candidate& selected = select(candidates);
+        return StartRun{detail::finalize(model, jet, jet, 1.0, selected, std::move(phases), options.accuracy), selected.value};
+    };
+    const auto probe = [&](const std::vector<double>& start, std::vector<FitPhase>& phases, Candidate& reached) {
+        FitOptions brief = options;
+        brief.maximum_iterations = std::min(probe_iterations, options.maximum_iterations);
+        std::vector<Candidate> candidates;
+        solve(model, jet, start, inside, brief, phases, candidates);
+        keep_feasible(model, candidates);
+        if (candidates.empty()) return false;
+        reached = select(candidates);
+        return true;
+    };
+    const double rows = static_cast<double>(detail::scored_rows(sample));
+    return multistart(starts, candidates, candidates && options.start_count == 0, run, probe,
+                      [](const std::vector<double>& t) { return t; }, [&](double value) { return -value * rows; });
 }
 
 }  // namespace scivolapi

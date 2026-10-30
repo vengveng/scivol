@@ -172,7 +172,8 @@ result = spec.fit(data, method="qmle")        # robust (sandwich) SEs
 - Components implement `role`, `signature`, `n_params`, `pack()`, `unpack()`;
   domains, bounds and starts belong to the native model.
 - `fit()` estimation options: `method` (`"mle"`, `"qmle"`), `coordinates`
-  (`"automatic"`, `"z"`, `"theta"`), `maxiter`, `accuracy`, `initial_params`.
+  (`"automatic"`, `"z"`, `"theta"`), `maxiter`, `accuracy`, `initial_params`,
+  `starts` (`"auto"`, a number of model candidate starts, or explicit vectors).
   Unknown options raise.
 - QMLE: Gaussian quasi-likelihood for mean and volatility with sandwich
   covariance `H^-1 OPG H^-1`; with a shaped density, a staged shape fit and the

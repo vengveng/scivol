@@ -5,6 +5,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #include "detail/numeric.hpp"
 #include "mean/regressors.hpp"
@@ -553,6 +554,39 @@ std::vector<double> Model::start(const Sample& sample) const
     if (spec_.volatility == VolatilityKind::aparch) theta[layout.delta] = 2.0;
     for (std::size_t i = 0; i < spec_.p; ++i) theta[layout.alpha + i] = shock / p;
     return theta;
+}
+
+// The model's start, then the near-integrated region of a recursion with both
+// shock and variance lags, where daily returns' other likelihood maxima lie
+// (the start's persistence is 0.9 with a large shock share): persistence 0.98
+// and 0.995 carried by beta.
+std::vector<std::vector<double>> Model::starts(const Sample& sample) const
+{
+    std::vector<std::vector<double>> out{start(sample)};
+    if (spec_.volatility == VolatilityKind::constant || spec_.p == 0 || spec_.q == 0) return out;
+    const Layout layout(spec_);
+    const double p = static_cast<double>(spec_.p), q = static_cast<double>(spec_.q);
+    for (const auto [persistence, shock] : {std::pair{0.98, 0.02}, std::pair{0.995, 0.01}}) {
+        std::vector<double> theta = out.front();
+        if (layout.egarch()) {
+            theta[layout.omega] = (1.0 - persistence) * std::log(sample.variance_seed);
+            for (std::size_t i = 0; i < spec_.p; ++i) theta[layout.alpha + i] = 2.5 * shock / p;
+            for (std::size_t j = 0; j < spec_.q; ++j) theta[layout.beta + j] = persistence / q;
+        } else {
+            // GJR's leverage adds about half its loading (kappa = 1/2 when symmetric);
+            // APARCH keeps delta = 2 and gamma = 0, where its moment is E z^2 = 1.
+            const bool gjr = spec_.volatility == VolatilityKind::gjr;
+            theta[layout.omega] = sample.variance_seed * (1.0 - persistence);
+            for (std::size_t i = 0; i < spec_.p; ++i) {
+                theta[layout.alpha + i] = shock / p;
+                if (gjr) theta[layout.gamma + i] = shock / p;
+            }
+            for (std::size_t j = 0; j < spec_.q; ++j)
+                theta[layout.beta + j] = (persistence - (gjr ? 1.5 : 1.0) * shock) / q;
+        }
+        if (feasible(theta)) out.push_back(std::move(theta));
+    }
+    return out;
 }
 
 // Exact data scaling y -> factor y (x unchanged): the mean's constant and

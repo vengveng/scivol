@@ -462,7 +462,17 @@ NB_MODULE(_scivolapi, m)
         .def_rw("coordinates", &FitOptions::coordinates)
         .def_rw("accuracy", &FitOptions::accuracy)
         .def_rw("maximum_iterations", &FitOptions::maximum_iterations)
-        .def_rw("start", &FitOptions::start);
+        .def_rw("start", &FitOptions::start)
+        .def_rw("starts", &FitOptions::starts)
+        .def_rw("start_count", &FitOptions::start_count);
+    m.attr("PROBE_ITERATIONS") = probe_iterations;
+    nb::class_<FitStart>(m, "FitStart")
+        .def_ro("theta", &FitStart::theta)
+        .def_ro("candidate", &FitStart::candidate)
+        .def_ro("finished", &FitStart::finished)
+        .def_ro("log_likelihood", &FitStart::log_likelihood)
+        .def_ro("success", &FitStart::success)
+        .def_ro("selected", &FitStart::selected);
 
     nb::class_<FitPhase>(m, "FitPhase")
         .def_ro("name", &FitPhase::name)
@@ -506,6 +516,7 @@ NB_MODULE(_scivolapi, m)
         .def_ro("inference", &FitResult::inference)
         .def_ro("success", &FitResult::success)
         .def_ro("phases", &FitResult::phases)
+        .def_ro("starts", &FitResult::starts)
         .def_ro("warnings", &FitResult::warnings);
 
     m.def("fit", [](const Model& model, const Vector& y, const FitOptions& options, const std::optional<Matrix>& x) {
