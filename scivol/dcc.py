@@ -19,6 +19,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from . import _scivolapi as api
+from ._summary import Summary
 from .components import GARCH, Normal
 
 if TYPE_CHECKING:
@@ -601,7 +602,7 @@ class CCCResult(_CorrelationResultMixin):
         # DCC(1,1) at a = b = 0: Q_t = Qbar for every row.
         return correlation_model(1, 1, "gaussian"), np.zeros(2)
 
-    def summary(self) -> str:
+    def summary(self) -> Summary:
         lines = []
         lines.append("=" * 72)
         lines.append(f"{'CCC Estimation Results':^72}")
@@ -621,7 +622,7 @@ class CCCResult(_CorrelationResultMixin):
         lines.append("-" * 72)
         lines.append(f"  Average pairwise correlation: {self.params.avg_pairwise_corr:.6f}")
         lines.append("=" * 72)
-        return "\n".join(lines)
+        return Summary("\n".join(lines))
 
 
 @dataclass
@@ -694,7 +695,7 @@ class DCCResult(_CorrelationResultMixin):
     def _copula_eta(self) -> Optional[float]:
         return self.params.eta
 
-    def summary(self) -> str:
+    def summary(self) -> Summary:
         model, theta = self._correlation()
         names = model.parameter_names
         se = self.std_errors
@@ -709,7 +710,7 @@ class DCCResult(_CorrelationResultMixin):
         lines.append(f"  Method: {method}")
         lines.append(
             f"  Obs: {self.T}  Series: {self.N}  "
-            f"Converged: {self.converged}"
+            f"Success: {self.success}"
         )
         lines.append(f"  Time: {self.time_elapsed:.4f}s  Iterations: {self.nit}")
         lines.append(
@@ -730,7 +731,7 @@ class DCCResult(_CorrelationResultMixin):
             lines.append(f"  {name}: {value:.6g}")
         lines.append(f"\n  Persistence: {self.params.persistence:.6f}  Inference: {self.inference}")
         lines.append("=" * 72)
-        return "\n".join(lines)
+        return Summary("\n".join(lines))
 
 
 

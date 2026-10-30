@@ -222,7 +222,7 @@ def fit_spec(
     hold_back: int = 0,
     scale: Optional[float] = None,
     method: str = "mle",
-    coordinates: Optional[str] = None,
+    coordinates: str = "automatic",
     maxiter: int = 1000,
     accuracy: float = 1e-10,
     initial_params: Optional[NDArray[np.float64]] = None,

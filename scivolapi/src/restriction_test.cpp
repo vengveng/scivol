@@ -297,7 +297,7 @@ LRResult restriction_test(const Model& parent, const Model& child, const Restric
     if (pf.estimator != Estimator::mle || cf.estimator != Estimator::mle)
         return invalid(out, LRStatus::unsupported, "QMLE LR calibration is not implemented.");
     if (!pf.success || !cf.success || !std::isfinite(out.statistic))
-        return invalid(out, LRStatus::uncertified, "Both estimates must be certified maximum-likelihood fits.");
+        return invalid(out, LRStatus::uncertified, "Both estimates must be maximum-likelihood fits that pass the first-order check.");
     if (pf.kink_point || cf.kink_point)
         return invalid(out, LRStatus::unsupported, "LR calibration at a residual kink-point MLE is not implemented.");
     const auto lifted = r.embed(cf.theta);

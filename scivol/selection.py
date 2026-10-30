@@ -12,6 +12,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from . import _scivolapi as api
+from ._summary import Summary
 from ._fit import (_COORDINATES, PreparedSample, native_spec, present_fit,
                    spec_from_native)
 from ._validation import validate_data, validate_hold_back, validate_regressors
@@ -144,21 +145,20 @@ class SelectionResult:
         """Candidate rows as a pandas DataFrame, or records without pandas."""
         terminals = {c.key for c in self.terminals}
         confidence = {c.key for c in self.confidence_set}
-        rows = [dict(model=str(c.specification), key=c.key,
-                     parameters=c.model.dimension,
+        rows = [dict(model=str(c.specification), parameters=c.model.dimension,
                      log_likelihood=None if c.fit is None else c.fit.log_likelihood,
-                     **c.information_criteria,
+                     **c.information_criteria, success=c.certified,
                      adequacy=c.diagnostics.get("status", "not_evaluated"),
-                     encompassing=dict(c.encompassing), certified=c.certified,
                      terminal=c.key in terminals, confidence_set=c.key in confidence,
-                     failure_reason=c.failure_reason) for c in self.candidates]
+                     failure_reason=c.failure_reason, encompassing=dict(c.encompassing),
+                     key=c.key) for c in self.candidates]
         try:
             import pandas as pd
         except ImportError:
             return rows
         return pd.DataFrame(rows)
 
-    def summary(self) -> str:
+    def summary(self) -> Summary:
         choice = str(self.selected_model) if self.selected_model is not None else "none"
         widening = ""
         for record in self.widenings:
@@ -166,9 +166,9 @@ class SelectionResult:
                            else f"log(p)={record['log_p_value']:.4g}")
             action = "Mean widened" if record['completed'] else "Mean widening pending"
             widening += f"\n{action} to AR({record['order']}): {record['triggering_test']} {probability}"
-        return (f"Selection: {self.status}; selected: {choice}\n"
-                f"Search complete: {self.search_complete}; terminals: {len(self.terminals)}; "
-                f"optimizer invocations: {self.fit_counts.get('optimizer_invocations', 0)}{widening}")
+        return Summary(f"Selection: {self.status}; selected: {choice}\n"
+                       f"Search complete: {self.search_complete}; terminals: {len(self.terminals)}; "
+                       f"optimizer invocations: {self.fit_counts.get('optimizer_invocations', 0)}{widening}")
 
 
 class Search:
@@ -647,7 +647,7 @@ class _Reduction:
         record = self._record(parent, child, restriction, "unresolved")
         record["level"] = level
         if not p.certified or not c.certified:
-            record["failure_reason"] = "Both fits must be certified"
+            record["failure_reason"] = "both fits must pass the first-order check"
             return record
         theta = restriction.embed(np.array(c.fit.theta))
         if theta is None:

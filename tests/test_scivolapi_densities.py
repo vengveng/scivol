@@ -394,7 +394,7 @@ def test_student_t_fit_recovers_the_tail_index(t_data):
 
 @pytest.mark.parametrize("coordinates", ["automatic", "theta"])
 @pytest.mark.parametrize("iid", [False, True], ids=["gjr", "iid"])
-def test_gaussian_tail_optimum_is_the_closed_eta_face(coordinates, iid, capsys):
+def test_gaussian_tail_optimum_is_the_closed_eta_face(coordinates, iid):
     from scivol import GJRGARCH, Normal
 
     z = np.random.default_rng(31).normal(size=3000)
@@ -415,8 +415,7 @@ def test_gaussian_tail_optimum_is_the_closed_eta_face(coordinates, iid, capsys):
     # summation roundoff of F (about 1e-13 relative).
     assert student.log_likelihood == pytest.approx(normal.log_likelihood, rel=0.0, abs=1e-9)
     assert student.dist_params.nu == np.inf
-    student.summary()
-    summary = capsys.readouterr().out
+    summary = student.summary()
     assert "eta=" in summary and "nu=inf" in summary
 
     skew = (GJRGARCH(1, 1) + SkewT()).fit(y, coordinates=coordinates)

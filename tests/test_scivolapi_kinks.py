@@ -129,7 +129,7 @@ def test_roundoff_rule_is_not_an_identification_or_smoothing_width():
 
 
 @pytest.mark.parametrize('family', ['aparch','ged'])
-def test_subunit_power_cusps_are_not_given_a_finite_clarke_certificate(family):
+def test_subunit_power_cusps_report_unbounded_one_sided_slopes(family):
     jax,jnp,_=_jax_modules()
     spec=api.ModelSpec()
     spec.mean.constant=True
@@ -154,7 +154,7 @@ def test_subunit_power_cusps_are_not_given_a_finite_clarke_certificate(family):
     assert not fitted.success and fitted.kink_point
     assert fitted.termination==api.Termination.stalled
     assert not len(fitted.gradient) and not len(fitted.std_errors)
-    assert any('non-Lipschitz' in warning for warning in fitted.warnings)
+    assert any('one-sided slopes are unbounded' in warning for warning in fitted.warnings)
     # Check the actual joint likelihood on both open branches. No derivative
     # at zero is manufactured by JAX's convention for abs'(0).
     from tests.test_scivolapi_mean import row_terms

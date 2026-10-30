@@ -182,7 +182,7 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
             r.active_kink_rows.assign(scan.rows.begin(), scan.rows.begin()+scan.out.count);
             if (decomposed) stationarity = optimize::kink_stationarity(problem, unit_theta, workspace);
             if (!scan.out.supported)
-                r.warnings.push_back("a non-Lipschitz residual power cusp has no finite Clarke certificate");
+                r.warnings.push_back("a residual sits at a cusp where the one-sided slopes are unbounded, so the first-order conditions cannot be checked");
             else if (!decomposed)
                 r.warnings.push_back("one-sided likelihood derivatives are unavailable at the residual face");
         }
@@ -292,8 +292,8 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
                              + ", which the solver had not accepted");
     if (r.termination != Termination::converged) r.warnings.push_back("the optimizer did not converge");
     if (r.termination == Termination::stalled)
-        r.warnings.push_back("vanishing steps before KKT certification; a likelihood kink or numerical limit may prevent smooth certification");
-    if (!r.stationary) r.warnings.push_back("first-order conditions are not met; the estimate is uncertified");
+        r.warnings.push_back("the optimizer's steps vanished before the first-order conditions were met; a likelihood kink or a numerical limit can cause this");
+    if (!r.stationary) r.warnings.push_back("the first-order conditions are not met at the estimate");
 
     if (!excluded.empty()) {
         std::string list;

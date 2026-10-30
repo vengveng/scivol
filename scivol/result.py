@@ -8,6 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 from datetime import datetime
 from . import _scivolapi as api
+from ._summary import Summary
 
 from .roles import Role
 from ._settings import settings
@@ -672,9 +673,9 @@ class EstimationResult:
     
     # Pretty printer
     # --------------------------------------------------------------------- #
-    def summary(self, robust: bool = False) -> None:
+    def summary(self, robust: bool = False) -> Summary:
         """
-        Print comprehensive estimation summary with professional formatting.
+        The estimation report: model, fit statistics, parameter table, model properties and warnings.
         
         Parameters
         ----------
@@ -684,61 +685,64 @@ class EstimationResult:
         """
         
         WIDTH = 70
+        lines: List[str] = []
         
         # Title
-        print("═" * WIDTH)
+        lines.append("═" * WIDTH)
         title = "Fixed Parameter Results" if self.parameter_source == "supplied" else "Model Estimation Results"
-        print(f"{title:^{WIDTH}}")
-        print("═" * WIDTH)
+        lines.append(f"{title:^{WIDTH}}")
+        lines.append("═" * WIDTH)
         
         # Model info
         model_str = str(self.spec) if self.spec else "Unknown Model"
-        print(f"Model:       {model_str}")
+        lines.append(f"Model:       {model_str}")
         density = self._native()[0].innovation_density(np.ascontiguousarray(self.params, dtype=np.float64))
         shapes = {**density.named, **density.derived}
         if shapes:
             description = ", ".join(f"{settings.names.resolve(name)}={value:.6g}" for name,value in shapes.items())
-            print(f"Density:     {self.density.signature} ({description})")
-        print(f"Method:      {self.method}")
-        print(f"Parameters:  {self.parameter_source}")
+            lines.append(f"Density:     {self.density.signature} ({description})")
+        lines.append(f"Method:      {self.method}")
+        lines.append(f"Parameters:  {self.parameter_source}")
         if self.fit_info.solver is not None:
-            print(f"Solver:      {self.fit_info.solver}")
+            lines.append(f"Solver:      {self.fit_info.solver}")
         if self.fit_info.optimization_space is not None:
-            print(f"Path:        {self.fit_info.optimization_space}")
-        print(f"Date:        {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print("─" * WIDTH)
+            lines.append(f"Path:        {self.fit_info.optimization_space}")
+        if self.fit_info.inference_status is not None:
+            lines.append(f"Inference:   {self.fit_info.inference_status}")
+        lines.append(f"Date:        {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("─" * WIDTH)
         
         # Estimation summary (two columns)
         conv_str = "Yes" if self.success else "No"
         time_str = f"{self.time_elapsed:.3f}s" if self.time_elapsed else "N/A"
-        print(f"{'No. Observations:':<20} {self.n_obs:<15} {'Converged:':<15} {conv_str}")
-        print(f"{'No. Parameters:':<20} {len(self.params):<15} {'Iterations:':<15} {self.n_iter}")
-        print(f"{'Time Elapsed:':<20} {time_str}")
+        lines.append(f"{'No. Observations:':<20} {self.n_obs:<15} {'Success:':<15} {conv_str}")
+        lines.append(f"{'No. Parameters:':<20} {len(self.params):<15} {'Iterations:':<15} {self.n_iter}")
+        lines.append(f"{'Time Elapsed:':<20} {time_str}")
         hold_back_line = self._format_hold_back_summary()
         if hold_back_line is not None:
-            print(f"{'Hold-back:':<20} {hold_back_line}")
+            lines.append(f"{'Hold-back:':<20} {hold_back_line}")
         if self.fit_info.scale is not None:
-            print(f"{'Scale:':<20} {self.fit_info.scale:g}")
-        print("─" * WIDTH)
+            lines.append(f"{'Scale:':<20} {self.fit_info.scale:g}")
+        lines.append("─" * WIDTH)
         
         # Model fit statistics
-        print(f"{'Log-Likelihood:':<20} {self.log_likelihood:>15.4f}")
-        print(f"{'AIC:':<20} {self.aic:>15.4f}")
-        print(f"{'BIC:':<20} {self.bic:>15.4f}")
-        print(f"{'HQIC:':<20} {self.hqic:>15.4f}")
-        print("─" * WIDTH)
+        lines.append(f"{'Log-Likelihood:':<20} {self.log_likelihood:>15.4f}")
+        lines.append(f"{'AIC:':<20} {self.aic:>15.4f}")
+        lines.append(f"{'BIC:':<20} {self.bic:>15.4f}")
+        lines.append(f"{'HQIC:':<20} {self.hqic:>15.4f}")
+        lines.append("─" * WIDTH)
         
         # Parameter estimates table
-        print(f"\n{'Parameter Estimates':^{WIDTH}}")
-        print("─" * WIDTH)
+        lines.append(f"\n{'Parameter Estimates':^{WIDTH}}")
+        lines.append("─" * WIDTH)
         
         # Select standard errors
         se = self.std_errors_robust if (robust and self.std_errors_robust is not None) else self.std_errors
         se_type = "Robust" if (robust and self.std_errors_robust is not None) else "MLE"
         
         # Header
-        print(f"{'Parameter':<12} {'Coef':>12} {'Std Err':>12} {'t-stat':>10} {'P>|t|':>10}")
-        print("─" * WIDTH)
+        lines.append(f"{'Parameter':<12} {'Coef':>12} {'Std Err':>12} {'t-stat':>10} {'P>|t|':>10}")
+        lines.append("─" * WIDTH)
         
         # Get parameter names
         param_names = self._get_param_names()
@@ -763,19 +767,20 @@ class EstimationResult:
                 t_str = f"{'N/A':>10}"
                 p_str = f"{'N/A':>10}"
             
-            print(f"{name:<12} {coef_str:>12} {se_str:>12} {t_str} {p_str}")
+            lines.append(f"{name:<12} {coef_str:>12} {se_str:>12} {t_str} {p_str}")
         
-        print("─" * WIDTH)
-        print(f"Standard errors: {se_type}")
+        lines.append("─" * WIDTH)
+        lines.append(f"Standard errors: {se_type}")
         
         # Diagnostics
-        self._print_diagnostics_formatted(WIDTH)
+        lines += self._diagnostic_lines(WIDTH)
         
         # Warnings
-        self._print_warnings(WIDTH)
+        lines += self._warning_lines(WIDTH)
         
-        print("═" * WIDTH)
-    
+        lines.append("═" * WIDTH)
+        return Summary("\n".join(lines))
+
     def _get_param_names(self) -> List[str]:
         """The model's parameter names in the display convention (settings.names)."""
         renames = {"ar": "phi", "ma": "theta", "exog": "x", "lam": "lambda"}
@@ -826,24 +831,26 @@ class EstimationResult:
         else:
             return f"{p:>10.3f}"
     
-    def _print_diagnostics_formatted(self, width: int) -> None:
-        """Print model properties returned by the common native interface."""
+    def _diagnostic_lines(self, width: int) -> List[str]:
+        """Model properties returned by the common native interface."""
         if self.vol is None:
-            return
+            return []
+        lines: List[str] = []
         model, _, _ = self._native()
         theta = np.ascontiguousarray(self.params, dtype=np.float64)
         persistence = model.persistence(theta)
         variance = model.unconditional_variance(theta)
-        print()
-        print(f"{'Model Diagnostics':^{width}}")
-        print("─" * width)
-        print(f"{'Persistence:':<35} {persistence:.6f}")
-        print(f"{'In model domain:':<35} {'Yes' if model.feasible(theta) else 'No'}")
-        print(f"{'Unconditional Variance:':<35} {variance:.6e}")
-        print(f"{'Unconditional Volatility:':<35} {np.sqrt(variance):.6f}")
+        lines.append("")
+        lines.append(f"{'Model Properties':^{width}}")
+        lines.append("─" * width)
+        lines.append(f"{'Persistence:':<35} {persistence:.6f}")
+        lines.append(f"{'In model domain:':<35} {'Yes' if model.feasible(theta) else 'No'}")
+        lines.append(f"{'Unconditional Variance:':<35} {variance:.6e}")
+        lines.append(f"{'Unconditional Volatility:':<35} {np.sqrt(variance):.6f}")
         if 0.0 < abs(persistence) < 1.0:
             half_life = np.log(0.5) / np.log(abs(persistence))
-            print(f"{'Half-life proxy (periods):':<35} {half_life:.1f}")
+            lines.append(f"{'Half-life (periods):':<35} {half_life:.1f}")
+        return lines
 
     def _collect_warnings(self) -> List[str]:
         """Collect persistent and derived warnings about the estimation."""
@@ -854,47 +861,30 @@ class EstimationResult:
                 warnings_list.append(message)
 
         if not self.success and not warnings_list:
-            add("The estimate is uncertified")
+            add("the estimate did not pass the first-order check")
         
         if self.vol is not None:
             model, _, _ = self._native()
             theta = np.ascontiguousarray(self.params, dtype=np.float64)
             if not model.feasible(theta):
-                add("Parameters are outside the model domain")
+                add("the parameters are outside the model domain")
             elif abs(model.persistence(theta)) > 0.99:
-                add("Persistence is very close to one")
+                add("persistence is very close to one")
 
         if self.std_errors is not None:
             if np.any(~np.isfinite(self.std_errors)):
-                add("Some standard errors could not be computed")
+                add("some standard errors could not be computed")
             elif np.any(self.std_errors <= 0):
-                add("Some standard errors are non-positive (Hessian issues)")
+                add("some standard errors are not positive")
 
         return warnings_list
 
-    def _print_warnings(self, width: int) -> None:
-        """Print any warnings about the estimation."""
+    def _warning_lines(self, width: int) -> List[str]:
         warnings_list = self._collect_warnings()
+        if not warnings_list:
+            return []
+        return ["", f"{'Warnings':^{width}}", "─" * width] + [f"  * {w}" for w in warnings_list]
 
-        if warnings_list:
-            print()
-            print(f"{'Warnings':^{width}}")
-            print("─" * width)
-            for w in warnings_list:
-                print(f"  * {w}")
-    
-    def _print_component_params(self, component: Component) -> None:
-        """Print component parameters with type safety"""
-        if not hasattr(component, 'fitted_params') or not component.fitted_params:
-            return
-            
-        for param_name, param_value in component.fitted_params.items():
-            if isinstance(param_value, list):
-                for i, v in enumerate(param_value, 1):
-                    print(f"  {param_name}_{i}: {v:.6f}")
-            else:
-                print(f"  {param_name}: {param_value:.6f}")
-    
     # Additional utility methods with explicit typing
     def to_dict(self) -> Dict[str, Any]:
         """Convert key results to dictionary"""
@@ -1105,9 +1095,8 @@ class EstimationResult:
             lines.append(f"  {name:<12} {val_str}")
         
         # Status
-        status = "Converged" if self.success else "Not converged"
         lines.append("")
-        lines.append(f"Status: {status}")
+        lines.append(f"Success: {'Yes' if self.success else 'No'}")
         
         return "\n".join(lines)
     

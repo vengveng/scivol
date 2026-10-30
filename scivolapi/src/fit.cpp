@@ -443,7 +443,7 @@ FitResult fit_shapes(const Model& model, const Model& gaussian, std::span<const 
     if (!r.feasible)
         r.warnings.push_back("under the fitted density the estimate lies outside the model's domain");
     if (r.termination != Termination::converged) r.warnings.push_back("the optimizer did not converge");
-    if (!r.stationary) r.warnings.push_back("first-order conditions are not met; the estimate is uncertified");
+    if (!r.stationary) r.warnings.push_back("the first-order conditions are not met at the estimate");
     r.success = r.feasible && first.success && r.termination == Termination::converged && r.stationary;
 
     const Sample gaussian_sample = plan ? gaussian.prepare(*plan) : gaussian.prepare(y, x);

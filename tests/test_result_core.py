@@ -169,7 +169,7 @@ def test_fit_info_is_exposed_in_result_and_dict():
 
 
 # ------------------------------------------------------------------ #
-def test_summary_prints(capsys):
+def test_summary_returns_the_report():
     data = np.zeros(30)
     spec = _build_fitted_spec()
     opt = DummyOpt(x=np.zeros(spec.total_params), fun=0.0)
@@ -186,9 +186,8 @@ def test_summary_prints(capsys):
         },
     )
 
-    # should not raise and should write to stdout
-    res.summary()
-    captured = capsys.readouterr().out
+    captured = res.summary()
+    assert isinstance(captured, str) and repr(captured) == str(captured)
 
     # very loose sanity checks
     assert "Model Estimation Results" in captured
@@ -202,14 +201,13 @@ def test_summary_prints(capsys):
     assert "Scale:" in captured
 
 
-def test_egarch_summary_prints_egarch_diagnostics(capsys):
+def test_egarch_summary_reports_egarch_properties():
     data = np.zeros(40)
     spec = _build_fitted_egarch_spec()
     opt = DummyOpt(x=np.array([-0.2, 0.15, 0.05, -0.10, 0.02, 0.85]), fun=1.0)
     res = EstimationResult(spec, opt, data)
 
-    res.summary()
-    captured = capsys.readouterr().out
+    captured = res.summary()
 
     assert "Persistence:" in captured
     assert "Unconditional Variance:" in captured

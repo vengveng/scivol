@@ -251,20 +251,18 @@ class TestParamNamesInResult:
 
     # -- summary output --
 
-    def test_summary_uses_display_names(self, capsys):
+    def test_summary_uses_display_names(self):
         settings.names.alpha = "a"
         settings.names.beta = "b"
         res = _make_garch_result()
-        res.summary()
-        out = capsys.readouterr().out
+        out = res.summary()
         assert "a[1]" in out
         assert "b[1]" in out
 
-    def test_summary_gjr_persistence_label(self, capsys):
+    def test_summary_gjr_persistence_label(self):
         settings.names.gamma = "zeta"
         res = _make_garch_result(gamma=True)
-        res.summary()
-        out = capsys.readouterr().out
+        out = res.summary()
         assert "zeta" in out
         assert "Persistence" in out
 

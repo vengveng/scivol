@@ -144,7 +144,7 @@ def _fit_many_worker(name, series, spec, index, initial, timeout, fit_kwargs):
         result = deepcopy(spec).fit(series, **kwargs)
         elapsed = time.perf_counter() - started
         if timeout is not None and elapsed > timeout:
-            raise FitTimeoutError(f"Fit exceeded the {timeout:g}-second timeout. Native fits finish before timeout is recorded.")
+            raise FitTimeoutError(f"the fit took longer than the {timeout:g}-second timeout, which is checked after the fit returns")
         first = result.fit_info.effective_hold_back or 0
         result._index = None if index is None else index[first:]
         result._name = name
