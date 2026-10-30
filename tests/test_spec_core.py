@@ -78,6 +78,9 @@ def test_hash_equality_contract():
     assert s1 != s3 and hash(s1) != hash(s3)
 
 
-def test_arrow_syntax_on_composite():
-    spec = GARCH(1, 2) << ARMA(1, 1) <- StudentT()
+def test_components_compose_only_with_plus():
+    spec = GARCH(1, 2) + ARMA(1, 1) + StudentT()
     assert str(spec) == "ARMA(1,1)+GARCH(1,2)+StudentT"
+    for compose in (lambda a, b: a < b, lambda a, b: a << b, lambda a, b: a >> b, lambda a, b: a - b):
+        with pytest.raises(TypeError):
+            compose(GARCH(), StudentT())

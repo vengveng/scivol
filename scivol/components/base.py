@@ -91,18 +91,3 @@ class Component(FitsMixin, ABC):
     def __add__(self, other: Union[Component, CompositeSpec]) -> CompositeSpec:
         return self.link(other)
     
-    def __sub__(self, other: Union[Component, CompositeSpec]) -> CompositeSpec:
-        return self.__add__(other)
-    
-    def __lt__(self, other: Union[Component, CompositeSpec]) -> CompositeSpec:
-        return self.__add__(other)
-    
-    def __lshift__(self, other) -> CompositeSpec:
-        return self.__add__(other)
-
-    def __rlshift__(self, other) -> CompositeSpec:
-        from ..spec.composite import CompositeSpec
-        return CompositeSpec(other, self)
-    
-    def __neg__(self) -> Component:
-        return self

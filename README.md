@@ -23,8 +23,8 @@ scikit-build-core. The native library also builds independently of Python.
 ## Fit and evaluate
 
 Components combine in mean, volatility, density order. A missing density is
-Normal; a missing volatility component gives constant variance. All four
-operators `+`, `<`, `<<` and `>>` compose components.
+Normal; a missing volatility component gives constant variance. `+` composes
+components.
 
 ```python
 import numpy as np

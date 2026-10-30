@@ -168,7 +168,7 @@ result = spec.fit(data, method="qmle")        # robust (sandwich) SEs
 
 - Roles (`scivol/roles.py`): `MEAN`, `VOLATILITY`, `DENSITY`, `CORRELATION`.
   Canonical order is mean, volatility, density.
-- Operators `+`, `<`, `<<`, `>>` all build a `CompositeSpec`.
+- `+` builds a `CompositeSpec`; it is the only composition operator.
 - Components implement `role`, `signature`, `n_params`, `pack()`, `unpack()`;
   domains, bounds and starts belong to the native model.
 - `fit()` estimation options: `method` (`"mle"`, `"qmle"`), `coordinates`

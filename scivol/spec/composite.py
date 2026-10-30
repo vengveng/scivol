@@ -90,13 +90,3 @@ class CompositeSpec(FitsMixin):
     def link(self, *others: Union[Component, CompositeSpec]) -> CompositeSpec:
         return CompositeSpec(self, *others)
     
-    def __lt__(self, other: Union[Component, CompositeSpec]) -> CompositeSpec:
-        return self.__add__(other)
-
-    def __lshift__(self, other: Union[Component, CompositeSpec]) -> CompositeSpec:
-        return self.__add__(other)
-
-    def __rlshift__(self, other: Union[Component, CompositeSpec]) -> CompositeSpec:
-        return CompositeSpec(other, self)
-
-    __sub__ = __add__
