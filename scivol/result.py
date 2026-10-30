@@ -201,6 +201,7 @@ class FitMetadata:
     inference_status: Optional[str] = None
     kink_point: bool = False
     active_kink_rows: tuple[int, ...] = ()
+    excluded_boundary: tuple[str, ...] = ()
     kkt_residual: Optional[float] = None
     kkt_tolerance: Optional[float] = None
     function_evaluations: Optional[int] = None

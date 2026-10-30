@@ -371,9 +371,9 @@ def test_fit_reaches_the_production_optimum(t_data, hyperbolic_data, density):
 
 
 @pytest.mark.parametrize("coordinates", ["automatic", "theta"])
-def test_likelihood_rising_toward_an_open_bound_is_not_a_maximum(coordinates):
+def test_likelihood_rising_toward_an_open_bound_is_reported(coordinates):
     # On t(3) innovations the VG likelihood rises toward lambda = 3/2, which the
-    # domain excludes: however close the optimizer stops, no maximum exists.
+    # domain excludes: the estimate stops at that bound and the fit names it.
     rng = np.random.default_rng(1)
     z = rng.standard_t(3.0, 2000) * np.sqrt(1.0 / 3.0)
     y, h = np.empty(2000), 1.0
@@ -382,7 +382,8 @@ def test_likelihood_rising_toward_an_open_bound_is_not_a_maximum(coordinates):
         h = 0.1 + 0.05 * y[t] ** 2 + 0.85 * h
     result = (GARCH(1, 1) + VarianceGamma()).fit(y, coordinates=coordinates)
     assert result.params[-1] > 1.5 and result.params[-1] - 1.5 < 1e-6
-    assert not result.success and result.fit_info.inference_status == "at_open_bound"
+    assert result.fit_info.inference_status == "at_excluded_boundary"
+    assert result.fit_info.excluded_boundary == ("lambda > 1.5",) and result.std_errors is None
 
 
 def test_student_t_fit_recovers_the_tail_index(t_data):

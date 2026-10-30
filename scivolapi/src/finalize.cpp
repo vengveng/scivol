@@ -6,6 +6,8 @@
 #include <limits>
 #include <numeric>
 #include <span>
+#include <sstream>
+#include <string>
 #include <type_traits>
 
 #include "fit_problem.hpp"
@@ -18,6 +20,33 @@ namespace scivolapi::detail {
 namespace {
 
 constexpr double eps = std::numeric_limits<double>::epsilon();
+
+// "omega > 0", "eta < 0.5": a declared open bound as a condition.
+std::string bound_condition(const std::string& name, const char* relation, double bound)
+{
+    std::ostringstream text;
+    text << name << ' ' << relation << ' ' << (std::abs(bound) <= std::numeric_limits<double>::min() ? 0.0 : bound);
+    return text.str();
+}
+
+// The open bounds whose representational endpoint x sits on (the chart stops
+// within roundoff of a nonzero endpoint; a zero endpoint is the smallest
+// normal) or that the step from x crosses (an empty step: endpoints only).
+void name_open_bounds(const optimize::Problem& p, std::span<const double> x, std::span<const double> step,
+                      const std::vector<std::string>& names, std::vector<std::string>& out)
+{
+    const auto at = [](double value, double endpoint) {
+        return value == endpoint || (std::abs(endpoint) > std::numeric_limits<double>::min()
+                                     && std::abs(value - endpoint) <= 64 * eps * std::abs(endpoint));
+    };
+    for (std::size_t i = 0; i < x.size(); ++i) {
+        const double s = step.empty() ? 0.0 : step[i];
+        if (!p.open_lower.empty() && p.open_lower[i] && (at(x[i], p.lower[i]) || (s < 0.0 && x[i] + s <= p.lower[i])))
+            out.push_back(bound_condition(names[i], ">", p.lower[i]));
+        if (!p.open_upper.empty() && p.open_upper[i] && (at(x[i], p.upper[i]) || (s > 0.0 && x[i] + s >= p.upper[i])))
+            out.push_back(bound_condition(names[i], "<", p.upper[i]));
+    }
+}
 
 }  // namespace
 
@@ -166,16 +195,38 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
     }
     r.kkt_residual = stationarity.residual;
     r.stationary = r.kkt_residual <= r.kkt_tolerance;
-    // A KKT point at an open bound is a supremum on the excluded boundary,
-    // not a maximum in the declared domain. The representational endpoint is
-    // one; short of it, the certificate leans on the bound when the projected
-    // gradient step -g crosses it (decided below, with the Newton step where
-    // the curvature allows).
-    bool open_bound = false;
-    if constexpr (univariate) open_bound = model.at_open_bound(unit_theta);
+    // The excluded boundaries of the declared domain the estimate lies at,
+    // reported as conditions ("persistence < 1"). An open bound counts at its
+    // representational endpoint and, short of it, where the certificate leans
+    // on it: the projected-gradient step -g crosses it (decided below, with the
+    // Newton step where the curvature allows), or the phase stopped with its
+    // iterates running to it. A strict constraint counts within
+    // active_constraint of zero where the likelihood increases across it (or
+    // wherever the gradient does not exist).
+    std::vector<std::string> excluded;
+    bool endpoint = false;
+    if constexpr (univariate) endpoint = model.at_open_bound(unit_theta);
     std::vector<double> descent(d);
     std::transform(unit_g.begin(), unit_g.end(), descent.begin(), std::negate<>());
     const bool gradient_crosses = r.stationary && gradient_ok && optimize::crosses_open_bound(problem, unit_theta, descent);
+    if (endpoint) name_open_bounds(problem, unit_theta, {}, r.names, excluded);
+    if constexpr (univariate) {
+        const std::size_t m = problem.constraint_count;
+        if (m) {
+            std::vector<double> values(m), jacobian(m * d);
+            std::vector<char> open(m);
+            model.open_constraints(open);
+            const std::vector<std::string> conditions = model.constraint_names();
+            if (problem.constraints(unit_theta.data(), values.data(), jacobian.data()))
+                for (std::size_t k = 0; k < m; ++k) {
+                    if (!open[k] || !(values[k] <= optimize::active_constraint)) continue;
+                    const double inward = std::inner_product(unit_g.begin(), unit_g.end(), jacobian.begin() + k * d, 0.0);
+                    if ((!gradient_ok || r.kink_point || inward > 0.0)
+                        && std::find(excluded.begin(), excluded.end(), conditions[k]) == excluded.end())
+                        excluded.push_back(conditions[k]);
+                }
+        }
+    }
 
     // Reported quantities, evaluated directly on the original data.
     r.theta.resize(d);
@@ -218,20 +269,23 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
     // maxima there. Where the reduced Hessian is positive definite, the
     // Newton step (unit-free) locates the local maximum instead: inside the
     // domain or beyond the open bound. Elsewhere only the gradient step speaks.
-    if (r.stationary && !open_bound && optimize::has_open_bound(problem)) {
+    if (r.stationary && !endpoint && optimize::has_open_bound(problem)) {
         optimize::FaceWorkspace face;
         face.reserve(d, problem.constraint_count);
         const bool definite = r.gradient.size() == d && r.hessian.size() == d * d
                               && optimize::face_newton_step(problem, r.theta, r.gradient, r.hessian, optimize::active_constraint, face);
-        open_bound = definite ? optimize::crosses_open_bound(problem, r.theta, face.step) : gradient_crosses;
+        if (definite) name_open_bounds(problem, r.theta, face.step, r.names, excluded);
+        else if (gradient_crosses) name_open_bounds(problem, unit_theta, descent, r.names, excluded);
     }
 
     const FitPhase& phase = r.phases.at(selected.phase);
     r.termination = phase.termination;
     // The phase stopped with its iterates running to an open bound, its local
-    // model placing the maximum beyond it: the supremum it approached lies on
-    // the excluded boundary, whether or not the point meets the KKT test.
-    if (r.termination == Termination::open_bound) open_bound = true;
+    // model placing the maximum beyond it.
+    if (r.termination == Termination::open_bound && excluded.empty()) {
+        name_open_bounds(problem, unit_theta, descent, r.names, excluded);
+        if (excluded.empty()) excluded.emplace_back("an open bound");
+    }
     if (!selected.accepted)
         r.warnings.push_back("returned the best feasible trial of phase " + phase.name
                              + ", which the solver had not accepted");
@@ -240,10 +294,15 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
         r.warnings.push_back("vanishing steps before KKT certification; a likelihood kink or numerical limit may prevent smooth certification");
     if (!r.stationary) r.warnings.push_back("first-order conditions are not met; the estimate is uncertified");
 
-    if (open_bound)
-        r.warnings.push_back("the likelihood increases toward an excluded open bound of the domain; no maximum exists in the domain");
+    if (!excluded.empty()) {
+        std::string list;
+        for (const std::string& condition : excluded) list += (list.empty() ? "" : ", ") + condition;
+        r.warnings.push_back("the estimate is at the excluded boundary of the declared domain (" + list
+                             + "); standard errors are not reported");
+    }
 
-    if (open_bound) r.inference = Inference::at_open_bound;
+    r.excluded_boundary = excluded;
+    if (!excluded.empty()) r.inference = Inference::at_excluded_boundary;
     else if (!r.stationary) r.inference = Inference::not_stationary;
     else if (r.kink_point) r.inference = Inference::at_kink;
     else if (stationarity.binding) r.inference = Inference::at_boundary;
@@ -258,7 +317,7 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
         }
     } else {
         r.covariance.clear();
-        if (r.stationary && !open_bound) {
+        if (r.stationary && excluded.empty()) {
             r.warnings.push_back(r.inference == Inference::at_kink
                                      ? "the estimate is a likelihood kink point; ordinary Hessian standard errors are not reported"
                                      : r.inference == Inference::at_boundary
@@ -267,8 +326,9 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
         }
     }
 
-    r.success = r.estimate_available && r.feasible && r.termination == Termination::converged && r.stationary
-                && !open_bound;
+    // A certified local maximum of the problem as posed, over the closure of
+    // the declared domain; an excluded boundary is reported, not refused.
+    r.success = r.estimate_available && r.feasible && r.termination == Termination::converged && r.stationary;
     return r;
 }
 

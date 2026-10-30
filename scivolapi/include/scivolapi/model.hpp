@@ -177,6 +177,12 @@ public:
     [[nodiscard]] std::size_t constraint_count() const noexcept;
     void constraints(std::span<const double> theta, std::span<double> values,
                      std::span<double> jacobian) const;
+    // Which constraints are strict in the declared domain (persistence < 1,
+    // a stable lag polynomial): 1 where c(theta) = 0 is excluded, stored as a
+    // representational margin; 0 where it is part of the domain (alpha + gamma >= 0).
+    void open_constraints(std::span<char> open) const;
+    // The condition each constraint row declares, for reporting ("persistence < 1").
+    [[nodiscard]] std::vector<std::string> constraint_names() const;
 
     // Active closed-domain face normals, row-major with dimension() columns.
     // Excludes representational chart margins at genuinely open boundaries.

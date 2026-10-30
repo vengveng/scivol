@@ -195,10 +195,14 @@ FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const
         : detail::finalize(model, unit_jet, data_jet, scale, select(candidates), phases, options.accuracy);
 
     // Leave a poor warm-start basin or saturated z chart by restarting the
-    // original theta problem from the model start. Explicit theta/z paths
-    // never enter this policy; all phases share the original iteration budget.
-    if (options.coordinates == Coordinates::automatic && model.capabilities().chart_covers_domain && !result.success
-        && iterations(phases) < options.maximum_iterations) {
+    // original theta problem from the model start: an uncertified estimate,
+    // or one at an excluded open bound. Explicit theta/z paths never enter
+    // this policy; all phases share the original iteration budget.
+    const std::vector<std::string> conditions = model.constraint_names();
+    const bool at_open_bound = std::any_of(result.excluded_boundary.begin(), result.excluded_boundary.end(),
+        [&](const std::string& c) { return std::find(conditions.begin(), conditions.end(), c) == conditions.end(); });
+    if (options.coordinates == Coordinates::automatic && model.capabilities().chart_covers_domain
+        && (!result.success || at_open_bound) && iterations(phases) < options.maximum_iterations) {
         const auto problem = make_problem(model, unit_jet, false);
         const auto same = [](const std::vector<double>& t) { return t; };
         const int remaining = options.maximum_iterations-iterations(phases);

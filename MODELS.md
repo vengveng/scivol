@@ -133,17 +133,21 @@ their workspaces can be used by independent Python threads.
   sandwich. Not offered for EGARCH with a shaped density.
 - A fit is certified (`result.success`) when the estimate is finite and
   feasible, the solver converged, and the projected-gradient (KKT) residual is
-  at most `max(sqrt(accuracy), sqrt(eps))`. An estimate within `64 eps`
-  (relative) of a nonzero open bound, or at the smallest normal number above a
-  zero open bound, is a supremum on the excluded boundary: it is uncertified
-  with `inference_status="at_open_bound"`. So is a stationary estimate short of
-  an open bound whose local maximum lies beyond it: the Newton step of the
-  likelihood on the active face crosses the bound, or, where the curvature
-  there is not positive, the projected-gradient step does. The theta Newton
-  refinement stops (phase termination `open_bound`) once that holds at five
-  consecutive iterates; such a fit reports `at_open_bound` without a KKT
-  certificate, since the likelihood was still rising toward the excluded
-  bound.
+  at most `max(sqrt(accuracy), sqrt(eps))`: a local maximum of the likelihood
+  over the closure of the declared domain.
+- An estimate at an excluded boundary of the declared domain reports
+  `inference_status="at_excluded_boundary"` and names the conditions in
+  `fit_info.excluded_boundary` (for example `("persistence < 1",)` or
+  `("eta < 0.5",)`); standard errors are withheld. An open bound counts when the
+  estimate is within `64 eps` (relative) of a nonzero endpoint or at the
+  smallest normal number above a zero one, or when the likelihood's local
+  maximum lies beyond it: the Newton step on the active face crosses the bound,
+  or, where the curvature there is not positive, the projected-gradient step
+  does. A strict constraint (persistence < 1, a stable lag polynomial,
+  `delta * eta < 1`) counts within `1e-8` of its boundary where the likelihood
+  increases across it. The theta Newton refinement stops (phase termination
+  `open_bound`) once its local model places the maximum beyond an open bound at
+  five consecutive iterates; such a fit is not certified.
 
 The model capability `likelihood_can_have_gradient_kinks` tells optimizers whether
 moving residuals can cross a face with a nondifferentiable first derivative.

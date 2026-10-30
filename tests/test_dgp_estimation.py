@@ -2890,18 +2890,34 @@ def test_arx_egarch_dgp_has_a_reproducible_stationarity_certificate(seed):
         assert not fitted.fit_info.kink_point
 
 
-def test_aparch_supremum_at_excluded_asymmetry_bound_is_uncertified():
+def test_aparch_maximum_at_excluded_asymmetry_bound_is_reported():
     from scivol import APARCH, GJRGARCH, Normal
 
     # Only negative shocks drive this GJR variance. APARCH's likelihood keeps
-    # rising toward the excluded asymmetry bound gamma = 1.
+    # rising toward the excluded asymmetry bound gamma = 1: the certified
+    # maximum over the domain's closure lies on it, and the fit says so.
     y = (GJRGARCH()+Normal()).simulate(4000, [.05, 0., .2, .85], seed=0).data
     fitted = (APARCH(1, 1)+Normal()).fit(y)
     assert abs(fitted.params[2] - 1.) <= 64*np.finfo(float).eps
-    assert not fitted.success
-    assert fitted.fit_info.inference_status == 'at_open_bound'
-    assert any('excluded open bound' in w for w in fitted.warnings)
+    assert fitted.fit_info.inference_status == 'at_excluded_boundary'
+    assert fitted.fit_info.excluded_boundary == ('gamma[1] < 1',)
+    assert fitted.std_errors is None
 
+
+
+@pytest.mark.parametrize("coordinates", ["theta", "z", "automatic"])
+def test_garch_maximum_at_the_excluded_stationarity_boundary_is_reported(coordinates):
+    from scivol import GARCH, Normal
+
+    # A variance level shift pushes GARCH persistence to one: the certified
+    # maximum over the domain's closure lies on alpha + beta = 1.
+    rng = np.random.default_rng(3)
+    y = np.concatenate([rng.standard_normal(1000), 3*rng.standard_normal(1000)])
+    fitted = (GARCH(1, 1)+Normal()).fit(y, coordinates=coordinates)
+    assert 1 - fitted.params[1] - fitted.params[2] < 1e-12
+    assert fitted.success and fitted.fit_info.inference_status == 'at_excluded_boundary'
+    assert fitted.fit_info.excluded_boundary == ('persistence < 1',)
+    assert fitted.std_errors is None
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])

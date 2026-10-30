@@ -434,6 +434,52 @@ void Model::constraints(std::span<const double> theta, std::span<double> values,
     }
 }
 
+namespace {
+
+// The constraint rows in Model::constraints order: the condition each declares
+// and whether its boundary c(theta) = 0 is excluded from the domain.
+struct ConstraintRow {
+    std::string name;
+    bool open;
+};
+
+std::vector<ConstraintRow> constraint_rows(const ModelSpec& spec)
+{
+    const detail::Layout layout(spec);
+    std::vector<ConstraintRow> rows;
+    for (std::size_t b = 0; b < layout.stable_blocks; ++b) {
+        const detail::Layout::Stable& s = layout.stable[b];
+        if (s.count < 2) continue;
+        const char* condition = layout.egarch() && s.at == layout.beta ? "stable beta polynomial"
+            : s.sign < 0 ? "invertible MA polynomial" : "stationary AR polynomial";
+        rows.insert(rows.end(), s.count, {condition, true});
+    }
+    if (!spec.mean.har.empty()) rows.insert(rows.end(), spec.mean.har.back(), {"stationary HAR polynomial", true});
+    if (layout.egarch()) return rows;
+    rows.push_back({"persistence < 1", true});
+    if (spec.volatility == VolatilityKind::gjr)
+        for (std::size_t i = 1; i <= spec.p; ++i)
+            rows.push_back({"alpha[" + std::to_string(i) + "] + gamma[" + std::to_string(i) + "] >= 0", false});
+    if (power_moment_has_tail_bound(spec)) rows.push_back({"delta * eta < 1", true});
+    return rows;
+}
+
+}  // namespace
+
+void Model::open_constraints(std::span<char> open) const
+{
+    const std::vector<ConstraintRow> rows = constraint_rows(spec_);
+    require(open.size() == rows.size(), "open constraint flags have the wrong length");
+    for (std::size_t row = 0; row < rows.size(); ++row) open[row] = rows[row].open;
+}
+
+std::vector<std::string> Model::constraint_names() const
+{
+    std::vector<std::string> names;
+    for (ConstraintRow& row : constraint_rows(spec_)) names.push_back(std::move(row.name));
+    return names;
+}
+
 // The mean starts at its constant = mean(y), every other coefficient zero.
 // Volatility starts with persistence 0.9 (EGARCH: beta summing to 0.9). GARCH
 // and GJR put 80% on beta and the rest on alpha (GJR: 60% alpha, 40% leverage at

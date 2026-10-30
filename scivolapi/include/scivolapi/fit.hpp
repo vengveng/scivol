@@ -48,7 +48,7 @@ enum class Inference {
     not_stationary,        // first-order conditions not met; the fit is uncertified
     at_boundary,           // a bound or constraint is active; Hessian SEs do not apply
     at_kink,               // nonsmooth estimate; ordinary Hessian SEs do not apply
-    at_open_bound,         // the likelihood rises toward an excluded bound; no maximum in the domain
+    at_excluded_boundary,  // at an open bound or strict constraint the declared domain excludes
     not_positive_definite, // the observed information is not positive definite
     ill_conditioned,       // positive definite, but too poorly conditioned to invert reliably
 };
@@ -94,6 +94,9 @@ struct FitResult {
     bool stationary = false;
     bool kink_point = false;
     std::vector<std::size_t> active_kink_rows;
+    // Excluded boundaries of the declared domain the estimate is at, as conditions
+    // ("persistence < 1", "eta < 0.5"); empty inside the domain.
+    std::vector<std::string> excluded_boundary;
     Inference inference = Inference::not_stationary;
     bool success = false;  // finite, feasible, solver converged, and stationary
 
