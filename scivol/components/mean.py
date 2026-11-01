@@ -1,23 +1,29 @@
-# scivol/components/density.py
+# scivol/components/mean.py
+"""Conditional means. Each declares one native ARMAX equation; the native model
+defines its coefficients, their names and the stationary and invertible domain."""
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Sequence
 
-import numpy as np
-
-from ..components.base import Component
+from .. import _scivolapi as api
 from ..roles import Role
+from .base import Component, native_check
+
+
+def _constant_suffix(constant: bool) -> str:
+    return "" if constant else ",constant=False"
+
 
 class ARMA(Component):
+    """ARMA(p, q) with an optional constant. Takes no exogenous regressors."""
+
     role = Role.MEAN
 
     def __init__(self, p: int, q: int, *, constant: bool = True):
         if any(type(order) is not int or order < 0 for order in (p, q)):
-            raise ValueError("orders must be non-negative integers")
-        self.p, self.q = p, q
-        self.constant = bool(constant)
-        self.fitted_params = None
-        self.fitted_values = None
+            raise ValueError("ARMA orders must be non-negative integers")
+        self.p, self.q, self.constant = p, q, bool(constant)
+        native_check(self)
 
     @classmethod
     def up_to(cls, p: int, q: int):
@@ -32,40 +38,26 @@ class ARMA(Component):
         return type(self)(self.p + 1, self.q, constant=self.constant) if self.p < max_order else None
 
     @property
-    def signature(self): return f"ARMA({self.p},{self.q})" if self.constant else f"ARMA({self.p},{self.q},constant=False)"
+    def signature(self) -> str:
+        return f"ARMA({self.p},{self.q}{_constant_suffix(self.constant)})"
 
-    @property
-    def n_params(self): return int(self.constant) + self.p + self.q  # constant + AR + MA
-
-    def pack(self, params_dict):
-        return np.array(([params_dict['const']] if self.constant else []) +
-                         params_dict['ar'] +
-                         params_dict['ma'])
-
-    def unpack(self, flat_params):
-        if len(flat_params) == 0:
-            self.fitted_params = {}
-            return {}
-
-        self.fitted_params = {
-            'const': float(flat_params[0]) if self.constant else 0.0,
-            'ar': flat_params[int(self.constant):int(self.constant)+self.p].tolist(),
-            'ma': flat_params[int(self.constant)+self.p:].tolist()
-        }
-        return self.fitted_params
+    def declare(self, native: api.ModelSpec, exog: int) -> bool:
+        if exog:
+            return False
+        native.mean.constant, native.mean.ar, native.mean.ma = self.constant, self.p, self.q
+        return True
 
 
 class ARX(Component):
+    """AR(lags) with an optional constant and the regressors passed as `x`."""
+
     role = Role.MEAN
 
     def __init__(self, lags: int = 0, *, constant: bool = True):
         if type(lags) is not int or lags < 0:
             raise ValueError("lags must be non-negative")
-        self.lags = int(lags)
-        self.constant = bool(constant)
-        self.n_exog: int = 0
-        self.fitted_params = None
-        self.fitted_values = None
+        self.lags, self.constant = lags, bool(constant)
+        native_check(self)
 
     @classmethod
     def up_to(cls, k: int):
@@ -77,56 +69,21 @@ class ARX(Component):
         return self.lags
 
     def widen(self, max_order: int) -> ARX | None:
-        if self.lags >= max_order:
-            return None
-        wider = type(self)(self.lags + 1, constant=self.constant)
-        wider.set_n_exog(self.n_exog)
-        return wider
+        return type(self)(self.lags + 1, constant=self.constant) if self.lags < max_order else None
 
     @property
-    def signature(self):
-        return f"ARX({self.lags})" if self.constant else f"ARX({self.lags},constant=False)"
+    def signature(self) -> str:
+        return f"ARX({self.lags}{_constant_suffix(self.constant)})"
 
-    @property
-    def n_params(self):
-        return int(self.constant) + self.lags + self.n_exog
-
-    def set_n_exog(self, n_exog: int) -> None:
-        if n_exog < 0:
-            raise ValueError("n_exog must be non-negative")
-        self.n_exog = int(n_exog)
-
-    @property
-    def required_hold_back(self) -> int:
-        return self.lags
-
-    def pack(self, params_dict):
-        const = [params_dict["const"]] if self.constant else []
-        ar = list(params_dict.get("ar", []))
-        exog = list(params_dict.get("exog", []))
-        return np.array(const + ar + exog, dtype=np.float64)
-
-    def unpack(self, flat_params):
-        if len(flat_params) == 0:
-            self.fitted_params = {}
-            return {}
-
-        offset = 0
-        const = 0.0
-        if self.constant:
-            const = float(flat_params[offset])
-            offset += 1
-
-        ar = flat_params[offset:offset + self.lags].tolist()
-        offset += self.lags
-        if self.n_exog == 0 and len(flat_params) > offset:
-            self.n_exog = int(len(flat_params) - offset)
-        exog = flat_params[offset:offset + self.n_exog].tolist()
-        self.fitted_params = {"const": const, "ar": ar, "exog": exog}
-        return self.fitted_params
+    def declare(self, native: api.ModelSpec, exog: int) -> bool:
+        native.mean.constant, native.mean.ar, native.mean.exog = self.constant, self.lags, exog
+        return True
 
 
 class HARX(Component):
+    """Heterogeneous autoregression: averages of the last w observations for each
+    horizon w, an optional constant and the regressors passed as `x`."""
+
     role = Role.MEAN
 
     def __init__(self, horizons: Sequence[int], *, constant: bool = True):
@@ -139,53 +96,13 @@ class HARX(Component):
             raise ValueError("horizons must be sorted in ascending order")
         if len(set(cleaned)) != len(cleaned):
             raise ValueError("horizons must be unique")
-
-        self.horizons = cleaned
-        self.constant = bool(constant)
-        self.n_exog: int = 0
-        self.fitted_params = None
-        self.fitted_values = None
+        self.horizons, self.constant = cleaned, bool(constant)
+        native_check(self)
 
     @property
-    def signature(self):
-        horizons = ",".join(str(h) for h in self.horizons)
-        return f"HARX({horizons})"
+    def signature(self) -> str:
+        return f"HARX({','.join(str(h) for h in self.horizons)}{_constant_suffix(self.constant)})"
 
-    @property
-    def n_params(self):
-        return int(self.constant) + len(self.horizons) + self.n_exog
-
-    def set_n_exog(self, n_exog: int) -> None:
-        if n_exog < 0:
-            raise ValueError("n_exog must be non-negative")
-        self.n_exog = int(n_exog)
-
-    @property
-    def required_hold_back(self) -> int:
-        return max(self.horizons)
-
-    def pack(self, params_dict):
-        const = [params_dict["const"]] if self.constant else []
-        har = list(params_dict.get("har", []))
-        exog = list(params_dict.get("exog", []))
-        return np.array(const + har + exog, dtype=np.float64)
-
-    def unpack(self, flat_params):
-        if len(flat_params) == 0:
-            self.fitted_params = {}
-            return {}
-
-        offset = 0
-        const = 0.0
-        if self.constant:
-            const = float(flat_params[offset])
-            offset += 1
-
-        n_har = len(self.horizons)
-        har = flat_params[offset:offset + n_har].tolist()
-        offset += n_har
-        if self.n_exog == 0 and len(flat_params) > offset:
-            self.n_exog = int(len(flat_params) - offset)
-        exog = flat_params[offset:offset + self.n_exog].tolist()
-        self.fitted_params = {"const": const, "har": har, "exog": exog}
-        return self.fitted_params
+    def declare(self, native: api.ModelSpec, exog: int) -> bool:
+        native.mean.constant, native.mean.har, native.mean.exog = self.constant, list(self.horizons), exog
+        return True

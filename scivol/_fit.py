@@ -37,67 +37,19 @@ class NativeOptimizationResult:
     njev: int
 
 
-# Native density kinds by component class name.
-DENSITIES = {
-    "Normal": api.DensityKind.normal,
-    "StudentT": api.DensityKind.student_t,
-    "SkewT": api.DensityKind.skew_t,
-    "GED": api.DensityKind.ged,
-    "GeneralizedHyperbolic": api.DensityKind.generalized_hyperbolic,
-    "NormalInverseGaussian": api.DensityKind.nig,
-    "Hyperbolic": api.DensityKind.hyperbolic,
-    "VarianceGamma": api.DensityKind.variance_gamma,
-}
-
-
-def native_mean(mean: Any, exog: int) -> Optional[api.MeanSpec]:
-    """The native mean for a mean component (None: residuals are the data)."""
-    from .components.mean import ARMA, ARX, HARX
-
-    native = api.MeanSpec()
-    if mean is None:
-        return native if exog == 0 else None
-    if isinstance(mean, ARMA):
-        if exog:
-            return None
-        native.constant, native.ar, native.ma = bool(mean.constant), int(mean.p), int(mean.q)
-    elif isinstance(mean, ARX):
-        native.constant, native.ar, native.exog = bool(mean.constant), int(mean.lags), exog
-    elif isinstance(mean, HARX):
-        native.constant, native.har, native.exog = bool(mean.constant), [int(h) for h in mean.horizons], exog
-    else:
-        return None
-    return native
-
-
 def native_spec(spec: Any, exog: int = 0) -> Optional[api.ModelSpec]:
-    """The native specification for a composition, or None if not yet covered."""
-    from .components.vol import APARCH, EGARCH, GARCH, GJRGARCH
-
+    """The native specification of a composition for `exog` regressor columns,
+    or None when the combination is not available. Each component declares its
+    own part; without a volatility component the variance is constant."""
     if hasattr(spec, "_native_definition"):
         return spec._native_definition
-
-    mean = native_mean(spec.get_component(Role.MEAN), exog)
-    if mean is None:
-        return None
-    volatility = spec.get_component(Role.VOLATILITY)
-    density = spec.get_component(Role.DENSITY)
-    volatility_kind = {
-        GARCH: api.VolatilityKind.garch, GJRGARCH: api.VolatilityKind.gjr, EGARCH: api.VolatilityKind.egarch,
-        APARCH: api.VolatilityKind.aparch, type(None): api.VolatilityKind.constant,
-    }.get(type(volatility))
-    if volatility_kind is None:
-        return None
-    kind = DENSITIES.get("Normal" if density is None else type(density).__name__)
-    if kind is None:
-        return None
     native = api.ModelSpec()
-    native.mean = mean
-    native.volatility = volatility_kind
-    native.p, native.q = (0, 0) if volatility is None else (int(volatility.p), int(volatility.q))
-    if volatility is not None:
-        native.stationarity = getattr(api.Stationarity, volatility.stationarity)
-    native.density = kind
+    native.volatility, native.p, native.q = api.VolatilityKind.constant, 0, 0
+    if exog and spec.get_component(Role.MEAN) is None:
+        return None  # regressors enter through the mean
+    for component in spec.components:
+        if not component.declare(native, exog):
+            return None
     return native
 
 
@@ -145,11 +97,6 @@ def prepare_sample(spec: Any, data: Any, x: Any = None, hold_back: int = 0,
         if x_all.shape[1] < columns:
             raise ValueError("not enough exogenous columns for this specification")
         x_all = np.ascontiguousarray(x_all[:, :columns]) if columns else None
-    mean = spec.get_component(Role.MEAN)
-    if x_all is not None and hasattr(mean, "set_n_exog"):
-        mean.set_n_exog(x_all.shape[1])
-    elif x_all is None and getattr(mean, "n_exog", 0):
-        raise ValueError(f"{mean.signature} requires exogenous regressors via `x=`.")
     native = native_spec(spec, 0 if x_all is None else x_all.shape[1])
     if native is None:
         raise NotImplementedError(f"{spec} cannot be estimated: unsupported component combination")
@@ -293,9 +240,6 @@ def spec_from_native(definition: api.ModelSpec):
              for name, args, kwargs in model.components]
     spec = CompositeSpec(*parts)
     spec._native_definition = definition
-    mean = spec.get_component(Role.MEAN)
-    if mean is not None and hasattr(mean, "set_n_exog"):
-        mean.set_n_exog(definition.mean.exog)
     return spec
 
 
@@ -355,9 +299,6 @@ def present_fit(spec, sample: PreparedSample, native_result: api.FitResult, *,
         return np.array(values) if values.size else None
 
     qmle = native_result.estimator == api.Estimator.qmle
-    from ._evaluation import unpack_components
-
-    unpack_components(spec, theta)
     first = skip + native.mean.conditioning
     result = EstimationResult(
         spec=spec,

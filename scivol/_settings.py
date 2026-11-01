@@ -28,25 +28,11 @@ _INDEXED_RE = re.compile(r"^([a-zA-Z_]+)(\[.+\])$")
 
 
 class ParamNames:
-    """Registry that maps canonical parameter names to user-chosen display names.
+    """Maps the native parameter names to user-chosen display names.
 
     Supports bare names (``"omega"``) and indexed names (``"alpha[1]"``).
     For indexed names the base is resolved and the index suffix reattached.
     """
-
-    _defaults: Dict[str, str] = {
-        "omega": "omega",
-        "alpha": "alpha",
-        "gamma": "gamma",
-        "beta": "beta",
-        "eta": "eta",
-        "nu": "nu",
-        "lambda": "lambda",
-        "lam": "lam",
-        "const": "const",
-        "ar": "ar",
-        "ma": "ma",
-    }
 
     def __init__(self) -> None:
         self._overrides: Dict[str, str] = {}
@@ -57,7 +43,7 @@ class ParamNames:
         # Avoid infinite recursion for private / dunder attributes
         if name.startswith("_"):
             raise AttributeError(name)
-        return self._overrides.get(name, self._defaults.get(name, name))
+        return self._overrides.get(name, name)
 
     def __setattr__(self, name: str, value: str) -> None:
         if name.startswith("_"):
@@ -80,19 +66,16 @@ class ParamNames:
         m = _INDEXED_RE.match(name)
         if m:
             base, suffix = m.group(1), m.group(2)
-            display_base = self._overrides.get(base, self._defaults.get(base, base))
-            return display_base + suffix
-        return self._overrides.get(name, self._defaults.get(name, name))
+            return self._overrides.get(base, base) + suffix
+        return self._overrides.get(name, name)
 
     def reset(self) -> None:
         """Clear all user overrides, reverting to default names."""
         self._overrides.clear()
 
     def __repr__(self) -> str:
-        items = {**self._defaults, **self._overrides}
-        changed = {k: v for k, v in items.items() if v != self._defaults.get(k, k)}
-        if changed:
-            parts = ", ".join(f"{k}={v!r}" for k, v in sorted(changed.items()))
+        if self._overrides:
+            parts = ", ".join(f"{k}={v!r}" for k, v in sorted(self._overrides.items()))
             return f"ParamNames(overrides: {parts})"
         return "ParamNames(defaults)"
 

@@ -1,8 +1,6 @@
 # scivol/spec/composite.py
 from __future__ import annotations
 from typing import Union, Tuple, List, Dict, Optional
-import numpy as np
-from numpy.typing import NDArray
 
 from ..roles import Role
 from .._mixins import FitsMixin
@@ -52,24 +50,6 @@ class CompositeSpec(FitsMixin):
             if comp is not None:
                 components_list.append(comp)
         return components_list
-    
-    @property
-    def slice_map(self) -> Dict[Component, slice]:
-        return self._slice_map()
-    
-    def _slice_map(self) -> Dict[Component, slice]:
-        """Pre-compute parameter slices for each component"""
-        slice_map = {}
-        offset = 0
-        for comp in self.components:
-            n_params = comp.n_params
-            slice_map[comp] = slice(offset, offset + n_params)
-            offset += n_params
-        return slice_map
-    
-    @property
-    def total_params(self) -> int:
-        return sum(c.n_params for c in self.components)
     
     def get_component(self, role: Role) -> Optional[Component]:
         """Get component by role"""

@@ -1,239 +1,71 @@
 # scivol/components/density.py
+"""Innovation densities, standardized to zero mean and unit variance. Each names
+a native density; the native model defines its shapes and their domain."""
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import ClassVar
 
-import numpy as np
-
-from ..components.base import Component
+from .. import _scivolapi as api
 from ..roles import Role
+from .base import Component
 
-class Normal(Component):
+
+class DensityComponent(Component):
     role = Role.DENSITY
-
-    def __init__(self):
-        self.fitted_params = {}
+    kind: ClassVar[str]  # the native DensityKind
 
     @property
-    def signature(self): return 'Normal'
+    def signature(self) -> str:
+        return type(self).__name__
 
-    @property
-    def n_params(self): return 0
-
-    def pack(self, params_dict): return np.array([])
-    def unpack(self, flat_params):
-        self.fitted_params = {}
-        return {}
-
-class StudentT(Component):
-    role = Role.DENSITY
-
-    def __init__(self):
-        self.fitted_params = None
-
-    @property
-    def signature(self): return "StudentT"
-
-    @property
-    def n_params(self): return 1  # reciprocal tail
-
-    def pack(self, params_dict): return np.array([params_dict['eta']])
-    def unpack(self, flat_params):
-        self.fitted_params = {'eta': flat_params[0]} if len(flat_params) > 0 else {}
-        return self.fitted_params
+    def declare(self, native: api.ModelSpec, exog: int) -> bool:
+        native.density = getattr(api.DensityKind, self.kind)
+        return True
 
 
-class SkewT(Component):
-    """
-    Skewed Student-t distribution (Hansen, 1994 parameterization).
+class Normal(DensityComponent):
+    """Standard Normal innovations (the default)."""
 
-    Parameters
-    ----------
-    eta : float
-        Reciprocal degrees of freedom in [0, 1/2), with the Normal limit at zero
-    lam : float
-        Skewness parameter (-1, 1), where lam=0 gives symmetric Student-t
-    """
-    role = Role.DENSITY
-
-    def __init__(self):
-        self.fitted_params = None
-
-    @property
-    def signature(self): return "SkewT"
-
-    @property
-    def n_params(self): return 2  # reciprocal tail + skewness
-
-    def pack(self, params_dict):
-        return np.array([params_dict['eta'], params_dict['lam']])
-
-    def unpack(self, flat_params):
-        if len(flat_params) >= 2:
-            self.fitted_params = {'eta': flat_params[0], 'lam': flat_params[1]}
-        else:
-            self.fitted_params = {}
-        return self.fitted_params
+    kind = "normal"
 
 
-class GED(Component):
-    """
-    Generalized Error Distribution (exponential power), standardized to unit variance.
+class StudentT(DensityComponent):
+    """Student-t with reciprocal tail eta = 1/nu in [0, 1/2); eta = 0 is the Normal."""
 
-    The shape parameter ``nu`` controls tail thickness and peakedness. ``nu=2``
-    recovers the Normal distribution, while smaller values imply heavier tails.
-    """
-
-    role = Role.DENSITY
-
-    def __init__(self):
-        self.fitted_params = None
-
-    @property
-    def signature(self):
-        return "GED"
-
-    @property
-    def n_params(self):
-        return 1
-
-    def pack(self, params_dict):
-        return np.array([params_dict["nu"]], dtype=np.float64)
-
-    def unpack(self, flat_params):
-        self.fitted_params = {"nu": flat_params[0]} if len(flat_params) > 0 else {}
-        return self.fitted_params
+    kind = "student_t"
 
 
-class GeneralizedHyperbolic(Component):
-    """Standardized Generalized Hyperbolic conditional density."""
+class SkewT(DensityComponent):
+    """Hansen's (1994) skewed t: reciprocal tail eta in [0, 1/2) and skewness lam in (-1, 1)."""
 
-    role = Role.DENSITY
-
-    def __init__(self):
-        self.fitted_params = None
-
-    @property
-    def signature(self):
-        return "GeneralizedHyperbolic"
-
-    @property
-    def n_params(self):
-        return 3
-
-    def pack(self, params_dict):
-        return np.array(
-            [params_dict["rho"], params_dict["zeta"], params_dict["lambda"]],
-            dtype=np.float64,
-        )
-
-    def unpack(self, flat_params):
-        if len(flat_params) >= 3:
-            self.fitted_params = {
-                "rho": flat_params[0],
-                "zeta": flat_params[1],
-                "lambda": flat_params[2],
-            }
-        else:
-            self.fitted_params = {}
-        return self.fitted_params
+    kind = "skew_t"
 
 
-class NormalInverseGaussian(Component):
-    """Standardized Normal Inverse Gaussian conditional density."""
+class GED(DensityComponent):
+    """Generalized error distribution with shape nu > 0; nu = 2 is the Normal."""
 
-    role = Role.DENSITY
-
-    def __init__(self):
-        self.fitted_params = None
-
-    @property
-    def signature(self):
-        return "NormalInverseGaussian"
-
-    @property
-    def n_params(self):
-        return 2
-
-    def pack(self, params_dict):
-        return np.array(
-            [params_dict["rho"], params_dict["zeta"]], dtype=np.float64
-        )
-
-    def unpack(self, flat_params):
-        if len(flat_params) >= 2:
-            self.fitted_params = {
-                "rho": flat_params[0],
-                "zeta": flat_params[1],
-            }
-        else:
-            self.fitted_params = {}
-        return self.fitted_params
+    kind = "ged"
 
 
-class Hyperbolic(Component):
-    """Standardized Hyperbolic conditional density."""
+class GeneralizedHyperbolic(DensityComponent):
+    """Generalized hyperbolic: skewness rho, concentration zeta and index lambda."""
 
-    role = Role.DENSITY
-
-    def __init__(self):
-        self.fitted_params = None
-
-    @property
-    def signature(self):
-        return "Hyperbolic"
-
-    @property
-    def n_params(self):
-        return 2
-
-    def pack(self, params_dict):
-        return np.array(
-            [params_dict["rho"], params_dict["zeta"]], dtype=np.float64
-        )
-
-    def unpack(self, flat_params):
-        if len(flat_params) >= 2:
-            self.fitted_params = {
-                "rho": flat_params[0],
-                "zeta": flat_params[1],
-            }
-        else:
-            self.fitted_params = {}
-        return self.fitted_params
+    kind = "generalized_hyperbolic"
 
 
-class VarianceGamma(Component):
-    """Standardized Variance-Gamma conditional density.
+class NormalInverseGaussian(DensityComponent):
+    """Normal inverse Gaussian: the generalized hyperbolic with lambda = -1/2."""
 
-    The GH boundary index ``lambda`` is restricted above 1.5 so the density
-    has a finite observed Hessian at its center.
-    """
+    kind = "nig"
 
-    role = Role.DENSITY
 
-    def __init__(self):
-        self.fitted_params = None
+class Hyperbolic(DensityComponent):
+    """Hyperbolic: the generalized hyperbolic with lambda = 1."""
 
-    @property
-    def signature(self):
-        return "VarianceGamma"
+    kind = "hyperbolic"
 
-    @property
-    def n_params(self):
-        return 2
 
-    def pack(self, params_dict):
-        return np.array(
-            [params_dict["rho"], params_dict["lambda"]], dtype=np.float64
-        )
+class VarianceGamma(DensityComponent):
+    """Variance-Gamma, the zeta -> 0 limit of the generalized hyperbolic, with index lambda > 3/2."""
 
-    def unpack(self, flat_params):
-        if len(flat_params) >= 2:
-            self.fitted_params = {
-                "rho": flat_params[0],
-                "lambda": flat_params[1],
-            }
-        else:
-            self.fitted_params = {}
-        return self.fitted_params
+    kind = "variance_gamma"

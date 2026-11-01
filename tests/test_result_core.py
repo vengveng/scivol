@@ -40,29 +40,16 @@ class DummyOpt(SimpleNamespace):
 
 
 def _build_fitted_spec() -> CompositeSpec:
-    """
-    ARMA(1,1) mean + GARCH(1,1) vol + Student-t density,
-    each with fake fitted parameters.
-    """
-    arma = ARMA(1, 1)
-    garch = GARCH(1, 1)
-    t_dist = StudentT()
-
-    # inject mock parameter estimates
-    arma.unpack(np.array([0.05, 0.20, -0.10]))          # const, ar1, ma1
-    garch.unpack(np.array([0.01, 0.08, 0.90]))          # ω, α1, β1
-    t_dist.unpack(np.array([0.125]))                      # eta
-
-    return arma + garch + t_dist
+    """ARMA(1,1) mean + GARCH(1,1) vol + Student-t density."""
+    return ARMA(1, 1) + GARCH(1, 1) + StudentT()
 
 
 def _build_fitted_egarch_spec() -> CompositeSpec:
-    """EGARCH(2,1) + Normal with fake fitted parameters."""
-    egarch = EGARCH(2, 1)
-    normal = Normal()
-    egarch.unpack(np.array([-0.2, 0.15, 0.05, -0.10, 0.02, 0.85]))
-    normal.unpack(np.array([]))
-    return egarch + normal
+    """EGARCH(2,1) + Normal."""
+    return EGARCH(2, 1) + Normal()
+
+
+SPEC_PARAMS = 7  # const, ar[1], ma[1], omega, alpha[1], beta[1], eta
 
 
 # ------------------------------------------------------------------ #
@@ -73,7 +60,7 @@ def test_scalar_properties():
     data = rng.standard_normal(250)
 
     spec = _build_fitted_spec()
-    k = spec.total_params
+    k = SPEC_PARAMS
     theta = np.linspace(0.1, 1.0, k)
 
     opt = DummyOpt(x=theta, fun=123.456)  # negative log-lik
@@ -112,8 +99,7 @@ def test_scalar_properties():
 def test_to_dict_structure():
     data = np.ones(50)
     spec = _build_fitted_spec()
-    theta = np.arange(spec.total_params, dtype=np.float64)
-    theta[-1] = 1.0/theta[-1]
+    theta = np.array([0.05, 0.20, -0.10, 0.01, 0.08, 0.90, 0.125])
     opt = DummyOpt(x=theta, fun=10.0)
     res = EstimationResult(spec, opt, data)
 
@@ -133,11 +119,10 @@ def test_to_dict_structure():
         "parameters",
     } <= d.keys()
 
-    # parameters sub-dict contains one entry per component
-    assert len(d["parameters"]) == len(spec.components)
-    for comp in spec.components:
-        assert comp.signature in d["parameters"]
-        assert d["parameters"][comp.signature] == comp.fitted_params
+    # parameters by name, in theta order; shapes with the derived nu
+    assert d["parameters"] == dict(zip(res.param_names, theta))
+    assert d["shapes"]["eta"] == 0.125 and d["shapes"]["nu"] == 8.0
+    assert d["persistence"] == pytest.approx(0.98)
 
 
 def test_fit_info_is_exposed_in_result_and_dict():
@@ -172,7 +157,7 @@ def test_fit_info_is_exposed_in_result_and_dict():
 def test_summary_returns_the_report():
     data = np.zeros(30)
     spec = _build_fitted_spec()
-    opt = DummyOpt(x=np.zeros(spec.total_params), fun=0.0)
+    opt = DummyOpt(x=np.zeros(SPEC_PARAMS), fun=0.0)
     res = EstimationResult(
         spec,
         opt,
@@ -212,7 +197,7 @@ def test_egarch_summary_reports_egarch_properties():
     assert "Persistence:" in captured
     assert "Unconditional Variance:" in captured
     assert "Geometric Variance" not in captured
-    assert res.garch_params.unconditional_variance == res.unconditional_variance
+    assert res.persistence == 0.85
     assert "non-stationary log-variance recursion" not in captured
 
 
@@ -261,20 +246,15 @@ def test_forecast_convergence():
     spec = GARCH(1, 1) + Normal()
     res = spec.fit(y)
     
-    # Skip if no GARCH params
-    gp = res.garch_params
-    if gp is None:
-        pytest.skip("No GARCH params available")
-    
     # Skip if model is non-stationary (persistence >= 1)
-    if gp.persistence >= 1.0:
-        pytest.skip(f"Model non-stationary: persistence = {gp.persistence}")
+    if res.persistence >= 1.0:
+        pytest.skip(f"Model non-stationary: persistence = {res.persistence}")
     
     # Long horizon forecast
     fc = res.forecast(horizon=200)
     
     # Should converge to unconditional variance
-    unconditional_var = gp.unconditional_variance
+    unconditional_var = res.unconditional_variance
     
     # Check last forecast is close to unconditional (within 30%)
     # Loose tolerance due to estimation error

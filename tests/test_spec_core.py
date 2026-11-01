@@ -44,27 +44,14 @@ def test_duplicate_role_raises():
 
 
 # ------------------------------------------------------------------
-# 3. Slice-map integrity
+# 3. The native model owns the parameter layout
 # ------------------------------------------------------------------
-def test_slice_map_matches_parameter_lengths():
-    spec = CompositeSpec(ARMA(1, 0), GARCH(1, 1))
-    slices = spec._slice_map()
-    theta_len = sum(comp.n_params for comp in spec.components)
-    # end of last slice == total length
-    assert max(sl.stop for sl in slices.values()) == theta_len
-    # slices are non-overlapping
-    stops = sorted((sl.start, sl.stop) for sl in slices.values())
-    for (_, a_stop), (b_start, _) in zip(stops, stops[1:]):
-        assert a_stop == b_start
+def test_native_model_names_every_parameter():
+    from scivol import _scivolapi as api
+    from scivol._fit import native_spec
 
-
-# ------------------------------------------------------------------
-# 4. total_params accuracy
-# ------------------------------------------------------------------
-def test_total_params():
-    spec = CompositeSpec(ARMA(2, 1), GARCH(3, 0))  # n = 1+2+1 + 1+3 = 8
-    assert spec.total_params == 8
-
+    model = api.Model(native_spec(CompositeSpec(ARMA(2, 1), GARCH(3, 0))))
+    assert model.parameter_names == ["const", "ar[1]", "ar[2]", "ma[1]", "omega", "alpha[1]", "alpha[2]", "alpha[3]"]
 
 
 # ------------------------------------------------------------------

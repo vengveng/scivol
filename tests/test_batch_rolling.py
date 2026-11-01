@@ -14,6 +14,7 @@ class DummyBatchResult:
     def __init__(self, data_len: int) -> None:
         self.n_obs = data_len
         self.data = np.zeros(data_len)
+        self.params = np.zeros(3)
         self.fit_info = FitMetadata()
         self.time_elapsed = 0.0
         self._index = None

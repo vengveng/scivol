@@ -99,15 +99,10 @@ def validate_regressors(x: Any, n_obs: int) -> np.ndarray:
     return np.ascontiguousarray(arr, dtype=np.float64)
 
 
-def small_sample_warning(spec: CompositeSpec, data: np.ndarray) -> Optional[str]:
-    """
-    Return a warning message if the sample looks too small for the number
-    of parameters. Current heuristic: ``len(data) < 5 * n_params``.
-    """
-    min_obs = spec.total_params * 5
-    if len(data) < min_obs:
-        return (
-            f"{len(data)} obs for {spec.total_params} parameters; "
-            f"recommend >{min_obs}."
-        )
+def small_sample_warning(n_params: int, n_obs: int) -> Optional[str]:
+    """A warning when the sample looks too small for the number of parameters:
+    fewer than five observations per parameter."""
+    min_obs = n_params * 5
+    if n_obs < min_obs:
+        return f"{n_obs} obs for {n_params} parameters; recommend >{min_obs}."
     return None

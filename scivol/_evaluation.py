@@ -36,12 +36,7 @@ class FilteredState:
     score: Optional[NDArray[np.float64]]
     hessian: Optional[NDArray[np.float64]]
     distribution: str
-    eta: Optional[float] = None
-    nu: Optional[float] = None
-    lam: Optional[float] = None
-    rho: Optional[float] = None
-    zeta: Optional[float] = None
-    shape_lambda: Optional[float] = None
+    shapes: dict[str, float]  # the density's shapes by name, fixed and derived ones included
 
     @property
     def residual_variance(self) -> NDArray[np.float64]:
@@ -59,12 +54,7 @@ class FilteredState:
             "sigma2": self.sigma2.copy(),
             "std_resid": self.std_resid.copy(),
             "distribution": self.distribution,
-            "eta": self.eta,
-            "nu": self.nu,
-            "lam": self.lam,
-            "rho": self.rho,
-            "zeta": self.zeta,
-            "lambda": self.shape_lambda,
+            "shapes": dict(self.shapes),
             "score": None if self.score is None else self.score.copy(),
             "hessian": None if self.hessian is None else self.hessian.copy(),
         }
@@ -83,12 +73,7 @@ class ForecastResult(Mapping[str, NDArray[np.float64]]):
     variance: NDArray[np.float64]
     residual_variance: NDArray[np.float64]
     distribution: str
-    eta: Optional[float] = None
-    nu: Optional[float] = None
-    lam: Optional[float] = None
-    rho: Optional[float] = None
-    zeta: Optional[float] = None
-    shape_lambda: Optional[float] = None
+    shapes: dict[str, float]  # the density's shapes by name, fixed and derived ones included
     density: Any = None  # api.InnovationDensity
     simulated_paths: Optional[Callable[[], NDArray[np.float64]]] = None
 
@@ -140,12 +125,7 @@ class ForecastResult(Mapping[str, NDArray[np.float64]]):
             "sigma2": self.sigma2.copy(),
             "volatility": self.volatility.copy(),
             "distribution": self.distribution,
-            "eta": self.eta,
-            "nu": self.nu,
-            "lam": self.lam,
-            "rho": self.rho,
-            "zeta": self.zeta,
-            "lambda": self.shape_lambda,
+            "shapes": dict(self.shapes),
         }
 
 
@@ -171,60 +151,22 @@ class SimulationResult:
 # Parameters
 # --------------------------------------------------------------------------- #
 
-def component_slices(spec: Any) -> list[tuple[Any, slice]]:
-    """Each component's entries of theta in the native layout [mean | volatility | shapes]:
-    the mean's block first, the density's last, the volatility's in between (a
-    mean-only model's sigma2 lies in between and belongs to no component)."""
-    from ._fit import native_spec
-
-    mean, volatility, density = (spec.get_component(role) for role in (Role.MEAN, Role.VOLATILITY, Role.DENSITY))
-    native = native_spec(spec, int(getattr(mean, "n_exog", 0) or 0))
-    if native is None:
-        raise NotImplementedError(f"{spec} has no native model")
-    dimension = api.Model(native).dimension
-    first = 0 if mean is None else mean.n_params
-    last = dimension - (0 if density is None else density.n_params)
-    slices = []
-    if mean is not None:
-        slices.append((mean, slice(0, first)))
-    if volatility is not None:
-        slices.append((volatility, slice(first, last)))
-    if density is not None:
-        slices.append((density, slice(last, dimension)))
-    return slices
-
-
-def unpack_components(spec: Any, theta: NDArray[np.float64]) -> None:
-    """Store theta in the components' fitted parameters."""
-    for component, entries in component_slices(spec):
-        component.unpack(theta[entries])
-
-
-_DISPLAY = {"phi": "ar", "theta": "ma", "x": "exog", "c": "const", "lambda": "lam"}
-
-
 def parameters(spec: Any, model: "api.Model", params: Any) -> NDArray[np.float64]:
     """theta in the model's order from an array, a mapping by parameter name
-    ("alpha[1]", or "alpha" with one value per lag), or None (the components'
-    fitted values)."""
+    ("alpha[1]", or "alpha" with one value per lag), or a result of this
+    specification (its estimates)."""
     names = list(model.parameter_names)
     if params is None:
-        theta = np.zeros(len(names))
-        for component, entries in component_slices(spec):
-            fitted = getattr(component, "fitted_params", None)
-            if not fitted and component.n_params:
-                raise ValueError("Parameters are required when the specification has not been fitted.")
-            if component.n_params:
-                theta[entries] = np.asarray(component.pack(fitted), dtype=np.float64)
-        if spec.get_component(Role.VOLATILITY) is None:
-            raise ValueError("A mean-only model needs explicit parameters: sigma2 has no component.")
-    elif isinstance(params, Mapping):
+        raise ValueError(f"Parameters are required: {', '.join(names)}.")
+    source = getattr(params, "spec", None)
+    if source is not None and hasattr(params, "params"):
+        if str(source) != str(spec):
+            raise ValueError(f"The result is for {source}; this specification is {spec}.")
+        params = params.params
+    if isinstance(params, Mapping):
         flat: dict[str, float] = {}
         for key, value in params.items():
             base, bracket, rest = str(key).partition("[")
-            base = _DISPLAY.get(base, base)
-            if base == "lam" and "lam" not in names:
-                base = "lambda"
             values = np.atleast_1d(np.asarray(value, dtype=np.float64))
             if bracket or values.size == 1 and f"{base}[1]" not in names:
                 flat[base + bracket + rest] = float(values[0])
@@ -254,17 +196,11 @@ def density_name(spec: Any) -> str:
     return "Normal" if density is None else density.signature
 
 
-def _shapes(model: "api.Model", theta: NDArray[np.float64]) -> dict[str, Optional[float]]:
-    """Density shapes by name, as the result containers report them (fixed ones included)."""
-    named = model.innovation_density(theta).named
-    return {
-        "eta": named.get("eta"),
-        "nu": named.get("nu"),
-        "lam": named.get("lam"),
-        "rho": named.get("rho"),
-        "zeta": named.get("zeta"),
-        "shape_lambda": named.get("lambda"),
-    }
+def shapes(model: "api.Model", theta: NDArray[np.float64]) -> dict[str, float]:
+    """The density's shapes by name: the estimated ones, those its definition
+    fixes (NIG: lambda = -1/2) and derived ones (Student-t: nu = 1/eta)."""
+    density = model.innovation_density(theta)
+    return {**density.named, **density.derived}
 
 
 def uniforms(rng: np.random.Generator, size: Any) -> NDArray[np.float64]:
@@ -341,7 +277,6 @@ def fixed_result(spec: Any, data: Any, params: Any, *, x: Any = None, hold_back:
 
     bound = _Bound(spec, data, params, x, hold_back, scale)
     filtered = state(spec, bound.model, bound.jet, bound.y, bound.theta)
-    unpack_components(spec, bound.theta)
     first = bound.sample.skip + bound.jet.first_scored
     result = FixedResult(
         spec, _SuppliedParameters(bound.theta.copy(), -filtered.log_likelihood), filtered.data,
@@ -385,7 +320,7 @@ def state(spec: Any, model: "api.Model", jet: "api.Jet", y: NDArray[np.float64],
         score=-np.asarray(out["gradient"]) if "gradient" in out else None,
         hessian=-np.asarray(out["hessian"]) if "hessian" in out else None,
         distribution=distribution,
-        **_shapes(model, theta),
+        shapes=shapes(model, theta),
     )
 
 
@@ -427,7 +362,7 @@ def forecast(spec: Any, model: "api.Model", theta: NDArray[np.float64], y: NDArr
         variance=np.asarray(out["variance"]),
         residual_variance=np.asarray(out["residual_variance"]),
         distribution=distribution,
-        **_shapes(model, theta),
+        shapes=shapes(model, theta),
         density=density,
         simulated_paths=paths,
     )
@@ -443,9 +378,6 @@ def simulate(spec: Any, n_obs: int, params: Any, *, burn: int = 500, seed: Any =
     burn = max(int(burn), 0)
     total = n_obs + burn
     rows = regressors(x, total)
-    mean = spec.get_component(Role.MEAN)
-    if rows is not None and hasattr(mean, "set_n_exog"):
-        mean.set_n_exog(rows.shape[1])
     native = native_spec(spec, 0 if rows is None else rows.shape[1])
     if native is None:
         raise NotImplementedError(f"{spec} cannot be simulated: unsupported component combination")

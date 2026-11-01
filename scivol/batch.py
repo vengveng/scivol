@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from copy import deepcopy
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -141,7 +140,7 @@ def _fit_many_worker(name, series, spec, index, initial, timeout, fit_kwargs):
         kwargs = dict(fit_kwargs)
         if initial is not None:
             kwargs["initial_params"] = initial
-        result = deepcopy(spec).fit(series, **kwargs)
+        result = spec.fit(series, **kwargs)
         elapsed = time.perf_counter() - started
         if timeout is not None and elapsed > timeout:
             raise FitTimeoutError(f"the fit took longer than the {timeout:g}-second timeout, which is checked after the fit returns")

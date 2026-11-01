@@ -2,36 +2,34 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, Optional, Union
+from typing import TYPE_CHECKING, Union
 
-import numpy as np
-
-from ..roles import Role
+from .. import _scivolapi as api
 from .._mixins import FitsMixin
+from ..roles import Role
 
 if TYPE_CHECKING:
     from ..spec.composite import CompositeSpec
 
-class Component(FitsMixin, ABC):
-    role: Role
 
-    def __init__(self):
-        self.fitted_params: Optional[Dict[str, Any]] = None
-        self.fitted_values: Optional[np.ndarray] = None
+class Component(FitsMixin, ABC):
+    """One part of a model: a mean, a volatility recursion or a density.
+
+    A component is a declaration. It writes its part of the native model
+    specification; the native model owns the parameters, their names, domain and
+    layout. Components hold no fitted state.
+    """
+
+    role: Role
 
     @property
     @abstractmethod
     def signature(self) -> str: ...
 
-    @property
     @abstractmethod
-    def n_params(self) -> int: ...
-
-    @abstractmethod
-    def pack(self, params_dict: Dict[str, Any]) -> np.ndarray: ...
-
-    @abstractmethod
-    def unpack(self, flat_params: np.ndarray) -> Dict[str, Any]: ...
+    def declare(self, native: api.ModelSpec, exog: int) -> bool:
+        """Write this component into `native` for `exog` regressor columns; False
+        when the combination is not available."""
 
     @property
     def autoregressive_order(self) -> int | None:
@@ -45,9 +43,6 @@ class Component(FitsMixin, ABC):
     def link(self, *others: Union[Component, CompositeSpec]) -> CompositeSpec:
         from ..spec.composite import CompositeSpec
         return CompositeSpec(self, *others)
-    
-    # Component helpers for CompositeSpec view
-    # -------------------------------------------------------
 
     def get_component(self, role: Role):
         return self.spec.get_component(role)
@@ -55,39 +50,40 @@ class Component(FitsMixin, ABC):
     def has_role(self, role: Role) -> bool:
         return self.spec.has_role(role)
 
-    def _as_spec(self) -> CompositeSpec:
-        """Internal helper: view this single component as a CompositeSpec."""
-        from ..spec.composite import CompositeSpec
-        return CompositeSpec(self)
-    
-    @property
-    def total_params(self) -> int:
-        return self.spec.total_params
-
     @property
     def spec(self) -> CompositeSpec:
-        """Public view: returns a CompositeSpec(self)."""
-        return self._as_spec()
+        """This component as a CompositeSpec (with the implicit Normal density)."""
+        from ..spec.composite import CompositeSpec
+        return CompositeSpec(self)
 
-    # Proxy repr / comparison to the spec so the implicit +Normal is visible
     def __hash__(self) -> int:
         return hash(self.spec)
 
     def __eq__(self, other) -> bool:
         from ..spec.composite import CompositeSpec
-        
+
         if isinstance(other, Component):
             return self.spec == other.spec
         if isinstance(other, CompositeSpec):
             return self.spec == other
         return NotImplemented
-    # -------------------------------------------------------
 
     def __str__(self) -> str:
         return str(self.spec)
 
-    # Sugar methods for linking components
-    # -------------------------------------------------------
+    def __repr__(self) -> str:
+        return self.signature
+
     def __add__(self, other: Union[Component, CompositeSpec]) -> CompositeSpec:
         return self.link(other)
-    
+
+
+def native_check(component: Component) -> None:
+    """Raise ValueError when the native model rejects the component's declaration."""
+    native = api.ModelSpec()
+    native.volatility, native.p, native.q = api.VolatilityKind.constant, 0, 0
+    component.declare(native, 0)
+    try:
+        api.Model(native)
+    except ValueError as exc:
+        raise ValueError(f"{component.signature}: {exc}") from None

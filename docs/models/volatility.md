@@ -20,8 +20,8 @@ y = true_model.simulate(2000, [0.05, 0.03, 0.1, 0.88, 0.12, -0.15], seed=11).dat
 
 gjr = true_model.fit(y)
 egarch = (EGARCH(1, 1) + SkewT()).fit(y)
-print(gjr.log_likelihood, gjr.garch_params.persistence, gjr.unconditional_variance)
-print(egarch.log_likelihood, egarch.garch_params.persistence, egarch.unconditional_variance)
+print(gjr.log_likelihood, gjr.persistence, gjr.unconditional_variance)
+print(egarch.log_likelihood, egarch.persistence, egarch.unconditional_variance)
 ```
 
 ```text

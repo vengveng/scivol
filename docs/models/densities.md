@@ -21,7 +21,7 @@ Normal is the default when a specification has no density component.
 
 ## Reading fitted shapes
 
-A fitted result collects the shapes in `result.dist_params`. Two names need care. Hansen's skewness parameter is `lam`, shown as `lambda` in the summary report, while the index of the generalized hyperbolic family is `shape_lambda`. And `nu` means the degrees of freedom $1/\eta$ for the Student-t densities but the estimated exponent for GED.
+A fitted result collects the shapes by name in `result.shapes`: the estimated ones, those the density fixes, such as the NIG's `lambda = -1/2`, and derived ones. For the Student-t densities the derived `nu` is the degrees of freedom $1/\eta$; for GED, `nu` is the estimated exponent itself.
 
 ```python
 from scivol import GJRGARCH, SkewT, GeneralizedHyperbolic, NormalInverseGaussian
@@ -30,16 +30,16 @@ true_model = GJRGARCH(1, 1) + SkewT()
 y = true_model.simulate(2000, [0.05, 0.03, 0.1, 0.88, 0.12, -0.15], seed=11).data
 
 skew = true_model.fit(y)
-print(skew.dist_params.eta, skew.dist_params.nu, skew.dist_params.lam)
+print(skew.shapes)
 
 nig = (GJRGARCH(1, 1) + NormalInverseGaussian()).fit(y)
-print(nig.dist_params.rho, nig.dist_params.zeta, nig.dist_params.shape_lambda)
+print(nig.shapes)
 print(skew.log_likelihood, nig.log_likelihood)
 ```
 
 ```text
-0.10725280236603035 9.323765700659445 -0.12973590131998786
--0.19626034673602827 3.256231711049524 -0.5
+{'eta': 0.10725280236603035, 'lam': -0.12973590131998786, 'nu': 9.323765700659445}
+{'rho': -0.19626034673602827, 'zeta': 3.256231711049524, 'lambda': -0.5}
 -2802.2958522410854 -2803.2378632053415
 ```
 

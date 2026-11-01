@@ -156,25 +156,13 @@ class TestSettingsSingleton:
 # ================================================================== #
 
 def _make_garch_result(gamma: bool = False):
-    """Build a minimal EstimationResult with fake fitted params."""
+    """An EstimationResult at given parameters, without fitting."""
     from scivol import GARCH, GJRGARCH, Normal
     from scivol.result import EstimationResult
 
-    if gamma:
-        vol = GJRGARCH(1, 1)
-        vol.unpack(np.array([1e-5, 0.05, 0.10, 0.85]))  # omega, alpha, gamma, beta
-        n_vol = 4
-    else:
-        vol = GARCH(1, 1)
-        vol.unpack(np.array([1e-5, 0.05, 0.90]))  # omega, alpha, beta
-        n_vol = 3
-
-    dens = Normal()
-    spec = vol + dens
-    params = np.zeros(n_vol)
-    opt = DummyOpt(x=params)
-
-    return EstimationResult(spec, opt, np.random.default_rng(0).standard_normal(100))
+    vol = GJRGARCH(1, 1) if gamma else GARCH(1, 1)
+    params = np.array([1e-5, 0.05, 0.10, 0.85]) if gamma else np.array([1e-5, 0.05, 0.90])
+    return EstimationResult(vol + Normal(), DummyOpt(x=params), np.random.default_rng(0).standard_normal(100))
 
 
 class TestParamNamesInResult:
@@ -223,31 +211,18 @@ class TestParamNamesInResult:
 
     def test_to_dict_keys_default(self):
         res = _make_garch_result()
-        d = res.to_dict()
-        gp = d["garch_params"]
-        assert "omega" in gp
-        assert "alpha" in gp
-        assert "beta" in gp
+        assert list(res.to_dict()["parameters"]) == ["omega", "alpha[1]", "beta[1]"]
 
     def test_to_dict_keys_overridden(self):
         settings.names.alpha = "a"
         settings.names.beta = "b"
         res = _make_garch_result()
-        d = res.to_dict()
-        gp = d["garch_params"]
-        assert "a" in gp
-        assert "b" in gp
-        # Original canonical keys should not appear
-        assert "alpha" not in gp
-        assert "beta" not in gp
+        assert list(res.to_dict()["parameters"]) == ["omega", "a[1]", "b[1]"]
 
     def test_to_dict_gjr_gamma_key(self):
         settings.names.gamma = "zeta"
         res = _make_garch_result(gamma=True)
-        d = res.to_dict()
-        gp = d["garch_params"]
-        assert "zeta" in gp
-        assert "gamma" not in gp
+        assert "zeta[1]" in res.to_dict()["parameters"]
 
     # -- summary output --
 
@@ -276,40 +251,13 @@ class TestParamNamesInResult:
 
 
 # ================================================================== #
-# 4. GARCHParams gamma support
+# 4. Parameters by name
 # ================================================================== #
 
-class TestGARCHParamsGamma:
-    """GARCHParams with gamma field behaves correctly."""
-
-    def test_no_gamma(self):
-        from scivol.result import GARCHParams
-        gp = GARCHParams(omega=1e-5, alpha=np.array([0.05]), beta=np.array([0.90]))
-        assert gp.gamma is None
-        arr = gp.to_array()
-        np.testing.assert_array_equal(arr, [1e-5, 0.05, 0.90])
-
-    def test_with_gamma(self):
-        from scivol.result import GARCHParams
-        gp = GARCHParams(
-            omega=1e-5,
-            alpha=np.array([0.05]),
-            beta=np.array([0.85]),
-            gamma=np.array([0.10]),
-        )
-        assert gp.gamma is not None
-        arr = gp.to_array()
-        np.testing.assert_array_equal(arr, [1e-5, 0.05, 0.10, 0.85])
-
-    def test_gjr_result_has_gamma(self):
+class TestParametersByName:
+    def test_names_and_blocks(self):
         res = _make_garch_result(gamma=True)
-        gp = res.garch_params
-        assert gp is not None
-        assert gp.gamma is not None
-        assert len(gp.gamma) == 1
-
-    def test_garch_result_no_gamma(self):
-        res = _make_garch_result(gamma=False)
-        gp = res.garch_params
-        assert gp is not None
-        assert gp.gamma is None
+        assert res.param_names == ("omega", "alpha[1]", "gamma[1]", "beta[1]")
+        assert res.parameters["gamma[1]"] == 0.10
+        np.testing.assert_array_equal(res.parameters["alpha"], [0.05])
+        assert dict(res.parameters)["beta[1]"] == 0.85

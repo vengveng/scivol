@@ -13,6 +13,8 @@ import numpy as np
 import pytest
 
 from scivol import GARCH, ARMA, Role, CompositeSpec
+from scivol import _scivolapi as api
+from scivol._fit import native_spec
 from scivol.result import FitMetadata
 
 
@@ -23,6 +25,7 @@ class DummyResult:  # simple stand-in for EstimationResult
         self.data = np.zeros(data_len)
         self.kwargs = kwargs
         self.fit_info = FitMetadata()
+        self.params = np.zeros(api.Model(native_spec(spec)).dimension)
         self._index = None
         self._name = None
 

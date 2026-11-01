@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from copy import deepcopy
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Protocol, runtime_checkable, TYPE_CHECKING, Union
 import warnings
@@ -33,148 +33,37 @@ if TYPE_CHECKING:
 
 
 # =============================================================================
-# PARAMETER CONTAINERS (matching reference implementation interface)
+# PARAMETERS BY NAME
 # =============================================================================
 
-@dataclass
-class GARCHParams:
-    """Container for GARCH/GJR-GARCH parameters.
-    
-    For standard GARCH, ``gamma`` is ``None``.
-    For GJR-GARCH, ``gamma`` holds the leverage coefficients.
+class Parameters(Mapping[str, float]):
+    """Values by the native model's parameter names ("omega", "alpha[1]", "eta").
+
+    A lag block's base name ("alpha", "beta", "ar") gives its values in lag
+    order as an array.
     """
-    omega: float
-    alpha: NDArray[np.float64]  # length p
-    beta: NDArray[np.float64]   # length q
-    gamma: Optional[NDArray[np.float64]] = None  # length p (GJR-GARCH only)
-    persistence: float = float("nan")  # the model's: GJR weights gamma by E[z^2 1(z<0)] of the fitted density
-    
-    is_stationary: bool = False  # supplied by Model domain checks
-    
-    unconditional_variance: float = float("nan")  # exact E[h], supplied by Model
-    
-    def to_array(self) -> NDArray[np.float64]:
-        """Flatten to 1D array.
-        
-        GARCH:     [omega, alpha..., beta...]
-        GJR-GARCH: [omega, alpha..., gamma..., beta...]
-        """
-        parts = [[self.omega], self.alpha]
-        if self.gamma is not None:
-            parts.append(self.gamma)
-        parts.append(self.beta)
-        return np.concatenate(parts)
-    
-    @classmethod
-    def from_array(cls, arr: NDArray[np.float64], p: int, q: int) -> "GARCHParams":
-        """Construct from flat array (standard GARCH only)."""
-        return cls(
-            omega=arr[0],
-            alpha=arr[1:1+p],
-            beta=arr[1+p:1+p+q],
-        )
 
+    def __init__(self, names: Sequence[str], values: NDArray[np.float64]) -> None:
+        self._names = tuple(names)
+        self._values = np.asarray(values, dtype=np.float64)
+        self._index = {name: i for i, name in enumerate(self._names)}
 
-@dataclass
-class EGARCHParams:
-    """Container for EGARCH parameters on the log-variance scale."""
+    def __getitem__(self, key: str) -> Union[float, NDArray[np.float64]]:
+        if key in self._index:
+            return float(self._values[self._index[key]])
+        block = [i for i, name in enumerate(self._names) if "[" in name and name.partition("[")[0] == key]
+        if block:
+            return self._values[block].copy()
+        raise KeyError(key)
 
-    omega: float
-    alpha: NDArray[np.float64]
-    beta: NDArray[np.float64]
-    gamma: NDArray[np.float64]
-    persistence: float = float("nan")  # sum beta
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._names)
 
-    is_stationary: bool = False  # supplied by Model domain checks
+    def __len__(self) -> int:
+        return len(self._names)
 
-    unconditional_variance: float = float("nan")  # exact E[h], supplied by Model
-
-    def to_array(self) -> NDArray[np.float64]:
-        return np.concatenate([[self.omega], self.alpha, self.gamma, self.beta])
-
-
-@dataclass
-class APARCHParams:
-    """Container for APARCH parameters on the conditional-power scale."""
-
-    omega: float
-    alpha: NDArray[np.float64]
-    beta: NDArray[np.float64]
-    gamma: NDArray[np.float64]
-    delta: float
-    persistence: float = float("nan")  # sum alpha_i E[(|z| - gamma_i z)^delta] + sum beta under the fitted density
-    unconditional_variance: float = float("nan")  # unavailable unless delta=2
-
-    is_stationary: bool = False  # supplied by Model domain checks
-
-    def to_array(self) -> NDArray[np.float64]:
-        return np.concatenate(
-            [[self.omega], self.alpha, self.gamma, self.beta, [self.delta]]
-        )
-
-
-@dataclass
-class DistributionParams:
-    """Container for distribution shape parameters."""
-    eta: Optional[float] = None      # Reciprocal t tail
-    nu: Optional[float] = None       # GED shape or derived t degrees of freedom
-    lam: Optional[float] = None      # Skew-t asymmetry (lambda)
-    rho: Optional[float] = None      # GH asymmetry
-    zeta: Optional[float] = None     # GH shape
-    shape_lambda: Optional[float] = None  # GH family index
-    shape_lambda_fixed: bool = False
-    
-    def to_array(self) -> NDArray[np.float64]:
-        """Flatten to 1D array."""
-        parts: List[float] = []
-        if self.eta is not None:
-            parts.append(self.eta)
-        elif self.nu is not None:
-            parts.append(self.nu)
-        if self.lam is not None:
-            parts.append(self.lam)
-        if self.rho is not None:
-            parts.append(self.rho)
-        if self.zeta is not None:
-            parts.append(self.zeta)
-        if self.shape_lambda is not None and not self.shape_lambda_fixed:
-            parts.append(self.shape_lambda)
-        return np.array(parts) if parts else np.array([])
-
-
-@dataclass
-class ARMAParams:
-    """Container for ARMA(p,q) parameters."""
-    c: float                          # Intercept
-    phi: NDArray[np.float64]          # AR coefficients (length p)
-    theta: NDArray[np.float64]        # MA coefficients (length q)
-    
-    @property
-    def p(self) -> int:
-        """AR order."""
-        return len(self.phi)
-    
-    @property
-    def q(self) -> int:
-        """MA order."""
-        return len(self.theta)
-    
-    unconditional_mean: float = float("nan")  # supplied by Model
-
-    is_stationary: bool = False  # supplied by Model domain checks
-
-    def to_array(self) -> NDArray[np.float64]:
-        """Flatten to 1D array [c, phi_1, ..., phi_p, theta_1, ..., theta_q]."""
-        return np.concatenate([[self.c], self.phi, self.theta])
-    
-    @classmethod
-    def from_array(cls, arr: NDArray[np.float64], p: int, q: int) -> "ARMAParams":
-        """Construct from flat array."""
-        return cls(
-            c=arr[0],
-            phi=arr[1:1+p],
-            theta=arr[1+p:1+p+q],
-        )
+    def __repr__(self) -> str:
+        return "Parameters(" + ", ".join(f"{n}={v:.6g}" for n, v in zip(self._names, self._values)) + ")"
 
 
 # =============================================================================
@@ -250,10 +139,10 @@ class FitMetadata:
 
 class EstimationResult:
     """
-    Container for GARCH estimation results.
+    Container for estimation results.
     
     Provides access to:
-    - Fitted parameters (via params, garch_params, dist_params)
+    - Fitted parameters (params, by name via parameters, density shapes via shapes)
     - Model fit metrics (loglikelihood, aic, bic)
     - Conditional variances and standardized residuals (sigma2, std_resid)
     - Standard errors (std_errors, std_errors_robust)
@@ -309,15 +198,7 @@ class EstimationResult:
         self._name: Optional[str] = name
         self._filtered_state_cache: Optional["FilteredState"] = None
 
-        # Components were mutated in-place during fitting
         self._component_map: Dict[Role, Component] = {c.role: c for c in spec.components}
-        self._component_param_snapshots: Dict[Role, Dict[str, Any]] = {}
-        self._component_signatures: Dict[Role, str] = {}
-        for component in spec.components:
-            self._component_signatures[component.role] = component.signature
-            fitted_params = getattr(component, "fitted_params", None)
-            if fitted_params:
-                self._component_param_snapshots[component.role] = deepcopy(fitted_params)
 
     @staticmethod
     def _coerce_fit_info(fit_info: Optional[Union[FitMetadata, Dict[str, Any]]]) -> FitMetadata:
@@ -431,76 +312,32 @@ class EstimationResult:
     def has_component(self, role: Role) -> bool:
         return role in self._component_map
 
-    # Structured parameter access (matching reference implementation)
+    # Parameters by name and model quantities
     # --------------------------------------------------------------------- #
     @property
-    def garch_params(self) -> Optional[Union[GARCHParams, EGARCHParams, APARCHParams]]:
-        """Volatility parameters as a structured object, with the model's persistence."""
-        fp = self._component_param_snapshots.get(Role.VOLATILITY)
-        if not fp:
-            return None
-        from .components.vol import APARCH, EGARCH
-
-        persistence = float(self._native()[0].persistence(np.ascontiguousarray(self.params, dtype=np.float64)))
-        arrays = {key: np.array(fp.get(key, []), dtype=np.float64) for key in ("alpha", "gamma", "beta")}
-        omega = float(fp.get("omega", 0.0))
-        moments = {"unconditional_variance": self.unconditional_variance,
-                   "is_stationary": self._native()[0].feasible(np.ascontiguousarray(self.params, dtype=np.float64))}
-        if isinstance(self.volatility, EGARCH):
-            return EGARCHParams(omega=omega, persistence=persistence, **moments, **arrays)
-        if isinstance(self.volatility, APARCH):
-            return APARCHParams(omega=omega, delta=float(fp["delta"]), persistence=persistence, **moments, **arrays)
-        if fp.get("gamma") is None:
-            arrays["gamma"] = None
-        return GARCHParams(omega=omega, persistence=persistence, **moments, **arrays)
+    def param_names(self) -> tuple[str, ...]:
+        """The native model's parameter names, in the order of params."""
+        return tuple(self._native()[0].parameter_names)
 
     @property
-    def arma_params(self) -> Optional[ARMAParams]:
-        """Get ARMA parameters as structured object."""
-        fp = self._component_param_snapshots.get(Role.MEAN)
-        if not fp:
-            return None
+    def parameters(self) -> Parameters:
+        """The estimates by name; a lag block's base name ("alpha") gives an array."""
+        return Parameters(self.param_names, self.params)
 
-        # Handle both naming conventions: c/phi/theta and const/ar/ma
-        c = fp.get('c', fp.get('const', 0.0))
-        phi = np.array(fp.get('phi', fp.get('ar', [])), dtype=np.float64)
-        theta = np.array(fp.get('theta', fp.get('ma', [])), dtype=np.float64)
-        
-        return ARMAParams(c=c, phi=phi, theta=theta, unconditional_mean=self.unconditional_mean,
-                          is_stationary=self._native()[0].feasible(np.ascontiguousarray(self.params, dtype=np.float64)))
-    
     @property
-    def dist_params(self) -> DistributionParams:
-        """Get distribution parameters as structured object."""
-        fp = self._component_param_snapshots.get(Role.DENSITY)
-        if not fp:
-            return DistributionParams()
+    def persistence(self) -> float:
+        """The persistence the model's stationarity condition bounds by one
+        (GJR and APARCH weight their coefficients by the density's moments)."""
+        return float(self._native()[0].persistence(np.ascontiguousarray(self.params, dtype=np.float64)))
 
-        eta = fp.get('eta')
-        nu = fp.get('nu')
-        lam = fp.get('lam')
-        rho = fp.get('rho')
-        zeta = fp.get('zeta')
-        shape_lambda = fp.get('lambda')
-        model = self._native()[0]
-        derived = model.innovation_density(np.ascontiguousarray(self.params, dtype=np.float64)).derived
-        nu = derived.get("nu", nu)
-        fixed_lambda = None
-        if "lambda" not in model.parameter_names:  # a GH member whose index the density fixes
-            fixed_lambda = model.innovation_density(np.ascontiguousarray(self.params, dtype=np.float64)).named.get("lambda")
-        if fixed_lambda is not None:
-            shape_lambda = fixed_lambda
+    @property
+    def shapes(self) -> Dict[str, float]:
+        """The density's shapes by name: estimated, fixed by the density (NIG's
+        lambda) and derived (the Student-t's nu = 1/eta)."""
+        from ._evaluation import shapes
 
-        return DistributionParams(
-            eta=eta,
-            nu=nu,
-            lam=lam,
-            rho=rho,
-            zeta=zeta,
-            shape_lambda=shape_lambda,
-            shape_lambda_fixed=fixed_lambda is not None,
-        )
-    
+        return shapes(self._native()[0], np.ascontiguousarray(self.params, dtype=np.float64))
+
     # Conditional variances and standardized residuals
     # --------------------------------------------------------------------- #
     @property
@@ -782,13 +619,8 @@ class EstimationResult:
         return Summary("\n".join(lines))
 
     def _get_param_names(self) -> List[str]:
-        """The model's parameter names in the display convention (settings.names)."""
-        renames = {"ar": "phi", "ma": "theta", "exog": "x", "lam": "lambda"}
-        names = []
-        for name in self._native()[0].parameter_names:
-            base, bracket, rest = name.partition("[")
-            names.append(settings.names.resolve(renames.get(base, base) + bracket + rest))
-        return names
+        """The model's parameter names as displayed (settings.names)."""
+        return [settings.names.resolve(name) for name in self.param_names]
 
     def _format_hold_back_summary(self) -> Optional[str]:
         requested = self.fit_info.requested_hold_back
@@ -903,51 +735,13 @@ class EstimationResult:
             'time_elapsed': self.time_elapsed,
             'fit_info': self.fit_info.to_dict(),
             'warnings': list(self.warnings),
-            'parameters': {},
         }
         
-        # Add GARCH parameters (keys use display names)
-        _r = settings.names.resolve
-        gp = self.garch_params
-        if gp is not None:
-            gp_dict = {
-                _r('omega'): gp.omega,
-                _r('alpha'): gp.alpha.tolist(),
-                _r('beta'): gp.beta.tolist(),
-                'persistence': gp.persistence,
-            }
-            if gp.gamma is not None:
-                gp_dict[_r('gamma')] = gp.gamma.tolist()
-            if isinstance(gp, APARCHParams):
-                gp_dict['delta'] = gp.delta
-            result_dict['garch_params'] = gp_dict
-        
-        # Add distribution parameters (keys use display names)
-        dp = self.dist_params
-        if any(
-            value is not None
-            for value in (dp.eta, dp.nu, dp.lam, dp.rho, dp.zeta, dp.shape_lambda)
-        ):
-            dist_params: Dict[str, float] = {}
-            if dp.eta is not None:
-                dist_params[_r('eta')] = dp.eta
-            if dp.nu is not None:
-                dist_params[_r('nu')] = dp.nu
-            if dp.lam is not None:
-                dist_params[_r('lam')] = dp.lam
-            if dp.rho is not None:
-                dist_params['rho'] = dp.rho
-            if dp.zeta is not None:
-                dist_params['zeta'] = dp.zeta
-            if dp.shape_lambda is not None:
-                dist_params[_r('lambda')] = dp.shape_lambda
-            result_dict['dist_params'] = dist_params
-        
-        # Parameters by component
-        for role, fitted_params in self._component_param_snapshots.items():
-            signature = self._component_signatures.get(role, role.name)
-            result_dict['parameters'][signature] = deepcopy(fitted_params)
-        
+        result_dict['parameters'] = dict(zip(self._get_param_names(), map(float, self.params)))
+        result_dict['shapes'] = self.shapes
+        if self.vol is not None:
+            result_dict['persistence'] = self.persistence
+
         # Add standard errors
         if self.std_errors is not None:
             result_dict['std_errors'] = self.std_errors.tolist()
@@ -989,9 +783,7 @@ class EstimationResult:
         estimator = api.Estimator.qmle if str(self.method).lower() == "qmle" else api.Estimator.mle
         result = api.diagnostics(api.Jet(model, y, x), np.ascontiguousarray(self.params, dtype=np.float64),
                                  n_cells, lags, df_adjustment, estimator, estimated, alpha)
-        dp = self.dist_params
-        result["dist_params"] = {"eta": dp.eta, "nu": dp.nu, "lam": dp.lam, "rho": dp.rho,
-                                 "zeta": dp.zeta, "lambda": dp.shape_lambda}
+        result["shapes"] = self.shapes
         result["distribution"] = self.density.signature if self.density is not None else "Normal"
         if print_results:
             self._print_diagnostic_tests(result)
@@ -1008,24 +800,8 @@ class EstimationResult:
         print("=" * WIDTH)
         
         # Distribution info
-        dist_name = results["distribution"]
-        dp = results["dist_params"]
-        if dp.get("rho") is not None:
-            dist_str = f"{dist_name} (rho={dp['rho']:.4f}"
-            if dp.get("zeta") is not None:
-                dist_str += f", zeta={dp['zeta']:.4f}"
-            if dist_name in {"GeneralizedHyperbolic", "VarianceGamma"}:
-                dist_str += f", lambda={dp['lambda']:.4f}"
-            dist_str += ")"
-        elif dp.get("eta") is not None:
-            shapes = ", ".join(f"{key}={dp[key]:.6g}" for key in ("eta", "nu", "lam") if dp.get(key) is not None)
-            dist_str = f"{dist_name} ({shapes})"
-        elif dp.get("nu") is not None and dp.get("lam") is not None:
-            dist_str = f"{dist_name} (nu={dp['nu']:.2f}, lam={dp['lam']:.4f})"
-        elif dp.get("nu") is not None:
-            dist_str = f"{dist_name} (nu={dp['nu']:.2f})"
-        else:
-            dist_str = dist_name
+        shapes = ", ".join(f"{name}={value:.6g}" for name, value in results["shapes"].items())
+        dist_str = f"{results['distribution']} ({shapes})" if shapes else results["distribution"]
         
         print(f"Distribution:  {dist_str}")
         print(f"Observations:  {results['n_obs']}")

@@ -133,7 +133,6 @@ def test_python_result_and_summary_use_model_moments(spec):
     model, _, _ = result._native()
     expected = model.unconditional_variance(result.params)
     assert result.unconditional_variance == pytest.approx(expected, nan_ok=True)
-    assert result.garch_params.unconditional_variance == pytest.approx(expected, nan_ok=True)
     output = result.summary()
     assert "Unconditional Variance:" in output
     assert "Geometric Variance" not in output

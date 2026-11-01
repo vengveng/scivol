@@ -164,10 +164,8 @@ class TestBoundaryParameters:
         assert result is not None
         assert np.isfinite(result.log_likelihood)
         
-        gp = result.garch_params
-        if gp is not None:
-            # Persistence should be high (close to true value)
-            assert gp.persistence > 0.8
+        # Persistence should be high (close to true value)
+        assert result.persistence > 0.8
     
     def test_studentt_tail_domain(self, sample_data):
         """The reciprocal tail includes the Normal boundary."""

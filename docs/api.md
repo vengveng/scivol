@@ -48,15 +48,15 @@ spec.fit_rolling(data, *, window, step=1, expanding=False, initial_results=None,
 Fit each column, or each window of each column, and return a `BatchFitResult` or a `RollingFitResult`; see [multiple series](multiple-series.md).
 
 ```text
-spec.loglikelihood(data, params=None, *, x=None, hold_back=0, scale=None)  -> float
-spec.score(data, params=None, ...)                                       -> array (k,)
-spec.hessian(data, params=None, ...)                                     -> array (k, k)
-spec.filter(data, params=None, ...)                                      -> FilteredState
-spec.fix(data, params=None, ...)                                         -> FixedResult
+spec.loglikelihood(data, params, *, x=None, hold_back=0, scale=None)  -> float
+spec.score(data, params, ...)                                       -> array (k,)
+spec.hessian(data, params, ...)                                     -> array (k, k)
+spec.filter(data, params, ...)                                      -> FilteredState
+spec.fix(data, params, ...)                                         -> FixedResult
 spec.simulate(n_obs, params, *, burn=500, seed=None, x=None)             -> SimulationResult
 ```
 
-The first five evaluate the model at given parameters: the log-likelihood, its gradient and Hessian, the fitted paths, and a result object with the methods of a fitted result. `params` is a parameter vector, or a mapping by name in which lag blocks can be lists, such as `{"omega": 0.1, "alpha": [0.1], "beta": [0.8]}`. A constant-variance model always needs explicit parameters. `simulate` generates a new series; see [forecasting and simulation](forecasting-and-simulation.md#simulating-new-series).
+The first five evaluate the model at given parameters: the log-likelihood, its gradient and Hessian, the fitted paths, and a result object with the methods of a fitted result. `params` is a parameter vector, a mapping by name in which lag blocks can be lists, such as `{"omega": 0.1, "alpha": [0.1], "beta": [0.8]}`, or a fitted result of the same specification. `simulate` generates a new series; see [forecasting and simulation](forecasting-and-simulation.md#simulating-new-series).
 
 ## Univariate results
 
@@ -69,7 +69,8 @@ The first five evaluate the model at given parameters: the log-likelihood, its g
 | `log_likelihood`, `aic`, `bic`, `hqic` | fit statistics |
 | `std_errors`, `std_errors_robust`, `cov_matrix`, `cov_robust`, `hessian`, `opg` | inference; see [inference](inference.md) |
 | `sigma2`, `resid`, `std_resid`, `conditional_mean` | fitted paths over the scored sample, as pandas Series when the data had an index |
-| `garch_params`, `arma_params`, `dist_params` | parameters by component, with derived quantities such as `persistence` and `nu` |
+| `param_names`, `parameters` | the model's parameter names, and the estimates by name; a lag block's base name, such as `parameters["alpha"]`, gives its values as an array |
+| `persistence`, `shapes` | the persistence the stationarity condition bounds, and the density's shapes by name, including fixed ones (NIG's `lambda`) and derived ones (the Student-t's `nu`) |
 | `unconditional_mean`, `unconditional_variance` | model moments; `inf` for a divergent moment and NaN when unavailable |
 | `method`, `n_obs`, `n_iter`, `time_elapsed`, `spec`, `data` | fit details |
 | `fit_info` | optimizer record, described below |
@@ -179,7 +180,7 @@ ConfidenceSet(reduction=GeneralToSpecific(), holdout=0.2, confidence=0.90,
 
 ## Settings and version
 
-`settings.show_progress` (default `True`) controls the progress bar of multi-column `.fit` calls. `settings.names` changes the parameter names shown in reports; the names used in parameter mappings do not change:
+`settings.show_progress` (default `True`) controls the progress bar of multi-column `.fit` calls. `settings.names` changes the parameter names shown in the summary report and the keys of `to_dict()`; `param_names`, `parameters` and parameter mappings keep the model's names:
 
 ```python
 from scivol import settings

@@ -414,7 +414,7 @@ def test_gaussian_tail_optimum_is_the_closed_eta_face(coordinates, iid):
     # Equal models; on the flat iid ridge the two certified optima agree to the
     # summation roundoff of F (about 1e-13 relative).
     assert student.log_likelihood == pytest.approx(normal.log_likelihood, rel=0.0, abs=1e-9)
-    assert student.dist_params.nu == np.inf
+    assert student.shapes["nu"] == np.inf
     summary = student.summary()
     assert "eta=" in summary and "nu=inf" in summary
 

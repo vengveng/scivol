@@ -83,9 +83,9 @@ result.std_errors                # standard errors, or None where they are not r
 result.log_likelihood, result.aic, result.bic
 result.success                   # True when the fit passes its first-order check
 result.fit_info.inference_status # "available", "at_boundary", ...
-result.garch_params.persistence  # alpha + beta for this model
+result.persistence               # alpha + beta for this model
 result.unconditional_variance
-result.dist_params.nu            # degrees of freedom, 1 / eta
+result.shapes["nu"]              # degrees of freedom, 1 / eta
 result.sigma2, result.std_resid  # fitted paths over the scored sample
 ```
 

@@ -8,7 +8,7 @@ $$
 
 where $m_t$ is the conditional mean, $h_t$ the conditional variance of the residual $e_t$, and $z_t$ an innovation drawn from the [chosen density](densities.md). This page covers the mean components, which define $m_t$, and the constant-variance model, which applies when no volatility component is given. Without a mean component, $m_t=0$.
 
-The parameter vector is ordered `[mean | volatility | density shapes]`. Parameter names use one-based lags, such as `ar[1]`, and the summary report shows the conventional symbols instead: `phi[1]` for AR coefficients, `theta[1]` for MA coefficients and `x[1]` for regressor coefficients. Parameter mappings passed to `fix` or `simulate` accept the names `ar`, `ma` and `exog`.
+The parameter vector is ordered `[mean | volatility | density shapes]`. Parameter names use one-based lags: `const`, `ar[1]`, `har[5]` for the five-day average, `exog[1]` and `ma[1]`. The same names appear in the summary report, in `result.parameters` and in the parameter mappings passed to `fix` or `simulate`.
 
 ## ARMA
 

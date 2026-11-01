@@ -373,9 +373,8 @@ def test_mean_widening_cap_budget_and_nonmean_rejections(garch_data):
 
 def test_mean_widening_template_preserves_structure_and_nested_lag_restrictions():
     arx = ARX(2, constant=False)
-    arx.set_n_exog(2)
     wider = arx.widen(5)
-    assert wider.lags == 3 and wider.n_exog == 2 and not wider.constant
+    assert wider.lags == 3 and not wider.constant
     arma = ARMA(2, 1, constant=False).widen(5)
     assert (arma.p, arma.q, arma.constant) == (3, 1, False)
     assert arx.widen(2) is None and Normal().widen(5) is None

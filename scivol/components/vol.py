@@ -1,43 +1,36 @@
 # scivol/components/vol.py
+"""Volatility components. Each names a native volatility family; the native
+model defines its parameters, domain, starts, forecasts and restrictions."""
 from __future__ import annotations
+
+from typing import ClassVar
+
+from .. import _scivolapi as api
 from ..roles import Role
-import numpy as np
-from ..components.base import Component
+from .base import Component, native_check
 
 STATIONARITY = ("covariance", "integrated", "none")
 
 
-def stationarity_setting(value: str, name: str, allowed: tuple[str, ...] = STATIONARITY) -> str:
-    """The declared stationarity domain of a variance recursion."""
-    if value not in allowed:
-        raise ValueError(f"{name} stationarity must be one of {', '.join(map(repr, allowed))}.")
-    return value
+class VolatilityComponent(Component):
+    """A variance recursion with p shock lags and q variance lags.
 
-
-def stationarity_suffix(value: str) -> str:
-    return "" if value == "covariance" else f",{value}"
-
-
-class APARCH(Component):
-    """Asymmetric Power ARCH volatility component.
-
-    The conditional scale follows
-
-    ``sigma_t**delta = omega + sum(alpha_i * (|eps|-gamma_i*eps)**delta)
-    + sum(beta_j * sigma_{t-j}**delta)``.
+    `stationarity` declares the domain of the recursion: "covariance" (the
+    textbook stationary domain, the default), "integrated" (persistence <= 1)
+    or "none" (positivity only). The native family decides which it admits.
     """
 
     role = Role.VOLATILITY
+    kind: ClassVar[str]   # the native VolatilityKind
+    label: ClassVar[str]  # the name in signatures
 
     def __init__(self, p: int = 1, q: int = 1, stationarity: str = "covariance"):
         if any(type(order) is not int or order < 0 for order in (p, q)):
-            raise ValueError("APARCH orders must be non-negative integers.")
-        self.p = p
-        self.q = q
-        self.stationarity = stationarity_setting(stationarity, "APARCH")
-        self.fitted_params = None
-        self.fitted_values = None
-        self._data = None
+            raise ValueError(f"{self.label} orders must be non-negative integers.")
+        if stationarity not in STATIONARITY:
+            raise ValueError(f"{self.label} stationarity must be one of {', '.join(map(repr, STATIONARITY))}.")
+        self.p, self.q, self.stationarity = p, q, stationarity
+        native_check(self)
 
     @classmethod
     def up_to(cls, p: int, q: int, stationarity: str = "covariance"):
@@ -46,180 +39,41 @@ class APARCH(Component):
 
     @property
     def signature(self) -> str:
-        return f"APARCH({self.p},{self.q}{stationarity_suffix(self.stationarity)})"
+        suffix = "" if self.stationarity == "covariance" else f",{self.stationarity}"
+        return f"{self.label}({self.p},{self.q}{suffix})"
 
-    @property
-    def n_params(self) -> int:
-        return 2 + 2 * self.p + self.q
+    def declare(self, native: api.ModelSpec, exog: int) -> bool:
+        native.volatility = getattr(api.VolatilityKind, self.kind)
+        native.p, native.q = self.p, self.q
+        native.stationarity = getattr(api.Stationarity, self.stationarity)
+        return True
 
-    def pack(self, params_dict: dict) -> np.ndarray:
-        return np.asarray(
-            [params_dict["omega"]]
-            + list(params_dict["alpha"])
-            + list(params_dict["gamma"])
-            + list(params_dict["beta"])
-            + [params_dict["delta"]],
-            dtype=np.float64,
-        )
 
-    def unpack(self, flat_params: np.ndarray) -> dict:
-        if len(flat_params) == 0:
-            self.fitted_params = {}
-            return {}
-        beta_start = 1 + 2 * self.p
-        self.fitted_params = {
-            "omega": float(flat_params[0]),
-            "alpha": [float(x) for x in flat_params[1 : 1 + self.p]],
-            "gamma": [float(x) for x in flat_params[1 + self.p : beta_start]],
-            "beta": [float(x) for x in flat_params[beta_start : beta_start + self.q]],
-            "delta": float(flat_params[beta_start + self.q]),
-        }
-        return self.fitted_params
+class GARCH(VolatilityComponent):
+    """GARCH(p, q): h_t = omega + sum alpha_i e_{t-i}^2 + sum beta_j h_{t-j}."""
 
-class GJRGARCH(Component):
-    """GJRGARCH(p, q) conditional volatility."""
+    kind, label = "garch", "GARCH"
 
-    role = Role.VOLATILITY
 
-    def __init__(self, p: int = 1, q: int = 1, stationarity: str = "covariance"):
-        if any(type(order) is not int or order < 0 for order in (p, q)):
-            raise ValueError("orders must be non-negative integers")
-        self.p, self.q = p, q
-        self.stationarity = stationarity_setting(stationarity, "GJR-GARCH")
-        self.fitted_params = None
-        self.fitted_values = None
-        self._data = None
+class GJRGARCH(VolatilityComponent):
+    """GJR-GARCH(p, q): GARCH with leverage terms gamma_i e_{t-i}^2 1(e_{t-i} < 0)."""
 
-    @classmethod
-    def up_to(cls, p: int, q: int, stationarity: str = "covariance"):
-        """Declare a maximal generator; native restrictions supply descendants."""
-        return cls(p, q, stationarity)
+    kind, label = "gjr", "GJR-GARCH"
 
-    @property
-    def signature(self): return f"GJR-GARCH({self.p},{self.q}{stationarity_suffix(self.stationarity)})"
 
-    @property
-    def n_params(self): return 1 + 2 * self.p + self.q  # omega + p alphas + p gammas + q betas
+class EGARCH(VolatilityComponent):
+    """EGARCH(p, q) in the log variance:
 
-    def pack(self, params_dict: dict) -> np.ndarray:
-        return np.array([params_dict['omega']] +
-                         params_dict['alpha']  +
-                         params_dict['gamma']  +
-                         params_dict['beta'])
-
-    def unpack(self, flat_params: np.ndarray) -> dict:
-        if len(flat_params) == 0:
-            self.fitted_params = {}
-            return {}
-
-        self.fitted_params = {
-            'omega': flat_params[0],
-            'alpha': flat_params[1:1+self.p].tolist(),
-            'gamma': flat_params[1+self.p:1+2*self.p].tolist(),
-            'beta': flat_params[1+2*self.p:1+2*self.p+self.q].tolist()
-        }
-        return self.fitted_params
-
-class EGARCH(Component):
+        log h_t = omega + sum alpha_i (|z_{t-i}| - E|z|) + sum gamma_i z_{t-i} + sum beta_j log h_{t-j}.
     """
-    EGARCH(p, q) volatility component.
 
-    The shipped recursion is:
+    kind, label = "egarch", "EGARCH"
 
-        log h_t = omega
-                + sum_i alpha_i * (|z_{t-i}| - E|z|)
-                + sum_i gamma_i * z_{t-i}
-                + sum_j beta_j  * log h_{t-j}
 
-    where z_t = epsilon_t / sqrt(h_t).
+class APARCH(VolatilityComponent):
+    """APARCH(p, q) in sigma^delta:
+
+        sigma_t^delta = omega + sum alpha_i (|e_{t-i}| - gamma_i e_{t-i})^delta + sum beta_j sigma_{t-j}^delta.
     """
-    role = Role.VOLATILITY
 
-    def __init__(self, p: int = 1, q: int = 1, stationarity: str = "covariance"):
-        if any(type(order) is not int or order < 0 for order in (p, q)):
-            raise ValueError("EGARCH orders must be non-negative integers.")
-        self.p = int(p)
-        self.q = int(q)
-        self.stationarity = stationarity_setting(stationarity, "EGARCH", ("covariance", "none"))
-        self.fitted_params = None
-        self.fitted_values = None
-        self._data = None
-
-    @classmethod
-    def up_to(cls, p: int, q: int, stationarity: str = "covariance"):
-        """Declare a maximal generator; native restrictions supply descendants."""
-        return cls(p, q, stationarity)
-
-    @property
-    def signature(self) -> str:
-        return f"EGARCH({self.p},{self.q}{stationarity_suffix(self.stationarity)})"
-
-    @property
-    def n_params(self) -> int:
-        return 1 + 2 * self.p + self.q
-
-    def pack(self, params_dict: dict) -> np.ndarray:
-        return np.array(
-            [params_dict["omega"]] + list(params_dict["alpha"]) + list(params_dict["gamma"]) + list(params_dict["beta"]),
-            dtype=np.float64,
-        )
-
-    def unpack(self, flat_params: np.ndarray) -> dict:
-        if len(flat_params) == 0:
-            self.fitted_params = {}
-            return {}
-
-        alpha = flat_params[1 : 1 + self.p]
-        gamma = flat_params[1 + self.p : 1 + 2 * self.p]
-        beta = flat_params[1 + 2 * self.p : 1 + 2 * self.p + self.q]
-        self.fitted_params = {
-            "omega": float(flat_params[0]),
-            "alpha": [float(x) for x in alpha],
-            "gamma": [float(x) for x in gamma],
-            "beta": [float(x) for x in beta],
-        }
-        return self.fitted_params
-
-class GARCH(Component):
-    """GARCH(p, q) conditional volatility."""
-
-    role = Role.VOLATILITY
-
-    def __init__(self, p: int = 1, q: int = 1, stationarity: str = "covariance"):
-        if any(type(order) is not int or order < 0 for order in (p, q)):
-            raise ValueError("orders must be non-negative integers")
-        self.p, self.q = p, q
-        self.stationarity = stationarity_setting(stationarity, "GARCH")
-        self.fitted_params = None
-        self.fitted_values = None
-        self._data = None
-
-    @classmethod
-    def up_to(cls, p: int, q: int, stationarity: str = "covariance"):
-        """Declare a maximal generator; native restrictions supply descendants."""
-        return cls(p, q, stationarity)
-
-    @property
-    def signature(self): return f"GARCH({self.p},{self.q}{stationarity_suffix(self.stationarity)})"
-
-    @property
-    def n_params(self): return 1 + self.p + self.q
-
-    def pack(self, params_dict: dict) -> np.ndarray:
-        """Convert dict to flat array"""
-        return np.array([params_dict['omega']] +
-                         params_dict['alpha']  +
-                         params_dict['beta'])
-
-    def unpack(self, flat_params: np.ndarray) -> dict:
-        """Convert flat array to dict - MUTATES SELF"""
-        if len(flat_params) == 0:
-            self.fitted_params = {}
-            return {}
-
-        self.fitted_params = {
-            'omega': flat_params[0],
-            'alpha': flat_params[1:1+self.p].tolist(),
-            'beta': flat_params[1+self.p:1+self.p+self.q].tolist()
-        }
-        return self.fitted_params
+    kind, label = "aparch", "APARCH"

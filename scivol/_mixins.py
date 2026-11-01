@@ -35,7 +35,7 @@ class FitsMixin:
         spec = validate_spec(self.spec)
         result = fit_spec(spec, values, x=x, hold_back=hold_back, scale=scale,
                           method=method, index=index, name=name, **options)
-        warning = small_sample_warning(spec, result.data)
+        warning = small_sample_warning(len(result.params), len(result.data))
         if warning:
             result.fit_info.add_warning(warning)
         return result
@@ -124,7 +124,7 @@ class FitsMixin:
     def loglikelihood(
         self,
         data: Any,
-        params: Any = None,
+        params: Any,
         *,
         x: Any = None,
         hold_back: int = 0,
@@ -139,7 +139,7 @@ class FitsMixin:
     def score(
         self,
         data: Any,
-        params: Any = None,
+        params: Any,
         *,
         x: Any = None,
         hold_back: int = 0,
@@ -154,7 +154,7 @@ class FitsMixin:
     def hessian(
         self,
         data: Any,
-        params: Any = None,
+        params: Any,
         *,
         x: Any = None,
         hold_back: int = 0,
@@ -169,7 +169,7 @@ class FitsMixin:
     def filter(
         self,
         data: Any,
-        params: Any = None,
+        params: Any,
         *,
         x: Any = None,
         hold_back: int = 0,
@@ -184,7 +184,7 @@ class FitsMixin:
     def fix(
         self,
         data: Any,
-        params: Any = None,
+        params: Any,
         *,
         x: Any = None,
         hold_back: int = 0,

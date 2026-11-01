@@ -467,13 +467,13 @@ def test_mean_only_fits_recover_the_simulation():
     for t in range(1, n):
         y[t] = 0.2 + 0.5 * y[t - 1] + e[t] + 0.3 * e[t - 1]
     normal = (ARMA(1, 1) + Normal()).fit(y)
-    assert normal._get_param_names() == ["const", "phi[1]", "theta[1]", "sigma2"]
+    assert normal._get_param_names() == ["const", "ar[1]", "ma[1]", "sigma2"]
     assert normal.params[3] == pytest.approx(np.mean(normal.resid ** 2), rel=1e-6)  # the sigma2 FOC
     t = (ARMA(1, 1) + StudentT()).fit(y)
     truth = [0.2, 0.5, 0.3, 0.25 * 5 / 3, 0.2]  # sigma2 = Var(0.5 t_5)
     for i, value in enumerate(truth):
         assert abs(t.params[i] - value) < 4.0 * t.std_errors[i], (i, t.params[i])
-    assert t.dist_params.eta == pytest.approx(t.params[-1])
+    assert t.shapes["eta"] == pytest.approx(t.params[-1])
     with pytest.raises(ValueError, match="p and q must be 0"):
         model_for(mean_spec(), "constant", "normal", 1, 1)
 

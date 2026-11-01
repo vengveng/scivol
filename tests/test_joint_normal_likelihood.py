@@ -14,10 +14,9 @@ def test_joint_normal_likelihood_is_normalized(mean_factory, vol_factory, p, q):
     data = rng.normal(size=180)
     x = rng.normal(size=(len(data), 1))
     mean = mean_factory()
-    mean.set_n_exog(1)
     volatility = vol_factory(p, q)
     spec = mean + volatility + Normal()
-    mean_parameters = np.full(mean.n_params, 0.04)
+    mean_parameters = np.full(len(mean.horizons) + 2 if isinstance(mean, HARX) else 3, 0.04)
     if vol_factory is EGARCH:
         vol_parameters = np.r_[
             -0.1, np.full(p, 0.08 / p), np.full(p, -0.02 / p), np.full(q, 0.8 / q)
