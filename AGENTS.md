@@ -220,7 +220,10 @@ selection = Auto().fit(data)
 - `fit_many` and `fit_rolling` copy ordinary specifications into thread pools.
   No process pools, string specification serialization, auto components or
   diagnostic penalties belong in orchestration.
-- Defaults and the whole adaptive procedure are not yet calibrated. See MODELS.md
+- The defaults (levels 0.01, budgets 256 for GETS and 1000 for information
+  criteria) were set from a simulation study (localdev/calibration, results in
+  docs/selection.md) covering models inside the search space at n = 1000 and
+  3000; misspecified models and large searches are not covered. See MODELS.md
   for the currently unavailable restrictions and diagnostics.
 
 ## 6. Native interface rules

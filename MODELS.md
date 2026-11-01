@@ -421,8 +421,9 @@ Persistent mean rejection at the cap returns
 
 The graph currently lacks APARCH fixed-power/asymmetry, skew-Gaussian and finite
 GH restrictions. Cross-terminal union tests and equivalence deduplication beyond
-native spec identity are not implemented. The defaults and the adaptive
-procedure have not been calibrated.
+native spec identity are not implemented. The defaults were checked by
+simulation for models inside the search space (docs/selection.md); behaviour
+under misspecification and for large searches is not established.
 
 `InformationCriterion` requires an explicit adequacy choice. `ConfidenceSet`
 compares frozen training candidates using chronological predictive losses and

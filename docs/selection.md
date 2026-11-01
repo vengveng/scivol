@@ -161,6 +161,21 @@ With 500 forecasts, the bootstrap eliminates only the two Student-t models, and 
 
 When the budget runs out, `search_complete` is `False`, `frontier` lists the models not yet explored, and the best eligible model found so far is still returned. `table()` returns a pandas DataFrame, or a list of dictionaries when pandas is not installed.
 
+## How the defaults perform
+
+The defaults were checked by simulation. The search covered an AR(1) mean, GJR-GARCH(1,1) and EGARCH(1,1) with a skewed t, and constant variance. Six models inside it generated 120 series each, at n = 1000 and at n = 3000. The table gives the share of series on which each procedure selected the generating model. A GARCH(0,0) recursion counts as constant variance:
+
+| Data-generating model | GETS, n=1000 | BIC, n=1000 | GETS, n=3000 | BIC, n=3000 |
+| --- | --- | --- | --- | --- |
+| GARCH(1,1), Normal | 90% | 94% | 99% | 98% |
+| GARCH(1,1), Student-t | 82% | 91% | 95% | 98% |
+| GJR-GARCH(1,1), skewed t | 37% | 44% | 89% | 91% |
+| EGARCH(1,1), Normal | 52% | 79% | 88% | 90% |
+| AR(1) mean, GARCH(1,1), Student-t | 68% | 72% | 98% | 98% |
+| iid Normal | 93% | 95% | 98% | 98% |
+
+The general-to-specific search used its defaults, and BIC ranked the whole search with adequacy checks. At n = 1000, most misses drop a small leverage effect or an AR term. Overfitting was rare for both procedures, at 2–3% of series. Restriction tests whose null held rejected in 0.5–2% of cases at the 1% level. The true model failed the adequacy checks in at most 1% of series. With all levels at 5%, the search overfitted 12% of the time and selected the true model less often at n = 3000 (82%), so the defaults stay at 1%. AIC overfitted about 40% of the time. The study's scripts are not part of the package.
+
 ## Limitations
 
-The default levels, lag choices and budgets of these procedures have not yet been calibrated by simulation, so their error rates in finite samples are unknown. Some restrictions are missing from the search: fixing the APARCH power or removing its asymmetry, a skewed Normal, and the limits of the generalized hyperbolic family. ARMA order searches need a minimal, nonsingular representation and must be requested explicitly. The procedures do not cover DCC models, structural breaks, long memory or infinite-variance models, and they report no confidence intervals that account for the selection itself.
+These simulations cover models inside the search space at two sample sizes. Error rates for misspecified models, much larger searches or shorter series are not established. Some restrictions are missing from the search: fixing the APARCH power or removing its asymmetry, a skewed Normal, and the limits of the generalized hyperbolic family. ARMA order searches need a minimal, nonsingular representation and must be requested explicitly. The procedures do not cover DCC models, structural breaks, long memory or infinite-variance models, and they report no confidence intervals that account for the selection itself.
