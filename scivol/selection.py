@@ -32,7 +32,7 @@ class InformationCriterion:
     """Rank a declared search by AIC, BIC or HQIC; declare adequacy explicitly."""
     name: str = "bic"
     adequacy: bool | None = None
-    max_fits: int = 96
+    max_fits: int = 1000  # a ranking needs the whole search fitted
     diagnostic_level: float = 0.01
 
     def __post_init__(self):
@@ -51,7 +51,7 @@ class GeneralToSpecific:
     diagnostic_level: float = 0.01
     prefer: str = "fewest_parameters"
     tie_break: InformationCriterion = field(default_factory=InformationCriterion)
-    max_fits: int = 96
+    max_fits: int = 256
     max_mean_order: int = 5
 
     def __post_init__(self):

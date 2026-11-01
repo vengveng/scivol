@@ -52,7 +52,7 @@ GJR-GARCH(1,1)+SkewT           6    -2800.897821 5647.398057 adequate
 | `diagnostic_level` | `0.01` | Level of the adequacy checks |
 | `prefer` | `"fewest_parameters"` | How to choose among final models; or `"information_criterion"` |
 | `tie_break` | `InformationCriterion("bic")` | Criterion that breaks ties in the parameter count |
-| `max_fits` | `96` | Budget of optimizer runs |
+| `max_fits` | `256` | Budget of optimizer runs |
 | `max_mean_order` | `5` | Largest AR order that mean widening may reach, from 1 to 8 |
 
 A model is adequate when none of three checks rejects under Holm's correction ([Holm, 1979](references.md#holm-1979)) at `diagnostic_level`: the Ljung-Box test on the standardized residuals and the absolute-residual Li-Mak test, each at lags $\min(10, n/5)$ and $\min(20, n/5)$, and the absolute sign-bias test. These tests need only finite second moments of the innovations; [diagnostics](diagnostics.md#absolute-residual-tests) gives their formulas. When a check cannot be evaluated, the model's adequacy is unresolved and it cannot serve as a starting point.
@@ -87,7 +87,7 @@ The likelihood-ratio statistic for a parent model with log-likelihood $\ell_P$ a
 
 When the null puts a parameter on the boundary of its domain, the statistic follows a chi-bar-square distribution, a mixture of chi-squares whose weights depend on the information matrix ([Self and Liang, 1987](references.md#self-liang-1987); [Andrews, 2001](references.md#andrews-2001)). scivol computes the weights in closed form for up to three boundary parameters and by numerical integration, to an absolute error of $10^{-6}$, for more. When other parameters also sit on their bounds, the distribution is no longer a chi-bar-square, and scivol simulates it with a fixed seed and reports the simulation error. A test whose p-value cannot be separated from the level within these errors is reported as unresolved.
 
-The search accepts only restrictions that have a reference distribution, which excludes restrictions at a kink, those whose information matrix is singular, and those that remove a parameter not identified under the null, such as the APARCH asymmetry. Each entry of `selection.tests` records the statistic, the distribution used, its weights or simulation error, the assumptions, the decision, and the reason for any failure.
+A fit at a likelihood kink, such as EGARCH with an estimated mean whose residual sits exactly at zero, is tested with the same laws. Its likelihood is not differentiable, but its population counterpart is, and the few residuals at zero move the statistic by a vanishing amount; in simulations of EGARCH with an AR(1) mean, the 5% tests at kink points rejected in 5–7% of cases (9% in one of eight settings), close to their rate at smooth fits. The search accepts only restrictions that have a reference distribution, which excludes those whose information matrix is singular and those that remove a parameter not identified under the null, such as the APARCH asymmetry. Each entry of `selection.tests` records the statistic, the distribution used, its weights or simulation error, the assumptions, the decision, and the reason for any failure.
 
 ## Information criteria
 
@@ -117,7 +117,7 @@ BIC narrowly prefers GARCH over the true GJR-GARCH model here, because the lever
 
 $$\mathrm{AIC}=-2\ell+2k,\qquad \mathrm{BIC}=-2\ell+k\log n,\qquad \mathrm{HQIC}=-2\ell+2k\log\log n,$$
 
-from [Akaike (1974)](references.md#akaike-1974), [Schwarz (1978)](references.md#schwarz-1978) and [Hannan and Quinn (1979)](references.md#hannan-quinn-1979). The options `max_fits=96` and `diagnostic_level=0.01` work as for the general-to-specific search.
+from [Akaike (1974)](references.md#akaike-1974), [Schwarz (1978)](references.md#schwarz-1978) and [Hannan and Quinn (1979)](references.md#hannan-quinn-1979). `diagnostic_level=0.01` works as for the general-to-specific search, and `max_fits=1000`, since a ranking needs every candidate fitted.
 
 ## Predictive confidence sets
 

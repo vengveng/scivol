@@ -33,7 +33,7 @@ def test_templates_declare_generators_and_native_closure():
         GARCH('auto')
 
 
-def test_residual_kink_mles_are_certified_but_lr_calibration_is_explicitly_unsupported():
+def test_residual_kink_mles_are_certified_and_their_lr_tests_use_the_ordinary_law():
     y = (ARX(1, constant=False)+GARCH()+Normal()).simulate(
         3000, [.2, .1, .1, .8], seed=104).data
     parent = api.Model(native_spec(ARX(1, constant=False)+EGARCH()+StudentT()))
@@ -48,9 +48,11 @@ def test_residual_kink_mles_are_certified_but_lr_calibration_is_explicitly_unsup
         assert fitted.inference == api.Inference.at_kink
         assert not len(fitted.gradient) and not len(fitted.hessian)
         assert not len(fitted.std_errors)
+    # The population criterion is smooth: Wilks' law (here a chi-bar-square for
+    # eta = 0 on its closed bound) applies at a kink point as at a smooth MLE.
     lr = api.restriction_test(parent, child, restriction, pf, cf, plan)
-    assert lr.status == api.LRStatus.unsupported
-    assert 'kink' in lr.message
+    assert lr.status == api.LRStatus.ok, lr.message
+    assert lr.statistic >= 0.0 and 0.0 <= lr.p_value <= 1.0
     reused = api.restrict_fit(parent, pf, restriction, plan)
     assert reused.status == api.RestrictFitStatus.reused
     assert reused.result.success and reused.result.kink_point

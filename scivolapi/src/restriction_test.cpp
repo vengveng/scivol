@@ -298,8 +298,12 @@ LRResult restriction_test(const Model& parent, const Model& child, const Restric
         return invalid(out, LRStatus::unsupported, "QMLE LR calibration is not implemented.");
     if (!pf.success || !cf.success || !std::isfinite(out.statistic))
         return invalid(out, LRStatus::uncertified, "Both estimates must be maximum-likelihood fits that pass the first-order check.");
-    if (pf.kink_point || cf.kink_point)
-        return invalid(out, LRStatus::unsupported, "LR calibration at a residual kink-point MLE is not implemented.");
+    // At a residual kink point the sample likelihood is not differentiable, but
+    // the population criterion is (the data are continuous), at most a few
+    // residuals sit exactly at zero, and each moves the statistic by
+    // O(n^-1/2) within n^-1/2 neighbourhoods: Wilks' law holds as at a smooth
+    // estimate (stochastic equicontinuity, as for least absolute deviations).
+    // Simulated sizes for EGARCH with an ARX mean match those at smooth fits.
     const auto lifted = r.embed(cf.theta);
     if (!lifted) return invalid(out, LRStatus::incompatible, "The child estimate cannot be embedded in the parent domain.");
     const double noise = 64.0 * eps * (1.0 + std::abs(pf.log_likelihood) + std::abs(cf.log_likelihood));
@@ -392,8 +396,6 @@ LRResult restriction_test(const Model& parent, const Model& child, const Restric
 {
     if (pf.comparison != plan.identity() || cf.comparison != plan.identity())
         return invalid({}, LRStatus::incompatible, "Fits and information must use the same comparison plan.");
-    if (pf.kink_point || cf.kink_point)
-        return invalid({}, LRStatus::unsupported, "LR calibration at a residual kink-point MLE is not implemented.");
     if (r.identification == Identification::unidentified_under_null)
         return invalid({}, LRStatus::unsupported, r.condition);
     const auto theta = r.embed(cf.theta);

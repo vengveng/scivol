@@ -162,8 +162,8 @@ Auto.fit(y, x=None, **search_fit_options)                           -> Selection
 
 GeneralToSpecific(reduction_level=0.01, encompassing_level=0.01, diagnostic_level=0.01,
                   prefer="fewest_parameters", tie_break=InformationCriterion(),
-                  max_fits=96, max_mean_order=5)
-InformationCriterion(name="bic", adequacy=None, max_fits=96, diagnostic_level=0.01)
+                  max_fits=256, max_mean_order=5)
+InformationCriterion(name="bic", adequacy=None, max_fits=1000, diagnostic_level=0.01)
 ConfidenceSet(reduction=GeneralToSpecific(), holdout=0.2, confidence=0.90,
               loss="log_score", refit_every=20, bootstrap_draws=4999, seed=None)
 ```
