@@ -5,6 +5,7 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    paths-ignore: ["docs/**", "**.md", "mkdocs.yml"]
 
 jobs:
   build_wheels:
