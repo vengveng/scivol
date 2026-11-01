@@ -74,6 +74,39 @@ inline constexpr std::array<FixedShape, 1> hyperbolic_fixed{{{"lambda", 1.0}}};
     return {};
 }
 
+// Whether `kind` names a density (an integer from outside may not).
+[[nodiscard]] inline bool known_density(DensityKind kind) noexcept
+{
+    switch (kind) {
+    case DensityKind::normal:
+    case DensityKind::student_t:
+    case DensityKind::skew_t:
+    case DensityKind::ged:
+    case DensityKind::generalized_hyperbolic:
+    case DensityKind::nig:
+    case DensityKind::hyperbolic:
+    case DensityKind::variance_gamma: return true;
+    }
+    return false;
+}
+
+// The normal mean-variance mixtures with a generalized inverse Gaussian mixing
+// law (GH, NIG, Hyperbolic, Variance-Gamma), which share their distribution code.
+[[nodiscard]] inline bool gh_family(DensityKind kind) noexcept
+{
+    switch (kind) {
+    case DensityKind::generalized_hyperbolic:
+    case DensityKind::nig:
+    case DensityKind::hyperbolic:
+    case DensityKind::variance_gamma: return true;
+    case DensityKind::normal:
+    case DensityKind::student_t:
+    case DensityKind::skew_t:
+    case DensityKind::ged: return false;
+    }
+    return false;
+}
+
 [[nodiscard]] inline std::span<const ShapeDomain> shape_domains(DensityKind kind) noexcept
 {
     using namespace domain_detail;

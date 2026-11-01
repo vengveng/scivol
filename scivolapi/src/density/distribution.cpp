@@ -17,8 +17,14 @@ constexpr double log_two = 0.69314718055994530941723212145818;
 constexpr double inv_sqrt_two = 0.70710678118654752440084436210485;
 constexpr double eps = std::numeric_limits<double>::epsilon();
 
+// The formula families the distribution functions implement. Each density
+// maps to one in prepare(); the functions switch on it, so a new family is a
+// compile error wherever it is not handled.
+enum class Law { normal, student, ged, gh };
+
 struct Point {
     DensityKind kind{};
+    Law law{};
     double eta{}, nu{}, tail_scale{}, constant{}, a{}, b{1.0}, lam{}, kappa{}, log_beta{}, log_gamma_one{};
     double alpha{}, minus{}, plus{}, delta{}, d2{}, mu{}, index{};
     double concentration{}, root_rate{}, exponent_offset{};
@@ -77,7 +83,7 @@ double log_gamma_one_plus(double a) noexcept
 
 bool prepare(DensityKind kind, const double* shape, Point& p) noexcept
 {
-    if (kind < DensityKind::normal || kind > DensityKind::variance_gamma) return false;
+    if (!known_density(kind)) return false;
     const auto domains = shape_domains(kind);
     if (!domains.empty() && !shape) return false;
     for (std::size_t i = 0; i < domains.size(); ++i)
@@ -85,9 +91,10 @@ bool prepare(DensityKind kind, const double* shape, Point& p) noexcept
             return false;
     p.kind = kind;
     switch (kind) {
-    case DensityKind::normal: return true;
+    case DensityKind::normal: p.law = Law::normal; return true;
     case DensityKind::student_t:
     case DensityKind::skew_t: {
+        p.law = Law::student;
         p.eta = shape[0];
         p.constant = t_log_normalizer(p.eta, 0).value;
         if (p.eta >= 1.0/512.0) {
@@ -103,6 +110,7 @@ bool prepare(DensityKind kind, const double* shape, Point& p) noexcept
         return std::isfinite(p.constant) && std::isfinite(p.log_beta);
     }
     case DensityKind::ged: {
+        p.law = Law::ged;
         GedDensity::Prepared s;
         if (!GedDensity::prepare(shape, 0, s)) return false;
         p.nu = s.nu; p.kappa = s.kappa; p.constant = s.constant.value;
@@ -117,10 +125,10 @@ bool prepare(DensityKind kind, const double* shape, Point& p) noexcept
         }
         return std::isfinite(p.kappa) && std::isfinite(p.constant);
     }
-    case DensityKind::generalized_hyperbolic: return prepare_gh<GeneralizedHyperbolic>(shape, p);
-    case DensityKind::nig: return prepare_gh<NormalInverseGaussian>(shape, p);
-    case DensityKind::hyperbolic: return prepare_gh<Hyperbolic>(shape, p);
-    case DensityKind::variance_gamma: return prepare_gh<VarianceGamma>(shape, p);
+    case DensityKind::generalized_hyperbolic: p.law = Law::gh; return prepare_gh<GeneralizedHyperbolic>(shape, p);
+    case DensityKind::nig: p.law = Law::gh; return prepare_gh<NormalInverseGaussian>(shape, p);
+    case DensityKind::hyperbolic: p.law = Law::gh; return prepare_gh<Hyperbolic>(shape, p);
+    case DensityKind::variance_gamma: p.law = Law::gh; return prepare_gh<VarianceGamma>(shape, p);
     }
     return false;
 }
@@ -279,16 +287,25 @@ bool adaptive_integral(const Function& f, double left, double right, double budg
     return true;
 }
 
+double gh_log_pdf(const Point& p, double x) noexcept;
+
 double log_pdf(const Point& p, double x) noexcept
 {
-    if (p.kind == DensityKind::normal) return -0.5*x*x-0.5*log_2pi;
-    if (p.kind == DensityKind::student_t || p.kind == DensityKind::skew_t) {
+    switch (p.law) {
+    case Law::normal: return -0.5*x*x-0.5*log_2pi;
+    case Law::student: {
         const double n = std::fma(p.b,x,p.a), scale = n < 0.0 ? 1.0-p.lam : 1.0+p.lam;
         const double q = n/scale;
         return p.constant+std::log(p.b)-t_kernel(q,p.eta,0).t;
     }
-    if (p.kind == DensityKind::ged)
-        return -p.constant-std::pow(std::abs(x)/std::exp(p.kappa),p.nu);
+    case Law::ged: return -p.constant-std::pow(std::abs(x)/std::exp(p.kappa),p.nu);
+    case Law::gh: return gh_log_pdf(p,x);
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
+double gh_log_pdf(const Point& p, double x) noexcept
+{
     const double c = x-p.mu, ac = std::abs(c), r = std::hypot(p.delta,c);
     const double w = p.delta == 0.0 ? 0.0 : p.d2/(r+ac);
     bessel::LogK k;
@@ -313,7 +330,7 @@ bool integrated_tail(const Point& p, double z, bool upper, double& logarithm) no
 {
     const double direction = upper ? 1.0 : -1.0;
     double scale;
-    if (p.kind == DensityKind::student_t) scale = 1.0/std::max(1.0,std::abs(z));
+    if (p.law == Law::student) scale = 1.0/std::max(1.0,std::abs(z));
     else {
         const double rate = upper ? p.minus : p.plus;
         const double slope = gh_log_slope(p,z);
@@ -322,7 +339,7 @@ bool integrated_tail(const Point& p, double z, bool upper, double& logarithm) no
     if (!(scale > 0.0) || !std::isfinite(scale)) return false;
     std::array<double, 8> points{0.0,1.0};
     std::size_t count = 2;
-    if (p.kind >= DensityKind::generalized_hyperbolic) {
+    if (p.law == Law::gh) {
         for (double x : {p.mu-p.delta,p.mu,p.mu+p.delta,0.0}) {
             const double distance = direction*(x-z);
             if (distance > 0.0 && std::isfinite(distance)) points[count++] = distance/(scale+distance);
@@ -339,9 +356,9 @@ bool integrated_tail(const Point& p, double z, bool upper, double& logarithm) no
     const auto integrand = [&](double t) {
         const double distance = scale*(t/(1.0-t));
         const double x = std::fma(direction,distance,z);
-        const double ratio = p.kind == DensityKind::student_t
+        const double ratio = p.law == Law::student
             ? distance*((2.0*z+distance)/(1.0-2.0*p.eta+p.eta*z*z)) : 0.0;
-        const double difference = p.kind == DensityKind::student_t
+        const double difference = p.law == Law::student
             ? -0.5*(1.0+p.eta)*ratio*log1p_ratio(p.eta*ratio,0).value
             : log_pdf(p,x)-reference;
         return std::exp(difference+std::log(scale)-2.0*std::log1p(-t));
@@ -393,7 +410,7 @@ bool student_log_tail(const Point& p, double x, double& result, double* area = n
         return true;
     }
     if (p.eta < 1.0/512.0) {
-        Point t = p; t.kind = DensityKind::student_t; t.a = 0.0; t.b = 1.0; t.lam = 0.0;
+        Point t = p; t.kind = DensityKind::student_t; t.law = Law::student; t.a = 0.0; t.b = 1.0; t.lam = 0.0;
         if (!integrated_tail(t,x,true,result)) return false;
         if (area) {
             if (x > 1.0) *area = 0.5-std::exp(result);
@@ -407,13 +424,18 @@ bool student_log_tail(const Point& p, double x, double& result, double* area = n
     return student_beta_log_tail(p.nu,p.tail_scale,p.log_beta,x,result,area);
 }
 
+bool gh_tails(const Point& p, double x, double& lower, double& upper) noexcept;
+
 bool tails(const Point& p, double x, double& lower, double& upper) noexcept
 {
-    if (p.kind == DensityKind::normal || ((p.kind == DensityKind::student_t || p.kind == DensityKind::skew_t) && p.eta == 0.0 && p.lam == 0.0)) {
+    const auto normal = [&] {
         lower = 0.5*std::erfc(-x*inv_sqrt_two); upper = 0.5*std::erfc(x*inv_sqrt_two);
         return true;
-    }
-    if (p.kind == DensityKind::student_t || p.kind == DensityKind::skew_t) {
+    };
+    switch (p.law) {
+    case Law::normal: return normal();
+    case Law::student: {
+        if (p.eta == 0.0 && p.lam == 0.0) return normal();
         const double n = std::fma(p.b,x,p.a), weight = n < 0.0 ? 1.0-p.lam : 1.0+p.lam;
         double l, area = 0.0;
         if (!student_log_tail(p,std::abs(n)/weight,l,p.lam == 0.0 ? nullptr : &area)) return false;
@@ -427,7 +449,7 @@ bool tails(const Point& p, double x, double& lower, double& upper) noexcept
         }
         return lower >= 0.0 && lower <= 1.0 && upper >= 0.0 && upper <= 1.0;
     }
-    if (p.kind == DensityKind::ged) {
+    case Law::ged: {
         double l;
         const double power = std::pow(std::abs(x)/std::exp(p.kappa),p.nu);
         if (!log_gamma_q(1.0/p.nu,power,std::log(std::abs(x))-p.kappa,
@@ -440,6 +462,13 @@ bool tails(const Point& p, double x, double& lower, double& upper) noexcept
         else { upper = small; lower = 1.0-small; }
         return true;
     }
+    case Law::gh: return gh_tails(p,x,lower,upper);
+    }
+    return false;
+}
+
+bool gh_tails(const Point& p, double x, double& lower, double& upper) noexcept
+{
     bool up = x >= p.mu;
     double l;
     if (!integrated_tail(p,x,up,l)) return false;
@@ -591,10 +620,10 @@ bool inverse_gh(const Point& p, double probability, bool upper, double& value) n
 bool invert(const Point& p, double probability, bool upper, double& value) noexcept
 {
     if (probability > 0.5) return invert(p,1.0-probability,!upper,value);
-    if (p.kind == DensityKind::normal) {
+    switch (p.law) {
+    case Law::normal:
         value = (upper ? 1.0 : -1.0)*normal_inverse(probability); return std::isfinite(value);
-    }
-    if (p.kind == DensityKind::student_t || p.kind == DensityKind::skew_t) {
+    case Law::student: {
         // The join has lower mass (1-lambda)/2. Transform whichever tail
         // actually lies on that branch, without subtracting a tiny probability.
         const double left_mass = 0.5*(1.0-p.lam), right_mass = 0.5*(1.0+p.lam);
@@ -617,12 +646,14 @@ bool invert(const Point& p, double probability, bool upper, double& value) noexc
         value = result;
         return true;
     }
-    if (p.kind == DensityKind::ged) {
+    case Law::ged: {
         double x;
         if (!inverse_ged(p,probability,x)) return false;
         value = upper ? x : -x; return true;
     }
-    return inverse_gh(p,probability,upper,value);
+    case Law::gh: return inverse_gh(p,probability,upper,value);
+    }
+    return false;
 }
 
 constexpr double nodes8[] = {.18343464249564980494,.52553240991632898582,.79666647741362673959,.96028985649753623168};
@@ -827,7 +858,7 @@ ExpectationStatus quantiles(DensityKind kind, const double* shape, const double*
     Point p;
     if ((n && (!u || !out)) || !prepare(kind,shape,p)) return Status::numerical_failure;
     for (std::size_t i = 0; i < n; ++i) if (!valid_probability(u[i])) return Status::numerical_failure;
-    if (n >= 512 && kind >= DensityKind::generalized_hyperbolic)
+    if (n >= 512 && gh_family(kind))
         return invert_many(p,u,n,out) ? Status::ok : Status::numerical_failure;
     for (std::size_t i = 0; i < n; ++i) {
         double result;

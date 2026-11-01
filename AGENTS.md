@@ -1,6 +1,6 @@
 # scivol Guide for AI Agents
 
-**Last updated:** 2026-10-25
+**Last updated:** 2026-11-01
 
 scivol fits univariate and multivariate volatility models (ARMA/ARX mean, GARCH,
 GJR-GARCH, EGARCH, APARCH, DCC; Normal, Student-t, Skew-t, GED, GH, NIG,
@@ -39,6 +39,16 @@ evidence. Do not wrap builds or tests in tracking scripts.
   and behavior, but the difference
   lives in the model's answers to that interface; a new difference means a new,
   documented question on the interface, not an `if` in a consumer.
+- **One definition per family.** Inside the native library the Model answers by
+  asking the family: a `VolatilityFamily` (`src/volatility/family.hpp`, one
+  `<name>_family.cpp` each, next to the recursion class) declares its block,
+  charts, simplex weights, constraints, starts, scaling, moments, forecasts,
+  simulation seed, restrictions and identification; a `DensityFamily`
+  (`src/density/family.hpp`) its derived shapes, tail index, residual kinks
+  and nested restrictions; `src/volatility/recursions.hpp` is the one list
+  through which the jet and path runner instantiate recursion classes. Model,
+  Layout, restrictions and simulation never test a kind. Switches over a kind
+  have no `default:` and `-Werror=switch` rejects a missing case.
 - `scivol/` is the thin Python layer: components and compositions, `_fit.py`
   (composition to native model, fit, result), `_evaluation.py` (fixed-parameter
   evaluation, forecasts, simulations), `result.py`, `dcc.py`, and orchestration
@@ -169,8 +179,11 @@ result = spec.fit(data, method="qmle")        # robust (sandwich) SEs
 - Roles (`scivol/roles.py`): `MEAN`, `VOLATILITY`, `DENSITY`, `CORRELATION`.
   Canonical order is mean, volatility, density.
 - `+` builds a `CompositeSpec`; it is the only composition operator.
-- Components implement `role`, `signature`, `n_params`, `pack()`, `unpack()`;
-  domains, bounds and starts belong to the native model.
+- Components are declarations: they implement `role`, `signature` and
+  `declare(native_spec, exog)`, are validated by the native model at
+  construction and hold no fitted state. Parameter names, sizes, domains,
+  bounds and starts belong to the native model; results read them from it
+  (`param_names`, `parameters`, `persistence`, `shapes`).
 - `fit()` estimation options: `method` (`"mle"`, `"qmle"`), `coordinates`
   (`"automatic"`, `"z"`, `"theta"`), `maxiter`, `accuracy`, `initial_params`,
   `starts` (`"auto"`, a number of model candidate starts, or explicit vectors).
@@ -245,7 +258,7 @@ Python owns memory; native code computes in place.
 - When adding or changing a model, update its JAX oracle tests,
   `tests/test_dgp_estimation.py` (simulate, true parameters, convergence and
   recovery), `MODELS.md`, `benchmark.py` if it belongs in the panel, and
-  `README.md` if user-facing support changed.
+  `README.md` if user-facing support changed. See section 10 for a new family.
 - Defaults (solver, coordinate path) change only on benchmark evidence on the same
   domain and real data.
 - `bugfix.md` (git-ignored) is an append-only log: when you fix a confirmed bug,
@@ -273,3 +286,31 @@ multi-series suites.
 Type style: `from __future__ import annotations`, annotate arrays as
 `NDArray[np.float64]`, Greek letters spelled out (`nu`, `lam`, `omega`), snake_case
 functions, PascalCase classes, private modules prefixed with `_`.
+
+## 10. Adding a volatility family or density
+
+The compiler and the contract test (`tests/test_family_contract.py`, which
+runs every registered kind) list what is missing; nothing outside these
+places changes.
+
+Volatility family:
+1. The recursion class in `src/volatility/<name>.hpp` (the concept in
+   `volatility.hpp`): value, exact first and second derivatives, coupled mean
+   terms, kinks reported through `VolatilityStep::defined`.
+2. Its `VolatilityFamily` in `src/volatility/<name>_family.cpp`; register it
+   in `families.hpp` and `volatility_family()`, and its recursion in
+   `recursions.hpp` (with only measured compiled widths).
+3. The `VolatilityKind` value and its binding name in `module.cpp`.
+4. A Python component: a `VolatilityComponent` subclass with `kind` and `label`.
+5. A JAX oracle test of value, gradient and Hessian (all requests, fixed and
+   runtime paths, near-boundary points), a DGP recovery test, MODELS.md and
+   the docs page.
+
+Density: the density class (`src/density/<name>.hpp`, the concept in
+`density.hpp`), its shape domain (`domain.hpp`), moments, exponential moment
+and distribution functions (the switches in `moments.cpp`,
+`exponential_moment.cpp`, `distribution.cpp`), its `DensityFamily` in
+`density/family.cpp`, a `jet_<name>.cpp` translation unit with its entry in
+`kernel_for` and `path_runner_for`, the `DensityKind` value and binding name,
+a `DensityComponent` subclass, and the same oracle, DGP and documentation
+updates.

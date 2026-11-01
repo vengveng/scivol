@@ -285,7 +285,7 @@ ExpectationStatus exponential_moment(DensityKind kind, const double* shape,
                                      double a, double b, double& value) noexcept
 {
     if (!std::isfinite(a) || !std::isfinite(b)) return Status::numerical_failure;
-    if (kind < DensityKind::normal || kind > DensityKind::variance_gamma) return Status::numerical_failure;
+    if (!known_density(kind)) return Status::numerical_failure;
     const auto domains = shape_domains(kind);
     if (!domains.empty() && !shape) return Status::numerical_failure;
     for (std::size_t i = 0; i < domains.size(); ++i)
