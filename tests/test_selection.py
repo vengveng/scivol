@@ -394,3 +394,17 @@ def test_mean_widening_template_preserves_structure_and_nested_lag_restrictions(
         GeneralToSpecific(max_mean_order=9)
     with pytest.raises(ValueError, match='max_mean_order'):
         Auto(max_mean_order=0)
+
+
+def test_parent_refits_terminate_and_never_lower_the_parent():
+    # A replication of the calibration study in which a parent refit from an
+    # embedded child kept ending below it, and the graph was rechecked until
+    # the budget ran out (256 fits, 16000 test records).
+    from scivol import EGARCH, GJRGARCH, SkewT
+
+    y = (EGARCH(1, 1) + Normal()).simulate(1000, [0.0, 0.15, -0.08, 0.95], seed=1_000_003 * 4 + 7919 * 1000 + 10).data
+    search_space = Search(mean=[ARX.up_to(1)], volatility=[GJRGARCH.up_to(1, 1), EGARCH.up_to(1, 1)],
+                          density=[SkewT()], constant_variance=True)
+    result = search_space.fit(y, n_jobs=1)
+    assert result.search_complete and result.status == "selected"
+    assert result.fit_counts["optimizer_invocations"] < 100

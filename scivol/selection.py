@@ -346,6 +346,7 @@ class _Reduction:
         self.widenings, self.widening_status = [], None
         self.deployment_reserve = 0
         self.visited, self.terminals, self.accepted = set(), set(), {}
+        self.refitted = set()  # (parent, child) pairs whose embedded child has seeded a parent refit
         self.started = time.perf_counter()
 
     def _declare(self, search):
@@ -655,14 +656,21 @@ class _Reduction:
             return record
         test = api.restriction_test(p.model, c.model, restriction, p.fit, c.fit,
                                     self.plan, level)
-        if test.status == api.LRStatus.negative_statistic and self.counts["optimizer_invocations"] + self.deployment_reserve < self.procedure.max_fits:
+        # A child above its parent: refit the parent once from the embedded child,
+        # keeping the refit only if it raises the parent's likelihood, so the
+        # parent improves strictly and the recheck of the graph terminates.
+        if (test.status == api.LRStatus.negative_statistic and (parent, child) not in self.refitted
+                and self.counts["optimizer_invocations"] + self.deployment_reserve < self.procedure.max_fits):
+            self.refitted.add((parent, child))
             self.counts["optimizer_invocations"] += 1
-            self.counts["parent_refits"] += 1
             self.counts["warm_started_fits"] += 1
-            p.fit = api.fit(p.model, self.plan, _options(self.options, theta))
-            self._diagnose(p, True)
-            test = api.restriction_test(p.model, c.model, restriction, p.fit, c.fit,
-                                        self.plan, level)
+            refit = api.fit(p.model, self.plan, _options(self.options, theta))
+            if refit.success and refit.log_likelihood > p.fit.log_likelihood:
+                self.counts["parent_refits"] += 1
+                p.fit = refit
+                self._diagnose(p, True)
+                test = api.restriction_test(p.model, c.model, restriction, p.fit, c.fit,
+                                            self.plan, level)
         if test.status == api.LRStatus.negative_statistic and self.counts["optimizer_invocations"] + self.deployment_reserve >= self.procedure.max_fits:
             self.frontier.add(parent)
         record.update(statistic=test.statistic, law=test.law.name,
