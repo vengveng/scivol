@@ -174,6 +174,7 @@ def fit_spec(
     accuracy: float = 1e-10,
     initial_params: Optional[NDArray[np.float64]] = None,
     starts: Any = "auto",
+    boundary: str = "withhold",
     index: Any = None,
     name: Optional[str] = None,
     **unknown: Any,
@@ -192,10 +193,17 @@ def fit_spec(
     beats the best finished start), a number n (the first n candidates, each in
     full; 1 is a single start), or explicit parameter vectors (each in full).
     `initial_params` is a single explicit start.
+
+    `boundary` chooses the standard errors of an estimate at which closed
+    bounds or constraints bind: "withhold" (none, the default) or "restricted"
+    (those of the model restricted to the binding faces, the conditions held as
+    equalities; parameters the faces fix get NaN).
     """
     if unknown:
         raise TypeError(f"fit() got unexpected keyword argument(s) {', '.join(map(repr, unknown))}; its estimation "
-                        "options are method, coordinates, maxiter, accuracy, initial_params and starts")
+                        "options are method, coordinates, maxiter, accuracy, initial_params, starts and boundary")
+    if boundary not in ("withhold", "restricted"):
+        raise ValueError("boundary must be 'withhold' or 'restricted'")
     sample = prepare_sample(spec, data, x, hold_back, scale)
     native, y, x_arr, skip, held = sample.native, sample.y, sample.x, sample.skip, sample.hold_back
     original_n_obs, scale_factor = sample.original_n_obs, sample.scale
@@ -211,6 +219,7 @@ def fit_spec(
     options.coordinates = _COORDINATES[coordinates]
     options.maximum_iterations = int(maxiter)
     options.accuracy = float(accuracy)
+    options.boundary = getattr(api.Boundary, boundary)
     if initial_params is not None:  # parameters, or a previous result to warm start from
         source = getattr(initial_params, "spec", None)
         if source is not None and str(source) != str(spec):
@@ -276,6 +285,7 @@ def present_fit(spec, sample: PreparedSample, native_result: api.FitResult, *,
         kink_point=bool(native_result.kink_point),
         active_kink_rows=tuple(skip+row for row in native_result.active_kink_rows),
         excluded_boundary=tuple(native_result.excluded_boundary),
+        binding=tuple(native_result.binding),
         starts=tuple(dict(theta=np.array(s.theta), candidate=s.candidate, finished=s.finished,
                           log_likelihood=s.log_likelihood, success=s.success, selected=s.selected)
                      for s in native_result.starts),
@@ -310,6 +320,8 @@ def present_fit(spec, sample: PreparedSample, native_result: api.FitResult, *,
         cov_matrix=matrix(native_result.covariance),
         opg=matrix(native_result.opg),
         cov_robust=matrix(native_result.robust_covariance),
+        std_errors=np.array(native_result.std_errors) if native_result.std_errors.size else None,
+        std_errors_robust=np.array(native_result.robust_std_errors) if native_result.robust_std_errors.size else None,
         fit_info=fit_info,
         method="QMLE" if qmle else "MLE",
         index=None if index is None else index[first:],

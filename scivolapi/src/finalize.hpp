@@ -39,5 +39,9 @@ std::vector<double> outer_products(std::span<const double> scores, std::size_t r
 std::vector<double> sandwich(const std::vector<double>& m, const std::vector<double>& b, std::size_t d);
 // Square roots of the diagonal.
 std::vector<double> standard_errors(const std::vector<double>& covariance, std::size_t d);
+// At an estimate where closed faces bind (Inference::at_boundary), the
+// covariance and standard errors of the model restricted to them
+// (Boundary::restricted); otherwise unchanged.
+void restrict_inference(FitResult& r);
 
 }  // namespace scivolapi::detail

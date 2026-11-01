@@ -95,7 +95,7 @@ ProjectionWorkspace projection_workspace(const Problem& problem)
 
 struct StationarityAccess {
     static Stationarity evaluate(const Problem& problem, std::span<const double> x, std::span<const double> g,
-                                 ProjectionWorkspace& w)
+                                 ProjectionWorkspace& w, ActiveSet* active)
     {
         const std::size_t n = problem.dimension, m_c = problem.constraint_count;
         Stationarity s;
@@ -140,14 +140,25 @@ struct StationarityAccess {
         for (std::size_t i = 0; i < n; ++i) s.residual = std::max(s.residual, std::abs(x[i] - w.y_[i]));
         s.binding = std::any_of(w.weights_.begin(), w.weights_.begin() + static_cast<std::ptrdiff_t>(rows),
                                 [](double weight) { return weight > 0.0; });
+        if (active) {  // the rows in the order they were added
+            std::size_t row = 0;
+            for (std::size_t i = 0; i < n; ++i) {
+                if (!problem.lower.empty() && !std::isnan(problem.lower[i]) && w.weights_[row++] > 0.0)
+                    active->lower.push_back(i);
+                if (!problem.upper.empty() && !std::isnan(problem.upper[i]) && w.weights_[row++] > 0.0)
+                    active->upper.push_back(i);
+            }
+            for (std::size_t k = 0; k < m_c; ++k)
+                if (w.weights_[row++] > 0.0) active->constraints.push_back(k);
+        }
         return s;
     }
 };
 
 Stationarity stationarity(const Problem& problem, std::span<const double> x, std::span<const double> g,
-                          ProjectionWorkspace& workspace)
+                          ProjectionWorkspace& workspace, ActiveSet* active)
 {
-    return StationarityAccess::evaluate(problem, x, g, workspace);
+    return StationarityAccess::evaluate(problem, x, g, workspace, active);
 }
 
 }  // namespace scivolapi::optimize

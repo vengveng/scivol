@@ -30,6 +30,17 @@ enum class Coordinates { automatic, z, theta };
 //         covariance is the two-step sandwich of the stacked score equations.
 enum class Estimator { mle, qmle };
 
+// Standard errors of an estimate at which closed bounds or constraints bind
+// (Inference::at_boundary).
+//   withhold:    none are reported; ordinary Hessian inference does not apply.
+//   restricted:  those of the model restricted to the binding faces: the
+//                binding conditions held as equalities, the information on the
+//                remaining directions (Z' H Z, Z spanning them), and its
+//                sandwich. Parameters the faces fix get NaN. Valid inference for
+//                the restricted model (an IGARCH, a GARCH without the lag at
+//                zero), not for the unrestricted estimator's boundary law.
+enum class Boundary { withhold, restricted };
+
 struct FitOptions {
     Estimator estimator = Estimator::mle;
     Coordinates coordinates = Coordinates::automatic;
@@ -47,6 +58,7 @@ struct FitOptions {
     std::vector<double> start;
     std::vector<std::vector<double>> starts;
     int start_count = 0;
+    Boundary boundary = Boundary::withhold;
 };
 
 // The race probe's length (FitOptions::start_count = 0).
@@ -73,6 +85,7 @@ enum class Inference {
     at_boundary,           // a bound or constraint is active; Hessian SEs do not apply
     at_kink,               // nonsmooth estimate; ordinary Hessian SEs do not apply
     at_excluded_boundary,  // at an open bound or strict constraint the declared domain excludes
+    restricted,            // at_boundary, with the standard errors of the model restricted to the binding faces
     not_positive_definite, // the observed information is not positive definite
     ill_conditioned,       // positive definite, but too poorly conditioned to invert reliably
 };
@@ -121,6 +134,11 @@ struct FitResult {
     // Excluded boundaries of the declared domain the estimate is at, as conditions
     // ("persistence < 1", "eta < 0.5"); empty inside the domain.
     std::vector<std::string> excluded_boundary;
+    // The closed bounds and constraints that bind at the estimate (a positive
+    // KKT weight), as conditions ("alpha[1] >= 0", "persistence <= 1"), and
+    // their inward normals in the data's units (one row of dimension each).
+    std::vector<std::string> binding;
+    std::vector<double> binding_normals;
     Inference inference = Inference::not_stationary;
     bool success = false;  // finite, feasible, solver converged, and stationary
 

@@ -33,7 +33,8 @@ These methods exist on every component and `CompositeSpec`.
 ```text
 spec.fit(data, *, x=None, hold_back=0, scale=None, method="mle",
          coordinates="automatic", maxiter=1000, accuracy=1e-10,
-         initial_params=None, starts="auto", n_jobs=None, show_progress=None)
+         initial_params=None, starts="auto", boundary="withhold", n_jobs=None,
+         show_progress=None)
 ```
 
 Fits the model and returns an `EstimationResult`. For a multi-column input it fits each column and returns a dictionary of results. [Estimation](estimation.md#fit-options) describes the options; unknown options raise a `TypeError`.
@@ -81,13 +82,14 @@ The first five evaluate the model at given parameters: the log-likelihood, its g
 | `forecast(horizon=10, *, x=None, simulations=10000, seed=0)` | `ForecastResult` |
 | `diagnostic_tests(n_cells=40, lags=10, alpha=0.05, print_results=True, *, df_adjustment=None)` | dictionary of tests; see [diagnostics](diagnostics.md) |
 | `filter()` | `FilteredState` at the estimates |
+| `bootstrap(replications=499, *, m=None, seed=0, n_jobs=None)` | `BootstrapResult`, the m-out-of-n parametric bootstrap; see [inference](inference.md#standard-errors-at-a-boundary) |
 | `to_dict()` | estimates, standard errors and metadata as a dictionary |
 
-`fit_info` records how the estimate was computed: `solver` and `optimizer_phases` (the phases that ran), `optimization_space` (the coordinate path), `starts` (every starting point and its outcome), `inference_status`, `excluded_boundary`, `kink_point` and `active_kink_rows`, `kkt_residual` and `kkt_tolerance`, iteration and evaluation counts, `internal_data_scale`, the hold-back and the scale. `fit_info.to_dict()` returns it as a dictionary.
+`fit_info` records how the estimate was computed: `solver` and `optimizer_phases` (the phases that ran), `optimization_space` (the coordinate path), `starts` (every starting point and its outcome), `inference_status`, `excluded_boundary`, `binding` (the closed conditions that bind), `kink_point` and `active_kink_rows`, `kkt_residual` and `kkt_tolerance`, iteration and evaluation counts, `internal_data_scale`, the hold-back and the scale. `fit_info.to_dict()` returns it as a dictionary.
 
 A `FixedResult`, returned by `spec.fix`, has the same attributes and methods, with `method="FIXED"`, `parameter_source="supplied"` and no covariance matrix.
 
-`FilteredState` holds the scored `data`, `mean`, `residuals`, `sigma2`, `std_resid` and `log_likelihood` at given parameters, plus the `score` and `hessian` of the log-likelihood when requested. `ForecastResult` has `mean`, `variance`, `residual_variance` (alias `sigma2`), `volatility` and `residual_volatility`, and the methods `quantile(level)` and `var(level)`. `SimulationResult` has `data`, `mean`, `residuals`, `sigma2` and `innovations`. Each has a `to_dict()` method.
+`FilteredState` holds the scored `data`, `mean`, `residuals`, `sigma2`, `std_resid` and `log_likelihood` at given parameters, plus the `score` and `hessian` of the log-likelihood when requested. `ForecastResult` has `mean`, `variance`, `residual_variance` (alias `sigma2`), `volatility` and `residual_volatility`, and the methods `quantile(level)` and `var(level)`. `SimulationResult` has `data`, `mean`, `residuals`, `sigma2` and `innovations`. `BootstrapResult` has `param_names`, `estimate`, `draws`, `m`, `n`, `replications`, `failures`, `std_errors` and `intervals(level=0.95)`. Each has a `to_dict()` method.
 
 ## Correlation models
 

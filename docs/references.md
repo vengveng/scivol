@@ -6,6 +6,10 @@ The papers and books cited throughout these pages, in alphabetical order by auth
 
 - Akaike, Hirotugu (1974). "A new look at the statistical model identification." *IEEE Transactions on Automatic Control*, **19**(6), 716–723. DOI: [10.1109/TAC.1974.1100705](https://doi.org/10.1109/TAC.1974.1100705). [Author's institutional bibliography](https://www.ism.ac.jp/akaikememorial/aic-e.html).
 
+<a id="andrews-2000"></a>
+
+- Andrews, Donald W. K. (2000). "Inconsistency of the bootstrap when a parameter is on the boundary of the parameter space." *Econometrica*, **68**(2), 399–405. DOI: [10.1111/1468-0262.00114](https://doi.org/10.1111/1468-0262.00114).
+
 <a id="andrews-2001"></a>
 
 - Andrews, Donald W. K. (2001). "Testing when a parameter is on the boundary of the maintained hypothesis." *Econometrica*, **69**(3), 683–734. DOI: [10.1111/1468-0262.00210](https://doi.org/10.1111/1468-0262.00210).
@@ -29,6 +33,10 @@ The papers and books cited throughout these pages, in alphabetical order by auth
 <a id="bertsekas-1982"></a>
 
 - Bertsekas, Dimitri P. (1982). "Projected Newton methods for optimization problems with simple constraints." *SIAM Journal on Control and Optimization*, **20**(2), 221–246. DOI: [10.1137/0320018](https://doi.org/10.1137/0320018).
+
+<a id="bickel-sakov-2008"></a>
+
+- Bickel, Peter J. and Anat Sakov (2008). "On the choice of m in the m out of n bootstrap and confidence bounds for extrema." *Statistica Sinica*, **18**(3), 967–985. [Journal page](https://www3.stat.sinica.edu.tw/statistica/J18N3/J18N38/J18N38.html).
 
 <a id="bollerslev-1986"></a>
 

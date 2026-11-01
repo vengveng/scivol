@@ -48,6 +48,38 @@ void name_open_bounds(const optimize::Problem& p, std::span<const double> x, std
     }
 }
 
+// The binding closed bounds and constraints as conditions, with their inward
+// normals at the reported (data-unit) theta.
+void record_binding(const Model& model, FitResult& r, const optimize::ActiveSet& active)
+{
+    const std::size_t d = r.theta.size();
+    std::vector<double> lower(d), upper(d);
+    model.bounds(lower, upper);
+    auto coordinate = [&](std::size_t i, double sign) {
+        r.binding_normals.resize(r.binding_normals.size() + d, 0.0);
+        r.binding_normals[r.binding_normals.size() - d + i] = sign;
+    };
+    for (std::size_t i : active.lower) {
+        r.binding.push_back(bound_condition(r.names[i], ">=", lower[i]));
+        coordinate(i, 1.0);
+    }
+    for (std::size_t i : active.upper) {
+        r.binding.push_back(bound_condition(r.names[i], "<=", upper[i]));
+        coordinate(i, -1.0);
+    }
+    if (active.constraints.empty()) return;
+    const std::size_t m = model.constraint_count();
+    std::vector<double> values(m), jacobian(m * d);
+    model.constraints(r.theta, values, jacobian);
+    const std::vector<std::string> names = model.constraint_names();
+    for (std::size_t k : active.constraints) {
+        r.binding.push_back(names[k]);
+        r.binding_normals.insert(r.binding_normals.end(), jacobian.begin() + k * d, jacobian.begin() + (k + 1) * d);
+    }
+}
+
+constexpr const char* boundary_warning = "the estimate is on the boundary of the domain; standard errors are not reported";
+
 }  // namespace
 
 // By Cholesky on the diagonally equilibrated matrix (parameters can differ in
@@ -187,9 +219,10 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
                 r.warnings.push_back("one-sided likelihood derivatives are unavailable at the residual face");
         }
     }
+    optimize::ActiveSet active;
     if (!r.kink_point && gradient_ok) {
         optimize::ProjectionWorkspace workspace = optimize::projection_workspace(problem);
-        stationarity = optimize::stationarity(problem, unit_theta, unit_g, workspace);
+        stationarity = optimize::stationarity(problem, unit_theta, unit_g, workspace, &active);
     } else if (!r.kink_point) {
         r.warnings.push_back("the gradient is not available at the estimate");
     }
@@ -303,6 +336,8 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
     }
 
     r.excluded_boundary = excluded;
+    if constexpr (univariate)
+        if (stationarity.binding) record_binding(model, r, active);
     if (!excluded.empty()) r.inference = Inference::at_excluded_boundary;
     else if (!r.stationary) r.inference = Inference::not_stationary;
     else if (r.kink_point) r.inference = Inference::at_kink;
@@ -322,7 +357,7 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
             r.warnings.push_back(r.inference == Inference::at_kink
                                      ? "the estimate is a likelihood kink point; ordinary Hessian standard errors are not reported"
                                      : r.inference == Inference::at_boundary
-                                     ? "the estimate is on the boundary of the domain; standard errors are not reported"
+                                     ? boundary_warning
                                      : "the observed information cannot be inverted reliably; standard errors are not reported");
         }
     }
@@ -331,6 +366,78 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
     // the declared domain; an excluded boundary is reported, not refused.
     r.success = r.estimate_available && r.feasible && r.termination == Termination::converged && r.stationary;
     return r;
+}
+
+void restrict_inference(FitResult& r)
+{
+    const std::size_t d = r.theta.size();
+    if (r.inference != Inference::at_boundary || r.hessian.size() != d * d || r.binding_normals.empty()) return;
+    // An orthonormal basis of the binding normals' span, then of its
+    // complement Z by orthogonalizing the coordinate axes against both
+    // (modified Gram-Schmidt, twice for accuracy).
+    std::vector<std::vector<double>> span, free;
+    auto orthogonalize = [&](std::vector<double> v) {
+        const double size = std::sqrt(std::inner_product(v.begin(), v.end(), v.begin(), 0.0));
+        for (int pass = 0; pass < 2; ++pass)
+            for (const auto* basis : {&span, &free})
+                for (const std::vector<double>& u : *basis) {
+                    const double c = std::inner_product(u.begin(), u.end(), v.begin(), 0.0);
+                    for (std::size_t i = 0; i < d; ++i) v[i] -= c * u[i];
+                }
+        const double norm = std::sqrt(std::inner_product(v.begin(), v.end(), v.begin(), 0.0));
+        if (!(norm > 1e-8 * size)) return std::vector<double>{};
+        for (double& x : v) x /= norm;
+        return v;
+    };
+    for (std::size_t k = 0; k * d < r.binding_normals.size(); ++k) {
+        auto u = orthogonalize({r.binding_normals.begin() + k * d, r.binding_normals.begin() + (k + 1) * d});
+        if (!u.empty()) span.push_back(std::move(u));
+    }
+    for (std::size_t j = 0; j < d && span.size() + free.size() < d; ++j) {
+        std::vector<double> axis(d, 0.0);
+        axis[j] = 1.0;
+        auto u = orthogonalize(std::move(axis));
+        if (!u.empty()) free.push_back(std::move(u));
+    }
+    const std::size_t k = free.size();
+    if (k == 0) return;
+    std::vector<double> information(k * k, 0.0), inverse;  // Z' H Z
+    for (std::size_t a = 0; a < k; ++a)
+        for (std::size_t b = 0; b < k; ++b)
+            for (std::size_t i = 0; i < d; ++i)
+                for (std::size_t j = 0; j < d; ++j)
+                    information[a * k + b] += free[a][i] * r.hessian[i * d + j] * free[b][j];
+    if (invert_information(information, k, inverse) != Inference::available) {
+        r.warnings.push_back("the information restricted to the binding faces cannot be inverted reliably");
+        return;
+    }
+    std::vector<double> covariance(d * d, 0.0);  // Z (Z' H Z)^-1 Z'
+    for (std::size_t i = 0; i < d; ++i)
+        for (std::size_t j = 0; j < d; ++j)
+            for (std::size_t a = 0; a < k; ++a)
+                for (std::size_t b = 0; b < k; ++b)
+                    covariance[i * d + j] += free[a][i] * inverse[a * k + b] * free[b][j];
+    // Parameters the faces fix have no variance left: NaN, not a zero error.
+    double largest = 0.0;
+    for (std::size_t i = 0; i < d; ++i) largest = std::max(largest, covariance[i * d + i]);
+    auto errors = [&](const std::vector<double>& c) {
+        std::vector<double> se = standard_errors(c, d);
+        for (std::size_t i = 0; i < d; ++i)
+            if (!(covariance[i * d + i] > eps * largest)) se[i] = std::numeric_limits<double>::quiet_NaN();
+        return se;
+    };
+    if (!r.opg.empty()) {
+        r.robust_covariance = sandwich(covariance, r.opg, d);
+        r.robust_std_errors = errors(r.robust_covariance);
+    }
+    r.covariance = r.estimator == Estimator::qmle && !r.robust_covariance.empty() ? r.robust_covariance : covariance;
+    r.std_errors = errors(r.covariance);
+    r.inference = Inference::restricted;
+    std::string list;
+    for (const std::string& condition : r.binding) list += (list.empty() ? "" : ", ") + condition;
+    std::erase(r.warnings, std::string(boundary_warning));
+    r.warnings.push_back("the estimate is on the boundary of the domain; standard errors hold the binding conditions ("
+                         + list + ") as equalities");
 }
 
 template FitResult finalize<Model, Jet>(const Model&, Jet&, Jet&, double, const Candidate&, std::vector<FitPhase>,

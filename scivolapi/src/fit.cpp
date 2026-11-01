@@ -523,13 +523,23 @@ FitResult fit_qmle(const Model& model, std::span<const double> y, std::span<cons
     return first;
 }
 
+// The declared boundary inference. A staged qmle fit's two-step covariance
+// has no restricted form here; its boundary errors stay withheld.
+void apply_boundary(const Model& model, const FitOptions& options, FitResult& r)
+{
+    const bool staged = options.estimator == Estimator::qmle && model.spec().density != DensityKind::normal;
+    if (options.boundary == Boundary::restricted && !staged) detail::restrict_inference(r);
+}
+
 }  // namespace
 
 FitResult fit(const Model& model, std::span<const double> y, std::span<const double> x, const FitOptions& options)
 {
     if (!(options.accuracy > 0.0) || options.maximum_iterations < 1)
         throw std::invalid_argument("accuracy must be positive and maximum_iterations at least 1");
-    return options.estimator == Estimator::qmle ? fit_qmle(model, y, x, options) : fit_mle(model, y, x, options);
+    FitResult r = options.estimator == Estimator::qmle ? fit_qmle(model, y, x, options) : fit_mle(model, y, x, options);
+    apply_boundary(model, options, r);
+    return r;
 }
 
 FitResult fit(const Model& model, const ComparisonPlan& plan, const FitOptions& options)
@@ -538,6 +548,7 @@ FitResult fit(const Model& model, const ComparisonPlan& plan, const FitOptions& 
         throw std::invalid_argument("accuracy must be finite and positive and maximum_iterations at least 1");
     FitResult r = options.estimator == Estimator::qmle
         ? fit_qmle(model, plan.y(), {}, options, &plan) : fit_mle(model, plan.y(), {}, options, &plan);
+    apply_boundary(model, options, r);
     r.comparison = plan.identity();
     r.fitted_spec = model.spec();
     return r;

@@ -451,12 +451,16 @@ NB_MODULE(_scivolapi, m)
         .value("at_boundary", Inference::at_boundary)
         .value("at_kink", Inference::at_kink)
         .value("at_excluded_boundary", Inference::at_excluded_boundary)
+        .value("restricted", Inference::restricted)
         .value("not_positive_definite", Inference::not_positive_definite)
         .value("ill_conditioned", Inference::ill_conditioned);
 
     nb::enum_<Estimator>(m, "Estimator")
         .value("mle", Estimator::mle)
         .value("qmle", Estimator::qmle);
+    nb::enum_<Boundary>(m, "Boundary")
+        .value("withhold", Boundary::withhold)
+        .value("restricted", Boundary::restricted);
 
     nb::class_<FitOptions>(m, "FitOptions")
         .def(nb::init<>())
@@ -466,7 +470,8 @@ NB_MODULE(_scivolapi, m)
         .def_rw("maximum_iterations", &FitOptions::maximum_iterations)
         .def_rw("start", &FitOptions::start)
         .def_rw("starts", &FitOptions::starts)
-        .def_rw("start_count", &FitOptions::start_count);
+        .def_rw("start_count", &FitOptions::start_count)
+        .def_rw("boundary", &FitOptions::boundary);
     m.attr("PROBE_ITERATIONS") = probe_iterations;
     nb::class_<FitStart>(m, "FitStart")
         .def_ro("theta", &FitStart::theta)
@@ -513,6 +518,7 @@ NB_MODULE(_scivolapi, m)
         .def_ro("kink_point", &FitResult::kink_point)
         .def_ro("active_kink_rows", &FitResult::active_kink_rows)
         .def_ro("excluded_boundary", &FitResult::excluded_boundary)
+        .def_ro("binding", &FitResult::binding)
         .def_ro("kkt_tolerance", &FitResult::kkt_tolerance)
         .def_ro("stationary", &FitResult::stationary)
         .def_ro("inference", &FitResult::inference)

@@ -42,12 +42,19 @@ struct Stationarity {
     bool binding = false;  // a bound or constraint binds at the projection
 };
 
+// The rows that bind at the projection (a positive weight): lower and upper
+// bounds by parameter index, constraints by index.
+struct ActiveSet {
+    std::vector<std::size_t> lower, upper, constraints;
+};
+
 // The library's single definition of first-order stationarity: the
 // projected-gradient residual ||x - P(x - g)||_inf, with P the projection onto
 // the problem's feasible set linearized at x. It vanishes exactly at a KKT point
 // and needs no activity cutoffs. Used by the optimizer and the finalizer alike.
+// With `active`, also the rows that bind (allocates; for the finalizer).
 Stationarity stationarity(const Problem& problem, std::span<const double> x, std::span<const double> g,
-                          ProjectionWorkspace& workspace);
+                          ProjectionWorkspace& workspace, ActiveSet* active = nullptr);
 
 // Reserves a workspace sized for `problem`.
 ProjectionWorkspace projection_workspace(const Problem& problem);

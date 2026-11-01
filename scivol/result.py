@@ -28,6 +28,7 @@ def _to_pandas_series(
 if TYPE_CHECKING:
     from .components import Component
     from .spec import CompositeSpec
+    from ._bootstrap import BootstrapResult
     from ._evaluation import FilteredState, ForecastResult
 
 
@@ -91,6 +92,7 @@ class FitMetadata:
     kink_point: bool = False
     active_kink_rows: tuple[int, ...] = ()
     excluded_boundary: tuple[str, ...] = ()
+    binding: tuple[str, ...] = ()   # closed bounds and constraints binding at the estimate
     starts: tuple[dict, ...] = ()   # each starting point: theta, candidate, finished, log_likelihood, success, selected
     kkt_residual: Optional[float] = None
     kkt_tolerance: Optional[float] = None
@@ -161,6 +163,8 @@ class EstimationResult:
         cov_matrix: Optional[NDArray[np.float64]] = None,
         opg: Optional[NDArray[np.float64]] = None,
         cov_robust: Optional[NDArray[np.float64]] = None,
+        std_errors: Optional[NDArray[np.float64]] = None,
+        std_errors_robust: Optional[NDArray[np.float64]] = None,
         fit_info: Optional[Union[FitMetadata, Dict[str, Any]]] = None,
         method: str = "MLE",
         index: Optional[Any] = None,
@@ -191,6 +195,9 @@ class EstimationResult:
         # Robust covariance / standard errors (for QMLE)
         self._opg: Optional[NDArray[np.float64]] = opg
         self._cov_robust: Optional[NDArray[np.float64]] = cov_robust
+        # Native errors where given (NaN marks a parameter a binding face fixes).
+        self._std_errors = std_errors
+        self._std_errors_robust = std_errors_robust
         
         # Pandas metadata (for preserving index/column names)
         self._index: Optional[Any] = index
@@ -435,6 +442,24 @@ class EstimationResult:
         return forecast(self.spec, model, np.ascontiguousarray(self.params), y, rows, horizon, x,
                         simulations=simulations, seed=seed)
 
+    def bootstrap(self, replications: int = 499, *, m: Optional[int] = None, seed: Any = 0,
+                  n_jobs: Optional[int] = None) -> "BootstrapResult":
+        """The m-out-of-n parametric bootstrap of the estimates.
+
+        Each of `replications` series continues the fitted model from the end of
+        the sample for m observations and is refitted from the estimate. By
+        default m is chosen by Bickel and Sakov's (2008) rule: the laws on the grid
+        m_j = n 0.75^j (j >= 1, m_j >= 250) are computed with common random numbers
+        and the m_j whose law is closest to the next is used. The law of sqrt(m) (theta* - theta_hat) estimates that of
+        sqrt(n) (theta_hat - theta_0), also at an estimate on a bound of the
+        domain, where Hessian standard errors do not apply and the ordinary
+        bootstrap (m = n) is inconsistent. Regressors are held at the sample's
+        first m rows. Refits run in `n_jobs` threads (default up to four).
+        """
+        from ._bootstrap import bootstrap
+
+        return bootstrap(self, replications, m=m, seed=seed, n_jobs=n_jobs)
+
     def _get_filtered_state(self) -> "FilteredState":
         if self._filtered_state_cache is None:
             from . import _scivolapi as api
@@ -463,7 +488,10 @@ class EstimationResult:
     
     @property
     def std_errors(self) -> Optional[NDArray[np.float64]]:
-        """Standard errors from covariance matrix."""
+        """Standard errors from the covariance matrix; NaN for a parameter a
+        binding face fixes (fit(boundary="restricted"))."""
+        if self._std_errors is not None:
+            return self._std_errors
         if self._cov_matrix is None:
             return None
         return np.sqrt(np.diag(self._cov_matrix))
@@ -481,6 +509,8 @@ class EstimationResult:
     @property
     def std_errors_robust(self) -> Optional[NDArray[np.float64]]:
         """Robust standard errors from sandwich covariance."""
+        if self._std_errors_robust is not None:
+            return self._std_errors_robust
         if self._cov_robust is None:
             return None
         return np.sqrt(np.diag(self._cov_robust))
@@ -681,7 +711,7 @@ class EstimationResult:
             elif abs(model.persistence(theta)) > 0.99:
                 add("persistence is very close to one")
 
-        if self.std_errors is not None:
+        if self.std_errors is not None and self.fit_info.inference_status != "restricted":
             if np.any(~np.isfinite(self.std_errors)):
                 add("some standard errors could not be computed")
             elif np.any(self.std_errors <= 0):

@@ -29,6 +29,7 @@ result = spec.fit(y, method="mle", coordinates="automatic", starts="auto", maxit
 | `x` | `None` | Regressors for ARX and HARX means, one row per observation |
 | `hold_back` | `0` | Number of initial observations used only as lags, not scored |
 | `scale` | `None` | A multiplier applied to the data before fitting, such as 100 for percent returns |
+| `boundary` | `"withhold"` | Standard errors at an estimate where closed bounds or constraints bind: `"withhold"` or `"restricted"`; see [inference](inference.md#standard-errors-at-a-boundary) |
 
 Unknown options raise a `TypeError`.
 
