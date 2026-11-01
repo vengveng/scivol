@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Protocol, runtime_checkable, TYPE_CHECKING, Union
-import warnings
 import numpy as np
 from numpy.typing import NDArray
 from datetime import datetime
@@ -239,27 +238,6 @@ class EstimationResult:
         """Persistent warnings about the fitted result."""
         return tuple(self._collect_warnings())
     
-    # Deprecated aliases (for backward compatibility)
-    @property
-    def loglikelihood(self) -> float:
-        """Deprecated: Use log_likelihood instead."""
-        warnings.warn(
-            "loglikelihood is deprecated, use log_likelihood instead",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.log_likelihood
-
-    @property
-    def niter(self) -> int:
-        """Deprecated: Use n_iter instead."""
-        warnings.warn(
-            "niter is deprecated, use n_iter instead",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.n_iter
-
     @property
     def unconditional_variance(self) -> float:
         """Exact stationary E[h], infinity if divergent, NaN if unavailable."""
