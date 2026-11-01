@@ -4,14 +4,14 @@
 
 namespace scivolapi::detail {
 
-Assembler assembler_branches_nig(const ModelSpec& spec)
+Kernel kernel_branches_nig(const ModelSpec& spec)
 {
-    return assembler_coupled<GhFamilyDensity<NormalInverseGaussian>, true, true>(spec.volatility);
+    return kernel_runtime<GhFamilyDensity<NormalInverseGaussian>, true, true>(spec);
 }
 
-Assembler assembler_nig(const ModelSpec& spec)
+Kernel kernel_nig(const ModelSpec& spec)
 {
-    return assembler_with<GhFamilyDensity<NormalInverseGaussian>>(spec);
+    return kernel_with<GhFamilyDensity<NormalInverseGaussian>>(spec);
 }
 
 PathRunner path_runner_nig(VolatilityKind kind)

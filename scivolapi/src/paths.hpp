@@ -8,10 +8,7 @@
 
 #include "mean/regressors.hpp"
 #include "model_layout.hpp"
-#include "volatility/aparch.hpp"
-#include "volatility/constant.hpp"
-#include "volatility/egarch.hpp"
-#include "volatility/garch.hpp"
+#include "volatility/recursions.hpp"
 #include "volatility/volatility.hpp"
 
 // The model's recursions run forward: first over observed rows (the filter, the
@@ -111,14 +108,9 @@ using PathRunner = PathStatus (*)(const PathInput&, PathBuffers&);
 template<class Density>
 PathRunner path_runner_with(VolatilityKind kind) noexcept
 {
-    switch (kind) {
-    case VolatilityKind::garch: return run_paths<GarchVolatility<false>>;
-    case VolatilityKind::gjr: return run_paths<GarchVolatility<true>>;
-    case VolatilityKind::egarch: return run_paths<EgarchVolatility<Density>>;
-    case VolatilityKind::aparch: return run_paths<AparchVolatility<>>;
-    case VolatilityKind::constant: return run_paths<ConstantVolatility<>>;
-    }
-    return nullptr;
+    return with_recursions(kind, [&]<class F>() -> PathRunner {
+        return run_paths<typename F::template Recursion<Density, false>>;
+    });
 }
 
 PathRunner path_runner_normal(VolatilityKind);
@@ -142,7 +134,7 @@ inline PathRunner path_runner_for(const ModelSpec& spec) noexcept
     case DensityKind::hyperbolic: return path_runner_hyperbolic(spec.volatility);
     case DensityKind::variance_gamma: return path_runner_variance_gamma(spec.volatility);
     }
-    return nullptr;
+    return nullptr;  // unreachable: the switch covers every density
 }
 
 }  // namespace scivolapi::detail

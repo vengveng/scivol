@@ -4,14 +4,14 @@
 
 namespace scivolapi::detail {
 
-Assembler assembler_branches_normal(const ModelSpec& spec)
+Kernel kernel_branches_normal(const ModelSpec& spec)
 {
-    return assembler_coupled<NormalDensity, true, true>(spec.volatility);
+    return kernel_runtime<NormalDensity, true, true>(spec);
 }
 
-Assembler assembler_normal(const ModelSpec& spec)
+Kernel kernel_normal(const ModelSpec& spec)
 {
-    return assembler_with<NormalDensity>(spec);
+    return kernel_with<NormalDensity>(spec);
 }
 
 PathRunner path_runner_normal(VolatilityKind kind)

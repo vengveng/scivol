@@ -510,8 +510,8 @@ FitResult fit_qmle(const Model& model, std::span<const double> y, std::span<cons
     const ModelSpec& spec = model.spec();
     if (spec.density != DensityKind::normal && !model.capabilities().density_free_recursion)
         throw std::invalid_argument(
-            "qmle with a non-Normal density needs a variance recursion free of the density's shapes "
-            "(EGARCH centres its recursion with E|z|)");
+            "qmle with a non-Normal density needs a variance recursion free of the density's shapes, "
+            "and this model's recursion uses them");
     ModelSpec gaussian_spec = spec;
     gaussian_spec.density = DensityKind::normal;
     const Model gaussian(gaussian_spec);

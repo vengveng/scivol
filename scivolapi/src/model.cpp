@@ -7,10 +7,10 @@
 #include <string>
 #include <utility>
 
+#include "density/family.hpp"
 #include "detail/numeric.hpp"
 #include "mean/regressors.hpp"
 #include "model_layout.hpp"
-#include "volatility/garch.hpp"
 
 namespace scivolapi {
 
@@ -29,43 +29,6 @@ void require(bool condition, const char* message)
 void check_size(std::span<const double> values, std::size_t expected)
 {
     require(values.size() == expected, "parameter vector has the wrong length");
-}
-
-// Student-t and Skew-t need delta * eta < 1 for APARCH's power moment to
-// exist, which only a stationarity condition (on the persistence) needs.
-bool power_moment_has_tail_bound(const ModelSpec& spec)
-{
-    return spec.volatility == VolatilityKind::aparch && spec.stationarity != Stationarity::none
-        && (spec.density == DensityKind::student_t || spec.density == DensityKind::skew_t);
-}
-
-// GARCH, GJR and APARCH declare a persistence condition (< 1 or <= 1).
-bool bounds_persistence(const ModelSpec& spec)
-{
-    return spec.volatility != VolatilityKind::egarch && spec.volatility != VolatilityKind::constant
-        && spec.stationarity != Stationarity::none;
-}
-
-// Where the recursion and the density are defined. Mean entries need only be finite.
-bool volatility_evaluable(const ModelSpec& spec, const Layout& layout, const double* theta)
-{
-    for (std::size_t k = 0; k < layout.shapes; ++k)
-        if (!std::isfinite(theta[k])) return false;
-    const double* vol = theta + layout.omega;
-    switch (spec.volatility) {
-    case VolatilityKind::garch: return detail::GarchVolatility<false>(spec).evaluable(vol);
-    case VolatilityKind::gjr: return detail::GarchVolatility<true>(spec).evaluable(vol);
-    case VolatilityKind::egarch: return true;  // the log-variance recursion is defined for any finite theta
-    case VolatilityKind::constant: return theta[layout.omega] > 0.0 && std::isfinite(theta[layout.omega]);
-    case VolatilityKind::aparch:  // omega > 0, alpha, beta >= 0, |gamma| < 1, delta > 0
-        if (!(theta[layout.omega] > 0.0) || !(theta[layout.delta] > 0.0)) return false;
-        for (std::size_t i = 0; i < spec.p; ++i)
-            if (!(theta[layout.alpha + i] >= 0.0) || !(std::abs(theta[layout.gamma + i]) < 1.0)) return false;
-        for (std::size_t j = 0; j < spec.q; ++j)
-            if (!(theta[layout.beta + j] >= 0.0)) return false;
-        return true;
-    }
-    return false;
 }
 
 // 1 - sum a_i L^i has all roots outside the unit circle (step-down recursion).
@@ -138,18 +101,16 @@ bool har_reflections(const MeanSpec& mean, const double* a, std::vector<double>&
 
 std::string indexed(const char* name, std::size_t i) { return std::string(name) + "[" + std::to_string(i) + "]"; }
 
+// At most this many family constraint rows (GJR's p, APARCH's one).
+constexpr std::size_t max_family_constraints = Layout::max_order + 1;
+
 }  // namespace
 
 Model::Model(const ModelSpec& spec) : spec_(spec)
 {
-    if (spec.volatility == VolatilityKind::constant)
-        require(spec.p == 0 && spec.q == 0, "constant variance has no orders: p and q must be 0");
+    const detail::VolatilityFamily& family = detail::volatility_family(spec.volatility);
+    family.validate(spec);
     require(spec.p <= Layout::max_order && spec.q <= Layout::max_order, "orders p and q must be at most 8");
-    require(spec.volatility != VolatilityKind::constant || spec.stationarity == Stationarity::covariance,
-            "constant variance has no stationarity condition to declare");
-    // The closed stable region's unit-root boundary has no reflection-coefficient chart.
-    require(spec.volatility != VolatilityKind::egarch || spec.stationarity != Stationarity::integrated,
-            "EGARCH declares a covariance (stable beta) or no stationarity condition");
     const MeanSpec& mean = spec.mean;
     require(mean.ar <= Layout::max_order && mean.ma <= Layout::max_order, "AR and MA orders must be at most 8");
     for (std::size_t k = 0; k < mean.har.size(); ++k)
@@ -164,13 +125,32 @@ Model::Model(const ModelSpec& spec) : spec_(spec)
     for (std::size_t k = 0; k < mean.har.size(); ++k) names_[layout.har + k] = indexed("har", mean.har[k]);
     for (std::size_t i = 0; i < mean.exog; ++i) names_[layout.exog + i] = indexed("exog", i + 1);
     for (std::size_t j = 0; j < mean.ma; ++j) names_[layout.ma + j] = indexed("ma", j + 1);
-    names_[layout.omega] = spec.volatility == VolatilityKind::constant ? "sigma2" : "omega";
-    for (std::size_t i = 0; i < spec.p; ++i) names_[layout.alpha + i] = indexed("alpha", i + 1);
-    if (spec.volatility != VolatilityKind::garch)
-        for (std::size_t i = 0; i < spec.p; ++i) names_[layout.gamma + i] = indexed("gamma", i + 1);
-    for (std::size_t j = 0; j < spec.q; ++j) names_[layout.beta + j] = indexed("beta", j + 1);
-    if (spec.volatility == VolatilityKind::aparch) names_[layout.delta] = "delta";
+    family.names(spec, names_.data() + layout.volatility);
     for (std::size_t i = 0; i < layout.shape_count; ++i) names_[layout.shapes + i] = layout.shape_domain[i].name;
+
+    // Constraint rows c(theta) >= 0 beyond the bounds:
+    //   stable blocks of order >= 2   1 - kappa_k^2 >= 0, kappa the reflection coefficients
+    //                                 (AR, MA, and the family's: EGARCH's beta);
+    //   HAR                           1 - kappa_k^2 >= 0 for the implied AR polynomial;
+    //   persistence condition         L - persistence >= 0, L the simplex chart's floating-point
+    //                                 margin (1 - persistence >= 0 integrated);
+    //   the family's own rows         (GJR alpha_i + gamma_i >= 0, APARCH delta * eta < 1).
+    std::vector<detail::ConstraintRow> rows;
+    for (std::size_t b = 0; b < layout.stable_blocks; ++b)
+        if (layout.stable[b].count >= 2) rows.insert(rows.end(), layout.stable[b].count, {layout.stable[b].condition, true});
+    if (!mean.har.empty()) rows.insert(rows.end(), mean.har.back(), {"stationary HAR polynomial", true});
+    if (family.persistence_condition(spec)) {
+        const bool integrated = spec.stationarity == Stationarity::integrated;
+        rows.push_back({integrated ? "persistence <= 1" : "persistence < 1", !integrated});
+    }
+    family_constraints_ = rows.size();
+    family.constraint_rows(spec, rows);
+    family_constraints_ = rows.size() - family_constraints_;
+    require(family_constraints_ <= max_family_constraints, "the volatility family declares too many constraints");
+    for (detail::ConstraintRow& row : rows) {
+        constraint_names_.push_back(std::move(row.name));
+        open_constraints_.push_back(row.open);
+    }
 }
 
 // Regressor rows for the scored rows t = c, ..., n - 1 (c conditioning rows).
@@ -249,13 +229,13 @@ bool Model::evaluable(std::span<const double> theta) const
 {
     if (theta.size() != dimension()) return false;
     const Layout layout(spec_);
-    return volatility_evaluable(spec_, layout, theta.data()) && layout.shapes_inside(theta.data());
+    for (std::size_t k = 0; k < layout.shapes; ++k)  // mean entries need only be finite
+        if (!std::isfinite(theta[k])) return false;
+    return layout.family->evaluable(spec_, theta.data() + layout.volatility) && layout.shapes_inside(theta.data());
 }
 
-// The declared domain: stationary AR (and HAR), invertible MA; GARCH, GJR and
-// APARCH persistence < 1 (<= 1 integrated; with APARCH's moment existing),
-// EGARCH a stable lag polynomial; no persistence condition when none is
-// declared.
+// The declared domain: stationary AR (and HAR), invertible MA, the family's
+// stable blocks and constraint rows, and the persistence condition it declares.
 bool Model::feasible(std::span<const double> theta) const
 {
     if (!evaluable(theta)) return false;
@@ -266,8 +246,14 @@ bool Model::feasible(std::span<const double> theta) const
         if (!StableChart::step_down(coefficients, layout.stable[b].count, kappa)) return false;
     }
     if (!har_stationary(spec_.mean, theta.data() + layout.har)) return false;
-    if (!bounds_persistence(spec_)) return true;
-    if (power_moment_has_tail_bound(spec_) && !(theta[layout.delta] * theta[layout.shapes] < 1.0)) return false;
+    if (family_constraints_) {
+        double values[max_family_constraints], jacobian[max_family_constraints * Layout::max_dimension] = {};
+        layout.family->constraints(layout, theta.data(), values, jacobian);
+        const std::size_t first = open_constraints_.size() - family_constraints_;
+        for (std::size_t r = 0; r < family_constraints_; ++r)
+            if (!(open_constraints_[first + r] ? values[r] > 0.0 : values[r] >= 0.0)) return false;
+    }
+    if (!layout.family->persistence_condition(spec_)) return true;
     double persistence = 0.0;
     if (!layout.persistence(theta.data(), 0, persistence, nullptr)) return false;
     return spec_.stationarity == Stationarity::integrated ? persistence <= 1.0 : persistence < 1.0;
@@ -285,11 +271,8 @@ void Model::bounds(std::span<double> lower, std::span<double> upper) const
             upper[k] = layout.scalar(k).upper_bound();
         }
     }
-    for (std::size_t k = 0; k < layout.simplex_count; ++k) {  // gamma (GJR) is bounded jointly with alpha
-        const std::size_t index = layout.simplex_index[k];
-        const bool leverage = spec_.volatility == VolatilityKind::gjr && index >= layout.gamma && index < layout.beta;
-        if (!leverage) lower[index] = 0.0;
-    }
+    for (std::size_t k = 0; k < layout.simplex_count; ++k)  // members that are not themselves >= 0 are bounded jointly
+        if (layout.simplex_nonnegative[k]) lower[layout.simplex_index[k]] = 0.0;
     for (std::size_t b = 0; b < layout.stable_blocks; ++b)  // order one: |coefficient| < 1 as a box
         if (layout.stable[b].count == 1) {
             lower[layout.stable[b].at] = -StableChart::bound();
@@ -314,6 +297,9 @@ void Model::open_bounds(std::span<char> lower, std::span<char> upper) const
         if (layout.stable[b].count == 1) lower[layout.stable[b].at] = upper[layout.stable[b].at] = 1;
 }
 
+// Closed faces: nonnegative simplex members and closed shape bounds at their
+// bound, and closed constraint rows at zero (GJR's alpha_i + gamma_i >= 0, an
+// integrated persistence <= 1), with the row's gradient as the inward normal.
 std::vector<double> Model::closed_face_normals(std::span<const double> theta) const
 {
     check_size(theta, dimension());
@@ -325,27 +311,20 @@ std::vector<double> Model::closed_face_normals(std::span<const double> theta) co
         normals.resize(at + d, 0.0);
         normals[at + j] = 1.0;
     };
-    for (std::size_t k = 0; k < layout.simplex_count; ++k) {
-        const std::size_t j = layout.simplex_index[k];
-        const bool leverage = spec_.volatility == VolatilityKind::gjr && j >= layout.gamma && j < layout.beta;
-        if (!leverage && theta[j] == 0.0) coordinate(j);
-    }
+    for (std::size_t k = 0; k < layout.simplex_count; ++k)
+        if (layout.simplex_nonnegative[k] && theta[layout.simplex_index[k]] == 0.0) coordinate(layout.simplex_index[k]);
     for (std::size_t k = 0; k < layout.shape_count; ++k)
         if (layout.shape_domain[k].closed_lower && theta[layout.shapes + k] == layout.shape_domain[k].lower)
             coordinate(layout.shapes + k);
-    if (spec_.volatility == VolatilityKind::gjr)
-        for (std::size_t k = 0; k < spec_.p; ++k)
-            if (theta[layout.alpha + k] + theta[layout.gamma + k] == 0.0) {
-                coordinate(layout.alpha + k);
-                normals[normals.size() - d + layout.gamma + k] = 1.0;
-            }
-    if (spec_.stationarity == Stationarity::integrated && bounds_persistence(spec_)) {
-        std::vector<double> gradient(d);
-        double persistence = 0.0;
-        if (layout.persistence(theta.data(), 1, persistence, gradient.data()) && persistence >= 1.0) {
-            for (double& g : gradient) g = -g;  // the inward normal of 1 - persistence >= 0
-            normals.insert(normals.end(), gradient.begin(), gradient.end());
-        }
+    const std::size_t m = constraint_count();
+    if (std::find(open_constraints_.begin(), open_constraints_.end(), 0) == open_constraints_.end()) return normals;
+    std::vector<double> values(m), jacobian(m * d);
+    constraints(theta, values, jacobian);
+    for (std::size_t r = 0; r < m; ++r) {
+        const double* row = jacobian.data() + r * d;
+        if (open_constraints_[r] || !(values[r] <= 0.0) || std::all_of(row, row + d, [](double v) { return v == 0.0; }))
+            continue;
+        normals.insert(normals.end(), row, row + d);
     }
     return normals;
 }
@@ -376,31 +355,12 @@ bool Model::at_open_bound(std::span<const double> theta) const
 
 bool Model::constant_variance() const noexcept
 {
-    return spec_.volatility == VolatilityKind::constant;
+    return detail::volatility_family(spec_.volatility).constant_variance();
 }
 
-std::size_t Model::constraint_count() const noexcept
-{
-    const Layout layout(spec_);
-    std::size_t count = 0;
-    for (std::size_t b = 0; b < layout.stable_blocks; ++b)
-        if (layout.stable[b].count >= 2) count += layout.stable[b].count;
-    if (!spec_.mean.har.empty()) count += spec_.mean.har.back();
-    if (layout.egarch()) return count;
-    if (bounds_persistence(spec_)) count += 1;
-    if (spec_.volatility == VolatilityKind::gjr) count += spec_.p;
-    if (power_moment_has_tail_bound(spec_)) count += 1;
-    return count;
-}
+std::size_t Model::constraint_count() const noexcept { return constraint_names_.size(); }
 
-// c(theta) >= 0 beyond the bounds:
-//   stable blocks of order >= 2   1 - kappa_k^2 >= 0, kappa the reflection coefficients
-//                                 (AR, MA, EGARCH's beta);
-//   HAR                           1 - kappa_k^2 >= 0 for the implied AR polynomial;
-//   GARCH, GJR, APARCH            L - persistence >= 0, L the simplex chart's floating-point margin
-//                                 (1 - persistence >= 0 integrated; absent without a condition);
-//   GJR                           alpha_i + gamma_i >= 0;
-//   APARCH, t family              1 - delta * eta >= 0.
+// The rows declared in the constructor, in that order.
 void Model::constraints(std::span<const double> theta, std::span<double> values,
                         std::span<double> jacobian) const
 {
@@ -434,9 +394,7 @@ void Model::constraints(std::span<const double> theta, std::span<double> values,
                 jacobian[row * d + layout.har + v] = -2.0 * kappa[k] * gradient[k * windows + v];
         }
     }
-    if (layout.egarch()) return;
-
-    if (bounds_persistence(spec_)) {
+    if (layout.family->persistence_condition(spec_)) {
         double* persistence_row = jacobian.data() + row * d;
         double persistence = 0.0;
         if (layout.persistence(theta.data(), 1, persistence, persistence_row)) {
@@ -450,77 +408,22 @@ void Model::constraints(std::span<const double> theta, std::span<double> values,
         }
         ++row;
     }
-    if (spec_.volatility == VolatilityKind::gjr)
-        for (std::size_t i = 0; i < spec_.p; ++i, ++row) {
-            values[row] = theta[layout.alpha + i] + theta[layout.gamma + i];
-            jacobian[row * d + layout.alpha + i] = 1.0;
-            jacobian[row * d + layout.gamma + i] = 1.0;
-        }
-    if (power_moment_has_tail_bound(spec_)) {
-        values[row] = 1.0 - theta[layout.shapes] * theta[layout.delta];
-        jacobian[row * d + layout.shapes] = -theta[layout.delta];
-        jacobian[row * d + layout.delta] = -theta[layout.shapes];
-    }
+    layout.family->constraints(layout, theta.data(), values.data() + row, jacobian.data() + row * d);
 }
-
-namespace {
-
-// The constraint rows in Model::constraints order: the condition each declares
-// and whether its boundary c(theta) = 0 is excluded from the domain.
-struct ConstraintRow {
-    std::string name;
-    bool open;
-};
-
-std::vector<ConstraintRow> constraint_rows(const ModelSpec& spec)
-{
-    const detail::Layout layout(spec);
-    std::vector<ConstraintRow> rows;
-    for (std::size_t b = 0; b < layout.stable_blocks; ++b) {
-        const detail::Layout::Stable& s = layout.stable[b];
-        if (s.count < 2) continue;
-        const char* condition = layout.egarch() && s.at == layout.beta ? "stable beta polynomial"
-            : s.sign < 0 ? "invertible MA polynomial" : "stationary AR polynomial";
-        rows.insert(rows.end(), s.count, {condition, true});
-    }
-    if (!spec.mean.har.empty()) rows.insert(rows.end(), spec.mean.har.back(), {"stationary HAR polynomial", true});
-    if (layout.egarch()) return rows;
-    if (bounds_persistence(spec)) {
-        const bool integrated = spec.stationarity == Stationarity::integrated;
-        rows.push_back({integrated ? "persistence <= 1" : "persistence < 1", !integrated});
-    }
-    if (spec.volatility == VolatilityKind::gjr)
-        for (std::size_t i = 1; i <= spec.p; ++i)
-            rows.push_back({"alpha[" + std::to_string(i) + "] + gamma[" + std::to_string(i) + "] >= 0", false});
-    if (power_moment_has_tail_bound(spec)) rows.push_back({"delta * eta < 1", true});
-    return rows;
-}
-
-}  // namespace
 
 void Model::open_constraints(std::span<char> open) const
 {
-    const std::vector<ConstraintRow> rows = constraint_rows(spec_);
-    require(open.size() == rows.size(), "open constraint flags have the wrong length");
-    for (std::size_t row = 0; row < rows.size(); ++row) open[row] = rows[row].open;
+    require(open.size() == open_constraints_.size(), "open constraint flags have the wrong length");
+    std::copy(open_constraints_.begin(), open_constraints_.end(), open.begin());
 }
 
-std::vector<std::string> Model::constraint_names() const
-{
-    std::vector<std::string> names;
-    for (ConstraintRow& row : constraint_rows(spec_)) names.push_back(std::move(row.name));
-    return names;
-}
+std::vector<std::string> Model::constraint_names() const { return constraint_names_; }
 
-// The mean starts at its constant = mean(y), every other coefficient zero.
-// Volatility starts with persistence 0.9 (EGARCH: beta summing to 0.9). GARCH
-// and GJR put 80% on beta and the rest on alpha (GJR: 60% alpha, 40% leverage at
-// kappa 1/2); APARCH starts at delta = 2, gamma = 0, where its moment is E z^2 = 1.
+// The mean starts at its constant = mean(y), every other coefficient zero; the
+// shapes at their declared starts; the volatility block at its family's start.
 std::vector<double> Model::start(const Sample& sample) const
 {
-    constexpr double persistence = 0.90;
     const Layout layout(spec_);
-    const double p = static_cast<double>(spec_.p), q = static_cast<double>(spec_.q);
     std::vector<double> theta(dimension(), 0.0);
     if (spec_.mean.constant) {
         double total = 0.0;
@@ -528,62 +431,22 @@ std::vector<double> Model::start(const Sample& sample) const
         theta[0] = total / static_cast<double>(sample.size());
     }
     for (std::size_t i = 0; i < layout.shape_count; ++i) theta[layout.shapes + i] = layout.shape_domain[i].start;
-    if (layout.egarch()) {
-        theta[layout.omega] = (1.0 - persistence) * std::log(sample.variance_seed);
-        for (std::size_t i = 0; i < spec_.p; ++i) theta[layout.alpha + i] = 0.1 / p;
-        if (spec_.p) theta[layout.gamma] = -0.05;
-        for (std::size_t j = 0; j < spec_.q; ++j) theta[layout.beta + j] = persistence / q;
-        return theta;
-    }
-    if (spec_.volatility == VolatilityKind::constant) {
-        theta[layout.omega] = sample.variance_seed;
-        return theta;
-    }
-    const double shock = 0.20 * persistence;
-    const double initial_persistence = spec_.p && spec_.q ? persistence
-        : (spec_.p ? shock : 0.0) + (spec_.q ? 0.80 * persistence : 0.0);
-    theta[layout.omega] = sample.variance_seed * (1.0 - initial_persistence);
-    for (std::size_t j = 0; j < spec_.q; ++j) theta[layout.beta + j] = 0.80 * persistence / q;
-    if (spec_.volatility == VolatilityKind::gjr) {
-        for (std::size_t i = 0; i < spec_.p; ++i) {
-            theta[layout.alpha + i] = 0.6 * shock / p;
-            theta[layout.gamma + i] = 0.8 * shock / p;  // 0.4 shock at kappa = 1/2
-        }
-        return theta;
-    }
-    if (spec_.volatility == VolatilityKind::aparch) theta[layout.delta] = 2.0;
-    for (std::size_t i = 0; i < spec_.p; ++i) theta[layout.alpha + i] = shock / p;
+    layout.family->start(layout, sample.variance_seed, theta.data());
     return theta;
 }
 
 // The model's start, then the near-integrated region of a recursion with both
 // shock and variance lags, where daily returns' other likelihood maxima lie
 // (the start's persistence is 0.9 with a large shock share): persistence 0.98
-// and 0.995 carried by beta.
+// and 0.995 carried by the variance lags.
 std::vector<std::vector<double>> Model::starts(const Sample& sample) const
 {
     std::vector<std::vector<double>> out{start(sample)};
-    if (spec_.volatility == VolatilityKind::constant || spec_.p == 0 || spec_.q == 0) return out;
     const Layout layout(spec_);
-    const double p = static_cast<double>(spec_.p), q = static_cast<double>(spec_.q);
     for (const auto [persistence, shock] : {std::pair{0.98, 0.02}, std::pair{0.995, 0.01}}) {
         std::vector<double> theta = out.front();
-        if (layout.egarch()) {
-            theta[layout.omega] = (1.0 - persistence) * std::log(sample.variance_seed);
-            for (std::size_t i = 0; i < spec_.p; ++i) theta[layout.alpha + i] = 2.5 * shock / p;
-            for (std::size_t j = 0; j < spec_.q; ++j) theta[layout.beta + j] = persistence / q;
-        } else {
-            // GJR's leverage adds about half its loading (kappa = 1/2 when symmetric);
-            // APARCH keeps delta = 2 and gamma = 0, where its moment is E z^2 = 1.
-            const bool gjr = spec_.volatility == VolatilityKind::gjr;
-            theta[layout.omega] = sample.variance_seed * (1.0 - persistence);
-            for (std::size_t i = 0; i < spec_.p; ++i) {
-                theta[layout.alpha + i] = shock / p;
-                if (gjr) theta[layout.gamma + i] = shock / p;
-            }
-            for (std::size_t j = 0; j < spec_.q; ++j)
-                theta[layout.beta + j] = (persistence - (gjr ? 1.5 : 1.0) * shock) / q;
-        }
+        if (!layout.family->near_integrated_start(layout, sample.variance_seed, persistence, shock, theta.data()))
+            break;
         if (feasible(theta)) out.push_back(std::move(theta));
     }
     return out;
@@ -591,9 +454,7 @@ std::vector<std::vector<double>> Model::starts(const Sample& sample) const
 
 // Exact data scaling y -> factor y (x unchanged): the mean's constant and
 // exogenous coefficients scale by factor (AR, HAR and MA coefficients are scale
-// free); GARCH and GJR scale omega by factor^2, APARCH by factor^delta
-// (sigma^delta), EGARCH shifts it by 2 log(factor) (1 - sum beta) (log h shifts
-// by 2 log factor). Everything else is scale free.
+// free); the volatility block as its family declares. Shapes are scale free.
 void Model::rescale(std::span<const double> theta, double factor, std::span<double> scaled) const
 {
     check_size(theta, dimension());
@@ -603,34 +464,21 @@ void Model::rescale(std::span<const double> theta, double factor, std::span<doub
     const Layout layout(spec_);
     if (spec_.mean.constant) scaled[0] = theta[0] * factor;
     for (std::size_t i = 0; i < spec_.mean.exog; ++i) scaled[layout.exog + i] = theta[layout.exog + i] * factor;
-    switch (spec_.volatility) {
-    case VolatilityKind::egarch: {
-        double slack = 1.0;
-        for (std::size_t j = 0; j < spec_.q; ++j) slack -= theta[layout.beta + j];
-        scaled[layout.omega] = theta[layout.omega] + 2.0 * std::log(factor) * slack;
-        break;
-    }
-    case VolatilityKind::aparch:
-        scaled[layout.omega] = theta[layout.omega] * std::pow(factor, theta[layout.delta]);
-        break;
-    default: scaled[layout.omega] = theta[layout.omega] * factor * factor;
-    }
+    layout.family->rescale(layout, theta.data(), factor, scaled.data());
 }
 
 // The z charts cover the domain except a HAR mean's stationary region (enforced
-// in theta by constraints); EGARCH centres its recursion with the density's
-// E|z|; APARCH variances beyond one step have no closed form (sigma^delta is
-// linear in expectation, sigma^2 is not).
+// in theta by constraints); the rest the volatility family and the density answer.
 ModelCapabilities Model::capabilities() const noexcept
 {
+    const detail::VolatilityFamily& family = detail::volatility_family(spec_.volatility);
     ModelCapabilities c;
     c.chart_covers_domain = spec_.mean.har.empty();
-    c.density_free_recursion = spec_.volatility != VolatilityKind::egarch;
+    c.density_free_recursion = family.density_free_recursion();
     c.likelihood_can_have_gradient_kinks = spec_.mean.width() != 0
-        && (spec_.volatility == VolatilityKind::egarch || spec_.volatility == VolatilityKind::aparch
-            || spec_.density == DensityKind::ged);
+        && (family.residual_kinks() || detail::density_family(spec_.density).residual_kinks());
     c.residual_kink_decomposition = c.likelihood_can_have_gradient_kinks;
-    if (spec_.volatility == VolatilityKind::aparch) c.exact_variance_horizon = 1;
+    c.exact_variance_horizon = family.exact_variance_horizon();
     return c;
 }
 
@@ -639,27 +487,24 @@ double Model::residual_kink_order(std::span<const double> theta, std::size_t fut
     check_size(theta, dimension());
     if (!spec_.mean.width()) return 0;
     const Layout l(spec_);
-    if (spec_.density == DensityKind::ged && theta[l.shapes] <= 1)
-        return std::numeric_limits<double>::quiet_NaN();
-    bool shock = false;
-    for (std::size_t i = 0; i < std::min(spec_.p, future); ++i)
-        shock |= theta[l.mean + 1 + i] != 0;
-    if (shock && spec_.volatility == VolatilityKind::aparch && theta[l.mean + 1 + 2*spec_.p + spec_.q] <= 1)
-        return std::numeric_limits<double>::quiet_NaN();
-    return shock && spec_.volatility == VolatilityKind::egarch ? 1 : 0;
+    const double density = detail::density_family(spec_.density).residual_kink_order(theta.data() + l.shapes);
+    if (std::isnan(density)) return density;
+    return l.family->residual_kink_order(l, theta.data(), future);
 }
 
 double Model::persistence(std::span<const double> theta) const
 {
     check_size(theta, dimension());
     const Layout layout(spec_);
-    if (layout.egarch()) {
-        double beta = 0.0;
-        for (std::size_t j = 0; j < spec_.q; ++j) beta += theta[layout.beta + j];
-        return beta;
-    }
-    double value = 0.0;
-    return layout.persistence(theta.data(), 0, value, nullptr) ? value : std::numeric_limits<double>::quiet_NaN();
+    return layout.family->persistence(layout, theta.data());
+}
+
+double Model::unconditional_variance(std::span<const double> theta) const
+{
+    check_size(theta, dimension());
+    if (!evaluable(theta)) return std::numeric_limits<double>::quiet_NaN();
+    const Layout layout(spec_);
+    return layout.family->unconditional_variance(*this, layout, theta);
 }
 
 double Model::unconditional_mean(std::span<const double> theta) const
@@ -712,10 +557,7 @@ InnovationDensity Model::innovation_density(std::span<const double> theta) const
 
 std::vector<std::pair<std::string, double>> derived_shapes(const InnovationDensity& density)
 {
-    if (density.density != DensityKind::student_t && density.density != DensityKind::skew_t) return {};
-    if (density.shape.empty() || !detail::domain_detail::student_t[0].contains(density.shape[0]))
-        throw std::invalid_argument("density shape is outside its domain");
-    return {{"nu", density.shape[0] == 0.0 ? std::numeric_limits<double>::infinity() : 1.0 / density.shape[0]}};
+    return detail::density_family(density.density).derived(density.shape.empty() ? nullptr : density.shape.data());
 }
 
 std::vector<std::pair<std::string, double>> named_shapes(const InnovationDensity& density)

@@ -64,8 +64,14 @@ inline constexpr std::array<FixedShape, 1> hyperbolic_fixed{{{"lambda", 1.0}}};
     switch (kind) {
     case DensityKind::nig: return nig_fixed;
     case DensityKind::hyperbolic: return hyperbolic_fixed;
-    default: return {};
+    case DensityKind::normal:
+    case DensityKind::student_t:
+    case DensityKind::skew_t:
+    case DensityKind::ged:
+    case DensityKind::generalized_hyperbolic:
+    case DensityKind::variance_gamma: return {};
     }
+    return {};
 }
 
 [[nodiscard]] inline std::span<const ShapeDomain> shape_domains(DensityKind kind) noexcept
@@ -79,8 +85,9 @@ inline constexpr std::array<FixedShape, 1> hyperbolic_fixed{{{"lambda", 1.0}}};
     case DensityKind::nig:
     case DensityKind::hyperbolic: return fixed_gh;
     case DensityKind::variance_gamma: return vg;
-    default: return {};
+    case DensityKind::normal: return {};
     }
+    return {};
 }
 
 }  // namespace scivolapi::detail

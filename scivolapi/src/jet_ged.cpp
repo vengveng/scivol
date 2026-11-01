@@ -4,14 +4,14 @@
 
 namespace scivolapi::detail {
 
-Assembler assembler_branches_ged(const ModelSpec& spec)
+Kernel kernel_branches_ged(const ModelSpec& spec)
 {
-    return assembler_coupled<GedDensity, true, true>(spec.volatility);
+    return kernel_runtime<GedDensity, true, true>(spec);
 }
 
-Assembler assembler_ged(const ModelSpec& spec)
+Kernel kernel_ged(const ModelSpec& spec)
 {
-    return assembler_with<GedDensity>(spec);
+    return kernel_with<GedDensity>(spec);
 }
 
 PathRunner path_runner_ged(VolatilityKind kind)

@@ -4,14 +4,14 @@
 
 namespace scivolapi::detail {
 
-Assembler assembler_branches_skew_t(const ModelSpec& spec)
+Kernel kernel_branches_skew_t(const ModelSpec& spec)
 {
-    return assembler_coupled<SkewTDensity, true, true>(spec.volatility);
+    return kernel_runtime<SkewTDensity, true, true>(spec);
 }
 
-Assembler assembler_skew_t(const ModelSpec& spec)
+Kernel kernel_skew_t(const ModelSpec& spec)
 {
-    return assembler_with<SkewTDensity>(spec);
+    return kernel_with<SkewTDensity>(spec);
 }
 
 PathRunner path_runner_skew_t(VolatilityKind kind)

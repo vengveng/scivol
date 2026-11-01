@@ -17,8 +17,10 @@
 #include <scivolapi/scivolapi.hpp>
 
 #include "../src/density/distribution.hpp"
+#include "../src/density/family.hpp"
 #include "../src/density/moments.hpp"
 #include "../src/optimize/kinks.hpp"
+#include "../src/volatility/family.hpp"
 
 namespace nb = nanobind;
 using namespace nb::literals;
@@ -777,31 +779,13 @@ NB_MODULE(_scivolapi, m)
             if (s.mean.ma) out.append(nb::make_tuple("ARMA", nb::make_tuple(s.mean.ar, s.mean.ma), kw));
             else if (!s.mean.har.empty()) out.append(nb::make_tuple("HARX", nb::make_tuple(s.mean.har), kw));
             else if (s.mean.width()) out.append(nb::make_tuple("ARX", nb::make_tuple(s.mean.ar), kw));
-            const char* vol = nullptr;
-            switch (s.volatility) {
-                case VolatilityKind::garch: vol = "GARCH"; break;
-                case VolatilityKind::gjr: vol = "GJRGARCH"; break;
-                case VolatilityKind::egarch: vol = "EGARCH"; break;
-                case VolatilityKind::aparch: vol = "APARCH"; break;
-                case VolatilityKind::constant: break;
-            }
-            if (vol) {
+            if (const char* vol = detail::volatility_family(s.volatility).component()) {
                 nb::dict settings;
                 if (s.stationarity == Stationarity::integrated) settings["stationarity"] = "integrated";
                 if (s.stationarity == Stationarity::none) settings["stationarity"] = "none";
                 out.append(nb::make_tuple(vol, nb::make_tuple(s.p, s.q), settings));
             }
-            const char* density = nullptr;
-            switch (s.density) {
-                case DensityKind::normal: density = "Normal"; break;
-                case DensityKind::student_t: density = "StudentT"; break;
-                case DensityKind::skew_t: density = "SkewT"; break;
-                case DensityKind::ged: density = "GED"; break;
-                case DensityKind::generalized_hyperbolic: density = "GeneralizedHyperbolic"; break;
-                case DensityKind::nig: density = "NormalInverseGaussian"; break;
-                case DensityKind::hyperbolic: density = "Hyperbolic"; break;
-                case DensityKind::variance_gamma: density = "VarianceGamma"; break;
-            }
+            const char* density = detail::density_family(s.density).component();
             out.append(nb::make_tuple(density, nb::tuple(), nb::dict()));
             return out;
         })

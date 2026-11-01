@@ -4,14 +4,14 @@
 
 namespace scivolapi::detail {
 
-Assembler assembler_branches_student_t(const ModelSpec& spec)
+Kernel kernel_branches_student_t(const ModelSpec& spec)
 {
-    return assembler_coupled<StudentTDensity, true, true>(spec.volatility);
+    return kernel_runtime<StudentTDensity, true, true>(spec);
 }
 
-Assembler assembler_student_t(const ModelSpec& spec)
+Kernel kernel_student_t(const ModelSpec& spec)
 {
-    return assembler_with<StudentTDensity>(spec);
+    return kernel_with<StudentTDensity>(spec);
 }
 
 PathRunner path_runner_student_t(VolatilityKind kind)

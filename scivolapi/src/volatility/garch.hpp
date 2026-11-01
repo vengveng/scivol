@@ -43,6 +43,7 @@ class GarchVolatility {
 public:
     static constexpr bool variance_curvature = true;
     static constexpr bool adjoint_hessian = true;
+    static constexpr std::size_t adjoint_width = 4;  // below four local coordinates the forward recursion is cheaper
 
     explicit GarchVolatility(const ModelSpec& spec, std::size_t mean = 0) noexcept
         : p_(spec.p), q_(spec.q), m_(Coupled ? mean : 0)

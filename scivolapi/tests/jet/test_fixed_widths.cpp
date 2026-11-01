@@ -81,10 +81,11 @@ void check(const Model& model, const Sample& sample, const std::vector<double>& 
 {
     const ModelSpec& spec = model.spec();
     const Layout layout(spec);
-    const VolatilityShape shape = volatility_shape(spec);
+    const Kernel kernel = kernel_for(spec);
+    const VolatilityShape shape = kernel.shape;
     const std::size_t d = layout.dimension, rows = sample.scored();
     const bool coupled = spec.mean.width() > 0;
-    assert(assembler_for(spec) == fixed);
+    assert(kernel.run == fixed);
 
     std::vector<double> storage_a(work_size(layout, shape, rows), 13.0), storage_b(storage_a);
     Work a = carve(storage_a.data(), layout, shape, rows), b = carve(storage_b.data(), layout, shape, rows);

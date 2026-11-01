@@ -12,10 +12,7 @@
 #include "jet_second.hpp"
 #include "mean/mean.hpp"
 #include "model_layout.hpp"
-#include "volatility/aparch.hpp"
-#include "volatility/constant.hpp"
-#include "volatility/egarch.hpp"
-#include "volatility/garch.hpp"
+#include "volatility/recursions.hpp"
 #include "volatility/volatility.hpp"
 
 // The likelihood pass shared by every model. Each density instantiates
@@ -33,28 +30,22 @@ struct VolatilityShape {
     bool adjoint = false;        // per-row history for the adjoint Hessian (GARCH, GJR; linear mean)
 };
 
-inline VolatilityShape volatility_shape(const ModelSpec& spec) noexcept
+// The workspace a recursion class needs for a spec. A recursion that may
+// accumulate its Hessian by the adjoint declares the width from which that pays:
+// the adjoint costs a backward pass and a per-row history (GARCH(1,1) F+G+H 21
+// against 29 ns/row forward; at width four 37 against 33).
+template<class Volatility>
+VolatilityShape volatility_shape(const ModelSpec& spec) noexcept
 {
     const std::size_t m = spec.mean.width();
+    const Volatility volatility(spec, 0);
     VolatilityShape v;
-    switch (spec.volatility) {
-    case VolatilityKind::gjr: v = {1u + 2u * spec.p + spec.q, std::max<std::size_t>(spec.q, 1u)}; break;
-    case VolatilityKind::egarch:
-        v = {1u + 2u * spec.p + spec.q + shape_domains(spec.density).size(),
-             std::max({spec.p, spec.q, std::size_t{1}})};
-        break;
-    case VolatilityKind::aparch: v = {2u + 2u * spec.p + spec.q, std::max<std::size_t>(spec.q, 1u)}; break;
-    default: v = {1u + spec.p + spec.q, std::max<std::size_t>(spec.q, 1u)};
-    }
-    v.width += m;
+    v.width = volatility.own() + m;
+    v.slots = volatility.ring_slots();
     v.mean = m;
     v.mean_slots = std::max(spec.p, spec.mean.ma) + 1u;  // the current row and the lags read back
-    // The adjoint Hessian pays a backward pass and a per-row history; below four
-    // local coordinates the forward second-order recursion is cheaper (GARCH(1,1)
-    // F+G+H 21 against 29 ns/row; at width four 37 against 33).
-    v.adjoint = ((spec.volatility == VolatilityKind::garch || spec.volatility == VolatilityKind::gjr) && v.width >= 4
-                 || spec.volatility == VolatilityKind::egarch)
-        && spec.mean.ma == 0;
+    if constexpr (requires { Volatility::adjoint_width; })
+        v.adjoint = spec.mean.ma == 0 && v.width >= Volatility::adjoint_width;
     return v;
 }
 
@@ -333,6 +324,12 @@ ThetaResult assemble(const AssembleInput& in, Work& work, double& value)
 
 using Assembler = ThetaResult (*)(const AssembleInput&, Work&, double&);
 
+// A compiled likelihood pass and the workspace it needs.
+struct Kernel {
+    Assembler run = nullptr;
+    VolatilityShape shape;
+};
+
 template<class Mean, class Volatility, class Density>
 ThetaResult assemble_requested(const AssembleInput& in, Work& work, double& value)
 {
@@ -345,41 +342,43 @@ ThetaResult assemble_requested(const AssembleInput& in, Work& work, double& valu
     }
 }
 
-// The loop for a density with a given volatility recursion, with or without a
-// mean, one set per density translation unit.
+template<class Mean, class Volatility, class Density>
+Kernel kernel(const ModelSpec& spec) noexcept
+{
+    return {assemble_requested<Mean, Volatility, Density>, volatility_shape<Volatility>(spec)};
+}
+
+// The loop for a density with the spec's volatility recursion, with or without
+// a mean, at runtime orders. Branches: the family's explicit residual-kink
+// variant where it has one.
 template<class Density, bool Coupled, bool Branches = false>
-Assembler assembler_coupled(VolatilityKind kind) noexcept
+Kernel kernel_runtime(const ModelSpec& spec) noexcept
 {
     using Mean = std::conditional_t<Coupled, ArmaxMean<>, NoMean>;
-    switch (kind) {
-    case VolatilityKind::garch: return assemble_requested<Mean, GarchVolatility<false, Coupled>, Density>;
-    case VolatilityKind::gjr: return assemble_requested<Mean, GarchVolatility<true, Coupled>, Density>;
-    case VolatilityKind::egarch:
-        if constexpr (Branches) return assemble<Mean, EgarchVolatility<Density, Coupled, true>, Density, -1, true>;
-        else return assemble_requested<Mean, EgarchVolatility<Density, Coupled>, Density>;
-    case VolatilityKind::aparch: return assemble_requested<Mean, AparchVolatility<Coupled>, Density>;
-    case VolatilityKind::constant: return assemble_requested<Mean, ConstantVolatility<Coupled>, Density>;
-    }
-    return nullptr;
+    return with_recursions(spec.volatility, [&]<class F>() -> Kernel {
+        if constexpr (Branches && F::branches) {
+            using Volatility = typename F::template Branches<Density, Coupled>;
+            return {assemble<Mean, Volatility, Density, -1, true>, volatility_shape<Volatility>(spec)};
+        } else {
+            return kernel<Mean, typename F::template Recursion<Density, Coupled>, Density>(spec);
+        }
+    });
 }
 
 // (1, Q) recursions without a mean (K = 0) or with a linear mean of K
 // regressors, compiled widths.
 template<class Density, std::size_t Q, std::size_t K>
-Assembler assembler_compiled(VolatilityKind kind) noexcept
+Kernel kernel_compiled(const ModelSpec& spec) noexcept
 {
     constexpr bool coupled = K > 0;
-    constexpr std::size_t M = coupled ? K : std::dynamic_extent;
+    constexpr std::size_t M = coupled ? K : runtime;
     using Mean = std::conditional_t<coupled, ArmaxMean<K, 0>, NoMean>;
-    switch (kind) {
-    case VolatilityKind::garch: return assemble_requested<Mean, GarchVolatility<false, coupled, 1, Q, M>, Density>;
-    case VolatilityKind::gjr: return assemble_requested<Mean, GarchVolatility<true, coupled, 1, Q, M>, Density>;
-    case VolatilityKind::egarch:
-        return assemble_requested<Mean, EgarchVolatility<Density, coupled, false, 1, Q, M>, Density>;
-    case VolatilityKind::aparch: return assemble_requested<Mean, AparchVolatility<coupled, 1, Q, M>, Density>;
-    case VolatilityKind::constant: return nullptr;
-    }
-    return nullptr;
+    return with_recursions(spec.volatility, [&]<class F>() -> Kernel {
+        if constexpr (F::compiled_widths)
+            return kernel<Mean, typename F::template Recursion<Density, coupled, 1, Q, M>, Density>(spec);
+        else
+            return {};
+    });
 }
 
 // Up to two regressors for (1,0) and (1,1) recursions; three to six (ARX with
@@ -388,92 +387,96 @@ Assembler assembler_compiled(VolatilityKind kind) noexcept
 // with five regressors: 41 -> 22 and 101 -> 62 ns/row) and costs about a
 // second of compile time per width in each density's translation unit.
 template<class Density, std::size_t Q>
-Assembler assembler_compiled(const ModelSpec& spec) noexcept
+Kernel kernel_compiled(const ModelSpec& spec) noexcept
 {
     const std::size_t k = spec.mean.regressors();
-    if (spec.mean.ma != 0 || k > (Q == 1 ? 6 : 2)) return nullptr;
+    if (spec.mean.ma != 0 || k > (Q == 1 ? 6 : 2)) return {};
     switch (k) {
-    case 0: return assembler_compiled<Density, Q, 0>(spec.volatility);
-    case 1: return assembler_compiled<Density, Q, 1>(spec.volatility);
-    case 2: return assembler_compiled<Density, Q, 2>(spec.volatility);
+    case 0: return kernel_compiled<Density, Q, 0>(spec);
+    case 1: return kernel_compiled<Density, Q, 1>(spec);
+    case 2: return kernel_compiled<Density, Q, 2>(spec);
     }
     if constexpr (Q == 1) {
         switch (k) {
-        case 3: return assembler_compiled<Density, Q, 3>(spec.volatility);
-        case 4: return assembler_compiled<Density, Q, 4>(spec.volatility);
-        case 5: return assembler_compiled<Density, Q, 5>(spec.volatility);
-        case 6: return assembler_compiled<Density, Q, 6>(spec.volatility);
+        case 3: return kernel_compiled<Density, Q, 3>(spec);
+        case 4: return kernel_compiled<Density, Q, 4>(spec);
+        case 5: return kernel_compiled<Density, Q, 5>(spec);
+        case 6: return kernel_compiled<Density, Q, 6>(spec);
         }
     }
-    return nullptr;
+    return {};
 }
 
 template<class Density>
-Assembler assembler_with(const ModelSpec& spec) noexcept
+Kernel kernel_with(const ModelSpec& spec) noexcept
 {
     if (spec.p == 1 && spec.q == 1 && spec.mean.constant && spec.mean.ar == 1 && spec.mean.ma == 1
         && spec.mean.har.empty() && spec.mean.exog == 0) {
-        if (spec.volatility == VolatilityKind::garch)
-            return assemble_requested<ArmaxMean<2, 1>, GarchVolatility<false, true, 1, 1, 3>, Density>;
-        if (spec.volatility == VolatilityKind::gjr)
-            return assemble_requested<ArmaxMean<2, 1>, GarchVolatility<true, true, 1, 1, 3>, Density>;
+        const Kernel arma = with_recursions(spec.volatility, [&]<class F>() -> Kernel {
+            if constexpr (F::arma11)
+                return kernel<ArmaxMean<2, 1>, typename F::template Recursion<Density, true, 1, 1, 3>, Density>(spec);
+            else
+                return {};
+        });
+        if (arma.run) return arma;
     }
     // (1,1) and (1,0) recursions with no mean or a linear mean of a few
     // regressors: the common fits and the selection candidates.
     if (spec.p == 1 && (spec.q == 1 || spec.q == 0)) {
-        const Assembler fixed = spec.q == 1 ? assembler_compiled<Density, 1>(spec) : assembler_compiled<Density, 0>(spec);
-        if (fixed) return fixed;
+        const Kernel fixed = spec.q == 1 ? kernel_compiled<Density, 1>(spec) : kernel_compiled<Density, 0>(spec);
+        if (fixed.run) return fixed;
     }
-    return spec.mean.width() ? assembler_coupled<Density, true>(spec.volatility)
-                             : assembler_coupled<Density, false>(spec.volatility);
+    return spec.mean.width() ? kernel_runtime<Density, true>(spec) : kernel_runtime<Density, false>(spec);
 }
 
-Assembler assembler_branches_normal(const ModelSpec&);
-Assembler assembler_branches_student_t(const ModelSpec&);
-Assembler assembler_branches_skew_t(const ModelSpec&);
-Assembler assembler_branches_ged(const ModelSpec&);
-Assembler assembler_branches_generalized_hyperbolic(const ModelSpec&);
-Assembler assembler_branches_nig(const ModelSpec&);
-Assembler assembler_branches_hyperbolic(const ModelSpec&);
-Assembler assembler_branches_variance_gamma(const ModelSpec&);
-Assembler assembler_normal(const ModelSpec&);
-Assembler assembler_student_t(const ModelSpec&);
-Assembler assembler_skew_t(const ModelSpec&);
-Assembler assembler_ged(const ModelSpec&);
-Assembler assembler_generalized_hyperbolic(const ModelSpec&);
-Assembler assembler_nig(const ModelSpec&);
-Assembler assembler_hyperbolic(const ModelSpec&);
-Assembler assembler_variance_gamma(const ModelSpec&);
+// One definition each in the density's translation unit (jet_<density>.cpp).
+Kernel kernel_branches_normal(const ModelSpec&);
+Kernel kernel_branches_student_t(const ModelSpec&);
+Kernel kernel_branches_skew_t(const ModelSpec&);
+Kernel kernel_branches_ged(const ModelSpec&);
+Kernel kernel_branches_generalized_hyperbolic(const ModelSpec&);
+Kernel kernel_branches_nig(const ModelSpec&);
+Kernel kernel_branches_hyperbolic(const ModelSpec&);
+Kernel kernel_branches_variance_gamma(const ModelSpec&);
+Kernel kernel_normal(const ModelSpec&);
+Kernel kernel_student_t(const ModelSpec&);
+Kernel kernel_skew_t(const ModelSpec&);
+Kernel kernel_ged(const ModelSpec&);
+Kernel kernel_generalized_hyperbolic(const ModelSpec&);
+Kernel kernel_nig(const ModelSpec&);
+Kernel kernel_hyperbolic(const ModelSpec&);
+Kernel kernel_variance_gamma(const ModelSpec&);
 
 // The loop for a model, chosen once per evaluation.
-inline Assembler assembler_for(const ModelSpec& spec) noexcept
+inline Kernel kernel_for(const ModelSpec& spec) noexcept
 {
     switch (spec.density) {
-    case DensityKind::normal: return assembler_normal(spec);
-    case DensityKind::student_t: return assembler_student_t(spec);
-    case DensityKind::skew_t: return assembler_skew_t(spec);
-    case DensityKind::ged: return assembler_ged(spec);
-    case DensityKind::generalized_hyperbolic: return assembler_generalized_hyperbolic(spec);
-    case DensityKind::nig: return assembler_nig(spec);
-    case DensityKind::hyperbolic: return assembler_hyperbolic(spec);
-    case DensityKind::variance_gamma: return assembler_variance_gamma(spec);
+    case DensityKind::normal: return kernel_normal(spec);
+    case DensityKind::student_t: return kernel_student_t(spec);
+    case DensityKind::skew_t: return kernel_skew_t(spec);
+    case DensityKind::ged: return kernel_ged(spec);
+    case DensityKind::generalized_hyperbolic: return kernel_generalized_hyperbolic(spec);
+    case DensityKind::nig: return kernel_nig(spec);
+    case DensityKind::hyperbolic: return kernel_hyperbolic(spec);
+    case DensityKind::variance_gamma: return kernel_variance_gamma(spec);
     }
-    return nullptr;
+    return {};
 }
 
-inline Assembler assembler_for_branches(const ModelSpec& spec) noexcept
+// The same with explicit residual-kink branches (diagnostics of kink points).
+inline Kernel kernel_for_branches(const ModelSpec& spec) noexcept
 {
     switch (spec.density) {
-    case DensityKind::normal: return assembler_branches_normal(spec);
-    case DensityKind::student_t: return assembler_branches_student_t(spec);
-    case DensityKind::skew_t: return assembler_branches_skew_t(spec);
-    case DensityKind::ged: return assembler_branches_ged(spec);
-    case DensityKind::generalized_hyperbolic: return assembler_branches_generalized_hyperbolic(spec);
-    case DensityKind::nig: return assembler_branches_nig(spec);
-    case DensityKind::hyperbolic: return assembler_branches_hyperbolic(spec);
-    case DensityKind::variance_gamma: return assembler_branches_variance_gamma(spec);
+    case DensityKind::normal: return kernel_branches_normal(spec);
+    case DensityKind::student_t: return kernel_branches_student_t(spec);
+    case DensityKind::skew_t: return kernel_branches_skew_t(spec);
+    case DensityKind::ged: return kernel_branches_ged(spec);
+    case DensityKind::generalized_hyperbolic: return kernel_branches_generalized_hyperbolic(spec);
+    case DensityKind::nig: return kernel_branches_nig(spec);
+    case DensityKind::hyperbolic: return kernel_branches_hyperbolic(spec);
+    case DensityKind::variance_gamma: return kernel_branches_variance_gamma(spec);
     }
-    return nullptr;
+    return {};
 }
 
 }  // namespace scivolapi::detail

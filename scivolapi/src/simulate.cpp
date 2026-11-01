@@ -4,8 +4,6 @@
 #include <stdexcept>
 #include <string>
 
-#include "density/exponential_moment.hpp"
-#include "density/moments.hpp"
 #include "model_layout.hpp"
 #include "paths.hpp"
 
@@ -101,94 +99,6 @@ std::vector<double> psi_weights(const ModelSpec& spec, const Layout& layout, con
     return psi;
 }
 
-// GARCH and GJR: E[h] follows the recursion with E[e^2] = E[h] and, for GJR,
-// E[e^2 1(e < 0)] = kappa E[h], kappa = E[z^2 1(z < 0)].
-void linear_variance(const ModelSpec& spec, const Layout& layout, const double* theta, const Run& r,
-                     std::span<double> out)
-{
-    const bool gjr = spec.volatility == VolatilityKind::gjr;
-    double kappa = 0.0;
-    if (gjr) {
-        detail::MomentResult m;
-        if (!detail::negative_second_moment(spec.density, layout.shape_count ? theta + layout.shapes : nullptr, 0, m))
-            throw std::domain_error("the density's negative second moment is not available at theta");
-        kappa = m.value;
-    }
-    const std::size_t T = r.observed, p = spec.p, q = spec.q;
-    std::vector<double> h(r.h.begin(), r.h.begin() + static_cast<std::ptrdiff_t>(T));
-    h.resize(T + out.size());
-    for (std::size_t f = 0; f < out.size(); ++f) {
-        const std::size_t s = T + f;
-        double v = theta[layout.omega];
-        for (std::size_t i = 1; i <= std::min(p, s); ++i) {
-            const std::size_t k = s - i;
-            const double alpha = theta[layout.alpha + i - 1], gamma = gjr ? theta[layout.gamma + i - 1] : 0.0;
-            if (k < T) v += (alpha + (r.e[k] < 0.0 ? gamma : 0.0)) * r.e[k] * r.e[k];
-            else v += (alpha + gamma * kappa) * h[k];
-        }
-        for (std::size_t j = 1; j <= std::min(q, s); ++j) v += theta[layout.beta + j - 1] * h[s - j];
-        h[s] = out[f] = v;
-    }
-}
-
-// EGARCH, with x = log h: for future rows x_s = d_s + sum_{u >= T} (A_su |z_u| + B_su z_u)
-// (the past is deterministic), so with independent z_u
-//   E[h_s] = exp(d_s) prod_u M(A_su, B_su),  M(a, b) = E exp(a |z| + b z).
-void egarch_variance(const ModelSpec& spec, const Layout& layout, const double* theta, const Run& r,
-                     std::span<double> out)
-{
-    const double* shape = layout.shape_count ? theta + layout.shapes : nullptr;
-    detail::MomentResult moment;
-    if (!detail::absolute_moment(spec.density, shape, 0, moment))
-        throw std::domain_error("the density's absolute moment is not available at theta");
-    const double m = moment.value;
-    const std::size_t T = r.observed, H = out.size(), p = spec.p, q = spec.q;
-    auto z = [&](std::size_t k) { return r.e[k] * std::exp(-0.5 * r.state[k]); };
-    // d over rows [0, T + H); A, B over future rows s and shock rows u (H x H, offset T).
-    std::vector<double> d(r.state.begin(), r.state.begin() + static_cast<std::ptrdiff_t>(T)), a(H * H, 0.0), b(H * H, 0.0);
-    d.resize(T + H);
-    for (std::size_t f = 0; f < H; ++f) {
-        const std::size_t s = T + f;
-        double v = theta[layout.omega];
-        for (std::size_t i = 1; i <= std::min(p, s); ++i) {
-            const std::size_t k = s - i;
-            const double alpha = theta[layout.alpha + i - 1], gamma = theta[layout.gamma + i - 1];
-            if (k < T) {
-                v += alpha * (std::abs(z(k)) - m) + gamma * z(k);
-            } else {
-                v -= alpha * m;
-                a[f * H + (k - T)] += alpha;
-                b[f * H + (k - T)] += gamma;
-            }
-        }
-        for (std::size_t j = 1; j <= std::min(q, s); ++j) {
-            const double beta = theta[layout.beta + j - 1];
-            v += beta * d[s - j];
-            if (f >= j)  // row s - j is a future row: its shocks feed through beta_j
-                for (std::size_t u = 0; u < f - j; ++u) {
-                    a[f * H + u] += beta * a[(f - j) * H + u];
-                    b[f * H + u] += beta * b[(f - j) * H + u];
-                }
-        }
-        d[s] = v;
-        double log_value = v;
-        for (std::size_t u = 0; u < f; ++u) {
-            double factor = 0.0;
-            switch (detail::exponential_moment(spec.density, shape, a[f * H + u], b[f * H + u], factor)) {
-            case detail::ExpectationStatus::ok: break;
-            case detail::ExpectationStatus::infinite:
-                throw std::domain_error("the EGARCH variance forecast " + std::to_string(f + 1)
-                                        + " steps ahead does not exist: E exp(a|z| + b z) is infinite under this density");
-            default: throw std::domain_error("the density's exponential moment could not be computed accurately");
-            }
-            log_value += std::log(factor);
-        }
-        out[f] = std::exp(log_value);
-        if (!std::isfinite(out[f]) || !(out[f] > 0.0))
-            throw std::domain_error("the variance forecast is not representable in double precision");
-    }
-}
-
 }  // namespace
 
 Simulation simulate(const Model& model, std::span<const double> theta, std::span<const double> y,
@@ -224,22 +134,7 @@ Simulation simulate_series(const Model& model, std::span<const double> theta, st
 
     // Unconditional variance. A nonstationary recursion (admitted by an
     // integrated or absent stationarity declaration) has none to start from.
-    const char* nonstationary = "theta is nonstationary: there is no unconditional variance to start the simulation from";
-    double seed = 0.0;
-    if (spec.volatility == VolatilityKind::egarch) {
-        double reflection[detail::StableChart::max_order], beta = 0.0;
-        if (!detail::StableChart::step_down(theta.data() + layout.beta, spec.q, reflection))
-            throw std::domain_error(nonstationary);
-        for (std::size_t j = 0; j < spec.q; ++j) beta += theta[layout.beta + j];
-        seed = std::exp(theta[layout.omega] / (1.0 - beta));
-    } else {
-        double persistence = 0.0;
-        if (!layout.persistence(theta.data(), 0, persistence, nullptr))
-            throw std::domain_error("the persistence is not available at theta");
-        if (!(persistence < 1.0)) throw std::domain_error(nonstationary);
-        const double level_power = theta[layout.omega] / (1.0 - persistence);
-        seed = spec.volatility == VolatilityKind::aparch ? std::pow(level_power, 2.0 / theta[layout.delta]) : level_power;
-    }
+    const double seed = layout.family->simulation_seed(layout, theta.data());
     if (!std::isfinite(seed) || !(seed > 0.0)) throw std::domain_error("the unconditional variance is not representable");
 
     std::vector<double> lagged_x(lags * exog, 0.0);
@@ -268,14 +163,9 @@ Forecast forecast(const Model& model, std::span<const double> theta, std::span<c
     // Exact horizons from the model's closed form (one step ahead it is the
     // filter's next variance); beyond them, averages over the supplied paths.
     const std::size_t exact = std::min(horizon, model.capabilities().exact_variance_horizon);
-    std::span<double> closed(f.residual_variance.data(), exact);
-    switch (spec.volatility) {
-    case VolatilityKind::garch:
-    case VolatilityKind::gjr:
-    case VolatilityKind::constant: linear_variance(spec, layout, theta.data(), filtered, closed); break;
-    case VolatilityKind::egarch: egarch_variance(spec, layout, theta.data(), filtered, closed); break;
-    case VolatilityKind::aparch: closed[0] = filtered.paths.variance[0]; break;
-    }
+    const detail::FilteredPaths past{filtered.e, filtered.h, filtered.state, filtered.observed,
+                                     filtered.paths.variance[0]};
+    layout.family->variance_forecast(layout, theta.data(), past, {f.residual_variance.data(), exact});
     if (horizon > exact) {
         require(paths > 0 && z.size() == paths * horizon,
                 "variance forecasts beyond the exact horizons need paths x horizon innovations");

@@ -4,14 +4,14 @@
 
 namespace scivolapi::detail {
 
-Assembler assembler_branches_variance_gamma(const ModelSpec& spec)
+Kernel kernel_branches_variance_gamma(const ModelSpec& spec)
 {
-    return assembler_coupled<GhFamilyDensity<VarianceGamma>, true, true>(spec.volatility);
+    return kernel_runtime<GhFamilyDensity<VarianceGamma>, true, true>(spec);
 }
 
-Assembler assembler_variance_gamma(const ModelSpec& spec)
+Kernel kernel_variance_gamma(const ModelSpec& spec)
 {
-    return assembler_with<GhFamilyDensity<VarianceGamma>>(spec);
+    return kernel_with<GhFamilyDensity<VarianceGamma>>(spec);
 }
 
 PathRunner path_runner_variance_gamma(VolatilityKind kind)

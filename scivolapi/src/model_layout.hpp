@@ -11,35 +11,29 @@
 #include "density/domain.hpp"
 #include "density/moments.hpp"
 #include "map/charts.hpp"
+#include "volatility/family.hpp"
 
 namespace scivolapi::detail {
 
 // Block structure of theta for a spec, and the chart that covers each entry.
 // theta = [mean | volatility | shapes] with
-//   mean    [const | ar_1..P | har_w.. | exog_1.. | ma_1..Q]
-//   GARCH   [omega | alpha_1..p, beta_1..q]
-//   GJR     [omega | alpha_1..p, gamma_1..p, beta_1..q]
-//   EGARCH  [omega, alpha_1..p, gamma_1..p | beta_1..q]
-//   APARCH  [omega | alpha_1..p | gamma_1..p | beta_1..q | delta]
-//   constant [sigma2]
+//   mean        [const | ar_1..P | har_w.. | exog_1.. | ma_1..Q]
+//   volatility  the family's block (see its VolatilityFamily), from `volatility`
 // Three kinds of chart:
 //   scalar   each independent entry has its own ScalarChart (the mean's constant,
-//            HAR and exogenous coefficients, omega, EGARCH's free entries,
-//            APARCH's gamma and delta, the shapes);
+//            HAR and exogenous coefficients, the family's free and interval
+//            entries, the shapes);
 //   simplex  the persistence coefficients are a linear image theta = M(w) v of one
-//            simplex v (sum v < 1), where the weights w are density moments:
-//              GARCH   theta = v;
-//              GJR     v = (c+, c-, beta) with c+_i = (1 - kappa) alpha_i,
-//                      c-_i = kappa (alpha_i + gamma_i), kappa = E[z^2 1(z<0)];
-//              APARCH  v = (M_i alpha_i, beta), M_i = E[(|z| - gamma_i z)^delta];
-//            so persistence = sum v < 1 is the declared stationarity condition
-//            (covariance and integrated declarations); without a stationarity
-//            condition the chart is the orthant v_j = exp(z_j) instead, and
-//            APARCH's map is the identity (its moments need not exist);
+//            simplex v (sum v < 1), where the weights w are density moments
+//            supplied by the family (GARCH: theta = v; GJR and APARCH: see
+//            their families), so persistence = sum v < 1 is the declared
+//            stationarity condition (covariance and integrated declarations);
+//            without a stationarity condition the chart is the orthant
+//            v_j = exp(z_j) instead;
 //   stable   lag polynomials with all roots outside the unit circle, via
 //            reflection coefficients: the AR coefficients (1 - sum phi_i L^i), the
-//            MA coefficients (1 + sum theta_j L^j, so -theta is charted) and
-//            EGARCH's beta (free scalars without a stationarity condition).
+//            MA coefficients (1 + sum theta_j L^j, so -theta is charted) and any
+//            the family declares (EGARCH's beta).
 // The weights depend on other entries (the shapes, APARCH's gamma_i and delta);
 // the chart's Jacobian and curvature include those cross terms exactly.
 // The single definition used by Model (maps, bounds, starts) and Jet (z-space).
@@ -50,38 +44,27 @@ struct Layout {
     static constexpr std::size_t max_simplex = 3 * max_order;
     static constexpr std::size_t max_weights = max_order;
 
-    // A density moment used as a weight, with derivatives over the theta entries
-    // it depends on (indices `index`, packed Hessian over them).
-    struct Weight {
-        double value = 1.0;
-        std::size_t count = 0;
-        std::array<std::size_t, 5> index{};
-        std::array<double, 5> grad{};
-        std::array<double, 15> hess{};
-    };
-    // One term c(w) v_j of a simplex row, with dc/dw and d2c/dw2.
-    struct Term {
-        std::size_t j = 0;
-        double c = 0.0, dc = 0.0, d2c = 0.0;
-    };
+    using Weight = MomentWeight;
+    using Term = SimplexTerm;
     // theta[at .. at + count) = sign * (coefficients of a stable lag polynomial).
     struct Stable {
         std::size_t at = 0, count = 0;
         double sign = 1.0;
+        const char* condition = "";  // reported constraint name
     };
 
-    VolatilityKind kind;
+    const VolatilityFamily* family;
     DensityKind density;
     Stationarity stationarity;
-    bool orthant = false;  // the persistence coefficients charted on the orthant (no stationarity condition)
+    bool orthant = false;  // the simplex charted on the orthant (no stationarity condition)
     std::size_t p = 0, q = 0;
     std::size_t mean = 0;                                    // mean entries, from index 0
     std::size_t ar = 0, har = 0, exog = 0, ma = 0;           // mean block starts
-    std::size_t omega = 0;
-    std::size_t alpha = 1, gamma = 0, beta = 0, delta = 0;  // block starts (gamma, delta if present)
+    std::size_t volatility = 0;                              // volatility block start
     std::size_t shapes = 0, shape_count = 0, dimension = 0;
     std::size_t simplex_count = 0;
     std::array<std::size_t, max_simplex> simplex_index{};
+    std::array<bool, max_simplex> simplex_nonnegative{};    // the member itself is >= 0 (GJR's gamma is not)
     std::array<Stable, 3> stable{};
     std::size_t stable_blocks = 0;
     std::span<const ShapeDomain> shape_domain;
@@ -89,11 +72,10 @@ struct Layout {
     std::array<bool, max_dimension> scalar_entry{};
 
     explicit Layout(const ModelSpec& spec) noexcept
-        : kind(spec.volatility), density(spec.density), stationarity(spec.stationarity), p(spec.p), q(spec.q),
-          mean(spec.mean.width()), shape_domain(shape_domains(spec.density))
+        : family(&volatility_family(spec.volatility)), density(spec.density), stationarity(spec.stationarity),
+          orthant(spec.stationarity == Stationarity::none), p(spec.p), q(spec.q), mean(spec.mean.width()),
+          shape_domain(shape_domains(spec.density))
     {
-        orthant = stationarity == Stationarity::none && kind != VolatilityKind::egarch
-                  && kind != VolatilityKind::constant;
         const double inf = std::numeric_limits<double>::infinity();
         shape_count = shape_domain.size();
         if (mean > max_mean) return;  // rejected by Model
@@ -101,138 +83,60 @@ struct Layout {
         har = ar + spec.mean.ar;
         exog = har + spec.mean.har.size();
         ma = exog + spec.mean.exog;
-        omega = mean;
-        alpha = omega + 1;
-        gamma = alpha + p;
-        switch (kind) {
-        case VolatilityKind::garch:
-            beta = alpha + p;
-            shapes = beta + q;
-            break;
-        case VolatilityKind::gjr:
-        case VolatilityKind::egarch:
-            beta = gamma + p;
-            shapes = beta + q;
-            break;
-        case VolatilityKind::aparch:
-            beta = gamma + p;
-            delta = beta + q;
-            shapes = delta + 1;
-            break;
-        case VolatilityKind::constant:  // omega is sigma2
-            beta = alpha;
-            shapes = alpha;
-            break;
-        }
+        volatility = mean;
+        shapes = volatility + family->size(spec);
         dimension = shapes + shape_count;
         if (dimension > max_dimension) return;  // rejected by Model
 
-        auto set_scalar = [&](std::size_t index, double lower, double upper, bool closed = false) {
-            chart[index] = ScalarChart::for_domain(lower, upper, closed);
-            scalar_entry[index] = true;
-        };
-        auto add_simplex = [&](std::size_t from, std::size_t count) {
-            for (std::size_t k = 0; k < count; ++k) simplex_index[simplex_count++] = from + k;
-        };
-        auto add_stable = [&](std::size_t at, std::size_t count, double sign) {
-            if (count) stable[stable_blocks++] = {at, count, sign};
-        };
-        if (spec.mean.constant) set_scalar(0, -inf, inf);
-        add_stable(ar, spec.mean.ar, 1.0);
-        for (std::size_t k = har; k < ma; ++k) set_scalar(k, -inf, inf);  // HAR and exogenous
-        add_stable(ma, spec.mean.ma, -1.0);
-        if (kind == VolatilityKind::egarch) {
-            for (std::size_t k = omega; k < beta; ++k) set_scalar(k, -inf, inf);
-            if (stationarity == Stationarity::none)
-                for (std::size_t j = 0; j < q; ++j) set_scalar(beta + j, -inf, inf);
-            else
-                add_stable(beta, q, 1.0);
-        } else {
-            set_scalar(omega, 0.0, inf);
-            add_simplex(alpha, p);
-            if (kind == VolatilityKind::gjr) add_simplex(gamma, p);
-            if (kind == VolatilityKind::aparch) {
-                for (std::size_t i = 0; i < p; ++i) set_scalar(gamma + i, -1.0, 1.0);
-                set_scalar(delta, 0.0, inf);
-            }
-            add_simplex(beta, q);
-        }
+        if (spec.mean.constant) scalar_at(0, -inf, inf);
+        stable_at(ar, spec.mean.ar, 1.0, "stationary AR polynomial");
+        for (std::size_t k = har; k < ma; ++k) scalar_at(k, -inf, inf);  // HAR and exogenous
+        stable_at(ma, spec.mean.ma, -1.0, "invertible MA polynomial");
+        family->chart(spec, *this);
         for (std::size_t i = 0; i < shape_count; ++i)
-            set_scalar(shapes + i, shape_domain[i].lower, shape_domain[i].upper, shape_domain[i].closed_lower);
+            scalar_at(shapes + i, shape_domain[i].lower, shape_domain[i].upper, shape_domain[i].closed_lower);
     }
 
-    [[nodiscard]] bool egarch() const noexcept { return kind == VolatilityKind::egarch; }
+    // Chart declarations, used while the layout is built.
+    void scalar_at(std::size_t index, double lower, double upper, bool closed = false) noexcept
+    {
+        chart[index] = ScalarChart::for_domain(lower, upper, closed);
+        scalar_entry[index] = true;
+    }
+    void simplex_at(std::size_t from, std::size_t count, bool nonnegative = true) noexcept
+    {
+        for (std::size_t k = 0; k < count; ++k) {
+            simplex_nonnegative[simplex_count] = nonnegative;
+            simplex_index[simplex_count++] = from + k;
+        }
+    }
+    void stable_at(std::size_t at, std::size_t count, double sign, const char* condition) noexcept
+    {
+        if (count) stable[stable_blocks++] = {at, count, sign, condition};
+    }
+
     // Whether the simplex map theta = M(w) v uses the moment weights.
-    [[nodiscard]] bool map_weighted() const noexcept
-    {
-        return kind == VolatilityKind::gjr || (kind == VolatilityKind::aparch && !orthant);
-    }
-    [[nodiscard]] std::size_t weight_count() const noexcept
-    {
-        return kind == VolatilityKind::gjr ? 1 : kind == VolatilityKind::aparch ? p : 0;
-    }
+    [[nodiscard]] bool map_weighted() const noexcept { return family->weighted(*this); }
+    [[nodiscard]] std::size_t weight_count() const noexcept { return family->weight_count(*this); }
 
     // Moment weights at theta; `order` derivatives over the entries they depend on.
     [[nodiscard]] bool weights(const double* theta, int order, Weight* w) const noexcept
     {
-        const double* shape = shape_count ? theta + shapes : nullptr;
-        MomentResult m;
-        auto take = [&](Weight& out, std::size_t extra) {
-            out.value = m.value;
-            out.count = shape_count + extra;
-            for (std::size_t a = 0; a < shape_count; ++a) out.index[a] = shapes + a;
-            for (std::size_t a = 0; a < out.count; ++a) out.grad[a] = order >= 1 ? m.gradient[a] : 0.0;
-            for (std::size_t a = 0; a < packed_size(out.count); ++a) out.hess[a] = order >= 2 ? m.hessian[a] : 0.0;
-        };
-        if (kind == VolatilityKind::gjr) {
-            if (!negative_second_moment(density, shape, order, m) || !(m.value > 0.0 && m.value < 1.0)) return false;
-            take(w[0], 0);
-        } else if (kind == VolatilityKind::aparch) {
-            for (std::size_t i = 0; i < p; ++i) {
-                if (!power_moment(density, shape, theta[gamma + i], theta[delta], order, m) || !(m.value > 0.0)
-                    || !std::isfinite(m.value))
-                    return false;
-                take(w[i], 2);
-                w[i].index[shape_count] = gamma + i;
-                w[i].index[shape_count + 1] = delta;
-            }
-        }
-        return true;
+        return family->weights(*this, theta, order, w);
     }
 
     // Row k of the simplex map: theta[simplex_index[k]] = sum c(w_r) v_j. Returns
     // the number of terms; `r` receives the weight it depends on (or weight_count()).
     std::size_t row(std::size_t k, const Weight* w, std::size_t& r, Term* t) const noexcept
     {
-        r = weight_count();
-        t[0] = {k, 1.0, 0.0, 0.0};
-        if (kind == VolatilityKind::gjr && k < 2 * p) {
-            r = 0;
-            const double kappa = w[0].value, a = 1.0 / (1.0 - kappa), b = 1.0 / kappa;
-            if (k < p) {  // alpha_i = c+_i / (1 - kappa)
-                t[0] = {k, a, a * a, 2.0 * a * a * a};
-                return 1;
-            }
-            const std::size_t i = k - p;  // gamma_i = c-_i / kappa - c+_i / (1 - kappa)
-            t[0] = {k, b, -b * b, 2.0 * b * b * b};
-            t[1] = {i, -a, -a * a, -2.0 * a * a * a};
-            return 2;
-        }
-        if (kind == VolatilityKind::aparch && !orthant && k < p) {  // alpha_i = v_i / M_i
-            r = k;
-            const double b = 1.0 / w[k].value;
-            t[0] = {k, b, -b * b, 2.0 * b * b * b};
-        }
-        return 1;
+        return family->row(*this, k, w, r, t);
     }
 
     // Persistence weight of simplex member k: persistence = sum pw_k theta_k.
     // Index of the weight it uses, or weight_count() for weight 1.
     [[nodiscard]] std::size_t persistence_weight(std::size_t k) const noexcept
     {
-        if (kind == VolatilityKind::gjr && k >= p && k < 2 * p) return 0;
-        if (kind == VolatilityKind::aparch && k < p) return k;
-        return weight_count();
+        return family->persistence_weight(*this, k);
     }
 
     // Persistence and, if `gradient` is given, its gradient over theta.
@@ -331,15 +235,7 @@ struct Layout {
         Weight w[max_weights];
         if (map_weighted() && !weights(theta, 0, w)) return false;
         double v[max_simplex], zs[max_simplex];
-        for (std::size_t k = 0; k < simplex_count; ++k) {  // v = persistence contributions
-            const std::size_t r = map_weighted() ? persistence_weight(k) : weight_count();
-            v[k] = (r < weight_count() ? w[r].value : 1.0) * theta[simplex_index[k]];
-        }
-        if (kind == VolatilityKind::gjr)
-            for (std::size_t i = 0; i < p; ++i) {  // c+ = (1 - kappa) alpha, c- = kappa (alpha + gamma)
-                v[i] = (1.0 - w[0].value) * theta[alpha + i];
-                v[p + i] = w[0].value * (theta[alpha + i] + theta[gamma + i]);
-            }
+        family->contributions(*this, w, theta, v);
         if (orthant) {
             for (std::size_t k = 0; k < simplex_count; ++k) {
                 if (!(v[k] > 0.0) || !std::isfinite(v[k])) return false;

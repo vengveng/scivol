@@ -146,7 +146,7 @@ def test_staged_qmle_and_its_two_step_covariance(returns, volatility, density):
 
 
 def test_staged_qmle_is_not_offered_for_egarch(returns):
-    with pytest.raises(ValueError, match="EGARCH"):
+    with pytest.raises(ValueError, match="free of the density.s shapes"):
         gaussian_fit(returns, None, "egarch", "student_t", estimator="qmle")
     _, r = gaussian_fit(returns, None, "egarch", estimator="qmle")
     assert r.estimator == api.Estimator.qmle and r.success

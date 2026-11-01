@@ -2,23 +2,23 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 
 #include <scivolapi/jet.hpp>
 
+#include "density/family.hpp"
 #include "finalize.hpp"
 #include "model_layout.hpp"
+#include "restriction_builder.hpp"
 
 namespace scivolapi {
-namespace {
+namespace detail {
 
-using detail::Layout;
-
-Restriction make_restriction(const Model& parent, const ModelSpec& child, std::string name,
-                             std::vector<std::pair<std::size_t, RestrictionType>> removed,
-                             double fixed = 0.0)
+Restriction& RestrictionBuilder::add(const ModelSpec& child, std::string name, Removed removed, double fixed)
 {
+    const Model& parent = parent_;
     const Model reduced(child);
     const auto& names = parent.parameter_names();
     const auto& kept = reduced.parameter_names();
@@ -42,12 +42,8 @@ Restriction make_restriction(const Model& parent, const ModelSpec& child, std::s
         r.directions[i * d + index] = 1.0;
         r.null_values.push_back(fixed);
     }
-    return r;
-}
-
-bool compatible(const FitResult& f, const ModelSpec& spec, const ComparisonPlan& plan)
-{
-    return f.fitted_spec && *f.fitted_spec == spec && f.comparison == plan.identity();
+    out_.push_back(std::move(r));
+    return out_.back();
 }
 
 // The Sylvester resultant also detects a shared missing highest-order term.
@@ -82,100 +78,55 @@ bool coprime(const std::vector<double>& a, const std::vector<double>& b)
     return true;
 }
 
+}  // namespace detail
+
+namespace {
+
+using detail::Layout;
+
+bool compatible(const FitResult& f, const ModelSpec& spec, const ComparisonPlan& plan)
+{
+    return f.fitted_spec && *f.fitted_spec == spec && f.comparison == plan.identity();
+}
+
 }  // namespace
 
+// The mean's coefficients one at a time, then the volatility family's and the
+// density's restrictions.
 std::vector<Restriction> Model::restrictions() const
 {
     using T = RestrictionType;
     const Layout l(spec_);
     std::vector<Restriction> out;
-    auto scalar = [&](ModelSpec child, std::string name, std::size_t index, T type, double fixed = 0.0) {
-        out.push_back(make_restriction(*this, child, std::move(name), {{index, type}}, fixed));
-    };
+    detail::RestrictionBuilder builder(*this, out);
     ModelSpec c = spec_;
     if (c.mean.constant) {
         c.mean.constant = false;
-        scalar(c, "mean.intercept", 0, T::interior_equality);
+        builder.add(c, "mean.intercept", 0, T::interior_equality);
     }
     c = spec_;
     if (c.mean.ar) {
         --c.mean.ar;
-        scalar(c, "mean.ar", l.ar + c.mean.ar, T::interior_equality);
+        builder.add(c, "mean.ar", l.ar + c.mean.ar, T::interior_equality);
     }
     c = spec_;
     if (c.mean.ma) {
         --c.mean.ma;
-        scalar(c, "mean.ma", l.ma + c.mean.ma, T::interior_equality);
+        builder.add(c, "mean.ma", l.ma + c.mean.ma, T::interior_equality);
     }
     c = spec_;
     if (c.mean.exog) {
         --c.mean.exog;
-        scalar(c, "mean.exog", l.exog + c.mean.exog, T::interior_equality);
+        builder.add(c, "mean.exog", l.exog + c.mean.exog, T::interior_equality);
     }
     for (std::size_t i = 0; i < spec_.mean.har.size(); ++i) {
         c = spec_;
         const auto window = c.mean.har[i];
         c.mean.har.erase(c.mean.har.begin() + static_cast<std::ptrdiff_t>(i));
-        scalar(c, "mean.har[" + std::to_string(window) + "]", l.har + i, T::interior_equality);
+        builder.add(c, "mean.har[" + std::to_string(window) + "]", l.har + i, T::interior_equality);
     }
-    c = spec_;
-    if (c.volatility != VolatilityKind::constant && c.p) {
-        --c.p;
-        if (c.volatility == VolatilityKind::garch) {
-            scalar(c, "volatility.shock", l.alpha + c.p, T::closed_boundary);
-        } else {
-            const T kind = c.volatility == VolatilityKind::egarch ? T::interior_equality : T::closed_boundary;
-            out.push_back(make_restriction(*this, c, "volatility.shock",
-                                          {{l.alpha + c.p, kind}, {l.gamma + c.p,
-                                            c.volatility == VolatilityKind::aparch ? T::interior_equality : kind}}));
-            if (c.volatility == VolatilityKind::gjr) {
-                // c+ = alpha, c- = alpha + gamma, both nonnegative.
-                out.back().directions[dimension() + l.alpha + c.p] = 1.0;
-            }
-        }
-        if (c.p == 0 && c.volatility == VolatilityKind::gjr)
-            out.back().child.volatility = VolatilityKind::garch;
-        if ((c.p == 0 && c.q > 0) || c.volatility == VolatilityKind::aparch) {
-            auto& r = out.back();
-            r.identification = Identification::unidentified_under_null;
-            r.condition = c.volatility == VolatilityKind::aparch
-                ? "Unidentified under the null: the removed shock's asymmetry disappears."
-                : "Unidentified under the null: no shock loading remains; variance-lag information does not grow with sample size.";
-        }
-    }
-    c = spec_;
-    if (c.volatility != VolatilityKind::constant && c.q) {
-        --c.q;
-        scalar(c, "volatility.beta", l.beta + c.q,
-               c.volatility == VolatilityKind::egarch ? T::interior_equality : T::closed_boundary);
-        if (c.p == 0) {
-            out.back().identification = Identification::unidentified_under_null;
-            out.back().condition = "Unidentified under the null: no shock loading remains.";
-        }
-    }
-    c = spec_;
-    if (c.volatility == VolatilityKind::gjr && c.p) {
-        c.volatility = VolatilityKind::garch;
-        std::vector<std::pair<std::size_t, T>> removed;
-        for (std::size_t i = 0; i < c.p; ++i) removed.emplace_back(l.gamma + i, T::interior_equality);
-        out.push_back(make_restriction(*this, c, "volatility.symmetry", std::move(removed)));
-        out.back().condition += " GJR symmetry requires strictly positive common sign loadings.";
-    }
-    c = spec_;
-    if (c.density == DensityKind::skew_t) {
-        c.density = DensityKind::student_t;
-        scalar(c, "density.symmetry", l.shapes + 1, T::interior_equality);
-        c.density = DensityKind::normal;
-        out.push_back(make_restriction(*this, c, "density.normal",
-                                      {{l.shapes, T::closed_boundary},
-                                       {l.shapes + 1, T::interior_equality}}));
-    } else if (c.density == DensityKind::student_t) {
-        c.density = DensityKind::normal;
-        scalar(c, "density.normal", l.shapes, T::closed_boundary);
-    } else if (c.density == DensityKind::ged) {
-        c.density = DensityKind::normal;
-        scalar(c, "density.normal", l.shapes, T::interior_equality, 2.0);
-    }
+    l.family->restrictions(l, builder);
+    detail::density_family(spec_.density).restrictions(l, builder);
     return out;
 }
 
@@ -251,7 +202,8 @@ std::optional<std::vector<double>> Restriction::warm_start(std::span<const doubl
     const double from = p.persistence(theta), to = c.persistence(*start);
     if (!(from < 1.0) || !(to < 1.0) || from == to) return start;
     std::vector<double> scaled = *start;
-    scaled[Layout(child).omega] *= (1.0 - to) / (1.0 - from);
+    const Layout layout(child);
+    layout.family->preserve_level(layout, scaled.data(), from, to);
     if (!c.feasible(scaled)) return start;
     return scaled;
 }
@@ -275,11 +227,6 @@ bool Restriction::identified(std::span<const double> theta) const
     const Layout l(parent);
     const double* t = lifted->data();
     const auto& mean = parent.mean;
-    if (parent.volatility == VolatilityKind::aparch) {
-        bool shock = false;
-        for (std::size_t i = 0; i < parent.p; ++i) shock = shock || t[l.alpha + i] != 0.0;
-        if (!shock) return false;
-    }
     if (mean.ma && mean.conditioning()) {
         std::vector<double> ar(mean.conditioning() + 1, 0.0), ma(mean.ma + 1);
         ar[0] = ma[0] = 1.0;
@@ -287,29 +234,9 @@ bool Restriction::identified(std::span<const double> theta) const
         for (std::size_t w = 0; w < mean.har.size(); ++w)
             for (std::size_t i = 1; i <= mean.har[w]; ++i) ar[i] -= t[l.har + w] / mean.har[w];
         for (std::size_t j = 0; j < mean.ma; ++j) ma[j + 1] = t[l.ma + j];
-        if (!coprime(ar, ma)) return false;
+        if (!detail::coprime(ar, ma)) return false;
     }
-    if (parent.q && parent.volatility != VolatilityKind::constant && parent.volatility != VolatilityKind::aparch) {
-        std::vector<double> a(parent.p + 1, 0.0), b(parent.q + 1);
-        b[0] = 1.0;
-        for (std::size_t j = 0; j < parent.q; ++j) b[j + 1] = -t[l.beta + j];
-        bool shock = false;
-        for (std::size_t i = 0; i < parent.p; ++i) {
-            a[i + 1] = t[l.alpha + i];
-            shock = shock || a[i + 1] != 0.0;
-        }
-        bool minimal = shock && coprime(a, b);
-        if (parent.volatility != VolatilityKind::garch) {
-            shock = false;
-            for (std::size_t i = 0; i < parent.p; ++i) {
-                a[i + 1] = t[l.gamma + i];
-                shock = shock || a[i + 1] != 0.0;
-            }
-            minimal = minimal || (shock && coprime(a, b));
-        }
-        if (!minimal) return false;
-    }
-    return true;
+    return l.family->identified(l, t);
 }
 
 RestrictedFit restrict_fit(const Model& parent, const FitResult& fitted, const Restriction& r,

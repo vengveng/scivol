@@ -11,14 +11,15 @@ endif()
 file(GLOB SCIVOLAPI_OPTIMIZE_SOURCES CONFIGURE_DEPENDS src/optimize/*.cpp src/optimize/*.c)
 file(GLOB SCIVOLAPI_MATH_SOURCES CONFIGURE_DEPENDS src/math/*.cpp src/density/*.cpp)
 file(GLOB SCIVOLAPI_JET_SOURCES CONFIGURE_DEPENDS src/jet_*.cpp)
+file(GLOB SCIVOLAPI_FAMILY_SOURCES CONFIGURE_DEPENDS src/volatility/*.cpp)
 add_library(scivolapi
     src/model.cpp
     src/restriction.cpp
     src/restriction_test.cpp
     src/cone_projection.cpp
-    src/model_moments.cpp
     src/jet.cpp
     ${SCIVOLAPI_JET_SOURCES}
+    ${SCIVOLAPI_FAMILY_SOURCES}
     src/fit.cpp
     src/finalize.cpp
     src/statistics.cpp
@@ -32,8 +33,10 @@ add_library(scivolapi::scivolapi ALIAS scivolapi)
 target_include_directories(scivolapi PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set_target_properties(scivolapi PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # IEEE semantics: no fast-math (NaN and non-finite checks are part of the contract).
+# A switch over a model kind that misses a case does not compile, so a new
+# family or density cannot be silently skipped.
 target_compile_options(scivolapi PRIVATE
-    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -fno-fast-math>
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Werror=switch -fno-fast-math>
 )
 
 option(SCIVOLAPI_TESTS "Build native tests" ON)

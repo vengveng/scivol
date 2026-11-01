@@ -38,7 +38,7 @@ def test_qmle_covers_every_mean_and_volatility(mean, volatility, density):
 @pytest.mark.parametrize("density", (StudentT, SkewT))
 def test_staged_qmle_is_not_offered_for_egarch_with_a_shaped_density(density):
     data = generate_garch_data(400, 0.05, 0.08, 0.88, seed=3)
-    with pytest.raises(ValueError, match="EGARCH"):
+    with pytest.raises(ValueError, match="free of the density.s shapes"):
         (EGARCH(1, 1) + density()).fit(data, method="qmle")
 
 

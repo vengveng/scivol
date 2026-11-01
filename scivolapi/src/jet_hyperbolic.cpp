@@ -4,14 +4,14 @@
 
 namespace scivolapi::detail {
 
-Assembler assembler_branches_hyperbolic(const ModelSpec& spec)
+Kernel kernel_branches_hyperbolic(const ModelSpec& spec)
 {
-    return assembler_coupled<GhFamilyDensity<Hyperbolic>, true, true>(spec.volatility);
+    return kernel_runtime<GhFamilyDensity<Hyperbolic>, true, true>(spec);
 }
 
-Assembler assembler_hyperbolic(const ModelSpec& spec)
+Kernel kernel_hyperbolic(const ModelSpec& spec)
 {
-    return assembler_with<GhFamilyDensity<Hyperbolic>>(spec);
+    return kernel_with<GhFamilyDensity<Hyperbolic>>(spec);
 }
 
 PathRunner path_runner_hyperbolic(VolatilityKind kind)

@@ -64,6 +64,7 @@ class EgarchVolatility {
 public:
     static constexpr std::size_t shapes = Density::shapes;
     static constexpr bool adjoint_hessian = true;
+    static constexpr std::size_t adjoint_width = 0;
 
     explicit EgarchVolatility(const ModelSpec& spec, std::size_t mean = 0) noexcept
         : p_(spec.p), q_(spec.q), m_(Coupled ? mean : 0)

@@ -95,9 +95,10 @@ Jet::Jet(const Model& model, const Sample& sample) : model_(model), sample_(samp
     const std::size_t n = sample.scored(), columns = model.spec().mean.regressors();
     if (sample.size() < 2 || sample.first_scored >= sample.size() || sample.design.size() != n * columns)
         throw std::invalid_argument("the sample must contain scored observations and the model's regressor rows");
-    if (detail::assembler_for(model.spec()) == nullptr) throw std::invalid_argument("this model is not available yet");
+    const detail::Kernel kernel = detail::kernel_for(model.spec());
+    if (kernel.run == nullptr) throw std::invalid_argument("this model is not available yet");
     const detail::Layout layout(model.spec());
-    const detail::VolatilityShape shape = detail::volatility_shape(model.spec());
+    const detail::VolatilityShape& shape = kernel.shape;
     work_.assign(detail::work_size(layout, shape, n), 0.0);
     if (model.capabilities().residual_kink_decomposition)
         kink_work_.assign(n + layout.dimension, 0.0);
@@ -116,10 +117,11 @@ JetResult Jet::theta(std::span<const double> theta, unsigned request, JetOutput&
     const std::size_t dim = layout.dimension, n = sample_.scored();
     if (request == 0u || (request & ~all_requests) || theta.size() != dim || !outputs_fit(request, out, dim, n))
         return {};
-    Work work = detail::carve(work_.data(), layout, detail::volatility_shape(model_.spec()), n);
+    const detail::Kernel kernel = detail::kernel_for(model_.spec());
+    Work work = detail::carve(work_.data(), layout, kernel.shape, n);
 
     double v = 0.0;
-    const ThetaResult r = detail::assembler_for(model_.spec())(
+    const ThetaResult r = kernel.run(
         input(model_, layout, sample_, theta.data(), request, out),
         work, v);
     if (r.status == Status::ok) {
@@ -146,7 +148,8 @@ JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
     if (request == 0u || (request & ~all_requests) || (request & (scores | kinks)) || z.size() != dim
         || !outputs_fit(request, out, dim, n) || !detail::all_finite(z.data(), dim))
         return {};
-    Work work = detail::carve(work_.data(), layout, detail::volatility_shape(model_.spec()), n);
+    const detail::Kernel kernel = detail::kernel_for(model_.spec());
+    Work work = detail::carve(work_.data(), layout, kernel.shape, n);
 
     // One chart point serves theta(z), the Jacobian and the curvature.
     detail::Layout::ChartPoint point;
@@ -158,7 +161,7 @@ JetResult Jet::z(std::span<const double> z, unsigned request, JetOutput& out)
         return failed;
     }
     double v = 0.0;
-    const ThetaResult r = detail::assembler_for(model_.spec())(
+    const ThetaResult r = kernel.run(
         input(model_, layout, sample_, work.theta, request, out),
         work, v);
     if (r.status != Status::ok) return finish(request, r, false);
@@ -227,7 +230,7 @@ bool Jet::residual_faces(std::span<const double> theta, double radius, KinkOutpu
     const std::size_t selected = fixed ? out.count : 0;
     if (!fixed) { out.count = 0; out.supported = true; }
     if (!m) return !fixed || selected == 0;
-    Work work = detail::carve(work_.data(), layout, detail::volatility_shape(model_.spec()), n);
+    Work work = detail::carve(work_.data(), layout, detail::kernel_for(model_.spec()).shape, n);
     const detail::ArmaxMean<> mean(model_.spec().mean);
     const auto regressors = model_.spec().mean.regressors(), ma = model_.spec().mean.ma;
     std::array<double, detail::Layout::max_order+1> orders{};
@@ -289,10 +292,11 @@ bool Jet::decompose_kinks(std::span<const double> theta, KinkOutput& out)
     double* center = signs+n;
     std::fill_n(signs, n, std::numeric_limits<double>::quiet_NaN());
     for (std::size_t k = 0; k < out.count; ++k) signs[out.rows[k]-sample_.first_scored] = 0;
-    Work work = detail::carve(work_.data(), layout, detail::volatility_shape(model_.spec()), n);
+    const detail::Kernel branches = detail::kernel_for_branches(model_.spec());
+    Work work = detail::carve(work_.data(), layout, branches.shape, n);
     detail::AssembleInput in{model_.spec(), layout, sample_, theta.data(), 2, nullptr, nullptr};
     in.kink_sign = signs;
-    const auto assemble = detail::assembler_for_branches(model_.spec());
+    const auto assemble = branches.run;
     double ignored;
     const auto base = assemble(in, work, ignored);
     if (base.status != Status::ok || !base.gradient_ok || !base.hessian_ok) return false;

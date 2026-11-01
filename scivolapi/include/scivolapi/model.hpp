@@ -217,15 +217,15 @@ public:
     // counts scored rows following this residual, excluding unused lag terms.
     [[nodiscard]] double residual_kink_order(std::span<const double> theta, std::size_t future) const;
     // The persistence of the variance recursion at theta, the quantity the
-    // stationarity condition bounds by one: sum of the persistence coefficients
-    // weighted by the density's moments (GJR, APARCH), sum beta for EGARCH, zero
-    // for constant variance. NaN where a moment it needs does not exist.
+    // stationarity condition bounds by one, as the volatility family defines it
+    // (GARCH: sum alpha + sum beta; GJR and APARCH weight the coefficients by
+    // density moments; EGARCH: sum beta; constant variance: zero). NaN where a
+    // moment it needs does not exist.
     [[nodiscard]] double persistence(std::span<const double> theta) const;
-    // Exact stationary E[h]: omega/(1-persistence) for GARCH/GJR and APARCH
-    // at delta=2; sigma2 for constant variance. EGARCH uses its stationary
-    // exponential-moment product, with log truncation error <= 2e-12.
-    // Infinity means a divergent moment; NaN means unavailable (APARCH delta
-    // != 2), nonstationary, invalid, or not representable in double precision.
+    // Exact stationary E[h], as the volatility family computes it (GARCH, GJR
+    // and APARCH at delta = 2: omega/(1-persistence); EGARCH: its stationary
+    // exponential-moment product). Infinity means a divergent moment; NaN means
+    // unavailable, nonstationary, invalid, or not representable in double precision.
     [[nodiscard]] double unconditional_variance(std::span<const double> theta) const;
     // Stationary E[y] = intercept/(1-sum AR-sum HAR). NaN for an unstable
     // implied AR polynomial or exogenous regressors whose means are unknown.
@@ -248,6 +248,9 @@ public:
 private:
     ModelSpec spec_;
     std::vector<std::string> names_;
+    std::vector<std::string> constraint_names_;
+    std::vector<char> open_constraints_;
+    std::size_t family_constraints_ = 0;  // the volatility family's own rows, last
 };
 
 }  // namespace scivolapi
