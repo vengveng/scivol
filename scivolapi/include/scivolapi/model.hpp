@@ -233,8 +233,17 @@ public:
     // The innovation density at theta.
     [[nodiscard]] InnovationDensity innovation_density(std::span<const double> theta) const;
     // Same mean/variance equation with Gaussian innovations, for QMLE scores.
-    // Callers must check density_free_recursion before substituting its paths.
     [[nodiscard]] Model gaussian_model() const;
+    // The theta with the same variance path as the Gaussian model at u (u: the
+    // Gaussian model's parameters, then this model's shapes); with `jacobian`,
+    // d theta/du (dimension^2); with `g`, sum_i g_i d2 theta_i/du du' added to
+    // `curvature`. The identity unless the recursion uses the density (EGARCH
+    // centres |z| with the density's E|z|). False where a moment it needs does
+    // not exist.
+    bool from_gaussian(std::span<const double> u, std::span<double> theta, std::span<double> jacobian = {},
+                       std::span<const double> g = {}, std::span<double> curvature = {}) const;
+    // Its inverse.
+    bool to_gaussian(std::span<const double> theta, std::span<double> u) const;
     // Conventional dynamic-mean df adjustment for residual portmanteau tests.
     [[nodiscard]] std::size_t residual_degrees_of_freedom() const noexcept;
     // A representational endpoint of an open scalar/stability bound is not

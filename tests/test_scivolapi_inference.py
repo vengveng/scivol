@@ -145,11 +145,47 @@ def test_staged_qmle_and_its_two_step_covariance(returns, volatility, density):
     assert np.all(np.array(r.std_errors[k1:]) > 0.0) and not np.allclose(r.std_errors[k1:], naive, rtol=1e-3)
 
 
-def test_staged_qmle_is_not_offered_for_egarch(returns):
-    with pytest.raises(ValueError, match="free of the density.s shapes"):
-        gaussian_fit(returns, None, "egarch", "student_t", estimator="qmle")
-    _, r = gaussian_fit(returns, None, "egarch", estimator="qmle")
-    assert r.estimator == api.Estimator.qmle and r.success
+def student_absolute_moment(eta):
+    """E|z| of the standardized Student-t with nu = 1/eta."""
+    from scipy.special import gammaln
+
+    nu = 1.0 / eta
+    return 2.0 * np.sqrt(nu - 2.0) * np.exp(gammaln((nu + 1.0) / 2.0) - gammaln(nu / 2.0)) / (np.sqrt(np.pi) * (nu - 1.0))
+
+
+def test_staged_qmle_for_egarch_reparameterizes_the_gaussian_model(returns):
+    # EGARCH centres |z| with E|z|, so the Gaussian stage's model is this one with
+    # omega = omega_N + alpha (m(eta) - sqrt(2/pi)); the shape stage and the
+    # two-step sandwich work in u = (omega_N, alpha, gamma, beta, eta).
+    gaussian_model, gaussian = gaussian_fit(returns, None, "egarch")
+    model, r = gaussian_fit(returns, None, "egarch", "student_t", estimator="qmle")
+    assert r.estimator == api.Estimator.qmle and r.success, r.warnings
+    a, eta = np.array(gaussian.theta), r.theta[-1]
+    m = student_absolute_moment
+    np.testing.assert_array_equal(r.theta[1:4], a[1:])
+    assert r.theta[0] == pytest.approx(a[0] + a[1] * (m(eta) - np.sqrt(2.0 / np.pi)), rel=1e-12, abs=1e-15)
+
+    step = 1e-5 * eta
+    m1 = (m(eta + step) - m(eta - step)) / (2 * step)
+    m2 = (m(eta + step) - 2 * m(eta) + m(eta - step)) / step**2
+    jacobian = np.eye(5)
+    jacobian[0, 1], jacobian[0, 4] = m(eta) - np.sqrt(2.0 / np.pi), a[1] * m1
+    out = api.Jet(model, returns).theta(np.array(r.theta), FULL | api.SCORES)
+    g = out["gradient"]
+    curvature = np.zeros((5, 5))
+    curvature[1, 4] = curvature[4, 1] = g[0] * m1
+    curvature[4, 4] = g[0] * a[1] * m2
+    h_u = jacobian.T @ out["hessian"] @ jacobian + curvature
+    assert abs((jacobian.T @ g)[4]) < 1e-5 * len(returns)  # the shape stage's first-order condition
+
+    s1 = api.Jet(gaussian_model, returns).theta(a, api.SCORES)["scores"]
+    psi = np.hstack([s1, (out["scores"] @ jacobian)[:, 4:]])
+    stacked = np.zeros((5, 5))
+    stacked[:4, :4] = np.array(gaussian.hessian)
+    stacked[4:, :] = h_u[4:, :]
+    inverse = np.linalg.inv(stacked)
+    expected = jacobian @ inverse @ (psi.T @ psi) @ inverse.T @ jacobian.T
+    np.testing.assert_allclose(r.covariance, expected, rtol=2e-5, atol=1e-14)
 
 
 def test_public_qmle_fit(returns):

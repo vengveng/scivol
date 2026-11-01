@@ -36,10 +36,14 @@ def test_qmle_covers_every_mean_and_volatility(mean, volatility, density):
 
 
 @pytest.mark.parametrize("density", (StudentT, SkewT))
-def test_staged_qmle_is_not_offered_for_egarch_with_a_shaped_density(density):
-    data = generate_garch_data(400, 0.05, 0.08, 0.88, seed=3)
-    with pytest.raises(ValueError, match="free of the density.s shapes"):
-        (EGARCH(1, 1) + density()).fit(data, method="qmle")
+def test_staged_qmle_for_egarch_keeps_the_gaussian_variance_path(density):
+    data = generate_garch_data(1500, 0.05, 0.08, 0.88, seed=3)
+    staged = (EGARCH(1, 1) + density()).fit(data, method="qmle")
+    gaussian = (EGARCH(1, 1) + Normal()).fit(data, method="qmle")
+    assert staged.method == "QMLE" and staged.success
+    np.testing.assert_array_equal(staged.params[1:4], gaussian.params[1:4])
+    np.testing.assert_allclose(staged.sigma2, gaussian.sigma2, rtol=1e-12)
+    assert np.all(np.isfinite(staged.std_errors))
 
 
 # =============================================================================

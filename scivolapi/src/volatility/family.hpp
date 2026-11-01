@@ -113,6 +113,16 @@ public:
 
     // Whether the variance recursion uses the density's shapes.
     [[nodiscard]] virtual bool density_free_recursion() const noexcept { return true; }
+    // The theta whose variance path equals the Gaussian model's: u holds the
+    // Gaussian model's parameters followed by the shapes, theta receives this
+    // model's. With `jacobian`, d theta/du (dimension^2, row-major, preset to
+    // the identity); with `g`, sum_i g_i d2 theta_i/du du' is added to
+    // `curvature`. False where a moment the map needs does not exist. The
+    // identity (the default) for a density-free recursion.
+    virtual bool from_gaussian(const Layout&, const double* /*u*/, double* /*theta*/, double* /*jacobian*/,
+                               const double* /*g*/, double* /*curvature*/) const noexcept { return true; }
+    // Its inverse: the Gaussian model's parameters (and the shapes) for theta.
+    virtual bool to_gaussian(const Layout&, const double* /*theta*/, double* /*u*/) const noexcept { return true; }
     // Horizons with exact variance forecasts.
     [[nodiscard]] virtual std::size_t exact_variance_horizon() const noexcept { return static_cast<std::size_t>(-1); }
     // Whether moving residuals can cross a kink of the recursion's shock terms.

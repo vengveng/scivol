@@ -52,7 +52,7 @@ QMLE [ 0.0575  0.0434  0.0717  0.8651  0.1073 -0.1294]
 [0.0142 0.0184 0.0271 0.0222 0.0194 0.0299]
 ```
 
-The covariance of this two-step estimator is the sandwich of the stacked score equations of both steps, so it accounts for the first step's estimation error in the shape parameters. `cov_matrix` and `cov_robust` both hold it. `qmle.hessian` is the Hessian of the final likelihood with the fitted density, which is not the matrix used in that sandwich. QMLE with a shaped density is not available for EGARCH, whose recursion depends on the density through $E|z|$.
+The covariance of this two-step estimator is the sandwich of the stacked score equations of both steps, so it accounts for the first step's estimation error in the shape parameters. `cov_matrix` and `cov_robust` both hold it. `qmle.hessian` is the Hessian of the final likelihood with the fitted density, which is not the matrix used in that sandwich. For EGARCH, whose recursion centres $|z|$ with the density's $E|z|$, both steps work in the Gaussian stage's parameters, and the covariance of the reported parameters follows by the delta method through $\omega=\omega_N+\sum_i\alpha_i(E|z|-\sqrt{2/\pi})$.
 
 ## Inference status
 

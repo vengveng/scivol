@@ -355,13 +355,16 @@ FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const
 
 // Second stage of a staged qmle fit: the shapes by maximum likelihood with the
 // mean and variance parameters held at the Gaussian estimate `first`, then the
-// two-step sandwich. With theta = (a, s), the stacked score equations
+// two-step sandwich. The stage works in u = (a, s), the Gaussian model's
+// parameters a and the shapes s, where theta(u) = Model::from_gaussian(u) has
+// the Gaussian model's variance path (the identity unless the recursion uses
+// the density, as EGARCH's E|z| does). The stacked score equations
 //   psi_t = [s1_t(a); s2_t(a, s)]
-// (Gaussian scores in a; the model's scores in s) have the block-triangular
-// Jacobian A = [H11 0; H21 H22], so the covariance is A^-1 (sum psi psi') A^-T,
-//   A^-1 = [H11^-1 0; -H22^-1 H21 H11^-1  H22^-1].
-// The Gaussian and the model's recursions coincide (the density does not enter
-// them), so H21 and H22 are blocks of the model's Hessian.
+// (Gaussian scores in a; the model's scores in s, both through theta(u)) have
+// the block-triangular Jacobian A = [H11 0; H21 H22], so the covariance of u is
+// A^-1 (sum psi psi') A^-T,  A^-1 = [H11^-1 0; -H22^-1 H21 H11^-1  H22^-1],
+// with H21 and H22 blocks of the Hessian of F(theta(u)), and that of theta
+// follows by the delta method, J C_u J' with J = d theta/du.
 FitResult fit_shapes(const Model& model, const Model& gaussian, std::span<const double> y,
                      std::span<const double> x, const FitOptions& options, FitResult first,
                      const ComparisonPlan* plan = nullptr)
@@ -392,6 +395,10 @@ FitResult fit_shapes(const Model& model, const Model& gaussian, std::span<const 
         return failure(model, sample, first.data_scale, std::move(phases), "the shape stage produced no estimate");
     const Candidate& best = select(candidates);
     std::copy(best.theta.begin(), best.theta.end(), theta.begin() + static_cast<std::ptrdiff_t>(k1));
+    const std::vector<double> u = theta;
+    if (!model.from_gaussian(u, theta))
+        return failure(model, sample, first.data_scale, std::move(phases),
+                       "the density's moments are not available at the shape estimate");
 
     FitResult r;
     r.estimator = Estimator::qmle;
@@ -452,22 +459,31 @@ FitResult fit_shapes(const Model& model, const Model& gaussian, std::span<const 
     gaussian_out.scores = gaussian_scores;
     const bool scores_ok = (reported.valid & scores)
         && (gaussian_jet.theta(first.theta, scores, gaussian_out).valid & scores);
-    if (scores_ok) {  // stacked scores psi_t
+    // d theta/du and the Hessian of F(theta(u)) at the estimate.
+    std::vector<double> jacobian(d * d), hessian_u(d * d, 0.0);
+    const bool map_ok = (reported.valid & gradient) && (reported.valid & hessian)
+        && model.from_gaussian(u, theta, jacobian, r.gradient, hessian_u);
+    if (map_ok) detail::pullback_hessian(jacobian, r.hessian, hessian_u, d);
+    if (scores_ok && map_ok) {  // stacked scores psi_t in u
         std::vector<double> psi(n * d);
         for (std::size_t t = 0; t < n; ++t) {
             std::copy_n(gaussian_scores.data() + t * k1, k1, psi.data() + t * d);
-            std::copy_n(model_scores.data() + t * d + k1, k2, psi.data() + t * d + k1);
+            for (std::size_t i = 0; i < k2; ++i) {
+                double s = 0.0;
+                for (std::size_t j = 0; j < d; ++j) s += jacobian[j * d + k1 + i] * model_scores[t * d + j];
+                psi[t * d + k1 + i] = s;
+            }
         }
         r.opg = outer_products(psi, n, d);
     }
 
     std::vector<double> h22(k2 * k2), c22;
     for (std::size_t i = 0; i < k2; ++i)
-        for (std::size_t j = 0; j < k2; ++j) h22[i * k2 + j] = r.hessian[(k1 + i) * d + k1 + j];
+        for (std::size_t j = 0; j < k2; ++j) h22[i * k2 + j] = hessian_u[(k1 + i) * d + k1 + j];
     if (first.inference != Inference::available) r.inference = first.inference;
     else if (!r.stationary) r.inference = Inference::not_stationary;
     else if (stationarity.binding) r.inference = Inference::at_boundary;
-    else if (!(reported.valid & hessian) || !scores_ok) r.inference = Inference::not_positive_definite;
+    else if (!map_ok || !scores_ok) r.inference = Inference::not_positive_definite;
     else r.inference = invert_information(h22, k2, c22);
     if (!(reported.valid & gradient)) r.gradient.clear();
     if (!(reported.valid & hessian)) r.hessian.clear();
@@ -483,14 +499,14 @@ FitResult fit_shapes(const Model& model, const Model& gaussian, std::span<const 
         std::vector<double> h21c11(k2 * k1, 0.0);  // H21 C11
         for (std::size_t i = 0; i < k2; ++i)
             for (std::size_t l = 0; l < k1; ++l)
-                for (std::size_t j = 0; j < k1; ++j) h21c11[i * k1 + j] += r.hessian[(k1 + i) * d + l] * c11[l * k1 + j];
+                for (std::size_t j = 0; j < k1; ++j) h21c11[i * k1 + j] += hessian_u[(k1 + i) * d + l] * c11[l * k1 + j];
         for (std::size_t i = 0; i < k2; ++i)
             for (std::size_t j = 0; j < k1; ++j) {
                 double s = 0.0;
                 for (std::size_t l = 0; l < k2; ++l) s += c22[i * k2 + l] * h21c11[l * k1 + j];
                 a[(k1 + i) * d + j] = -s;
             }
-        r.robust_covariance = sandwich(a, r.opg, d);
+        r.robust_covariance = sandwich(jacobian, sandwich(a, r.opg, d), d);
         r.robust_std_errors = standard_errors(r.robust_covariance, d);
         r.covariance = r.robust_covariance;
         r.std_errors = r.robust_std_errors;
@@ -508,10 +524,6 @@ FitResult fit_qmle(const Model& model, std::span<const double> y, std::span<cons
                    const FitOptions& options, const ComparisonPlan* plan = nullptr)
 {
     const ModelSpec& spec = model.spec();
-    if (spec.density != DensityKind::normal && !model.capabilities().density_free_recursion)
-        throw std::invalid_argument(
-            "qmle with a non-Normal density needs a variance recursion free of the density's shapes, "
-            "and this model's recursion uses them");
     ModelSpec gaussian_spec = spec;
     gaussian_spec.density = DensityKind::normal;
     const Model gaussian(gaussian_spec);

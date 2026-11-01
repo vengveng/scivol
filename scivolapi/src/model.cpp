@@ -535,6 +535,33 @@ Model Model::gaussian_model() const
     return Model(gaussian);
 }
 
+bool Model::from_gaussian(std::span<const double> u, std::span<double> theta, std::span<double> jacobian,
+                          std::span<const double> g, std::span<double> curvature) const
+{
+    const std::size_t d = dimension();
+    check_size(u, d);
+    require(theta.size() == d && (jacobian.empty() || jacobian.size() == d * d)
+                && (g.empty() || (g.size() == d && curvature.size() == d * d)),
+            "from_gaussian outputs have the wrong length");
+    std::copy(u.begin(), u.end(), theta.begin());
+    if (!jacobian.empty()) {
+        std::fill(jacobian.begin(), jacobian.end(), 0.0);
+        for (std::size_t i = 0; i < d; ++i) jacobian[i * d + i] = 1.0;
+    }
+    const Layout layout(spec_);
+    return layout.family->from_gaussian(layout, u.data(), theta.data(), jacobian.empty() ? nullptr : jacobian.data(),
+                                        g.empty() ? nullptr : g.data(), g.empty() ? nullptr : curvature.data());
+}
+
+bool Model::to_gaussian(std::span<const double> theta, std::span<double> u) const
+{
+    check_size(theta, dimension());
+    require(u.size() == dimension(), "to_gaussian output has the wrong length");
+    std::copy(theta.begin(), theta.end(), u.begin());
+    const Layout layout(spec_);
+    return layout.family->to_gaussian(layout, theta.data(), u.data());
+}
+
 std::size_t Model::residual_degrees_of_freedom() const noexcept
 {
     return spec_.mean.ar + spec_.mean.har.size() + spec_.mean.ma;

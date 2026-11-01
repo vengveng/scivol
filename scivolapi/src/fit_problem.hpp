@@ -152,20 +152,41 @@ optimize::Problem make_problem(const ModelT& model, JetT& jet, bool in_z)
 // The same objective as a function of the trailing parameters theta[first..]
 // alone, the others held at `fixed`: theta coordinates, their bounds, no
 // constraints. Buffers are allocated once, here.
+// d2(F o theta)/du du' = J' H J + sum_i g_i d2 theta_i/du du' (curvature holds the sum).
+inline void pullback_hessian(const std::vector<double>& jacobian, const std::vector<double>& hessian,
+                             std::vector<double>& out, std::size_t d)
+{
+    std::vector<double> hj(d * d, 0.0);
+    for (std::size_t i = 0; i < d; ++i)
+        for (std::size_t k = 0; k < d; ++k)
+            for (std::size_t j = 0; j < d; ++j) hj[i * d + j] += hessian[i * d + k] * jacobian[k * d + j];
+    for (std::size_t i = 0; i < d; ++i)
+        for (std::size_t j = 0; j < d; ++j) {
+            double s = 0.0;
+            for (std::size_t k = 0; k < d; ++k) s += jacobian[k * d + i] * hj[k * d + j];
+            out[i * d + j] += s;
+        }
+}
+
+// The shape stage of a staged qmle fit: the entries of u from `first` on (the
+// shapes), the leading ones fixed, with objective F(theta(u)) / n for
+// theta(u) = Model::from_gaussian(u), the identity for a density-free recursion.
 inline optimize::Problem make_tail_problem(const Model& model, Jet& jet, std::span<const double> fixed,
                                            std::size_t first)
 {
     struct Buffers {
-        std::vector<double> theta, g, h;
+        std::vector<double> u, theta, g, h, jacobian, curvature;
     };
     const std::size_t d = model.dimension(), k = d - first;
     auto b = std::make_shared<Buffers>(Buffers{{fixed.begin(), fixed.end()}, std::vector<double>(d),
-                                               std::vector<double>(d * d)});
+                                               std::vector<double>(d), std::vector<double>(d * d),
+                                               std::vector<double>(d * d), std::vector<double>(d * d)});
     const double scale = 1.0 / static_cast<double>(jet.sample().scored());
     optimize::Problem problem;
     problem.dimension = k;
-    problem.objective = [&jet, b, first, k, scale](const double* x, double& f, double* g) {
-        std::copy_n(x, k, b->theta.begin() + static_cast<std::ptrdiff_t>(first));
+    problem.objective = [&model, &jet, b, first, k, d, scale](const double* x, double& f, double* g) {
+        std::copy_n(x, k, b->u.begin() + static_cast<std::ptrdiff_t>(first));
+        if (!model.from_gaussian(b->u, b->theta, b->jacobian)) return false;
         JetOutput out;
         unsigned request = value;
         if (g != nullptr) {
@@ -175,16 +196,25 @@ inline optimize::Problem make_tail_problem(const Model& model, Jet& jet, std::sp
         if (jet.theta(b->theta, request, out).status != Status::ok) return false;
         f = out.value * scale;
         if (g != nullptr)
-            for (std::size_t i = 0; i < k; ++i) g[i] = b->g[first + i] * scale;
+            for (std::size_t i = 0; i < k; ++i) {
+                double s = 0.0;
+                for (std::size_t j = 0; j < d; ++j) s += b->jacobian[j * d + first + i] * b->g[j];
+                g[i] = s * scale;
+            }
         return true;
     };
-    problem.hessian = [&jet, b, first, k, d, scale](const double* x, double* h) {
-        std::copy_n(x, k, b->theta.begin() + static_cast<std::ptrdiff_t>(first));
+    problem.hessian = [&model, &jet, b, first, k, d, scale](const double* x, double* h) {
+        std::copy_n(x, k, b->u.begin() + static_cast<std::ptrdiff_t>(first));
+        if (!model.from_gaussian(b->u, b->theta)) return false;
         JetOutput out;
+        out.gradient = b->g;
         out.hessian = b->h;
-        if (jet.theta(b->theta, hessian, out).status != Status::ok) return false;
+        if (jet.theta(b->theta, gradient | hessian, out).status != Status::ok) return false;
+        std::fill(b->curvature.begin(), b->curvature.end(), 0.0);
+        if (!model.from_gaussian(b->u, b->theta, b->jacobian, b->g, b->curvature)) return false;
+        pullback_hessian(b->jacobian, b->h, b->curvature, d);
         for (std::size_t i = 0; i < k; ++i)
-            for (std::size_t j = 0; j < k; ++j) h[i * k + j] = b->h[(first + i) * d + first + j] * scale;
+            for (std::size_t j = 0; j < k; ++j) h[i * k + j] = b->curvature[(first + i) * d + first + j] * scale;
         return true;
     };
     std::vector<double> lower(d), upper(d);

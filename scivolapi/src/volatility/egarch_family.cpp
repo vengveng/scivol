@@ -161,6 +161,53 @@ public:
     }
 
     bool density_free_recursion() const noexcept override { return false; }
+
+    // The Gaussian model centres |z| with m_N = sqrt(2/pi), this one with
+    // m = E|z| of its density, so the recursions agree when
+    //   omega = omega_N + sum alpha_i (m(s) - m_N).
+    bool from_gaussian(const Layout& l, const double* u, double* theta, double* jacobian, const double* g,
+                       double* curvature) const noexcept override
+    {
+        MomentResult m, normal;
+        const int order = g ? 2 : jacobian ? 1 : 0;
+        if (!absolute_moment(l.density, l.shape_count ? u + l.shapes : nullptr, order, m)
+            || !absolute_moment(DensityKind::normal, nullptr, 0, normal) || !std::isfinite(m.value))
+            return false;
+        const std::size_t d = l.dimension, omega = l.volatility, alpha = omega + 1;
+        double loading = 0.0;
+        for (std::size_t i = 0; i < l.p; ++i) loading += u[alpha + i];
+        theta[omega] = u[omega] + loading * (m.value - normal.value);
+        if (jacobian) {
+            for (std::size_t i = 0; i < l.p; ++i) jacobian[omega * d + alpha + i] = m.value - normal.value;
+            for (std::size_t k = 0; k < l.shape_count; ++k) jacobian[omega * d + l.shapes + k] = loading * m.gradient[k];
+        }
+        if (g) {
+            const double go = g[omega];
+            for (std::size_t k = 0; k < l.shape_count; ++k) {
+                const std::size_t s = l.shapes + k;
+                for (std::size_t i = 0; i < l.p; ++i) {
+                    curvature[(alpha + i) * d + s] += go * m.gradient[k];
+                    curvature[s * d + alpha + i] += go * m.gradient[k];
+                }
+                for (std::size_t j = 0; j < l.shape_count; ++j)
+                    curvature[s * d + l.shapes + j] += go * loading * m.hessian[k <= j ? packed(l.shape_count, k, j)
+                                                                                      : packed(l.shape_count, j, k)];
+            }
+        }
+        return true;
+    }
+
+    bool to_gaussian(const Layout& l, const double* theta, double* u) const noexcept override
+    {
+        MomentResult m, normal;
+        if (!absolute_moment(l.density, l.shape_count ? theta + l.shapes : nullptr, 0, m)
+            || !absolute_moment(DensityKind::normal, nullptr, 0, normal) || !std::isfinite(m.value))
+            return false;
+        double loading = 0.0;
+        for (std::size_t i = 0; i < l.p; ++i) loading += theta[l.volatility + 1 + i];
+        u[l.volatility] = theta[l.volatility] - loading * (m.value - normal.value);
+        return true;
+    }
     bool residual_kinks() const noexcept override { return true; }
 
     double residual_kink_order(const Layout& l, const double* theta, std::size_t future) const noexcept override

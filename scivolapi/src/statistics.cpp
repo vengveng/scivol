@@ -361,9 +361,10 @@ DiagnosticEvaluation evaluate_diagnostics(Jet& jet, std::span<const double> thet
     if (estimated && out.status == TestStatus::ok && model.at_open_bound(theta)) out.status = TestStatus::at_boundary;
     if (out.status != TestStatus::ok || !estimated) return out;
     if (estimator == Estimator::qmle) {
+        // The Gaussian model at the parameters with this model's variance path.
         const Model gaussian = model.gaussian_model();
-        require(model.capabilities().density_free_recursion || gaussian.dimension() == d,
-                "QMLE diagnostics need a density-free recursion");
+        std::vector<double> u(d);
+        require(model.to_gaussian(theta, u), "the density's moments are not available at theta");
         out.parameters = gaussian.dimension();
         out.score.resize(n * out.parameters);
         out.information.resize(out.parameters * out.parameters);
@@ -371,7 +372,8 @@ DiagnosticEvaluation evaluate_diagnostics(Jet& jet, std::span<const double> thet
         JetOutput gaussian_out;
         gaussian_out.scores = out.score;
         gaussian_out.hessian = out.information;
-        if ((gaussian_jet.theta(theta.first(out.parameters), scores | hessian, gaussian_out).valid & (scores | hessian)) != (scores | hessian))
+        if ((gaussian_jet.theta(std::span<const double>(u).first(out.parameters), scores | hessian, gaussian_out).valid
+             & (scores | hessian)) != (scores | hessian))
             out.status = TestStatus::invalid_qmle_derivatives;
     }
     return out;
