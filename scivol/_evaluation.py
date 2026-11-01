@@ -399,12 +399,18 @@ def simulate(spec: Any, n_obs: int, params: Any, *, burn: int = 500, seed: Any =
 
 def oos_losses(result: "EstimationResult", full_data: Any, *, full_x: Any, start: int, stop: int,
                loss: str) -> NDArray[np.float64]:
-    """Native predictive losses on a specified slice of the observed series."""
+    """Native predictive losses on a specified slice of the observed series.
+
+    The recursions start as in the fit: the same conditioning rows and the fit
+    sample's variance seed, so rows after the fit sample do not enter it."""
     skip = result._native_skip
     scale = float(result.fit_info.scale or 1.0)
+    model = result._native_model
     y = np.ascontiguousarray(np.asarray(full_data, dtype=np.float64)[skip:stop] * scale)
     x = None if full_x is None else regressors(np.asarray(full_x, dtype=np.float64)[skip:stop], len(y))
-    jet = api.Jet(result._native_model, y, x)
+    conditioning = model.spec.mean.conditioning
+    seed = float(np.mean(np.square(result._native_y)))
+    jet = api.Jet(model, api.ComparisonPlan(y, conditioning, x, variance_seed=seed))
     first = skip + jet.first_scored
     if start < first or stop <= start:
         raise ValueError("The OOS slice must lie after the rows that condition the fit.")

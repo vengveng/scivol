@@ -81,3 +81,13 @@ def test_hold_back_rows_supply_lags_and_fix_the_scored_sample():
     assert zero.fit_info.likelihood_n_obs == ar.fit_info.likelihood_n_obs == 595  # comparable criteria
     short = (ARMA(2, 0) + GARCH(1, 1) + Normal()).fit(y)
     assert short.fit_info.likelihood_n_obs == 598  # without hold_back, scoring starts after the lags
+
+
+def test_oos_losses_keep_the_fit_samples_variance_seed(returns):
+    n = len(returns)
+    fitted = (GARCH(1, 1) + Normal()).fit(returns[: n - 200])
+    holdout = 100.0 * returns[n - 200:]  # a large holdout would raise a seed that saw it
+    data = np.concatenate([returns[: n - 200], holdout])
+    losses = oos_losses(fitted, data, full_x=None, start=0, stop=n - 200, loss="logscore")
+    with_holdout = oos_losses(fitted, data, full_x=None, start=0, stop=n, loss="logscore")
+    np.testing.assert_array_equal(with_holdout[: n - 200], losses)
