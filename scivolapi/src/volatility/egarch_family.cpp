@@ -141,7 +141,7 @@ public:
         for (std::size_t j = 0; j < l.q; ++j) block[1 + 2 * l.p + j] = persistence / static_cast<double>(l.q);
     }
 
-    bool near_integrated_start(const Layout& l, double seed, double persistence, double shock,
+    bool lagged_variance_start(const Layout& l, double seed, double persistence, double shock,
                                double* theta) const override
     {
         if (!l.p || !l.q) return false;

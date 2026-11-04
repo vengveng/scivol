@@ -100,10 +100,11 @@ public:
     // The default start, written into the block of `theta` (the mean and the
     // shapes already hold theirs), from the conditioning variance `seed`.
     virtual void start(const Layout& layout, double seed, double* theta) const = 0;
-    // Moves the default start to a near-integrated region with `persistence`
-    // carried by the variance lags and `shock` on the shock loadings. False
-    // when the recursion has no such region.
-    virtual bool near_integrated_start(const Layout& layout, double seed, double persistence, double shock,
+    // Moves the default start to `persistence` carried by the variance lags
+    // and `shock` on the shock loadings. False when the recursion has no such
+    // region: no variance lags, or a negative persistence its domain excludes
+    // (EGARCH's stable beta admits one: an alternating log variance).
+    virtual bool lagged_variance_start(const Layout& layout, double seed, double persistence, double shock,
                                        double* theta) const = 0;
     // Exact data scaling y -> factor y of the block (scaled holds theta).
     virtual void rescale(const Layout& layout, const double* theta, double factor, double* scaled) const = 0;

@@ -67,6 +67,22 @@ def test_every_start_is_finished_while_the_estimate_is_on_the_persistence_face()
     assert all(s["finished"] for s in integrated.fit_info.starts)
 
 
+def test_egarch_candidates_cover_an_alternating_log_variance():
+    # Without volatility dynamics, EGARCH's weakly identified beta can have a
+    # separate, higher maximum at negative beta, which only the fourth
+    # candidate (beta -0.9) reaches.
+    from scivol import ARX, EGARCH, SkewT
+
+    y = np.random.default_rng(1_000_003 * 6 + 7919 * 1000 + 3).standard_normal(1000)
+    spec = ARX(1) + EGARCH() + SkewT()
+    result, positive = spec.fit(y), spec.fit(y, starts=3)
+    assert [s["theta"][5] for s in result.fit_info.starts] == pytest.approx([0.9, 0.98, 0.995, -0.9])
+    assert result.params["beta[1]"] < -0.9 < 0.8 < positive.params["beta[1]"]
+    assert result.log_likelihood > positive.log_likelihood + 2.0
+    assert result.fit_info.starts[3]["selected"]
+    assert len((GARCH() + Normal()).fit(y).fit_info.starts) == 3  # beta >= 0 has no such region
+
+
 def test_explicit_starts_each_run_in_full_and_the_best_is_reported(bimodal):
     single = (GARCH() + Normal()).fit(bimodal, starts=1)
     auto = (GARCH() + Normal()).fit(bimodal)

@@ -64,7 +64,7 @@ Each model therefore offers a few candidate starts in structurally different reg
 | Model | Candidate starts |
 | --- | --- |
 | GARCH, GJR-GARCH, APARCH | persistence 0.9 (the default start), 0.98 and 0.995, the latter two carried mostly by beta |
-| EGARCH | beta 0.9, 0.98 and 0.995 |
+| EGARCH | beta 0.9, 0.98, 0.995 and −0.9 |
 | DCC | $(a, b) = (0.05, 0.90)$ and $(0.02, 0.80)$ |
 | Constant variance, ARCH | the default start only |
 
@@ -76,7 +76,7 @@ The `starts` option decides how they are used:
 | `n` | The first `n` candidates each run in full; `starts=1` is a single start. |
 | a list of parameter vectors | Each vector runs in full. |
 
-Because the optimizer never lowers the likelihood, a finished start always ends at least as high as the start it beat. The reported estimate is the best finished start, preferring one that passes its first-order check. On 500 liquid stocks and ten models, the automatic race reduced the number of fits that stopped below the best known maximum from 114 to 38 out of 5,000, at 17% more total time ([benchmarks](benchmarks.md)). A maximum in a region the candidates do not cover, or one whose probe does not yet look promising after five iterations, can still be missed.
+Because the optimizer never lowers the likelihood, a finished start always ends at least as high as the start it beat. The reported estimate is the best finished start, preferring one that passes its first-order check. On 500 liquid stocks and ten models, the automatic race reduced the number of fits that stopped below the best known maximum from 114 to 38 out of 5,000, at 17% more total time ([benchmarks](benchmarks.md)). EGARCH's last candidate covers the negative half of its stable region for beta: with little volatility dynamics, as in a series of independent draws, the likelihood can have a separate maximum there, where the log variance alternates. On 40 simulated series of independent Normal draws, this candidate moved 5 of 40 AR(1)-EGARCH-skew-t fits to a higher maximum at negative beta; on daily stock returns it never won, and it costs EGARCH fits about 8% more time. A maximum in a region the candidates do not cover, or one whose probe does not yet look promising after five iterations, can still be missed.
 
 On the persistence face, where persistence reaches the limit of the declared stationarity, the likelihood can have several separate maxima, and a five-iteration probe says little about them. On daily stock returns, the probe of the start that led to the higher maximum was still 5 to 60 below the finished value. So while the best finished estimate is on that face, the remaining candidates are all finished. On 400 daily stock-return series and 14 models, this cut the automatic fits that stopped below the best known maximum from 50 to 23 of 5,600, at 25% more total time, and no fit ended lower.
 

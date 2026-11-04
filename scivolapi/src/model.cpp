@@ -436,18 +436,20 @@ std::vector<double> Model::start(const Sample& sample) const
     return theta;
 }
 
-// The model's start, then the near-integrated region of a recursion with both
-// shock and variance lags, where daily returns' other likelihood maxima lie
+// The model's start, then, for a recursion with both shock and variance lags,
+// the near-integrated region, where daily returns' other likelihood maxima lie
 // (the start's persistence is 0.9 with a large shock share): persistence 0.98
-// and 0.995 carried by the variance lags.
+// and 0.995 carried by the variance lags; and, where the domain admits it
+// (EGARCH), persistence -0.9: with little volatility dynamics the likelihood
+// can have a separate maximum at an alternating log variance.
 std::vector<std::vector<double>> Model::starts(const Sample& sample) const
 {
     std::vector<std::vector<double>> out{start(sample)};
     const Layout layout(spec_);
-    for (const auto [persistence, shock] : {std::pair{0.98, 0.02}, std::pair{0.995, 0.01}}) {
+    for (const auto [persistence, shock] : {std::pair{0.98, 0.02}, std::pair{0.995, 0.01}, std::pair{-0.9, 0.02}}) {
         std::vector<double> theta = out.front();
-        if (!layout.family->near_integrated_start(layout, sample.variance_seed, persistence, shock, theta.data()))
-            break;
+        if (!layout.family->lagged_variance_start(layout, sample.variance_seed, persistence, shock, theta.data()))
+            continue;
         if (feasible(theta)) out.push_back(std::move(theta));
     }
     return out;

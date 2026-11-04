@@ -123,10 +123,10 @@ public:
         for (std::size_t i = 0; i < l.p; ++i) theta[alpha(l) + i] = shock / p;
     }
 
-    bool near_integrated_start(const Layout& l, double seed, double persistence, double shock,
+    bool lagged_variance_start(const Layout& l, double seed, double persistence, double shock,
                                double* theta) const override
     {
-        if (!l.p || !l.q) return false;
+        if (!l.p || !l.q || persistence < shock) return false;  // beta >= 0
         const double p = static_cast<double>(l.p), q = static_cast<double>(l.q);
         theta[l.volatility] = seed * (1.0 - persistence);
         for (std::size_t i = 0; i < l.p; ++i) theta[alpha(l) + i] = shock / p;

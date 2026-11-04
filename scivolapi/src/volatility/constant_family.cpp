@@ -40,7 +40,7 @@ public:
     bool constant_variance() const noexcept override { return true; }
 
     void start(const Layout& l, double seed, double* theta) const override { theta[l.volatility] = seed; }
-    bool near_integrated_start(const Layout&, double, double, double, double*) const override { return false; }
+    bool lagged_variance_start(const Layout&, double, double, double, double*) const override { return false; }
 
     void rescale(const Layout& l, const double* theta, double factor, double* scaled) const override
     {
