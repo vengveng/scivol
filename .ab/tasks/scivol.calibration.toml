@@ -1,0 +1,29 @@
+summary = "Selection Monte Carlo: localdev/calibration/SCRIPT OUT REPS on this tree's build; OUT lands in localdev/calibration/"
+source = { kind = "git" }
+inputs = ["localdev/calibration/*.py"]
+outputs = [{ path = "localdev/calibration/*.pkl" }]
+# The user: full suites and big runs go to the mini (2026-10-30, 2026-11-02); the laptop only while the mini is away.
+avoid = ["mbp"]
+cost = { cores = { min = 4, max = 8 }, mem_gb = { base = 1, per_core = 0.5 }, minutes = 10 }
+
+[args.script]
+type = "enum"
+values = ["run.py", "run_auto.py"]
+default = "run.py"
+
+[args.out]
+type = "str"
+help = "result file name, e.g. cal_r120.pkl; read it with analyze.py"
+
+[args.reps]
+type = "int"
+default = 120
+
+[bind.default]
+env = "export PATH={node.scivol_venv}/bin:$PATH"
+probe = "{node.scivol_venv}/bin/python -I -c \"import sys, numpy, nanobind, importlib.util as u; assert not u.find_spec('scivol'), 'scivol is installed in this venv'; print(sys.version.split()[0], numpy.__version__, nanobind.__version__)\" && cmake --version | head -1 && ninja --version"
+run = """
+cmake -S . -B build/ab -G Ninja -DCMAKE_BUILD_TYPE=Release -DPython_EXECUTABLE=$(command -v python) &&
+cmake --build build/ab && cmake --install build/ab --prefix . &&
+export PYTHONPATH=$PWD && cd localdev/calibration && python {script} {out} {reps} {cores}
+"""

@@ -19,6 +19,7 @@ bugfix.md
 *.gz
 *.whl
 /.*/
+!/.ab/
 !/.github/
 !/.github/workflows/
 !/.github/workflows/*.yml

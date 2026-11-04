@@ -1,0 +1,21 @@
+summary = "Build this tree's scivol._scivolapi, then pytest ARGS with one xdist worker per granted core (default: the fast suite)"
+source = { kind = "git" }
+# The user: full suites and big runs go to the mini (2026-10-30, 2026-11-02); the laptop only while the mini is away.
+avoid = ["mbp"]
+cost = { cores = { min = 2, max = 8 }, mem_gb = { base = 1.5, per_core = 1.0 }, minutes = 3 }
+
+[args.args]
+type = "args"
+default = "tests/"
+help = "pytest arguments, e.g. 'tests/ --run-slow -m slow' or 'tests/test_scivolapi_volatility.py --run-slow -k aparch'"
+
+[bind.default]
+# The venv must not have scivol installed: its editable finder would import another checkout.
+env = "export PATH={node.scivol_venv}/bin:$PATH"
+probe = "{node.scivol_venv}/bin/python -I -c \"import sys, numpy, scipy, jax, mpmath, xdist, nanobind, importlib.util as u; assert not u.find_spec('scivol'), 'scivol is installed in this venv'; print(sys.version.split()[0], numpy.__version__, jax.__version__, nanobind.__version__)\" && cmake --version | head -1 && ninja --version"
+# The module goes into ./scivol, so the tests import this tree, as with `make dev`.
+run = """
+cmake -S . -B build/ab -G Ninja -DCMAKE_BUILD_TYPE=Release -DPython_EXECUTABLE=$(command -v python) &&
+cmake --build build/ab && cmake --install build/ab --prefix . &&
+python -m pytest -q -n {cores} {args}
+"""

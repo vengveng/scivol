@@ -275,8 +275,9 @@ Python owns memory; native code computes in place.
   domain and real data.
 - `bugfix.md` (git-ignored) is an append-only log: when you fix a confirmed bug,
   add a short entry with impact, cause, fix and the test that covers it.
-- Builds: run one heavy compile at a time and watch memory pressure; stop if it
-  turns yellow. Never leave long builds running unattended without telling the user.
+- Heavy work (the test suite, `make native`, CRSP and calibration runs) goes
+  through ab (section 9), which picks the machine and waits for room. Run
+  only targeted tests that take under a minute directly.
 - No pushes or releases unless the user asks.
 
 ## 9. Build and test
@@ -294,6 +295,18 @@ pytest tests/ --run-slow      # include @pytest.mark.slow
 
 Slow tests (`--run-slow`) are the full oracle matrices and the parallel and
 multi-series suites.
+
+Heavy runs use the ab tasks in `.ab/tasks/`. Each job builds this tree in its
+own snapshot, so it works from any worktree and never touches the editable
+install:
+
+```bash
+ab run scivol.test                                    # fast suite
+ab run scivol.test args='tests/ --run-slow -m slow'   # slow suite
+ab run scivol.native                                  # make native
+ab run scivol.crsp runs=runs_now last=400 -d          # then ab wait <job>; ab collect <job>
+ab run scivol.calibration out=cal_r120.pkl -d         # script=run_auto.py for Auto
+```
 
 Type style: `from __future__ import annotations`, annotate arrays as
 `NDArray[np.float64]`, Greek letters spelled out (`nu`, `lam`, `omega`), snake_case

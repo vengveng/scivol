@@ -1,0 +1,9 @@
+summary = "make native: build the C++ library and its tests, then ctest"
+source = { kind = "git" }
+cost = { cores = { min = 2, max = 8 }, mem_gb = { base = 1, per_core = 0.5 }, minutes = 3 }
+
+[bind.default]
+env = "export PATH={node.scivol_venv}/bin:$PATH"
+probe = "cmake --version | head -1 && ninja --version && c++ --version | head -1"
+# make native builds with CMAKE_BUILD_PARALLEL_LEVEL, which ab sets to {cores}.
+run = "make native"
