@@ -53,6 +53,20 @@ def test_a_start_not_pursued_is_only_probed(bimodal):
         assert not s["finished"] and not s["selected"] and s["log_likelihood"] <= first["log_likelihood"]
 
 
+def test_every_start_is_finished_while_the_estimate_is_on_the_persistence_face():
+    # Separate maxima along the face leave a short probe uninformative there.
+    y = (GARCH() + Normal()).simulate(2000, [0.02, 0.06, 0.935], seed=23).data
+    result = (GARCH() + Normal()).fit(y)
+    assert result.success and result.persistence == pytest.approx(1.0, abs=1e-12)
+    assert result.fit_info.excluded_boundary == ("persistence < 1",)
+    assert all(s["finished"] for s in result.fit_info.starts)
+    assert not any(p.startswith("start 2: probe") for p in result.fit_info.optimizer_phases)
+    # Declared integrated, the face is inside the domain and the policy is the same.
+    integrated = GARCH(stationarity="integrated").fit(y)
+    assert integrated.persistence == pytest.approx(1.0, abs=1e-12)
+    assert all(s["finished"] for s in integrated.fit_info.starts)
+
+
 def test_explicit_starts_each_run_in_full_and_the_best_is_reported(bimodal):
     single = (GARCH() + Normal()).fit(bimodal, starts=1)
     auto = (GARCH() + Normal()).fit(bimodal)

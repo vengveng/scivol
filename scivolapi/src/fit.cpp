@@ -182,9 +182,13 @@ bool better(const FitResult& a, const FitResult& b)
 // units and `log_likelihood(value)` the data's log-likelihood at an objective
 // value. The race keeps no start that a probe has not already lifted above the
 // best finished one, so a pursued start ends at least as high as that one.
-template<class Run, class Probe, class Report, class LogLikelihood>
+// While the best finished estimate is on the persistence face
+// (`on_face(result)`), every remaining start is finished instead: separate
+// maxima along that face leave a short probe 5-60 below the finished value
+// even on the way to the higher one.
+template<class Run, class Probe, class Report, class LogLikelihood, class OnFace>
 FitResult multistart(const std::vector<std::vector<double>>& starts, bool candidates, bool race, Run run,
-                     Probe probe, Report report, LogLikelihood log_likelihood)
+                     Probe probe, Report report, LogLikelihood log_likelihood, OnFace on_face)
 {
     const auto entry = [&](const std::vector<double>& start) {
         FitStart s;
@@ -203,7 +207,7 @@ FitResult multistart(const std::vector<std::vector<double>>& starts, bool candid
         const std::string label = "start " + std::to_string(k + 1) + ": ";
         FitStart s = entry(starts[k]);
         std::vector<double> from = starts[k];
-        if (race) {
+        if (race && !on_face(best.result)) {
             std::vector<FitPhase> probed;
             Candidate reached;
             const bool ok = probe(starts[k], probed, reached);
@@ -350,7 +354,8 @@ FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const
             model.rescale(unit, scale, theta);
             return theta;
         },
-        [&](double value) { return -value * scored - scored * std::log(scale); });
+        [&](double value) { return -value * scored - scored * std::log(scale); },
+        [&](const FitResult& result) { return result.estimate_available && model.on_persistence_face(result.theta); });
 }
 
 // Second stage of a staged qmle fit: the shapes by maximum likelihood with the
@@ -609,7 +614,8 @@ FitResult fit(const CorrelationModel& model, std::span<const double> eps, std::s
     };
     const double rows = static_cast<double>(detail::scored_rows(sample));
     return multistart(starts, candidates, candidates && options.start_count == 0, run, probe,
-                      [](const std::vector<double>& t) { return t; }, [&](double value) { return -value * rows; });
+                      [](const std::vector<double>& t) { return t; }, [&](double value) { return -value * rows; },
+                      [](const FitResult&) { return false; });
 }
 
 }  // namespace scivolapi

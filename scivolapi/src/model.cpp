@@ -11,6 +11,7 @@
 #include "detail/numeric.hpp"
 #include "mean/regressors.hpp"
 #include "model_layout.hpp"
+#include "optimize/open_bounds.hpp"
 
 namespace scivolapi {
 
@@ -497,6 +498,18 @@ double Model::persistence(std::span<const double> theta) const
     check_size(theta, dimension());
     const Layout layout(spec_);
     return layout.family->persistence(layout, theta.data());
+}
+
+bool Model::on_persistence_face(std::span<const double> theta) const
+{
+    check_size(theta, dimension());
+    const Layout layout(spec_);
+    if (!layout.family->persistence_condition(spec_)) return false;
+    double persistence = 0.0;
+    if (!layout.persistence(theta.data(), 0, persistence, nullptr)) return false;
+    const double limit = spec_.stationarity == Stationarity::integrated
+        ? 1.0 : detail::SimplexChart::limit(layout.simplex_count);
+    return limit - persistence <= optimize::active_constraint;
 }
 
 double Model::unconditional_variance(std::span<const double> theta) const

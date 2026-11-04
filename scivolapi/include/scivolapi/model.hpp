@@ -222,6 +222,12 @@ public:
     // density moments; EGARCH: sum beta; constant variance: zero). NaN where a
     // moment it needs does not exist.
     [[nodiscard]] double persistence(std::span<const double> theta) const;
+    // Whether theta is on the persistence face: the family declares a
+    // stationarity condition on the persistence (not under stationarity
+    // "none") and the persistence is within the active-constraint tolerance of
+    // its limit (1, or the strict condition's floating-point margin below 1).
+    // Daily returns' likelihoods can have several separate maxima there.
+    [[nodiscard]] bool on_persistence_face(std::span<const double> theta) const;
     // Exact stationary E[h], as the volatility family computes it (GARCH, GJR
     // and APARCH at delta = 2: omega/(1-persistence); EGARCH: its stationary
     // exponential-moment product). Infinity means a divergent moment; NaN means

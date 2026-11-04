@@ -2,7 +2,7 @@ summary = "Build this tree's scivol._scivolapi, then pytest ARGS with one xdist 
 source = { kind = "git" }
 # The user: full suites and big runs go to the mini (2026-10-30, 2026-11-02); the laptop only while the mini is away.
 avoid = ["mbp"]
-cost = { cores = { min = 2, max = 8 }, mem_gb = { base = 1.5, per_core = 1.0 }, minutes = 3 }
+cost = { cores = { min = 2, max = 8 }, mem_gb = { base = 4.5, per_core = 0.4 }, minutes = 3 }
 
 [args.args]
 type = "args"
