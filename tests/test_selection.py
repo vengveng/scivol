@@ -207,7 +207,7 @@ def test_gjr_dgp_keeps_real_leverage():
     result = search(constant_variance=False).fit(y)
     assert result.status == 'selected', result.summary()
     assert isinstance(result.selected_model.get_component(Role.VOLATILITY), GJRGARCH), result.summary()
-    assert result.selected.params[2] > 0
+    assert result.selected.params.iloc[2] > 0
     assert any(t['restriction'] == 'volatility.symmetry' and t['decision'] == 'rejected' for t in result.tests)
 
 

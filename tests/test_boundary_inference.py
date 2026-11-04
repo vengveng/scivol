@@ -31,11 +31,11 @@ def test_a_coordinate_face_gives_the_child_models_errors(garch_data):
     parent = GARCH(2, 1).fit(garch_data, boundary="restricted")
     child = GARCH(1, 1).fit(garch_data)
     assert parent.fit_info.inference_status == "restricted"
-    assert parent.params[2] == 0.0 and np.isnan(parent.std_errors[2])
+    assert parent.params.iloc[2] == 0.0 and np.isnan(parent.std_errors.iloc[2])
     keep = [0, 1, 3]
-    np.testing.assert_allclose(parent.params[keep], child.params, rtol=1e-5)
-    np.testing.assert_allclose(parent.std_errors[keep], child.std_errors, rtol=1e-4)
-    np.testing.assert_allclose(parent.std_errors_robust[keep], child.std_errors_robust, rtol=1e-4)
+    np.testing.assert_allclose(parent.params.iloc[keep], child.params, rtol=1e-5)
+    np.testing.assert_allclose(parent.std_errors.iloc[keep], child.std_errors, rtol=1e-4)
+    np.testing.assert_allclose(parent.std_errors_robust.iloc[keep], child.std_errors_robust, rtol=1e-4)
     assert any("as equalities" in w for w in parent.warnings)
     assert not any("standard errors" in w and "not" in w for w in parent.warnings)
 
@@ -44,7 +44,7 @@ def test_the_integrated_face_leaves_no_variance_in_the_persistence(shifted):
     result = GARCH(1, 1, stationarity="integrated").fit(shifted, boundary="restricted")
     assert result.fit_info.binding == ("persistence <= 1",)
     assert result.persistence == pytest.approx(1.0, abs=1e-12)
-    c = result.cov_matrix
+    c = result.cov_matrix.to_numpy()
     assert c[1, 1] + 2 * c[1, 2] + c[2, 2] == pytest.approx(0.0, abs=1e-12 * c[2, 2])
     assert np.all(np.isfinite(result.std_errors)) and np.all(result.std_errors > 0)
 
@@ -61,7 +61,7 @@ def test_qmle_reports_the_restricted_sandwich(garch_data):
     assert result.fit_info.inference_status == "restricted"
     np.testing.assert_array_equal(result.std_errors, result.std_errors_robust)
     child = GARCH(1, 1).fit(garch_data, method="qmle")
-    np.testing.assert_allclose(result.std_errors[[0, 1, 3]], child.std_errors, rtol=1e-4)
+    np.testing.assert_allclose(result.std_errors.iloc[[0, 1, 3]], child.std_errors, rtol=1e-4)
 
 
 def test_a_staged_qmle_fit_keeps_its_boundary_errors_withheld(garch_data):

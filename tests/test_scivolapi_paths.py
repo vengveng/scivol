@@ -241,7 +241,7 @@ def test_a_fitted_result_filters_and_forecasts_natively(data):
     out = api.forecast(model, np.array(result.params), y, 5, np.ascontiguousarray(x), future)
     np.testing.assert_array_equal(fc.mean, out["mean"])
     np.testing.assert_array_equal(fc.residual_variance, out["residual_variance"])
-    assert fc.distribution == "StudentT" and fc.shapes["eta"] == pytest.approx(result.params[-1])
+    assert fc.distribution == "StudentT" and fc.shapes["eta"] == pytest.approx(result.params.iloc[-1])
     assert fc.quantile(0.05).shape == (5,)
     with pytest.raises(ValueError, match="exogenous"):
         result.forecast(5)

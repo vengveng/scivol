@@ -512,7 +512,7 @@ def test_gjr_fit_reaches_the_production_optimum(gjr_data, density):
 
 def test_gjr_fit_recovers_the_leverage_effect(gjr_data):
     result = (GJRGARCH(1, 1) + StudentT()).fit(gjr_data)
-    gamma, se = result.params[2], result.std_errors[2]
+    gamma, se = result.params.iloc[2], result.std_errors.iloc[2]
     assert abs(gamma - 0.10) < 4.0 * se
 
 
@@ -538,10 +538,10 @@ def test_egarch_fit_reaches_the_production_optimum(egarch_data, density):
 def test_egarch_fit_is_exactly_equivariant_to_data_scale(egarch_data, q):
     base = (EGARCH(1, q) + StudentT()).fit(egarch_data)
     scaled = (EGARCH(1, q) + StudentT()).fit(10.0 * egarch_data)
-    persistence = 1.0 - sum(base.params[3:3 + q])
+    persistence = 1.0 - sum(base.params.iloc[3:3 + q])
     assert base.success and scaled.success
-    assert scaled.params[0] == pytest.approx(base.params[0] + 2.0 * np.log(10.0) * persistence, abs=1e-7)
-    assert scaled.params[1:] == pytest.approx(base.params[1:], rel=1e-6)
+    assert scaled.params.iloc[0] == pytest.approx(base.params.iloc[0] + 2.0 * np.log(10.0) * persistence, abs=1e-7)
+    assert scaled.params.iloc[1:].to_numpy() == pytest.approx(base.params.iloc[1:].to_numpy(), rel=1e-6)
     assert scaled.log_likelihood == pytest.approx(base.log_likelihood - egarch_data.size * np.log(10.0), abs=1e-6)
 
 
@@ -583,9 +583,9 @@ def test_aparch_fit_reaches_the_production_optimum(aparch_data, density):
 def test_aparch_fit_is_exactly_equivariant_to_data_scale(aparch_data):
     base = (APARCH(1, 1) + StudentT()).fit(aparch_data)
     scaled = (APARCH(1, 1) + StudentT()).fit(10.0 * aparch_data)
-    delta = base.params[4]
-    assert scaled.params[0] == pytest.approx(base.params[0] * 10.0 ** delta, rel=1e-6)
-    assert scaled.params[1:] == pytest.approx(base.params[1:], rel=1e-6)
+    delta = base.params.iloc[4]
+    assert scaled.params.iloc[0] == pytest.approx(base.params.iloc[0] * 10.0 ** delta, rel=1e-6)
+    assert scaled.params.iloc[1:].to_numpy() == pytest.approx(base.params.iloc[1:].to_numpy(), rel=1e-6)
     assert scaled.log_likelihood == pytest.approx(base.log_likelihood - aparch_data.size * np.log(10.0), abs=1e-6)
 
 

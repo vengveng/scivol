@@ -3,11 +3,14 @@
 a native density; the native model defines its shapes and their domain."""
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from .. import _scivolapi as api
 from ..roles import Role
 from .base import Component
+
+if TYPE_CHECKING:
+    from .._distribution import Distribution
 
 
 class DensityComponent(Component):
@@ -21,6 +24,13 @@ class DensityComponent(Component):
     def declare(self, native: api.ModelSpec, exog: int) -> bool:
         native.density = getattr(api.DensityKind, self.kind)
         return True
+
+    def distribution(self, **shapes: float) -> "Distribution":
+        """The standardized distribution at the given shapes, by name, as in
+        `SkewT().distribution(eta=0.15, lam=-0.1)`."""
+        from .._distribution import Distribution
+
+        return Distribution.of(self.kind, type(self).__name__, shapes)
 
 
 class Normal(DensityComponent):

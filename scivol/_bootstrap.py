@@ -106,7 +106,7 @@ def law_distance(a: NDArray[np.float64], b: NDArray[np.float64]) -> float:
 def bootstrap(result: "EstimationResult", replications: int = 499, *, m: Optional[int] = None, seed: Any = 0,
               n_jobs: Optional[int] = None) -> BootstrapResult:
     model, y, x = result._native()
-    theta = np.ascontiguousarray(result.params, dtype=np.float64)
+    theta = result._theta
     n = int(result.fit_info.likelihood_n_obs or result.n_obs)
     if replications < 2:
         raise ValueError("replications must be at least 2")
@@ -131,7 +131,7 @@ def bootstrap(result: "EstimationResult", replications: int = 499, *, m: Optiona
             series = api.simulate(model, theta, y, np.ascontiguousarray(z[:, :size]), x, future)["y"][0]
             try:
                 refit = result.spec.fit(series, x=future, method=method, initial_params=theta)
-                estimates.append(np.asarray(refit.params, dtype=np.float64) if refit.success else None)
+                estimates.append(refit._theta if refit.success else None)
             except Exception:  # noqa: BLE001 - a failed refit is counted, not raised
                 estimates.append(None)
         return estimates

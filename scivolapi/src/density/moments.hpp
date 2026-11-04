@@ -33,6 +33,9 @@ struct MomentResult {
 [[nodiscard]] bool absolute_moment(DensityKind, const double* shape, int order, MomentResult&) noexcept;
 [[nodiscard]] bool power_moment(DensityKind, const double* shape, double gamma, double delta,
                                 int order, MomentResult&) noexcept;
+// E[z^k] of the standardized law, k >= 1: +infinity for an even moment that
+// diverges, NaN for an odd one that does not exist; false on numerical failure.
+[[nodiscard]] bool standardized_moment(DensityKind, const double* shape, unsigned k, double& value) noexcept;
 
 namespace moment_detail {
 

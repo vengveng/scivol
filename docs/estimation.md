@@ -118,7 +118,7 @@ print(result.warnings)
 
 ```text
 True at_excluded_boundary ('persistence < 1',)
-('the estimate is at the excluded boundary of the declared domain (persistence < 1); standard errors are not reported', 'persistence is very close to one')
+('the estimate is at the excluded boundary of the declared domain (persistence < 1); standard errors are not reported; to estimate on it, declare stationarity="integrated" (persistence <= 1) and fit with boundary="restricted"', 'persistence is very close to one')
 ```
 
 The fit succeeds, `fit_info.excluded_boundary` names the condition the estimate reaches, and standard errors are not reported, since the estimate is not an interior point of the model. If persistence one belongs in your model, declare it on the volatility component: `GARCH(1, 1, stationarity="integrated")` fits the same likelihood with persistence one inside the domain and reports this estimate with status `at_boundary`. `stationarity="none"` drops the condition altogether. [Volatility models](models/volatility.md#declaring-stationarity) describes the three declarations. Along the persistence-one face the likelihood can have several separate maxima, and the paths can end at different ones: on daily stock returns, GJR-GARCH fits with a skewed t on that face differed by up to 140 in log-likelihood between the automatic and theta paths, whether or not the face was declared. Refitting with `coordinates="theta"` and comparing the likelihoods is a cheap check.

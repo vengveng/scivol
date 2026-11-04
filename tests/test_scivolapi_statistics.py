@@ -247,7 +247,7 @@ import numpy as np
 from scivol import GARCH, Normal
 from scivol._scivolapi import diebold_mariano
 result = (GARCH() + Normal()).fit(np.random.default_rng(53).normal(size=350))
-result.diagnostic_tests(print_results=False)
+str(result.diagnostics())
 result.summary()
 assert np.isfinite(result.aic)
 diebold_mariano(np.arange(100, dtype=float), np.zeros(100))
@@ -255,17 +255,18 @@ diebold_mariano(np.arange(100, dtype=float), np.zeros(100))
     subprocess.run([sys.executable, '-c', script], check=True, capture_output=True, text=True)
 
 
-def test_result_diagnostics_preserve_public_keys_and_add_adequacy_tests():
+def test_result_diagnostics_cover_residuals_and_pits():
     y = np.random.default_rng(39).normal(size=600)
     result = (ARMA(1, 0) + GARCH() + Normal()).fit(y)
-    tests = result.diagnostic_tests(lags=8, print_results=False)
-    assert tests['n_obs'] == len(y)-1
-    assert tests['df_adjustment'] == 1
-    assert tests['residual_ljung_box']['df'] == 7
-    assert tests['ljung_box'][1]['df'] == 8
-    assert {'dgt', 'ljung_box', 'pit', 'li_mak', 'berkowitz', 'sign_bias'} <= tests.keys()
-    assert tests['dgt']['df'] == 39
-    assert 'not calibrated' in tests['pit_calibration']
+    tests = result.diagnostics(lags=8)
+    assert tests.n_obs == len(y)-1
+    assert tests.residual_ljung_box.df == 7  # lags less the AR parameter
+    assert tests.pit_ljung_box[1].df == 8
+    assert tests.dgt.df == 39 and tests.sign_bias.df == 3
+    assert len(tests.pit) == len(y)-1 and len(tests.to_frame()) == 10
+    np.testing.assert_allclose(tests.pit, result.pit, rtol=1e-12)
+    assert 'not calibrated' in tests.pit_calibration
+    assert 'Li-Mak(8)' in str(tests)
 
 
 def mcs_reference(losses, uniforms, length, method, alpha):
@@ -521,7 +522,7 @@ def test_rejected_in_sample_pit_reference_never_blocks_adequacy():
     checks = {c['name']: c for c in result.candidates[0].diagnostics['checks']}
     assert not {'berkowitz', 'dgt'} & checks.keys()
     assert all(not c['holm_reject'] for c in checks.values())
-    assert result.selected.diagnostic_tests(print_results=False)['dgt']['p_value'] < .0001
+    assert result.selected.diagnostics().dgt.p_value < .0001
 
 
 def test_adequacy_preserves_infeasible_parameter_reason():

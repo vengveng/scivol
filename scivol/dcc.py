@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
+import pandas as pd
 from numpy.typing import NDArray
 
 from . import _scivolapi as api
@@ -316,46 +317,6 @@ class RollingDCCResult(Sequence[RollingDCCWindow]):
         return len(self.windows)
 
 
-@dataclass
-class DCCParams:
-    """Container for DCC parameters."""
-
-    a: NDArray[np.float64]
-    b: NDArray[np.float64]
-    eta: Optional[float] = None
-
-    @property
-    def persistence(self) -> float:
-        return float(np.sum(self.a) + np.sum(self.b))
-
-    def __repr__(self) -> str:
-        a_str = ", ".join(f"{x:.6f}" for x in self.a)
-        b_str = ", ".join(f"{x:.6f}" for x in self.b)
-        eta_str = "" if self.eta is None else f", eta={self.eta:.6f}"
-        return (
-            f"DCCParams(a=[{a_str}], b=[{b_str}]"
-            f"{eta_str}, persistence={self.persistence:.6f})"
-        )
-
-
-@dataclass
-class CCCParams:
-    """Container for constant conditional correlation parameters."""
-
-    corr: NDArray[np.float64]
-
-    @property
-    def avg_pairwise_corr(self) -> float:
-        if self.corr.shape[0] <= 1:
-            return 1.0
-        upper = self.corr[np.triu_indices_from(self.corr, k=1)]
-        return float(np.mean(upper))
-
-    def __repr__(self) -> str:
-        n_series = self.corr.shape[0]
-        return f"CCCParams(corr=<{n_series}x{n_series} matrix>, avg_pairwise_corr={self.avg_pairwise_corr:.6f})"
-
-
 def correlation_model(p: int, q: int, distribution: str) -> "api.CorrelationModel":
     spec = api.CorrelationSpec()
     spec.p, spec.q = int(p), int(q)
@@ -363,8 +324,13 @@ def correlation_model(p: int, q: int, distribution: str) -> "api.CorrelationMode
     return api.CorrelationModel(spec)
 
 
+def _densities(marginals: Optional[Sequence[Any]]) -> List["api.InnovationDensity"]:
+    """Marginal densities as native descriptions; a Distribution passes its own."""
+    return [getattr(m, "_law", m) for m in (marginals or [])]
+
+
 def _marginal_density(result: "EstimationResult") -> "api.InnovationDensity":
-    return result._native()[0].innovation_density(np.ascontiguousarray(result.params, dtype=np.float64))
+    return result._native()[0].innovation_density(result._theta)
 
 
 class _CorrelationResultMixin:
@@ -463,7 +429,7 @@ class _CorrelationResultMixin:
             z = np.ascontiguousarray(correlation["innovation"][:, :, i])
             future_x = None if future[i] is None else np.ascontiguousarray(
                 np.asarray(future[i], dtype=np.float64).reshape(horizon, -1))
-            out = api.simulate(marginal._native_model, np.ascontiguousarray(marginal.params), marginal._native_y, z,
+            out = api.simulate(marginal._native_model, marginal._theta, marginal._native_y, z,
                                marginal._native_x, future_x)
             for key in columns:
                 columns[key][:, :, i] = out[key]
@@ -552,9 +518,9 @@ class _CorrelationResultMixin:
 
 @dataclass
 class CCCResult(_CorrelationResultMixin):
-    """Result of a CCC estimation: R = Qbar normalized to a correlation matrix."""
+    """Result of a CCC estimation: R = Qbar normalized to a correlation matrix
+    (`unconditional_corr`). CCC has no estimated correlation parameters."""
 
-    params: CCCParams
     nll: float
     T: int
     N: int
@@ -579,6 +545,10 @@ class CCCResult(_CorrelationResultMixin):
         return np.zeros(0, dtype=np.float64)
 
     @property
+    def params(self) -> pd.Series:
+        return pd.Series(np.zeros(0), index=pd.Index([], name="parameter", dtype=object), name="params")
+
+    @property
     def log_likelihood(self) -> float:
         return -self.nll * self.T
 
@@ -588,15 +558,13 @@ class CCCResult(_CorrelationResultMixin):
 
     @property
     def bic(self) -> float:
-        return api.information_criteria(self.log_likelihood, 0, self.T)[0]
+        return api.information_criteria(self.log_likelihood, 0, self.T)[1]
 
     @property
-    def std_errors(self) -> NDArray[np.float64]:
-        return np.empty(0, dtype=np.float64)
-
-    @property
-    def std_errors_robust(self) -> NDArray[np.float64]:
-        return np.empty(0, dtype=np.float64)
+    def average_correlation(self) -> float:
+        """The mean of the off-diagonal entries of the correlation matrix."""
+        corr = _normalize_correlation(self.Qbar)
+        return 1.0 if corr.shape[0] <= 1 else float(np.mean(corr[np.triu_indices_from(corr, k=1)]))
 
     def _correlation(self) -> tuple["api.CorrelationModel", NDArray[np.float64]]:
         # DCC(1,1) at a = b = 0: Q_t = Qbar for every row.
@@ -620,16 +588,17 @@ class CCCResult(_CorrelationResultMixin):
         )
         lines.append(f"  Marginals stored: {'Yes' if self.univariate_results is not None else 'No'}")
         lines.append("-" * 72)
-        lines.append(f"  Average pairwise correlation: {self.params.avg_pairwise_corr:.6f}")
+        lines.append(f"  Average pairwise correlation: {self.average_correlation:.6f}")
         lines.append("=" * 72)
         return Summary("\n".join(lines))
 
 
 @dataclass
 class DCCResult(_CorrelationResultMixin):
-    """Result of a DCC estimation."""
+    """Result of a DCC estimation. `params`, the standard errors and the
+    covariance matrices are indexed by the correlation model's parameter names
+    (a[1], b[1] and, for the Student-t copula, eta)."""
 
-    params: DCCParams
     theta: NDArray[np.float64]
     nll: float
     p: int
@@ -643,10 +612,10 @@ class DCCResult(_CorrelationResultMixin):
     warm_started: bool = False
     maxiter: int = 500
     distribution: str = "gaussian"
-    hessian: Optional[NDArray[np.float64]] = None
-    opg: Optional[NDArray[np.float64]] = None
-    cov_mle: Optional[NDArray[np.float64]] = None
-    cov_robust: Optional[NDArray[np.float64]] = None
+    _hessian: Optional[NDArray[np.float64]] = field(default=None, repr=False)
+    _opg: Optional[NDArray[np.float64]] = field(default=None, repr=False)
+    _cov_matrix: Optional[NDArray[np.float64]] = field(default=None, repr=False)
+    _cov_robust: Optional[NDArray[np.float64]] = field(default=None, repr=False)
     success: bool = False
     inference: str = ""
     kkt_residual: float = float("nan")
@@ -678,28 +647,71 @@ class DCCResult(_CorrelationResultMixin):
         return api.information_criteria(self.log_likelihood, self.K, self.T)[1]
 
     @property
-    def std_errors(self) -> NDArray[np.float64]:
-        if self.cov_mle is not None:
-            return np.sqrt(np.diag(self.cov_mle))
-        return np.full(self.K, np.nan)
+    def param_names(self) -> tuple[str, ...]:
+        return tuple(correlation_model(self.p, self.q, self.distribution).parameter_names)
+
+    def _names(self) -> pd.Index:
+        return pd.Index(self.param_names, name="parameter")
+
+    def _matrix(self, values: Optional[NDArray[np.float64]]) -> Optional[pd.DataFrame]:
+        return None if values is None else pd.DataFrame(values, index=self._names(), columns=self._names())
 
     @property
-    def std_errors_robust(self) -> NDArray[np.float64]:
-        if self.cov_robust is not None:
-            return np.sqrt(np.diag(self.cov_robust))
-        return np.full(self.K, np.nan)
+    def params(self) -> pd.Series:
+        return pd.Series(self.theta, index=self._names(), name="params")
+
+    @property
+    def persistence(self) -> float:
+        """The sum of the a and b coefficients."""
+        return float(np.sum(self.theta[:self.p + self.q]))
+
+    @property
+    def shapes(self) -> dict[str, float]:
+        """The Student-t copula's eta and nu = 1/eta; empty for the Gaussian copula."""
+        model, theta = self._correlation()
+        law = model.innovation_density(theta)
+        return {**law.named, **law.derived}
+
+    @property
+    def hessian(self) -> Optional[pd.DataFrame]:
+        """Hessian of the correlation stage's negative log-likelihood."""
+        return self._matrix(self._hessian)
+
+    @property
+    def opg(self) -> Optional[pd.DataFrame]:
+        return self._matrix(self._opg)
+
+    @property
+    def cov_matrix(self) -> Optional[pd.DataFrame]:
+        return self._matrix(self._cov_matrix)
+
+    @property
+    def cov_robust(self) -> Optional[pd.DataFrame]:
+        return self._matrix(self._cov_robust)
+
+    def _errors(self, covariance: Optional[NDArray[np.float64]]) -> NDArray[np.float64]:
+        return np.sqrt(np.diag(covariance)) if covariance is not None else np.full(self.K, np.nan)
+
+    @property
+    def std_errors(self) -> pd.Series:
+        """Standard errors of the correlation stage (NaN where its inference is not available)."""
+        return pd.Series(self._errors(self._cov_matrix), index=self._names(), name="std_errors")
+
+    @property
+    def std_errors_robust(self) -> pd.Series:
+        return pd.Series(self._errors(self._cov_robust), index=self._names(), name="std_errors_robust")
 
     def _correlation(self) -> tuple["api.CorrelationModel", NDArray[np.float64]]:
         return correlation_model(self.p, self.q, self.distribution), np.ascontiguousarray(self.theta)
 
     def _copula_eta(self) -> Optional[float]:
-        return self.params.eta
+        return self.shapes.get("eta")
 
     def summary(self) -> Summary:
         model, theta = self._correlation()
         names = model.parameter_names
-        se = self.std_errors
-        se_r = self.std_errors_robust
+        se = self._errors(self._cov_matrix)
+        se_r = self._errors(self._cov_robust)
 
         lines = []
         lines.append("=" * 72)
@@ -729,7 +741,7 @@ class DCCResult(_CorrelationResultMixin):
             )
         for name, value in model.innovation_density(theta).derived.items():
             lines.append(f"  {name}: {value:.6g}")
-        lines.append(f"\n  Persistence: {self.params.persistence:.6f}  Inference: {self.inference}")
+        lines.append(f"\n  Persistence: {self.persistence:.6f}  Inference: {self.inference}")
         lines.append("=" * 72)
         return Summary("\n".join(lines))
 
@@ -785,15 +797,15 @@ class CCC:
         t_count, n_series = eps.shape
         started = time.perf_counter()
         target = None if Qbar is None else np.ascontiguousarray(Qbar, dtype=np.float64)
-        jet = api.CorrelationJet(correlation_model(1, 1, "gaussian"), eps, target, list(marginals or []))
+        jet = api.CorrelationJet(correlation_model(1, 1, "gaussian"), eps, target, _densities(marginals))
         out = jet.theta(np.zeros(2), api.VALUE)
         if out["status"] != "ok":
             raise ValueError(f"The constant correlation likelihood is not available ({out['status']}).")
         qbar = np.asarray(jet.target(np.zeros(2)))
         return CCCResult(
-            params=CCCParams(corr=_normalize_correlation(qbar)), nll=float(out["value"]) / t_count, T=t_count,
+            nll=float(out["value"]) / t_count, T=t_count,
             N=n_series, Qbar=qbar, converged=True, nit=0, time_elapsed=time.perf_counter() - started, _eps=eps,
-            _marginals=list(marginals or []),
+            _marginals=_densities(marginals),
         )
 
     def __repr__(self) -> str:
@@ -890,16 +902,14 @@ class DCC:
         set_starts(options, starts, model, explicit=theta0 is not None)
         target = None if Qbar is None else np.ascontiguousarray(Qbar, dtype=np.float64)
         started = time.perf_counter()
-        r = api.fit_correlation(model, eps, options, target, list(marginals or []))
+        r = api.fit_correlation(model, eps, options, target, _densities(marginals))
         elapsed = time.perf_counter() - started
         if not r.estimate_available:
             from ._fit import FitError, failure_message
             raise FitError(failure_message(r.warnings))
         theta = np.array(r.theta)
-        jet = api.CorrelationJet(model, eps, target, list(marginals or []))
+        jet = api.CorrelationJet(model, eps, target, _densities(marginals))
         return DCCResult(
-            params=DCCParams(a=theta[:p].copy(), b=theta[p:p + q].copy(),
-                             eta=model.innovation_density(theta).named.get("eta")),
             theta=theta,
             nll=-r.log_likelihood / t_count,
             p=p,
@@ -913,10 +923,10 @@ class DCC:
             warm_started=theta0 is not None,
             maxiter=maxiter,
             distribution=self.distribution,
-            hessian=np.array(r.hessian) / t_count if r.hessian.size else None,  # of the per-row average
-            opg=np.array(r.opg) / t_count if r.opg.size else None,
-            cov_mle=np.array(r.covariance) if r.covariance.size else None,
-            cov_robust=np.array(r.robust_covariance) if r.robust_covariance.size else None,
+            _hessian=np.array(r.hessian) if r.hessian.size else None,
+            _opg=np.array(r.opg) if r.opg.size else None,
+            _cov_matrix=np.array(r.covariance) if r.covariance.size else None,
+            _cov_robust=np.array(r.robust_covariance) if r.robust_covariance.size else None,
             success=bool(r.success),
             inference=r.inference.name,
             kkt_residual=float(r.kkt_residual),
@@ -927,7 +937,7 @@ class DCC:
                               log_likelihood=s.log_likelihood, success=s.success, selected=s.selected)
                          for s in r.starts),
             _eps=eps,
-            _marginals=list(marginals or []),
+            _marginals=_densities(marginals),
         )
 
     def fit_rolling(

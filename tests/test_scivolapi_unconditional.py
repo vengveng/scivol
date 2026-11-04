@@ -131,7 +131,7 @@ def test_egarch_negative_student_shocks_have_finite_variance():
 def test_python_result_and_summary_use_model_moments(spec):
     result = spec.fit(np.random.default_rng(935).normal(size=350))
     model, _, _ = result._native()
-    expected = model.unconditional_variance(result.params)
+    expected = model.unconditional_variance(result._theta)
     assert result.unconditional_variance == pytest.approx(expected, nan_ok=True)
     output = result.summary()
     assert "Unconditional Variance:" in output

@@ -838,6 +838,18 @@ ExpectationStatus distribution(DensityKind kind, const double* shape, double z,
     lower = l; upper = r; return Status::ok;
 }
 
+ExpectationStatus log_density(DensityKind kind, const double* shape, const double* z, std::size_t n,
+                              double* out) noexcept
+{
+    Point p;
+    if ((n && (!z || !out)) || !prepare(kind,shape,p)) return Status::numerical_failure;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (std::isnan(z[i])) return Status::numerical_failure;
+        out[i] = std::isinf(z[i]) ? -std::numeric_limits<double>::infinity() : log_pdf(p,z[i]);
+    }
+    return Status::ok;
+}
+
 ExpectationStatus quantile(DensityKind kind, const double* shape, double u, double& z) noexcept
 {
     Point p; double result;

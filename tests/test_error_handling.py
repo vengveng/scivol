@@ -173,7 +173,7 @@ class TestBoundaryParameters:
         result = spec.fit(sample_data)
         
         # The reciprocal tail stays in its finite-variance domain.
-        eta = result.params[-1]
+        eta = result.params.iloc[-1]
         assert 0 <= eta < 0.5
     
     def test_skewt_lambda_bounded(self, sample_data):
@@ -182,7 +182,7 @@ class TestBoundaryParameters:
         result = spec.fit(sample_data)
         
         # lambda should be in (-1, 1)
-        lam = result.params[-1]
+        lam = result.params.iloc[-1]
         assert -1.0 < lam < 1.0
 
 

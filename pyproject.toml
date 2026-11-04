@@ -13,6 +13,7 @@ authors         = [{ name = "Ivan Khalin" }]
 requires-python = ">=3.10"
 dependencies    = [
     "numpy>=1.22",
+    "pandas>=1.5",
     "tqdm>=4.0",
 ]
 keywords = ["volatility", "garch", "gjr-garch", "econometrics", "time-series", "finance"]

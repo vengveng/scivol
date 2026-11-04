@@ -252,6 +252,21 @@ def spec_from_native(definition: api.ModelSpec):
     return spec
 
 
+def _with_hints(native_result: api.FitResult) -> list[str]:
+    """The native warnings, with the options that give standard errors at a boundary."""
+    out = []
+    for warning in native_result.warnings:
+        if warning.startswith("the estimate is at the excluded boundary") and any(
+                c.startswith("persistence") for c in native_result.excluded_boundary):
+            warning += ("; to estimate on it, declare stationarity=\"integrated\" (persistence <= 1) and fit with "
+                        "boundary=\"restricted\"")
+        elif warning == "the estimate is on the boundary of the domain; standard errors are not reported":
+            warning += ("; fit(boundary=\"restricted\") gives those of the model restricted to the binding conditions, "
+                        "and result.bootstrap() the m-out-of-n bootstrap")
+        out.append(warning)
+    return out
+
+
 def present_fit(spec, sample: PreparedSample, native_result: api.FitResult, *,
                 maxiter: int, warm_started: bool, elapsed: float,
                 index=None, name=None) -> EstimationResult:
@@ -303,7 +318,7 @@ def present_fit(spec, sample: PreparedSample, native_result: api.FitResult, *,
         original_n_obs=original_n_obs,
         effective_n_obs=len(y),
         scale=scale_factor,
-        warnings=tuple(native_result.warnings),
+        warnings=tuple(_with_hints(native_result)),
     )
     def matrix(values: Any) -> Optional[NDArray[np.float64]]:
         return np.array(values) if values.size else None
@@ -328,6 +343,7 @@ def present_fit(spec, sample: PreparedSample, native_result: api.FitResult, *,
         name=name,
     )
     result._resid = np.array(native_result.residual)
+    result._native_fit = native_result
     result._fit_x = x_arr
     result.attach_sample(model, y, x_arr, skip)
     return result

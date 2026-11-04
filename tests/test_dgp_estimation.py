@@ -1157,9 +1157,9 @@ class TestGARCHNormal:
         true = TRUE_PARAMS["garch_normal"]
         
         # Check each parameter (with generous tolerance for finite sample)
-        omega_hat = result.params[0]
-        alpha_hat = result.params[1]
-        beta_hat = result.params[2]
+        omega_hat = result.params.iloc[0]
+        alpha_hat = result.params.iloc[1]
+        beta_hat = result.params.iloc[2]
         
         # Persistence should be well-estimated
         true_persistence = true["alpha"] + true["beta"]
@@ -1212,9 +1212,9 @@ class TestGARCHStudentT:
         true = TRUE_PARAMS["garch_studentt"]
         
         # Check persistence
-        alpha_hat = result.params[1]
-        beta_hat = result.params[2]
-        eta_hat = result.params[3]
+        alpha_hat = result.params.iloc[1]
+        beta_hat = result.params.iloc[2]
+        eta_hat = result.params.iloc[3]
         
         true_persistence = true["alpha"] + true["beta"]
         est_persistence = alpha_hat + beta_hat
@@ -1256,9 +1256,9 @@ class TestGARCHGED:
         result = spec.fit(data, coordinates="theta")
 
         true = TRUE_PARAMS["garch_ged"]
-        alpha_hat = result.params[1]
-        beta_hat = result.params[2]
-        nu_hat = result.params[3]
+        alpha_hat = result.params.iloc[1]
+        beta_hat = result.params.iloc[2]
+        nu_hat = result.params.iloc[3]
 
         true_persistence = true["alpha"] + true["beta"]
         est_persistence = alpha_hat + beta_hat
@@ -1297,10 +1297,10 @@ class TestGARCHGeneralizedHyperbolic:
 
     def test_parameter_recovery(self, result) -> None:
         true = TRUE_PARAMS["garch_gh"]
-        assert abs(result.params[1] + result.params[2] - true["alpha"] - true["beta"]) < 0.06
-        assert abs(result.params[3] - true["rho"]) < 0.15
-        assert 1.0 < result.params[4] < 6.0
-        assert -1.5 < result.params[5] < 3.0
+        assert abs(result.params.iloc[1] + result.params.iloc[2] - true["alpha"] - true["beta"]) < 0.06
+        assert abs(result.params.iloc[3] - true["rho"]) < 0.15
+        assert 1.0 < result.params.iloc[4] < 6.0
+        assert -1.5 < result.params.iloc[5] < 3.0
 
 
 class TestGARCHNormalInverseGaussian:
@@ -1331,9 +1331,9 @@ class TestGARCHNormalInverseGaussian:
 
     def test_parameter_recovery(self, result) -> None:
         true = TRUE_PARAMS["garch_nig"]
-        assert abs(result.params[1] + result.params[2] - true["alpha"] - true["beta"]) < 0.06
-        assert abs(result.params[3] - true["rho"]) < 0.15
-        assert 1.0 < result.params[4] < 6.0
+        assert abs(result.params.iloc[1] + result.params.iloc[2] - true["alpha"] - true["beta"]) < 0.06
+        assert abs(result.params.iloc[3] - true["rho"]) < 0.15
+        assert 1.0 < result.params.iloc[4] < 6.0
 
 
 class TestGARCHHyperbolic:
@@ -1362,9 +1362,9 @@ class TestGARCHHyperbolic:
 
     def test_parameter_recovery(self, result) -> None:
         true = TRUE_PARAMS["garch_hyperbolic"]
-        assert abs(result.params[1] + result.params[2] - true["alpha"] - true["beta"]) < 0.06
-        assert abs(result.params[3] - true["rho"]) < 0.15
-        assert 1.0 < result.params[4] < 6.0
+        assert abs(result.params.iloc[1] + result.params.iloc[2] - true["alpha"] - true["beta"]) < 0.06
+        assert abs(result.params.iloc[3] - true["rho"]) < 0.15
+        assert 1.0 < result.params.iloc[4] < 6.0
 
 
 class TestGARCHVarianceGamma:
@@ -1394,9 +1394,9 @@ class TestGARCHVarianceGamma:
 
     def test_parameter_recovery(self, result) -> None:
         true = TRUE_PARAMS["garch_vg"]
-        assert abs(result.params[1] + result.params[2] - true["alpha"] - true["beta"]) < 0.06
-        assert abs(result.params[3] - true["rho"]) < 0.15
-        assert abs(result.params[4] - true["lambda"]) < 1.5
+        assert abs(result.params.iloc[1] + result.params.iloc[2] - true["alpha"] - true["beta"]) < 0.06
+        assert abs(result.params.iloc[3] - true["rho"]) < 0.15
+        assert abs(result.params.iloc[4] - true["lambda"]) < 1.5
 
 
 # -----------------------------------------------------------------------------
@@ -1436,8 +1436,8 @@ class TestGARCHSkewT:
         true = TRUE_PARAMS["garch_skewt"]
         
         # Check persistence
-        alpha_hat = result.params[1]
-        beta_hat = result.params[2]
+        alpha_hat = result.params.iloc[1]
+        beta_hat = result.params.iloc[2]
         
         true_persistence = true["alpha"] + true["beta"]
         est_persistence = alpha_hat + beta_hat
@@ -1446,7 +1446,7 @@ class TestGARCHSkewT:
             f"Persistence: true={true_persistence:.4f}, est={est_persistence:.4f}"
         
         # Skewness parameter should have correct sign
-        lam_hat = result.params[4]
+        lam_hat = result.params.iloc[4]
         assert lam_hat * true["lam"] > 0 or abs(lam_hat) < 0.1, \
             f"Lambda sign mismatch: true={true['lam']:.3f}, est={lam_hat:.3f}"
 
@@ -1537,8 +1537,8 @@ class TestARMAGARCHNormal:
         true = TRUE_PARAMS["arma_garch_normal"]
         
         # Check GARCH persistence
-        alpha_hat = result.params[4]
-        beta_hat = result.params[5]
+        alpha_hat = result.params.iloc[4]
+        beta_hat = result.params.iloc[5]
         
         true_persistence = true["alpha"] + true["beta"]
         est_persistence = alpha_hat + beta_hat
@@ -1673,9 +1673,9 @@ class TestARMAGJRGARCHNormal:
 
         result = (ARMA(1, 1) + GJRGARCH(1, 1) + Normal()).fit(data)
         true = TRUE_PARAMS["arma_gjr_garch_normal"]
-        alpha_hat = result.params[4]
-        gamma_hat = result.params[5]
-        beta_hat = result.params[6]
+        alpha_hat = result.params.iloc[4]
+        gamma_hat = result.params.iloc[5]
+        beta_hat = result.params.iloc[6]
 
         true_persistence = true["alpha"] + 0.5 * true["gamma"] + true["beta"]
         est_persistence = alpha_hat + 0.5 * gamma_hat + beta_hat
@@ -1716,10 +1716,10 @@ class TestARMAGJRGARCHStudentT:
 
         result = (ARMA(1, 1) + GJRGARCH(1, 1) + StudentT()).fit(data)
         true = TRUE_PARAMS["arma_gjr_garch_studentt"]
-        alpha_hat = result.params[4]
-        gamma_hat = result.params[5]
-        beta_hat = result.params[6]
-        eta_hat = result.params[7]
+        alpha_hat = result.params.iloc[4]
+        gamma_hat = result.params.iloc[5]
+        beta_hat = result.params.iloc[6]
+        eta_hat = result.params.iloc[7]
 
         true_persistence = true["alpha"] + 0.5 * true["gamma"] + true["beta"]
         est_persistence = alpha_hat + 0.5 * gamma_hat + beta_hat
@@ -1762,10 +1762,10 @@ class TestARMAGJRGARCHSkewT:
 
         result = (ARMA(1, 1) + GJRGARCH(1, 1) + SkewT()).fit(data)
         true = TRUE_PARAMS["arma_gjr_garch_skewt"]
-        alpha_hat = result.params[4]
-        gamma_hat = result.params[5]
-        beta_hat = result.params[6]
-        lam_hat = result.params[8]
+        alpha_hat = result.params.iloc[4]
+        gamma_hat = result.params.iloc[5]
+        beta_hat = result.params.iloc[6]
+        lam_hat = result.params.iloc[8]
 
         true_persistence = true["alpha"] + 0.5 * true["gamma"] + true["beta"]
         est_persistence = alpha_hat + 0.5 * gamma_hat + beta_hat
@@ -1811,9 +1811,9 @@ class TestARMANormal:
         
         true = TRUE_PARAMS["arma_normal"]
         
-        c_hat = result.params[0]
-        phi_hat = result.params[1]
-        theta_hat = result.params[2]
+        c_hat = result.params.iloc[0]
+        phi_hat = result.params.iloc[1]
+        theta_hat = result.params.iloc[2]
         
         # Check AR coefficient (most identifiable)
         assert abs(phi_hat - true["phi"]) / abs(true["phi"]) < PARAM_RTOL, \
@@ -1859,9 +1859,9 @@ class TestGJRGARCHNormal:
         
         true = TRUE_PARAMS["gjr_garch_normal"]
         
-        alpha_hat = result.params[1]
-        gamma_hat = result.params[2]
-        beta_hat = result.params[3]
+        alpha_hat = result.params.iloc[1]
+        gamma_hat = result.params.iloc[2]
+        beta_hat = result.params.iloc[3]
         
         # Check persistence: α + 0.5·γ + β
         true_persistence = true["alpha"] + 0.5 * true["gamma"] + true["beta"]
@@ -1911,10 +1911,10 @@ class TestGJRGARCHStudentT:
         
         true = TRUE_PARAMS["gjr_garch_studentt"]
         
-        alpha_hat = result.params[1]
-        gamma_hat = result.params[2]
-        beta_hat = result.params[3]
-        eta_hat = result.params[4]
+        alpha_hat = result.params.iloc[1]
+        gamma_hat = result.params.iloc[2]
+        beta_hat = result.params.iloc[3]
+        eta_hat = result.params.iloc[4]
         
         true_persistence = true["alpha"] + 0.5 * true["gamma"] + true["beta"]
         est_persistence = alpha_hat + 0.5 * gamma_hat + beta_hat
@@ -1960,10 +1960,10 @@ class TestGJRGARCHSkewT:
         
         true = TRUE_PARAMS["gjr_garch_skewt"]
         
-        alpha_hat = result.params[1]
-        gamma_hat = result.params[2]
-        beta_hat = result.params[3]
-        lam_hat = result.params[5]
+        alpha_hat = result.params.iloc[1]
+        gamma_hat = result.params.iloc[2]
+        beta_hat = result.params.iloc[3]
+        lam_hat = result.params.iloc[5]
         
         true_persistence = true["alpha"] + 0.5 * true["gamma"] + true["beta"]
         est_persistence = alpha_hat + 0.5 * gamma_hat + beta_hat
@@ -2062,10 +2062,10 @@ class TestEGARCHSkewT:
         result = (EGARCH(1, 1) + SkewT()).fit(data)
         true = TRUE_PARAMS["egarch_skewt"]
 
-        beta_hat = result.params[3]
+        beta_hat = result.params.iloc[3]
         assert abs(beta_hat - true["beta"]) < 0.08, f"Beta recovery failed: true={true['beta']:.3f}, est={beta_hat:.3f}"
 
-        lam_hat = result.params[5]
+        lam_hat = result.params.iloc[5]
         assert lam_hat * true["lam"] > 0 or abs(lam_hat) < 0.1, \
             f"Lambda sign mismatch: true={true['lam']:.3f}, est={lam_hat:.3f}"
 
@@ -2105,11 +2105,11 @@ class TestEGARCHHigherOrder:
         spec = api.ModelSpec()
         spec.volatility = api.VolatilityKind.egarch
         spec.p, spec.q = 1, 2
-        gradient = api.Jet(api.Model(spec), data).theta(result.params, api.GRADIENT)["gradient"]
+        gradient = api.Jet(api.Model(spec), data).theta(result._theta, api.GRADIENT)["gradient"]
         assert np.max(np.abs(gradient)) / data.size < result.fit_info.kkt_tolerance
-        assert abs(result.params[1] - 0.18) < 0.10
-        assert abs(result.params[2] + 0.12) < 0.06
-        assert abs(sum(result.params[3:5]) - 0.95) < 0.06
+        assert abs(result.params.iloc[1] - 0.18) < 0.10
+        assert abs(result.params.iloc[2] + 0.12) < 0.06
+        assert abs(sum(result.params.iloc[3:5]) - 0.95) < 0.06
 
     @pytest.fixture
     def data_21_normal(self) -> NDArray[np.float64]:
@@ -2203,11 +2203,11 @@ class TestARMAEGARCHNormal:
         result = (ARMA(1, 1) + EGARCH(1, 1) + Normal()).fit(data)
         true = TRUE_PARAMS["arma_egarch_normal"]
 
-        phi_hat = result.params[1]
-        theta_hat = result.params[2]
-        alpha_hat = result.params[4]
-        gamma_hat = result.params[5]
-        beta_hat = result.params[6]
+        phi_hat = result.params.iloc[1]
+        theta_hat = result.params.iloc[2]
+        alpha_hat = result.params.iloc[4]
+        gamma_hat = result.params.iloc[5]
+        beta_hat = result.params.iloc[6]
 
         assert abs(phi_hat - true["phi"]) < 0.12
         assert abs(theta_hat - true["theta"]) < 0.12
@@ -2403,8 +2403,8 @@ class TestARXHARXEGARCH:
         result = spec.fit(data, x=x, coordinates="theta")
 
         assert result.success
-        np.testing.assert_allclose(result.params[:3], params[:3], atol=0.16, rtol=0.0)
-        assert result.params[6] == pytest.approx(params[6], abs=0.10)
+        np.testing.assert_allclose(result.params.iloc[:3], params[:3], atol=0.16, rtol=0.0)
+        assert result.params.iloc[6] == pytest.approx(params[6], abs=0.10)
 
     def test_arx_egarch_studentt_estimation_runs(self) -> None:
         from scivol import ARX, EGARCH, StudentT
@@ -2643,11 +2643,11 @@ class TestDCCGARCH:
         """Univariate GARCH parameters should be close to truth."""
         for i, r in enumerate(dcc_result.univariate_results):
             omega_true, alpha_true, beta_true = DCC_GARCH_TRUE["garch"][i]
-            np.testing.assert_allclose(r.params[0], omega_true, rtol=0.40,
+            np.testing.assert_allclose(r.params.iloc[0], omega_true, rtol=0.40,
                                        err_msg=f"omega mismatch, series {i}")
-            np.testing.assert_allclose(r.params[1], alpha_true, rtol=0.25,
+            np.testing.assert_allclose(r.params.iloc[1], alpha_true, rtol=0.25,
                                        err_msg=f"alpha mismatch, series {i}")
-            np.testing.assert_allclose(r.params[2], beta_true, rtol=0.05,
+            np.testing.assert_allclose(r.params.iloc[2], beta_true, rtol=0.05,
                                        err_msg=f"beta mismatch, series {i}")
 
     # -- Step 2: DCC recovery --
@@ -2660,8 +2660,8 @@ class TestDCCGARCH:
         """DCC parameters should be close to truth."""
         a_true = DCC_GARCH_TRUE["dcc_a"]
         b_true = DCC_GARCH_TRUE["dcc_b"]
-        a_hat = dcc_result.params.a[0]
-        b_hat = dcc_result.params.b[0]
+        a_hat = dcc_result.params["a[1]"]
+        b_hat = dcc_result.params["b[1]"]
         np.testing.assert_allclose(a_hat, a_true, rtol=0.30,
                                    err_msg=f"DCC a: {a_hat:.5f} vs {a_true}")
         np.testing.assert_allclose(b_hat, b_true, rtol=0.05,
@@ -2670,7 +2670,7 @@ class TestDCCGARCH:
     def test_dcc_persistence(self, dcc_result) -> None:
         """Persistence should be close to truth and < 1."""
         pers_true = DCC_GARCH_TRUE["dcc_a"] + DCC_GARCH_TRUE["dcc_b"]
-        pers_hat = dcc_result.params.persistence
+        pers_hat = dcc_result.persistence
         assert 0 < pers_hat < 1
         np.testing.assert_allclose(pers_hat, pers_true, atol=0.03)
 
@@ -2752,7 +2752,7 @@ class TestDCCStudentT:
         np.testing.assert_allclose(
             fitted.theta[:2], [truth["a"], truth["b"]], rtol=0.20, atol=0.015
         )
-        assert 1/14.0 < fitted.params.eta < 1/4.0
+        assert 1/14.0 < fitted.shapes["eta"] < 1/4.0
 
 
 # -----------------------------------------------------------------------------
@@ -2814,8 +2814,8 @@ def test_standalone_mean_tensor_recovery(family, density):
     spec = mean + densities[density]()
     result = spec.fit(data, x=x)
     assert result.success, result.convergence_message
-    np.testing.assert_allclose(result.params[:4], coefficients, atol=0.12, rtol=0)
-    assert abs(result.params[4] - 1.2) < 0.25  # sigma2
+    np.testing.assert_allclose(result.params.iloc[:4], coefficients, atol=0.12, rtol=0)
+    assert abs(result.params.iloc[4] - 1.2) < 0.25  # sigma2
     truth = np.r_[coefficients, 1.2, shape]
     assert result.log_likelihood >= spec.loglikelihood(data, truth, x=x) - 1e-6
 
@@ -2846,8 +2846,8 @@ def test_aparch_zero_beta_start_has_an_interior_mle():
     data = (GARCH()+Normal()).simulate(3000, [.1, .15, .7], seed=101).data
     fitted = (APARCH(1, 0)+Normal()).fit(data)
     assert fitted.success, fitted.warnings
-    assert 1 < fitted.params[-1] < 5
-    assert fitted.params[0] > .1 and fitted.params[1] > .1
+    assert 1 < fitted.params.iloc[-1] < 5
+    assert fitted.params.iloc[0] > .1 and fitted.params.iloc[1] > .1
     assert fitted.log_likelihood > -3600
 
 
@@ -2860,7 +2860,7 @@ def test_automatic_path_leaves_a_degenerate_aparch_warm_start():
     fitted = model.fit(y, initial_params=theta)
     assert fitted.success, fitted.warnings
     assert fitted.log_likelihood > -4193
-    assert 1 < fitted.params[-1] < 5
+    assert 1 < fitted.params.iloc[-1] < 5
     assert fitted.n_iter <= 1000
     independent = model.fit(y, initial_params=theta, coordinates='z')
     assert all('restart' not in name for name in independent.fit_info.optimizer_phases)
@@ -2898,7 +2898,7 @@ def test_aparch_maximum_at_excluded_asymmetry_bound_is_reported():
     # maximum over the domain's closure lies on it, and the fit says so.
     y = (GJRGARCH()+Normal()).simulate(4000, [.05, 0., .2, .85], seed=0).data
     fitted = (APARCH(1, 1)+Normal()).fit(y)
-    assert abs(fitted.params[2] - 1.) <= 64*np.finfo(float).eps
+    assert abs(fitted.params.iloc[2] - 1.) <= 64*np.finfo(float).eps
     assert fitted.fit_info.inference_status == 'at_excluded_boundary'
     assert fitted.fit_info.excluded_boundary == ('gamma[1] < 1',)
     assert fitted.std_errors is None
@@ -2914,7 +2914,7 @@ def test_garch_maximum_at_the_excluded_stationarity_boundary_is_reported(coordin
     rng = np.random.default_rng(3)
     y = np.concatenate([rng.standard_normal(1000), 3*rng.standard_normal(1000)])
     fitted = (GARCH(1, 1)+Normal()).fit(y, coordinates=coordinates)
-    assert 1 - fitted.params[1] - fitted.params[2] < 1e-12
+    assert 1 - fitted.params.iloc[1] - fitted.params.iloc[2] < 1e-12
     assert fitted.success and fitted.fit_info.inference_status == 'at_excluded_boundary'
     assert fitted.fit_info.excluded_boundary == ('persistence < 1',)
     assert fitted.std_errors is None
@@ -2930,9 +2930,9 @@ def test_declared_stationarity_decides_where_the_level_shift_maximum_lies():
     y = np.concatenate([rng.standard_normal(1000), 3*rng.standard_normal(1000)])
     fits = {s: (GARCH(1, 1, s)+Normal()).fit(y) for s in ("covariance", "integrated", "none")}
     assert fits["integrated"].success and fits["integrated"].fit_info.inference_status == "at_boundary"
-    assert fits["integrated"].params[1] + fits["integrated"].params[2] == pytest.approx(1.0, abs=1e-15)
+    assert fits["integrated"].params.iloc[1] + fits["integrated"].params.iloc[2] == pytest.approx(1.0, abs=1e-15)
     assert fits["none"].success and fits["none"].fit_info.inference_status == "available"
-    assert fits["none"].params[1] + fits["none"].params[2] > 1.0
+    assert fits["none"].params.iloc[1] + fits["none"].params.iloc[2] > 1.0
     assert fits["none"].log_likelihood > fits["integrated"].log_likelihood
     assert fits["integrated"].log_likelihood == pytest.approx(fits["covariance"].log_likelihood, abs=1e-8)
 

@@ -381,15 +381,15 @@ def test_likelihood_rising_toward_an_open_bound_is_reported(coordinates):
         y[t] = np.sqrt(h) * z[t]
         h = 0.1 + 0.05 * y[t] ** 2 + 0.85 * h
     result = (GARCH(1, 1) + VarianceGamma()).fit(y, coordinates=coordinates)
-    assert result.params[-1] > 1.5 and result.params[-1] - 1.5 < 1e-6
+    assert result.params.iloc[-1] > 1.5 and result.params.iloc[-1] - 1.5 < 1e-6
     assert result.fit_info.inference_status == "at_excluded_boundary"
     assert result.fit_info.excluded_boundary == ("lambda > 1.5",) and result.std_errors is None
 
 
 def test_student_t_fit_recovers_the_tail_index(t_data):
     result = (GARCH(1, 1) + StudentT()).fit(t_data)
-    assert abs(result.params[3] - 0.2) < 4.0 * result.std_errors[3]
-    assert abs(result.params[1] - 0.08) < 4.0 * result.std_errors[1]
+    assert abs(result.params.iloc[3] - 0.2) < 4.0 * result.std_errors.iloc[3]
+    assert abs(result.params.iloc[1] - 0.08) < 4.0 * result.std_errors.iloc[1]
 
 
 @pytest.mark.parametrize("coordinates", ["automatic", "theta"])
@@ -407,7 +407,7 @@ def test_gaussian_tail_optimum_is_the_closed_eta_face(coordinates, iid):
     normal = (GJRGARCH(1, 1) + Normal()).fit(y, coordinates=coordinates)
     student = (GJRGARCH(1, 1) + StudentT()).fit(y, coordinates=coordinates)
     assert normal.success and student.success
-    assert student.params[-1] == 0.0
+    assert student.params.iloc[-1] == 0.0
     # On iid data the first automatic pass can end on the flat GARCH ridge at
     # the excluded omega = 0 endpoint; the theta restart then ends at the face.
     assert student.fit_info.solver.split("+")[-1].startswith("theta:newton")
@@ -419,13 +419,13 @@ def test_gaussian_tail_optimum_is_the_closed_eta_face(coordinates, iid):
     assert "eta=" in summary and "nu=inf" in summary
 
     skew = (GJRGARCH(1, 1) + SkewT()).fit(y, coordinates=coordinates)
-    assert skew.success and skew.params[-2] == 0.0
+    assert skew.success and skew.params.iloc[-2] == 0.0
     # Hansen's Normal limit retains lambda. Check its two-piece Normal density.
     spec = api.ModelSpec()
     spec.volatility, spec.density = api.VolatilityKind.gjr, api.DensityKind.skew_t
     model = api.Model(spec)
     out = api.Jet(model, y).theta(np.ascontiguousarray(skew.params), api.VALUE | api.PATHS)
-    lam = skew.params[-1]
+    lam = skew.params.iloc[-1]
     a = 4*lam/np.sqrt(2*np.pi)
     b = np.sqrt(1+3*lam*lam-a*a)
     standardized = y/np.sqrt(out["variance"])

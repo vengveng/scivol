@@ -309,15 +309,25 @@ class Search:
 
 
 class Auto:
-    """AR(1)+intercept x {GJR, EGARCH, APARCH}(1,1) x SkewT, plus constant variance."""
-    def __init__(self, *, max_mean_order: int = 5):
+    """AR(1)+intercept x {GJR, EGARCH, APARCH}(1,1) x SkewT, plus constant variance.
+
+    `procedure` is GeneralToSpecific(max_mean_order=max_mean_order) by
+    default; an InformationCriterion ranks the same search instead (it does
+    not widen the mean, so max_mean_order then has no effect)."""
+    def __init__(self, *, max_mean_order: int = 5, procedure=None):
         _validate_mean_cap(max_mean_order)
+        if procedure is not None and not isinstance(procedure, (GeneralToSpecific, InformationCriterion)):
+            raise TypeError("Auto's procedure must be GeneralToSpecific or InformationCriterion")
+        if isinstance(procedure, InformationCriterion) and procedure.adequacy is None:
+            raise ValueError("InformationCriterion needs adequacy=True or adequacy=False")
         self.max_mean_order = max_mean_order
+        self.procedure = procedure
 
     def fit(self, y, x=None, **options):
+        procedure = self.procedure or GeneralToSpecific(max_mean_order=self.max_mean_order)
         return Search(mean=[ARX.up_to(1)], volatility=[GJRGARCH.up_to(1, 1),
                       EGARCH.up_to(1, 1), APARCH.up_to(1, 1)], density=[SkewT()]).fit(
-                          y, x, procedure=GeneralToSpecific(max_mean_order=self.max_mean_order), **options)
+                          y, x, procedure=procedure, **options)
 
 
 def _options(values, start=None):

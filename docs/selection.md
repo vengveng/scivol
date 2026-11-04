@@ -65,7 +65,7 @@ If every starting model fails the adequacy checks, and each fails the residual L
 
 ### Automatic selection
 
-`Auto(max_mean_order=5).fit(y, x=None)` runs the general-to-specific search over a fixed set of starting models: an ARX(1) mean, with regressors if you pass `x`, combined with GJR-GARCH(1,1), EGARCH(1,1) and APARCH(1,1), each with skewed-t innovations, plus a constant-variance model. To change the starting models or the procedure, use `Search` directly.
+`Auto(max_mean_order=5, procedure=None).fit(y, x=None)` searches a fixed set of models: an ARX(1) mean, with regressors if you pass `x`, combined with GJR-GARCH(1,1), EGARCH(1,1) and APARCH(1,1), each with skewed-t innovations, plus a constant-variance model, and the models nested in them. By default it runs the general-to-specific search, which may widen the mean up to `max_mean_order` lags. `Auto(procedure=InformationCriterion("bic", adequacy=True))` ranks the same search by BIC instead; [choosing a procedure](#choosing-a-procedure) compares the two. To change the models, use `Search` directly.
 
 ## Restriction tests
 
@@ -161,21 +161,38 @@ With 500 forecasts, the bootstrap eliminates only the two Student-t models, and 
 
 When the budget runs out, `search_complete` is `False`, `frontier` lists the models not yet explored, and the best eligible model found so far is still returned. `table()` returns a pandas DataFrame, or a list of dictionaries when pandas is not installed.
 
-## How the defaults perform
+## Choosing a procedure
 
-The defaults were checked by simulation. The search covered an AR(1) mean, GJR-GARCH(1,1) and EGARCH(1,1) with a skewed t, and constant variance. Six models inside it generated 120 series each, at n = 1000 and at n = 3000. The table gives the share of series on which each procedure selected the generating model. A GARCH(0,0) recursion counts as constant variance:
+The two procedures reach a model in different ways. The general-to-specific search walks down from the largest adequate models, one tested restriction at a time, and can step outside the search by widening the mean. An information criterion fits every model in the search and ranks the adequate ones:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="images/selection-procedures-dark.svg">
+  <img alt="The general-to-specific search starts from the largest adequate models, tests one restriction at a time and stops when none is accepted; the information criterion fits every model, keeps the adequate ones and ranks them by BIC" src="images/selection-procedures-light.svg">
+</picture>
+
+Both were compared by simulation on the search of `Auto`. Eight models generated 120 series each, at n = 1000 and at n = 3000. Six lie inside the search; APARCH lies inside but is hard to tell apart from EGARCH, and AR(2) needs a mean lag beyond the search. The table gives the share of series on which each procedure selected the generating model, with a GARCH(0,0) recursion counted as constant variance:
 
 | Data-generating model | GETS, n=1000 | BIC, n=1000 | GETS, n=3000 | BIC, n=3000 |
 | --- | --- | --- | --- | --- |
 | GARCH(1,1), Normal | 90% | 94% | 99% | 98% |
-| GARCH(1,1), Student-t | 82% | 91% | 95% | 98% |
-| GJR-GARCH(1,1), skewed t | 37% | 44% | 89% | 91% |
-| EGARCH(1,1), Normal | 52% | 79% | 88% | 90% |
-| AR(1) mean, GARCH(1,1), Student-t | 68% | 72% | 98% | 98% |
-| iid Normal | 93% | 95% | 98% | 98% |
+| GARCH(1,1), Student-t | 82% | 91% | 95% | 97% |
+| GJR-GARCH(1,1), skewed t | 37% | 44% | 89% | 90% |
+| EGARCH(1,1), Normal | 52% | 78% | 88% | 89% |
+| AR(1) mean, GARCH(1,1), Student-t | 68% | 72% | 98% | 97% |
+| iid Normal | 93% | 95% | 98% | 97% |
+| AR(2) mean, GARCH(1,1), Student-t | 23% | 0% | 88% | 0% |
+| APARCH(1,1), Normal, $\delta=1.2$ | 0% | 0% | 0% | 0% |
+| Fits per series | 52–94 | 181 | 52–94 | 181 |
 
-The general-to-specific search used its defaults, and BIC ranked the whole search with adequacy checks. At n = 1000, most misses drop a small leverage effect or an AR term. Overfitting was rare for both procedures, at 2–3% of series. Restriction tests whose null held rejected in 0.5–2% of cases at the 1% level. The true model failed the adequacy checks in at most 1% of series. With all levels at 5%, the search overfitted 12% of the time and selected the true model less often at n = 3000 (82%), so the defaults stay at 1%. AIC overfitted about 40% of the time. The study's scripts are not part of the package.
+The general-to-specific search used its defaults, and BIC ranked the search with adequacy checks. The table suggests when each is the better choice:
+
+- In shorter samples, BIC finds asymmetric and heavy-tailed models more often. At n = 1000 the search's 1% restriction tests often lack the power to keep a small leverage term, an EGARCH term or a skewness parameter, and it misses the EGARCH model 47% of the time against BIC's 20%.
+- When the mean may need more lags than the search declares, the general-to-specific search is the one that finds it. BIC never leaves the declared models: on the AR(2) data it found no adequate model in 92% of the series at n = 3000, while the search widened the mean and selected the true model in 88%.
+- At n = 3000 the two agree within two points on every model inside the search, and the general-to-specific search needs a third of the fits.
+- The general-to-specific search records every test behind its choice, at known levels, which an information criterion does not provide.
+
+Neither procedure selected the APARCH model. With $\delta=1.2$ the EGARCH model comes within one or two log-likelihood points with one parameter fewer, so both chose EGARCH (about 75% of the series at n = 3000) or GJR-GARCH. Overfitting was rare for both, at most 8% of series and usually 1–3%. Restriction tests whose null held rejected in 0.6–2% of cases at the 1% level, and the true model failed the adequacy checks in at most 1% of series under the general-to-specific search and 2.5% under BIC. In an earlier run of the six models inside a smaller search, all levels at 5% made the general-to-specific search overfit 12% of the time, so the defaults stay at 1%, and AIC overfitted about 40% of the time. The study's scripts are not part of the package.
 
 ## Limitations
 
-These simulations cover models inside the search space at two sample sizes. Error rates for misspecified models, much larger searches or shorter series are not established. Some restrictions are missing from the search: fixing the APARCH power or removing its asymmetry, a skewed Normal, and the limits of the generalized hyperbolic family. ARMA order searches need a minimal, nonsingular representation and must be requested explicitly. The procedures do not cover DCC models, structural breaks, long memory or infinite-variance models, and they report no confidence intervals that account for the selection itself.
+These simulations cover eight models at two sample sizes. Error rates for misspecified models, much larger searches or shorter series are not established. Some restrictions are missing from the search: fixing the APARCH power or removing its asymmetry, a skewed Normal, and the limits of the generalized hyperbolic family. ARMA order searches need a minimal, nonsingular representation and must be requested explicitly. The procedures do not cover DCC models, structural breaks, long memory or infinite-variance models, and they report no confidence intervals that account for the selection itself.

@@ -24,7 +24,7 @@ series
 0          True -3215.201074      17              0
 1          True -3250.979106      16              0
 2          True -3145.029294      24              1
-('the estimate is on the boundary of the domain; standard errors are not reported',)
+('the estimate is on the boundary of the domain; standard errors are not reported; fit(boundary="restricted") gives those of the model restricted to the binding conditions, and result.bootstrap() the m-out-of-n bootstrap',)
 ```
 
 For the third series the Student-t fit ends at `eta = 0`, which is the Normal density and a boundary of the domain, so it reports no standard errors. The result is a `BatchFitResult`, a mapping from series names to ordinary fitted results; series are named by DataFrame column, or by position as the strings `"0"`, `"1"` and so on. Fits run in `n_jobs` threads, by default up to four.
@@ -50,7 +50,7 @@ Calling `.fit()` on a multi-column input is a shortcut for `fit_many(..., on_err
 ```python
 rolling = (GARCH(1, 1) + StudentT()).fit_rolling(returns[:, 0], window=1000, step=250)
 for w in rolling:
-    print(w.start, w.stop, w.label, w.batch["0"].params.round(4))
+    print(w.start, w.stop, w.label, w.batch["0"].params.round(4).to_numpy())
 ```
 
 ```text
@@ -82,7 +82,7 @@ from scivol import DCC
 
 rolling_dcc = DCC().fit_rolling(returns, window=1000, step=250, univariate_spec=GARCH())
 for w in rolling_dcc:
-    print(w.label, w.result.success, w.result.params.persistence)
+    print(w.label, w.result.success, w.result.persistence)
 ```
 
 ```text

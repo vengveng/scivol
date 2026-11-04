@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="940" height="500" viewBox="0 0 940 500" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<defs><marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#a9a89f"/></marker></defs>
+<rect width="940" height="500" fill="#fcfcfb"/>
+<text x="210" y="30" text-anchor="middle" font-size="15" font-weight="600" fill="#2a78d6">General-to-specific</text>
+<text x="790" y="30" text-anchor="middle" font-size="15" font-weight="600" fill="#1baf7a">Information criterion</text>
+<rect x="70" y="48" width="280" height="50" rx="7" fill="#fcfcfb" stroke="#2a78d6" stroke-width="1.6"/>
+<text x="210.0" y="70" text-anchor="middle" font-size="13" fill="#0b0b0b">Start from the largest models</text>
+<text x="210.0" y="86" text-anchor="middle" font-size="13" fill="#0b0b0b">that pass the adequacy checks</text>
+<rect x="70" y="132" width="280" height="66" rx="7" fill="#fcfcfb" stroke="#2a78d6" stroke-width="1.6"/>
+<text x="210.0" y="154" text-anchor="middle" font-size="13" fill="#0b0b0b">Try each one-step restriction: fit it,</text>
+<text x="210.0" y="170" text-anchor="middle" font-size="13" fill="#0b0b0b">test it (likelihood ratio at 1%)</text>
+<text x="210.0" y="186" text-anchor="middle" font-size="13" fill="#0b0b0b">and check its adequacy</text>
+<path d="M 210.0 98 L 210.0 130" stroke="#a9a89f" stroke-width="1.4" fill="none" marker-end="url(#head)"/>
+<rect x="130" y="232" width="160" height="34" rx="7" fill="#fcfcfb" stroke="#2a78d6" stroke-width="1.6"/>
+<text x="210.0" y="254" text-anchor="middle" font-size="13" fill="#0b0b0b">Restriction accepted?</text>
+<path d="M 210.0 198 L 210.0 230" stroke="#a9a89f" stroke-width="1.4" fill="none" marker-end="url(#head)"/>
+<path d="M 130 249.0 L 40 249.0 L 40 165.0 L 68 165.0" stroke="#a9a89f" stroke-width="1.4" fill="none" marker-end="url(#head)"/>
+<text x="34" y="279.0" font-size="12" fill="#52514e" text-anchor="start">yes: move to</text>
+<text x="34" y="294.0" font-size="12" fill="#52514e">the restricted model</text>
+<rect x="70" y="316" width="280" height="50" rx="7" fill="#fcfcfb" stroke="#2a78d6" stroke-width="1.6"/>
+<text x="210.0" y="338" text-anchor="middle" font-size="13" fill="#0b0b0b">Stop at the models that accept</text>
+<text x="210.0" y="354" text-anchor="middle" font-size="13" fill="#0b0b0b">no further restriction</text>
+<path d="M 210.0 266 L 210.0 314" stroke="#a9a89f" stroke-width="1.4" fill="none" marker-end="url(#head)"/>
+<text x="218.0" y="294" font-size="12" fill="#52514e" text-anchor="start">no</text>
+<rect x="70" y="400" width="280" height="50" rx="7" fill="#fcfcfb" stroke="#2a78d6" stroke-width="1.6"/>
+<text x="210.0" y="422" text-anchor="middle" font-size="13" fill="#0b0b0b">Choose the final model with the fewest</text>
+<text x="210.0" y="438" text-anchor="middle" font-size="13" fill="#0b0b0b">parameters; BIC breaks ties</text>
+<path d="M 210.0 366 L 210.0 398" stroke="#a9a89f" stroke-width="1.4" fill="none" marker-end="url(#head)"/>
+<text x="380" y="66" font-size="12" fill="#52514e">if no start is adequate and</text>
+<text x="380" y="81" font-size="12" fill="#52514e">the residuals are autocorrelated:</text>
+<text x="380" y="96" font-size="12" fill="#52514e">add an AR lag to the mean and</text>
+<text x="380" y="111" font-size="12" fill="#52514e">start again</text>
+<path d="M 350 78 L 372 78 L 372 62 L 352 62" stroke="#a9a89f" stroke-width="1.4" fill="none" marker-end="url(#head)"/>
+<text x="210" y="476" text-anchor="middle" font-size="12" fill="#52514e">50–95 fits per series on Auto's search</text>
+<rect x="660" y="48" width="260" height="34" rx="7" fill="#fcfcfb" stroke="#1baf7a" stroke-width="1.6"/>
+<text x="790.0" y="70" text-anchor="middle" font-size="13" fill="#0b0b0b">Fit every declared model</text>
+<rect x="660" y="116" width="260" height="50" rx="7" fill="#fcfcfb" stroke="#1baf7a" stroke-width="1.6"/>
+<text x="790.0" y="138" text-anchor="middle" font-size="13" fill="#0b0b0b">Keep the models that pass</text>
+<text x="790.0" y="154" text-anchor="middle" font-size="13" fill="#0b0b0b">the adequacy checks</text>
+<path d="M 790.0 82 L 790.0 114" stroke="#a9a89f" stroke-width="1.4" fill="none" marker-end="url(#head)"/>
+<rect x="660" y="200" width="260" height="34" rx="7" fill="#fcfcfb" stroke="#1baf7a" stroke-width="1.6"/>
+<text x="790.0" y="222" text-anchor="middle" font-size="13" fill="#0b0b0b">Rank them by BIC</text>
+<path d="M 790.0 166 L 790.0 198" stroke="#a9a89f" stroke-width="1.4" fill="none" marker-end="url(#head)"/>
+<rect x="660" y="268" width="260" height="34" rx="7" fill="#fcfcfb" stroke="#1baf7a" stroke-width="1.6"/>
+<text x="790.0" y="290" text-anchor="middle" font-size="13" fill="#0b0b0b">Choose the lowest BIC</text>
+<path d="M 790.0 234 L 790.0 266" stroke="#a9a89f" stroke-width="1.4" fill="none" marker-end="url(#head)"/>
+<text x="790.0" y="328" text-anchor="middle" font-size="12" fill="#52514e">181 fits per series on Auto's search</text>
+<text x="790.0" y="346" text-anchor="middle" font-size="12" fill="#52514e">no model outside the search is reached</text>
+</svg>

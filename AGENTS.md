@@ -183,7 +183,13 @@ result = spec.fit(data, method="qmle")        # robust (sandwich) SEs
   `declare(native_spec, exog)`, are validated by the native model at
   construction and hold no fitted state. Parameter names, sizes, domains,
   bounds and starts belong to the native model; results read them from it
-  (`param_names`, `parameters`, `persistence`, `shapes`).
+  (`param_names`, `persistence`, `shapes`). Estimates, standard errors,
+  t- and p-values are pandas Series by parameter name; covariance matrices
+  are DataFrames; a name always gives a float.
+- Tests live in `scivol.stats` and return one `TestResult` type; the
+  statistics and reference laws are native. `result.diagnostics()` is the
+  battery; `result.innovations` and `DensityComponent.distribution(**shapes)`
+  give a `Distribution`.
 - `fit()` estimation options: `method` (`"mle"`, `"qmle"`), `coordinates`
   (`"automatic"`, `"z"`, `"theta"`), `maxiter`, `accuracy`, `initial_params`,
   `starts` (`"auto"`, a number of model candidate starts, or explicit vectors).
@@ -225,6 +231,9 @@ selection = Auto().fit(data)
   docs/selection.md) covering models inside the search space at n = 1000 and
   3000; misspecified models and large searches are not covered. See MODELS.md
   for the currently unavailable restrictions and diagnostics.
+- `Auto(procedure=...)` runs GETS (default) or an InformationCriterion on the
+  same search; docs/selection.md#choosing-a-procedure compares them
+  (localdev/calibration/run_auto.py, results auto_r120.txt).
 
 ## 6. Native interface rules
 

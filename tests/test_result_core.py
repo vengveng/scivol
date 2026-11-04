@@ -68,7 +68,8 @@ def test_scalar_properties():
     res = EstimationResult(spec, opt, data)
 
     # optimisation proxy
-    assert res.params is opt.x
+    np.testing.assert_array_equal(res.params, opt.x)
+    assert list(res.params.index) == list(res.param_names)
     assert res.n_iter == opt.nit
     assert res.success is True
     assert res.convergence_message == "converged"

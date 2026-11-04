@@ -204,7 +204,7 @@ def test_fit_recovers_the_simulation_and_is_certified():
         assert abs(estimate - truth) < 4.0 * se
     jet = api.CorrelationJet(native._correlation()[0], eps)
     out = jet.theta(native.theta, api.HESSIAN | api.SCORES)
-    np.testing.assert_allclose(native.cov_mle, np.linalg.inv(out["hessian"]), rtol=1e-8)
+    np.testing.assert_allclose(native.cov_matrix, np.linalg.inv(out["hessian"]), rtol=1e-8)
     s = out["scores"]
     inverse = np.linalg.inv(out["hessian"])
     np.testing.assert_allclose(native.cov_robust, inverse @ (s.T @ s) @ inverse, rtol=1e-8)
@@ -217,8 +217,8 @@ def test_student_t_fit_recovers_the_tail():
     eps /= eps.std(0)
     marginal = api.InnovationDensity(api.DensityKind.student_t, [1 / 6])
     r = DCC(1, 1, distribution="studentt").fit_from_residuals(eps, marginals=[marginal] * 4)
-    assert r.success and 1/9.0 < r.params.eta < 1/4.0
-    assert r.params.persistence == pytest.approx(0.97, abs=0.03)
+    assert r.success and 1/9.0 < r.shapes["eta"] < 1/4.0
+    assert r.persistence == pytest.approx(0.97, abs=0.03)
 
 
 def test_dcc_fit_with_native_marginals():
@@ -392,7 +392,7 @@ def test_copula_non_normal_marginals_and_sparse_requests(density, fixed_target):
         np.testing.assert_allclose(jet.target(theta), expected, rtol=2e-14, atol=2e-14)
         ccc = CCC().fit_from_residuals(eps, Qbar=target, marginals=marginals)
         np.testing.assert_allclose(ccc.Qbar, expected, rtol=2e-14, atol=2e-14)
-        np.testing.assert_allclose(ccc.Rt, np.broadcast_to(ccc.params.corr, ccc.Rt.shape), rtol=2e-14)
+        np.testing.assert_allclose(ccc.Rt, np.broadcast_to(ccc.unconditional_corr, ccc.Rt.shape), rtol=2e-14)
 
 
 def test_student_copula_likelihood_stays_bounded_at_the_upper_face():

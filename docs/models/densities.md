@@ -162,6 +162,45 @@ which in the GH notation above has $\delta=0$, $\beta=\vartheta s$, $\alpha=s\sq
 
 The GH, NIG, hyperbolic and variance-gamma densities have exponential tails, so all their polynomial moments exist, and their exponential moments exist for slopes in a bounded interval. Their EGARCH variance and APARCH persistence are therefore finite for moderate coefficients.
 
+## Distributions
+
+`result.innovations` is the fitted standardized distribution as an object, with its density, distribution and quantile functions and its exact moments. For the skewed-t fit above, its skewness and kurtosis are close to those of the standardized residuals:
+
+```python
+import numpy as np
+
+law = skew.innovations
+print(law)
+print(round(law.skewness, 4), round(law.kurtosis, 4))
+z = skew.std_resid
+print(round(float(np.mean(z**3)), 4), round(float(np.mean(z**4)), 4))
+print(law.ppf([0.01, 0.05]).round(4), round(law.cdf(-2.0), 5))
+```
+
+```text
+Distribution(SkewT, eta=0.107253, lam=-0.129736, nu=9.32377)
+-0.3229 4.2317
+-0.3552 4.1154
+[-2.6643 -1.6951] 0.0303
+```
+
+Each density component builds the distribution at shapes you choose, by name. A moment that diverges is infinite, as the fourth moment is for a Student-t with $\eta\ge1/4$:
+
+```python
+from scivol import StudentT
+
+t5 = StudentT().distribution(eta=0.2)
+print(t5.shapes, round(t5.kurtosis, 6), round(t5.isf(1e-6), 3))
+print(StudentT().distribution(eta=0.3).kurtosis)
+```
+
+```text
+{'eta': 0.2, 'nu': 5.0} 9.0 19.188
+inf
+```
+
+The methods are `pdf`, `logpdf`, `cdf`, `sf`, `ppf`, `isf`, `moment(k)` and `rvs`, and the moments `mean`, `variance`, `skewness` and `kurtosis` (not excess kurtosis); the [API page](../api.md#innovation-distributions) lists them.
+
 ## Quantiles and forecasts
 
 Each density also provides its distribution function, quantile function and moments. A one-step-ahead quantile of the observation is $m_{T+1}+\sqrt{h_{T+1}}\,F^{-1}(u)$; quantiles further ahead mix over future means and variances and are simulated. [Forecasting and simulation](../forecasting-and-simulation.md) covers both.

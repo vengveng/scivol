@@ -18,6 +18,9 @@ namespace scivolapi::detail {
 // Scalar failures leave outputs untouched. Inputs and shapes must be finite.
 [[nodiscard]] ExpectationStatus distribution(DensityKind, const double* shape, double z,
                                               double& lower, double& upper) noexcept;
+// log f(z) of the standardized law at n points.
+[[nodiscard]] ExpectationStatus log_density(DensityKind, const double* shape, const double* z, std::size_t n,
+                                           double* out) noexcept;
 [[nodiscard]] ExpectationStatus quantile(DensityKind, const double* shape, double u,
                                         double& z) noexcept;
 [[nodiscard]] ExpectationStatus quantile_upper(DensityKind, const double* shape, double v,

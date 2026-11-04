@@ -78,8 +78,9 @@ For your own data, pass a one-dimensional NumPy array or a pandas Series of retu
 Everything in the report is also available as an attribute:
 
 ```python
-result.params                    # estimates, in mean, volatility, density order
-result.std_errors                # standard errors, or None where they are not reported
+result.params                    # estimates by parameter name, in mean, volatility, density order
+result.std_errors                # standard errors by name, or None where they are not reported
+result.table()                   # estimates, standard errors, t-statistics and p-values
 result.log_likelihood, result.aic, result.bic
 result.success                   # True when the fit passes its first-order check
 result.fit_info.inference_status # "available", "at_boundary", ...

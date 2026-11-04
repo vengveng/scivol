@@ -186,7 +186,7 @@ class TestDCCFit:
         eps = dcc_dgp_data["eps"]
         dcc = DCC(1, 1)
         result = dcc.fit_from_residuals(eps)
-        assert 0 < result.params.persistence < 1
+        assert 0 < result.persistence < 1
 
     def test_warm_start_and_iteration_budget(self, dcc_dgp_data):
         eps = dcc_dgp_data["eps"]
@@ -278,7 +278,7 @@ class TestMultivariateForecastAndSimulation:
     def test_ccc_constant_path_from_residuals(self, dcc_dgp_data):
         result = CCC().fit_from_residuals(dcc_dgp_data["eps"])
         expected = _normalize_corr(result.Qbar)
-        np.testing.assert_allclose(result.params.corr, expected, rtol=1e-12, atol=1e-12)
+        np.testing.assert_allclose(result.unconditional_corr, expected, rtol=1e-12, atol=1e-12)
         np.testing.assert_allclose(result.Rt, np.broadcast_to(expected, result.Rt.shape))
         np.testing.assert_allclose(result.corr(0, 1), np.full(result.T, expected[0, 1]))
 
@@ -338,9 +338,9 @@ class TestMultivariateForecastAndSimulation:
         sim = result.simulate(12, seed=123)
 
         for h in range(4):
-            np.testing.assert_allclose(forecast.correlation[h], result.params.corr, rtol=1e-12, atol=1e-12)
+            np.testing.assert_allclose(forecast.correlation[h], result.unconditional_corr, rtol=1e-12, atol=1e-12)
         for t in range(12):
-            np.testing.assert_allclose(sim.correlation[t], result.params.corr, rtol=1e-12, atol=1e-12)
+            np.testing.assert_allclose(sim.correlation[t], result.unconditional_corr, rtol=1e-12, atol=1e-12)
 
     def test_dcc_simulation_uses_one_step_correlation_forecast(self, fitted_multivariate_results):
         result = fitted_multivariate_results["dcc"]
@@ -400,11 +400,11 @@ class TestMultivariateForecastAndSimulation:
         scenarios = result.scenarios(4000, seed=919)
         simulated = result.simulate(30, seed=919)
 
-        assert result.params.eta is not None
+        assert result.shapes.get("eta") is not None
         assert scenarios.copula_distribution == "studentt"
-        assert scenarios.copula_eta == result.params.eta
+        assert scenarios.copula_eta == result.shapes["eta"]
         assert simulated.copula_distribution == "studentt"
-        assert simulated.copula_eta == result.params.eta
+        assert simulated.copula_eta == result.shapes["eta"]
         assert scenarios.data.shape == (4000, 3)
         assert simulated.data.shape == (30, 3)
         assert np.all(np.isfinite(scenarios.data))

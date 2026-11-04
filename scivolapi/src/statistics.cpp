@@ -262,6 +262,52 @@ TestStatistic arch_lm(std::span<const double> standardized, std::size_t lags)
     return out;
 }
 
+TestStatistic wald(std::span<const double> difference, std::span<const double> covariance)
+{
+    const std::size_t k = difference.size();
+    require(k >= 1 && covariance.size() == k * k, "a Wald test needs k hypotheses and a k x k covariance");
+    finite(difference);
+    finite(covariance);
+    std::vector<double> inverse;
+    TestStatistic out;
+    out.df = k;
+    if (detail::invert_information(std::vector<double>(covariance.begin(), covariance.end()), k, inverse)
+        != Inference::available) {
+        out.status = TestStatus::singular_information;
+        return out;
+    }
+    double statistic = 0.0;
+    for (std::size_t i = 0; i < k; ++i)
+        for (std::size_t j = 0; j < k; ++j) statistic += difference[i] * inverse[i * k + j] * difference[j];
+    return chi_test(statistic, k);
+}
+
+JarqueBera jarque_bera(std::span<const double> series)
+{
+    finite(series);
+    require(series.size() >= 3, "Jarque-Bera requires at least three observations");
+    const double n = static_cast<double>(series.size());
+    const double mean = std::accumulate(series.begin(), series.end(), 0.0) / n;
+    double m2 = 0.0, m3 = 0.0, m4 = 0.0;
+    for (double x : series) {
+        const double d = x - mean, d2 = d * d;
+        m2 += d2;
+        m3 += d2 * d;
+        m4 += d2 * d2;
+    }
+    m2 /= n;
+    m3 /= n;
+    m4 /= n;
+    JarqueBera out;
+    out.test.df = 2;
+    if (!(m2 > 0.0) || !std::isfinite(m4)) return out;
+    out.skewness = m3 / (m2 * std::sqrt(m2));
+    out.kurtosis = m4 / (m2 * m2);
+    const double excess = out.kurtosis - 3.0;
+    out.test = chi_test(n / 6.0 * (out.skewness * out.skewness + 0.25 * excess * excess), 2);
+    return out;
+}
+
 Berkowitz berkowitz(std::span<const double> pit)
 {
     require(pit.size() >= 5, "Berkowitz requires at least five PIT observations");

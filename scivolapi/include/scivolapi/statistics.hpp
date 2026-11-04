@@ -35,6 +35,10 @@ double normal_survival(double x);
 double student_survival(double x, double df);
 double chi_square_survival(double x, double df);
 TestStatistic coefficient_test(double coefficient, double standard_error, std::size_t df);
+// Wald test of k linear hypotheses: d' V^-1 d ~ chi-square(k), with d the
+// estimates minus their hypothesized values and V (k x k, row-major) their
+// covariance. A V that is not positive definite gives singular_information.
+TestStatistic wald(std::span<const double> difference, std::span<const double> covariance);
 
 struct Portmanteau {
     TestStatistic ljung_box, box_pierce;
@@ -57,6 +61,15 @@ SignBias sign_bias(std::span<const double> standardized, std::span<const double>
 // Engle (1982): auxiliary OLS of z_t^2 on an intercept and q lagged squares.
 // Uses n_aux R^2 ~ chi-square(q), with n_aux = rows - q.
 TestStatistic arch_lm(std::span<const double> standardized, std::size_t lags);
+
+struct JarqueBera {
+    TestStatistic test;
+    double skewness = std::numeric_limits<double>::quiet_NaN();
+    double kurtosis = std::numeric_limits<double>::quiet_NaN();  // not excess
+};
+// Jarque and Bera (1987): n/6 (S^2 + (K - 3)^2/4) ~ chi-square(2), with S and K
+// the skewness and kurtosis from moments about the sample mean (divisor n).
+JarqueBera jarque_bera(std::span<const double> series);
 
 struct Berkowitz {
     TestStatistic test;

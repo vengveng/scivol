@@ -41,7 +41,7 @@ def test_staged_qmle_for_egarch_keeps_the_gaussian_variance_path(density):
     staged = (EGARCH(1, 1) + density()).fit(data, method="qmle")
     gaussian = (EGARCH(1, 1) + Normal()).fit(data, method="qmle")
     assert staged.method == "QMLE" and staged.success
-    np.testing.assert_array_equal(staged.params[1:4], gaussian.params[1:4])
+    np.testing.assert_array_equal(staged.params.iloc[1:4], gaussian.params.iloc[1:4])
     np.testing.assert_allclose(staged.sigma2, gaussian.sigma2, rtol=1e-12)
     assert np.all(np.isfinite(staged.std_errors))
 
@@ -286,7 +286,7 @@ class TestTwoStepStudentT:
         
         if result.std_errors is not None:
             assert len(result.std_errors) == 4
-            se_eta = result.std_errors[3]
+            se_eta = result.std_errors.iloc[3]
             assert np.isfinite(se_eta)
             assert se_eta > 0
 
@@ -316,7 +316,7 @@ class TestTwoStepSkewT:
         spec = GARCH(1, 1) + SkewT()
         result = spec.fit(skewt_data, method='qmle')
         
-        lam = result.params[4]
+        lam = result.params.iloc[4]
         assert -1 < lam < 1
     
     def test_skewt_has_ses(self, skewt_data):

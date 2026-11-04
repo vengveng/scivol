@@ -192,3 +192,24 @@ def test_density_is_standardized(density):
     assert np.mean(z * z) == pytest.approx(1.0, rel=2e-2)
     lower, upper = api.distribution(law.density, law.shape, np.ascontiguousarray(z[::997]))
     np.testing.assert_allclose(lower, u[::997], rtol=1e-8, atol=1e-12)
+
+
+@pytest.mark.parametrize("density", DENSITIES)
+def test_density_functions_and_moments_agree(density):
+    """The density integrates to one; its moments, distribution and quantile
+    functions are those of that density."""
+    from scipy.integrate import quad
+
+    kind = getattr(api.DensityKind, density)
+    shape = [d["start"] for d in api.density_shapes(kind)]
+    if kind == api.DensityKind.skew_t:
+        shape[1] = -0.2  # an asymmetric point
+    f = lambda z: float(np.exp(api.log_density(kind, shape, np.array([z]))[0]))
+    for k in range(5):
+        integral = quad(lambda z: z**k * f(z), -np.inf, np.inf, limit=400, epsabs=1e-11)[0]
+        expected = 1.0 if k == 0 else api.standardized_moment(kind, shape, k)
+        assert integral == pytest.approx(expected, rel=1e-7, abs=1e-8), k
+    z = np.array([-1.3, 0.2, 2.1])
+    lower, _ = api.distribution(kind, shape, z)
+    assert lower[0] == pytest.approx(quad(f, -np.inf, -1.3)[0], rel=1e-8)
+    np.testing.assert_allclose(api.quantiles(kind, shape, np.ascontiguousarray(lower), False), z, rtol=1e-9)

@@ -17,6 +17,7 @@
 #include <scivolapi/scivolapi.hpp>
 
 #include "../src/density/distribution.hpp"
+#include "../src/density/domain.hpp"
 #include "../src/density/family.hpp"
 #include "../src/density/moments.hpp"
 #include "../src/optimize/kinks.hpp"
@@ -628,6 +629,40 @@ NB_MODULE(_scivolapi, m)
               return nb::make_tuple(owned_vector(std::move(lower)), owned_vector(std::move(upper)));
           },
           "density"_a, "shape"_a, "z"_a, "Both tails P(Z <= z), P(Z > z) of the standardized density.");
+    m.def("density_shapes",
+          [](DensityKind kind) {
+              nb::list out;
+              for (const auto& d : detail::shape_domains(kind)) {
+                  nb::dict shape;
+                  shape["name"] = d.name;
+                  shape["lower"] = d.lower;
+                  shape["upper"] = d.upper;
+                  shape["start"] = d.start;
+                  shape["closed_lower"] = d.closed_lower;
+                  out.append(shape);
+              }
+              return out;
+          },
+          "density"_a, "The estimated shapes of a density: name, interval (upper end open) and default start.");
+    m.def("log_density",
+          [](DensityKind kind, const std::vector<double>& shape, const Vector& z) {
+              const std::size_t n = z.shape(0);
+              std::vector<double> out(n);
+              if (detail::log_density(kind, shape.empty() ? nullptr : shape.data(), z.data(), n, out.data())
+                  != detail::ExpectationStatus::ok)
+                  throw std::domain_error("the density could not be evaluated at these shapes");
+              return owned_vector(std::move(out));
+          },
+          "density"_a, "shape"_a, "z"_a, "log f(z) of the standardized density.");
+    m.def("standardized_moment",
+          [](DensityKind kind, const std::vector<double>& shape, unsigned k) {
+              double value = 0.0;
+              if (!detail::standardized_moment(kind, shape.empty() ? nullptr : shape.data(), k, value))
+                  throw std::domain_error("the moment could not be computed at these shapes");
+              return value;
+          },
+          "density"_a, "shape"_a, "k"_a,
+          "E[z^k] of the standardized density: inf for a divergent even moment, NaN for an odd one.");
     m.def("negative_second_moment",
           [](DensityKind kind, const std::vector<double>& shape) {
               detail::MomentResult r;
@@ -881,6 +916,19 @@ NB_MODULE(_scivolapi, m)
     m.def("arch_lm", [](const Vector& z, std::size_t lags) {
         return test_dictionary(arch_lm(view(z), lags));
     }, "standardized"_a, "lags"_a = 10);
+    m.def("wald", [](const Vector& difference, const Matrix& covariance) {
+        const std::size_t k = difference.shape(0);
+        if (covariance.shape(0) != k || covariance.shape(1) != k)
+            throw std::invalid_argument("the covariance must be k x k for k hypotheses");
+        return test_dictionary(wald(view(difference), std::span<const double>(covariance.data(), k * k)));
+    }, "difference"_a, "covariance"_a);
+    m.def("jarque_bera", [](const Vector& series) {
+        const JarqueBera test = jarque_bera(view(series));
+        nb::dict out = test_dictionary(test.test);
+        out["skewness"] = test.skewness;
+        out["kurtosis"] = test.kurtosis;
+        return out;
+    }, "series"_a);
     m.def("sign_bias", [](const Vector& z, const Vector& e) { return sign_bias_dictionary(sign_bias(view(z), view(e))); },
           "standardized"_a, "residual"_a);
     m.def("berkowitz", [](const Vector& u) { return berkowitz_dictionary(berkowitz(view(u))); }, "pit"_a);

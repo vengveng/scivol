@@ -136,6 +136,10 @@ The papers and books cited throughout these pages, in alphabetical order by auth
 - Holm, Sture (1979). "A simple sequentially rejective multiple test procedure." *Scandinavian Journal of Statistics*, **6**(2), 65–70. [JSTOR](https://www.jstor.org/stable/4615733).
 
 
+<a id="jarque-bera-1987"></a>
+
+- Jarque, Carlos M., and Bera, Anil K. (1987). "A test for normality of observations and regression residuals." *International Statistical Review*, **55**(2), 163–172. DOI: [10.2307/1403192](https://doi.org/10.2307/1403192).
+
 <a id="kraft-1988"></a>
 
 - Kraft, Dieter (1988). *A software package for sequential quadratic programming*. DFVLR-FB **88-28**, Deutsche Forschungs- und Versuchsanstalt für Luft- und Raumfahrt, Oberpfaffenhofen. 34 pp.

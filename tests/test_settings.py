@@ -258,6 +258,6 @@ class TestParametersByName:
     def test_names_and_blocks(self):
         res = _make_garch_result(gamma=True)
         assert res.param_names == ("omega", "alpha[1]", "gamma[1]", "beta[1]")
-        assert res.parameters["gamma[1]"] == 0.10
-        np.testing.assert_array_equal(res.parameters["alpha"], [0.05])
-        assert dict(res.parameters)["beta[1]"] == 0.85
+        assert res.params["gamma[1]"] == 0.10
+        assert res.params["alpha[1]"] == 0.05
+        assert res.params["beta[1]"] == 0.85

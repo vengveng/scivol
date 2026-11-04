@@ -10,21 +10,27 @@ $$\widehat{\mathrm{Cov}}_{\mathrm{MLE}}=H^{-1},\qquad
 Both use sums over the scored observations, so no further division by the sample size is needed. The first is the usual inverse observed information. The sandwich remains valid when the density is misspecified but the conditional mean and variance are correct.
 
 ```python
+import pandas as pd
 from scivol import GJRGARCH, SkewT
 
 spec = GJRGARCH(1, 1) + SkewT()
 y = spec.simulate(2000, [0.05, 0.03, 0.1, 0.88, 0.12, -0.15], seed=11).data
 result = spec.fit(y)
-print(result.std_errors.round(4))
-print(result.std_errors_robust.round(4))
+print(pd.DataFrame({"mle": result.std_errors, "robust": result.std_errors_robust}).round(4))
 ```
 
 ```text
-[0.0135 0.0167 0.0228 0.0219 0.0204 0.0303]
-[0.0129 0.0164 0.024  0.0209 0.0196 0.03  ]
+              mle  robust
+parameter
+omega      0.0135  0.0129
+alpha[1]   0.0167  0.0164
+gamma[1]   0.0228  0.0240
+beta[1]    0.0219  0.0209
+eta        0.0204  0.0196
+lam        0.0303  0.0300
 ```
 
-`result.summary(robust=True)` uses the sandwich standard errors in the parameter table and says so in its last line. The t-statistics in the table use a Student-t reference with the residual degrees of freedom.
+Standard errors are pandas Series indexed by parameter name, like `result.params`, and the matrices below are DataFrames with the names on both axes. `result.table()` collects the estimates, standard errors, t-statistics and p-values, and `result.table(robust=True)` and `result.summary(robust=True)` use the sandwich standard errors instead. The t-statistics use a Student-t reference with the residual degrees of freedom; `result.tvalues` and `result.pvalues` hold them.
 
 | Attribute | Contents |
 | --- | --- |
@@ -43,16 +49,48 @@ print(result.std_errors_robust.round(4))
 
 ```python
 qmle = spec.fit(y, method="qmle")
-print(qmle.method, qmle.params.round(4))
-print(qmle.std_errors.round(4))
+print(qmle.method)
+print(qmle.table().round(4))
 ```
 
 ```text
-QMLE [ 0.0575  0.0434  0.0717  0.8651  0.1073 -0.1294]
-[0.0142 0.0184 0.0271 0.0222 0.0194 0.0299]
+QMLE
+           estimate  std_error  t_value  p_value
+parameter
+omega        0.0575     0.0142   4.0361   0.0001
+alpha[1]     0.0434     0.0184   2.3635   0.0182
+gamma[1]     0.0717     0.0271   2.6488   0.0081
+beta[1]      0.8651     0.0222  38.9680   0.0000
+eta          0.1073     0.0194   5.5193   0.0000
+lam         -0.1294     0.0299  -4.3320   0.0000
 ```
 
 The covariance of this two-step estimator is the sandwich of the stacked score equations of both steps, so it accounts for the first step's estimation error in the shape parameters. `cov_matrix` and `cov_robust` both hold it. `qmle.hessian` is the Hessian of the final likelihood with the fitted density, which is not the matrix used in that sandwich. For EGARCH, whose recursion centres $|z|$ with the density's $E|z|$, both steps work in the Gaussian stage's parameters, and the covariance of the reported parameters follows by the delta method through $\omega=\omega_N+\sum_i\alpha_i(E|z|-\sqrt{2/\pi})$.
+
+## Testing parameters
+
+`stats.wald(result, names, values=0)` tests that the named parameters equal the given values, jointly, against a chi-square law with one degree of freedom per parameter; `robust=True` uses the sandwich covariance. `stats.likelihood_ratio(restricted, unrestricted)` compares two fits of nested models. It finds how the smaller model sits inside the larger one, such as the Normal inside the Student-t at $\eta=0$, and uses the reference law that this restriction implies. Here the skewed t of the example above is tested against the symmetric Student-t, and the Student-t against the Normal:
+
+```python
+from scivol import StudentT, stats
+
+student = (GJRGARCH(1, 1) + StudentT()).fit(y)
+normal = GJRGARCH(1, 1).fit(y)
+print(stats.wald(result, "lam"))
+print(stats.likelihood_ratio(student, result))
+lr = stats.likelihood_ratio(normal, student)
+print(lr, lr.law, lr.weights)
+```
+
+```text
+Wald(lam): statistic=18.2938, df=1, p_value=1.893e-05
+LR(density.symmetry): statistic=17.5727, df=1, p_value=2.765e-05
+LR(density.normal): statistic=43.0863, p_value=2.619e-11 chi_bar_square (0.5, 0.5)
+```
+
+Symmetry, $\lambda=0$, lies inside the domain, so its likelihood-ratio statistic has the chi-square law with one degree of freedom, and the Wald test agrees. Normality, $\eta=0$, is a bound of the Student-t's domain: the estimator cannot fall below it, and the statistic's law is the equal mixture of a point mass at zero and a chi-square with one degree of freedom ([Self and Liang, 1987](references.md#self-liang-1987)). For a restriction to several bounds, the mixture weights depend on the information matrix and are computed numerically; [model selection](selection.md#restriction-tests) describes these laws. The Wald test at a bound has no chi-square law, so `stats.wald(student, "eta")` returns the status `at_boundary` and points to the likelihood-ratio test.
+
+Both fits must be maximum-likelihood fits to the same data. The two models are refitted from their estimates on the rows the larger model scores, so a model with fewer mean lags is compared on the same sample; on the same rows this reproduces the original fits.
 
 ## Inference status
 
@@ -82,14 +120,19 @@ from scivol import GARCH
 y = GARCH(1, 1).simulate(3000, [0.05, 0.08, 0.9], seed=4).data
 result = GARCH(2, 1).fit(y, boundary="restricted")
 print(result.fit_info.inference_status, result.fit_info.binding)
-print(result.params.round(4), result.std_errors.round(4))
-print(GARCH(1, 1).fit(y).std_errors.round(4))
+print(result.params.round(4).to_dict())
+print(pd.concat({"GARCH(2,1)": result.std_errors, "GARCH(1,1)": GARCH(1, 1).fit(y).std_errors}, axis=1).round(4))
 ```
 
 ```text
 restricted ('alpha[2] >= 0',)
-[0.0644 0.0614 0.     0.9116] [0.0194 0.0099    nan 0.015 ]
-[0.0194 0.0099 0.015 ]
+{'omega': 0.0644, 'alpha[1]': 0.0614, 'alpha[2]': 0.0, 'beta[1]': 0.9116}
+           GARCH(2,1)  GARCH(1,1)
+parameter
+omega          0.0194      0.0194
+alpha[1]       0.0099      0.0099
+alpha[2]          NaN         NaN
+beta[1]        0.0150      0.0150
 ```
 
 These are valid standard errors for the restricted model, such as an IGARCH model when the binding condition is `persistence <= 1`. They do not describe how the unrestricted estimator varies around the boundary. The second choice, `result.bootstrap(replications=499, m=None, seed=0, n_jobs=None)`, does: it runs the m-out-of-n parametric bootstrap. Each replication continues the fitted model from the end of the sample for m observations and refits it from the estimate. The law of $\sqrt{m}\,(\theta^*-\hat\theta)$ then estimates that of $\sqrt{n}\,(\hat\theta-\theta_0)$. Because the refits respect the domain, an estimate on a bound keeps its boundary law, which the ordinary bootstrap with $m=n$ does not reproduce ([Andrews, 2000](references.md#andrews-2000)). By default, m follows the rule of [Bickel and Sakov (2008)](references.md#bickel-sakov-2008). The laws on the grid $m_j = n\,0.75^j$ (at least 250 observations) share their random numbers, and the $m_j$ whose law is closest to the next one is used.
@@ -110,13 +153,13 @@ print(boot.intervals(0.95).round(4))
  [0.8868 0.9602]]
 ```
 
-The result holds the refits' estimates in `draws`, the chosen `m`, and the number of failed refits. Here 46% of the refits put `alpha[2]` exactly on its bound. `std_errors` is the standard deviation of the bootstrap law, scaled to the sample size. `intervals(level)` gives basic intervals, from $\hat\theta - q_{1-a/2}/\sqrt{n}$ to $\hat\theta - q_{a/2}/\sqrt{n}$, where $q$ are the quantiles of $\sqrt{m}\,(\theta^*-\hat\theta)$; they are cut at the parameter's bounds. For a parameter on its bound, the interval can reduce to the bound itself, as it does for `alpha[2]`. Its coverage holds at each parameter value, but not uniformly over values near the bound. To test whether such a parameter is zero, use the restriction tests of [model selection](selection.md#restriction-tests). Regressors are held at the sample's first m rows.
+The result holds the refits' estimates in `draws`, the chosen `m`, and the number of failed refits. Here 46% of the refits put `alpha[2]` exactly on its bound. `std_errors` is the standard deviation of the bootstrap law, scaled to the sample size. `intervals(level)` gives basic intervals, from $\hat\theta - q_{1-a/2}/\sqrt{n}$ to $\hat\theta - q_{a/2}/\sqrt{n}$, where $q$ are the quantiles of $\sqrt{m}\,(\theta^*-\hat\theta)$; they are cut at the parameter's bounds. For a parameter on its bound, the interval can reduce to the bound itself, as it does for `alpha[2]`. Its coverage holds at each parameter value, but not uniformly over values near the bound. To test whether such a parameter is zero, use `stats.likelihood_ratio` (see [testing parameters](#testing-parameters)). Regressors are held at the sample's first m rows.
 
 For a QMLE fit, the first-order check covers both steps: the Gaussian step and the shape step with the first-step estimates held fixed.
 
 ## DCC standard errors
 
-The standard errors of a DCC or CCC fit come from the correlation stage. They include the dependence of the target $\overline Q$ on the copula's $\eta$, but treat the marginal models as known, so they do not reflect the estimation error of the first stage. `result.inference` gives the status of the correlation stage, using the names above. In DCC results, `hessian` and `opg` are averages per observation, while `cov_mle` and `cov_robust` are covariance matrices of the estimates.
+The standard errors of a DCC or CCC fit come from the correlation stage. They include the dependence of the target $\overline Q$ on the copula's $\eta$, but treat the marginal models as known, so they do not reflect the estimation error of the first stage. `result.inference` gives the status of the correlation stage, using the names above. As in univariate results, `params`, the standard errors and the matrices `hessian`, `opg`, `cov_matrix` and `cov_robust` are indexed by parameter name.
 
 ## Limitations
 

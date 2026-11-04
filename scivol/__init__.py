@@ -32,10 +32,8 @@ from .roles import Role
 from ._settings import settings
 from .dcc import (
     CCC,
-    CCCParams,
     CCCResult,
     DCC,
-    DCCParams,
     DCCResult,
     MultivariateScenarioResult,
     RollingDCCResult,
@@ -43,6 +41,8 @@ from .dcc import (
 )
 from .batch import BatchFitFailure, BatchFitResult, FitTimeoutError, RollingFitResult, RollingFitWindow
 from ._fit import FitError
+from ._distribution import Distribution
+from . import stats
 
 __all__: list[str] = [
     "ARMA",
@@ -51,12 +51,11 @@ __all__: list[str] = [
     "BatchFitFailure",
     "BatchFitResult",
     "Component",
+    "Distribution",
     "CompositeSpec",
     "CCC",
-    "CCCParams",
     "CCCResult",
     "DCC",
-    "DCCParams",
     "DCCResult",
     "EGARCH",
     "FitError",
@@ -77,6 +76,7 @@ __all__: list[str] = [
     "RollingDCCWindow",
     "settings",
     "SkewT",
+    "stats",
     "StudentT",
     "VarianceGamma",
     "__version__",

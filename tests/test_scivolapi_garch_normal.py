@@ -139,8 +139,8 @@ def test_fit_recovers_known_parameters(garch_data):
     assert result.fit_info.inference_status == "available"
     omega, alpha, beta = result.params
     se = result.std_errors
-    assert abs(alpha - 0.08) < 4 * se[1] and abs(beta - 0.90) < 4 * se[2]
-    assert abs(omega - 0.05) < 4 * se[0]
+    assert abs(alpha - 0.08) < 4 * se["alpha[1]"] and abs(beta - 0.90) < 4 * se["beta[1]"]
+    assert abs(omega - 0.05) < 4 * se["omega"]
 
 
 # Maximized log-likelihoods from the previous production engine on the same
@@ -165,8 +165,8 @@ def test_theta_and_z_paths_run_independently_and_agree(garch_data):
 def test_fit_is_exactly_equivariant_to_data_scale(garch_data):
     base = (GARCH(1, 1) + Normal()).fit(garch_data)
     scaled = (GARCH(1, 1) + Normal()).fit(10.0 * garch_data)
-    assert scaled.params[0] == pytest.approx(100.0 * base.params[0], rel=1e-8)
-    assert scaled.params[1:] == pytest.approx(base.params[1:], rel=1e-8)
+    assert scaled.params.iloc[0] == pytest.approx(100.0 * base.params.iloc[0], rel=1e-8)
+    assert scaled.params.iloc[1:].to_numpy() == pytest.approx(base.params.iloc[1:].to_numpy(), rel=1e-8)
     assert scaled.log_likelihood == pytest.approx(base.log_likelihood - garch_data.size * np.log(10.0), abs=1e-6)
 
 

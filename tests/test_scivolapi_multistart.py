@@ -33,7 +33,7 @@ def test_the_race_finishes_a_start_whose_probe_beats_the_first(bimodal):
     auto = (GARCH() + Normal()).fit(bimodal)
     assert single.success and auto.success
     assert auto.log_likelihood > single.log_likelihood + 0.5
-    assert auto.params[2] > 0.95 > single.params[2]
+    assert auto.params.iloc[2] > 0.95 > single.params.iloc[2]
     record = auto.fit_info.starts
     chosen = [k for k, s in enumerate(record) if s["selected"]]
     assert len(chosen) == 1 and chosen[0] > 0 and record[chosen[0]]["finished"]

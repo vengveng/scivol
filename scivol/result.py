@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Protocol, runtime_checkable, TYPE_CHECKING, Union
 import numpy as np
@@ -10,9 +9,17 @@ from . import _scivolapi as api
 from ._summary import Summary
 
 from .roles import Role
+from . import stats as _stats
 from ._settings import settings
 
-# Lazy import for pandas to avoid hard dependency
+import pandas as pd
+
+
+def _p_value(test: Dict[str, Any]) -> float:
+    """A test's p-value; 0.0 where it underflows a double."""
+    return 0.0 if test["status"] == "probability_underflow" else float(test["p_value"])
+
+
 def _to_pandas_series(
     arr: NDArray[np.float64],
     index: Any,
@@ -20,7 +27,6 @@ def _to_pandas_series(
     suffix: str = "",
 ) -> Any:
     """Convert numpy array to pandas Series if index is available."""
-    import pandas as pd
     series_name = f"{name}_{suffix}" if name else suffix
     return pd.Series(arr, index=index, name=series_name)
 
@@ -30,40 +36,7 @@ if TYPE_CHECKING:
     from .spec import CompositeSpec
     from ._bootstrap import BootstrapResult
     from ._evaluation import FilteredState, ForecastResult
-
-
-# =============================================================================
-# PARAMETERS BY NAME
-# =============================================================================
-
-class Parameters(Mapping[str, float]):
-    """Values by the native model's parameter names ("omega", "alpha[1]", "eta").
-
-    A lag block's base name ("alpha", "beta", "ar") gives its values in lag
-    order as an array.
-    """
-
-    def __init__(self, names: Sequence[str], values: NDArray[np.float64]) -> None:
-        self._names = tuple(names)
-        self._values = np.asarray(values, dtype=np.float64)
-        self._index = {name: i for i, name in enumerate(self._names)}
-
-    def __getitem__(self, key: str) -> Union[float, NDArray[np.float64]]:
-        if key in self._index:
-            return float(self._values[self._index[key]])
-        block = [i for i, name in enumerate(self._names) if "[" in name and name.partition("[")[0] == key]
-        if block:
-            return self._values[block].copy()
-        raise KeyError(key)
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._names)
-
-    def __len__(self) -> int:
-        return len(self._names)
-
-    def __repr__(self) -> str:
-        return "Parameters(" + ", ".join(f"{n}={v:.6g}" for n, v in zip(self._names, self._values)) + ")"
+    from ._distribution import Distribution
 
 
 # =============================================================================
@@ -218,8 +191,14 @@ class EstimationResult:
     # Scalars
     # --------------------------------------------------------------------- #
     @property
-    def params(self) -> np.ndarray:
-        return self.optimization_result.x
+    def params(self) -> pd.Series:
+        """The estimates, indexed by the model's parameter names ("omega", "alpha[1]", "eta")."""
+        return pd.Series(self._theta, index=pd.Index(self.param_names, name="parameter"), name="params")
+
+    @property
+    def _theta(self) -> NDArray[np.float64]:
+        """The estimates as a contiguous array in the model's order."""
+        return np.ascontiguousarray(self.optimization_result.x, dtype=np.float64)
 
     @property
     def log_likelihood(self) -> float:
@@ -248,28 +227,28 @@ class EstimationResult:
     @property
     def unconditional_variance(self) -> float:
         """Exact stationary E[h], infinity if divergent, NaN if unavailable."""
-        return self._native()[0].unconditional_variance(np.ascontiguousarray(self.params, dtype=np.float64))
+        return self._native()[0].unconditional_variance(self._theta)
 
     @property
     def unconditional_mean(self) -> float:
         """Stationary E[y], unavailable when exogenous means are unknown."""
-        return self._native()[0].unconditional_mean(np.ascontiguousarray(self.params, dtype=np.float64))
+        return self._native()[0].unconditional_mean(self._theta)
 
     # Information criteria
     # --------------------------------------------------------------------- #
     @property
     def aic(self) -> float:
-        return api.information_criteria(self.log_likelihood, len(self.params),
+        return api.information_criteria(self.log_likelihood, self._theta.size,
                                         self.fit_info.likelihood_n_obs or self.n_obs)[0]
 
     @property
     def bic(self) -> float:
-        return api.information_criteria(self.log_likelihood, len(self.params),
+        return api.information_criteria(self.log_likelihood, self._theta.size,
                                         self.fit_info.likelihood_n_obs or self.n_obs)[1]
 
     @property
     def hqic(self) -> float:
-        return api.information_criteria(self.log_likelihood, len(self.params),
+        return api.information_criteria(self.log_likelihood, self._theta.size,
                                         self.fit_info.likelihood_n_obs or self.n_obs)[2]
 
     # Component shorthands
@@ -305,15 +284,10 @@ class EstimationResult:
         return tuple(self._native()[0].parameter_names)
 
     @property
-    def parameters(self) -> Parameters:
-        """The estimates by name; a lag block's base name ("alpha") gives an array."""
-        return Parameters(self.param_names, self.params)
-
-    @property
     def persistence(self) -> float:
         """The persistence the model's stationarity condition bounds by one
         (GJR and APARCH weight their coefficients by the density's moments)."""
-        return float(self._native()[0].persistence(np.ascontiguousarray(self.params, dtype=np.float64)))
+        return float(self._native()[0].persistence(self._theta))
 
     @property
     def shapes(self) -> Dict[str, float]:
@@ -321,7 +295,7 @@ class EstimationResult:
         lambda) and derived (the Student-t's nu = 1/eta)."""
         from ._evaluation import shapes
 
-        return shapes(self._native()[0], np.ascontiguousarray(self.params, dtype=np.float64))
+        return shapes(self._native()[0], self._theta)
 
     # Conditional variances and standardized residuals
     # --------------------------------------------------------------------- #
@@ -439,7 +413,7 @@ class EstimationResult:
         from ._evaluation import forecast
 
         model, y, rows = self._native()
-        return forecast(self.spec, model, np.ascontiguousarray(self.params), y, rows, horizon, x,
+        return forecast(self.spec, model, self._theta, y, rows, horizon, x,
                         simulations=simulations, seed=seed)
 
     def bootstrap(self, replications: int = 499, *, m: Optional[int] = None, seed: Any = 0,
@@ -467,7 +441,7 @@ class EstimationResult:
 
             model, y, rows = self._native()
             self._filtered_state_cache = state(self.spec, model, api.Jet(model, y, rows), y,
-                                               np.ascontiguousarray(self.params))
+                                               self._theta)
         return self._filtered_state_cache
 
     def filter(self) -> "FilteredState":
@@ -476,46 +450,130 @@ class EstimationResult:
     
     # Covariance and standard errors
     # --------------------------------------------------------------------- #
-    @property
-    def hessian(self) -> Optional[NDArray[np.float64]]:
-        """Hessian matrix at optimum."""
-        return self._hessian
-    
-    @property
-    def cov_matrix(self) -> Optional[NDArray[np.float64]]:
-        """Covariance matrix of parameters (inverse of Hessian)."""
-        return self._cov_matrix
-    
-    @property
-    def std_errors(self) -> Optional[NDArray[np.float64]]:
-        """Standard errors from the covariance matrix; NaN for a parameter a
-        binding face fixes (fit(boundary="restricted"))."""
-        if self._std_errors is not None:
-            return self._std_errors
-        if self._cov_matrix is None:
+    def _vector(self, values: Optional[NDArray[np.float64]], name: str) -> Optional[pd.Series]:
+        if values is None:
             return None
-        return np.sqrt(np.diag(self._cov_matrix))
-    
-    @property
-    def opg(self) -> Optional[NDArray[np.float64]]:
-        """Outer Product of Gradients matrix."""
-        return self._opg
-    
-    @property
-    def cov_robust(self) -> Optional[NDArray[np.float64]]:
-        """Robust (sandwich) covariance matrix for QMLE."""
-        return self._cov_robust
-    
-    @property
-    def std_errors_robust(self) -> Optional[NDArray[np.float64]]:
-        """Robust standard errors from sandwich covariance."""
-        if self._std_errors_robust is not None:
-            return self._std_errors_robust
-        if self._cov_robust is None:
+        return pd.Series(np.asarray(values, dtype=np.float64), index=pd.Index(self.param_names, name="parameter"),
+                         name=name)
+
+    def _matrix(self, values: Optional[NDArray[np.float64]]) -> Optional[pd.DataFrame]:
+        if values is None:
             return None
-        return np.sqrt(np.diag(self._cov_robust))
-    
-    
+        names = pd.Index(self.param_names, name="parameter")
+        return pd.DataFrame(np.asarray(values, dtype=np.float64), index=names, columns=names)
+
+    def _errors(self, robust: bool = False) -> Optional[NDArray[np.float64]]:
+        """Standard errors as an array: native errors where given (NaN marks a
+        parameter a binding face fixes), else the covariance's diagonal."""
+        given = self._std_errors_robust if robust else self._std_errors
+        if given is not None:
+            return np.asarray(given, dtype=np.float64)
+        covariance = self._cov_robust if robust else self._cov_matrix
+        return None if covariance is None else np.sqrt(np.diag(covariance))
+
+    @property
+    def hessian(self) -> Optional[pd.DataFrame]:
+        """Hessian of the negative log-likelihood at the estimate."""
+        return self._matrix(self._hessian)
+
+    @property
+    def cov_matrix(self) -> Optional[pd.DataFrame]:
+        """Covariance of the estimates (inverse information; sandwich for QMLE)."""
+        return self._matrix(self._cov_matrix)
+
+    @property
+    def std_errors(self) -> Optional[pd.Series]:
+        """Standard errors; NaN for a parameter a binding face fixes (fit(boundary="restricted"))."""
+        return self._vector(self._errors(), "std_errors")
+
+    @property
+    def opg(self) -> Optional[pd.DataFrame]:
+        """Outer product of the per-observation scores."""
+        return self._matrix(self._opg)
+
+    @property
+    def cov_robust(self) -> Optional[pd.DataFrame]:
+        """Sandwich covariance H^-1 OPG H^-1."""
+        return self._matrix(self._cov_robust)
+
+    @property
+    def std_errors_robust(self) -> Optional[pd.Series]:
+        """Standard errors from the sandwich covariance."""
+        return self._vector(self._errors(robust=True), "std_errors_robust")
+
+    def _coefficient_tests(self, robust: bool = False) -> Optional[list[dict]]:
+        se = self._errors(robust)
+        if se is None:
+            return None
+        df = (self.fit_info.likelihood_n_obs or self.n_obs) - self._theta.size
+        nan = {"statistic": np.nan, "p_value": np.nan, "status": "not_estimable"}
+        return [api.coefficient_test(float(c), float(e), df) if np.isfinite(e) and e > 0 else nan
+                for c, e in zip(self._theta, se)]
+
+    @property
+    def tvalues(self) -> Optional[pd.Series]:
+        """Estimates over their standard errors, as in the summary report."""
+        tests = self._coefficient_tests()
+        return None if tests is None else self._vector(np.array([t["statistic"] for t in tests]), "tvalues")
+
+    @property
+    def pvalues(self) -> Optional[pd.Series]:
+        """Two-sided p-values of the t-statistics (Student-t, n - k degrees of
+        freedom), as in the summary report. For a parameter whose null value is
+        a bound of its domain (the Student-t's eta = 0), stats.likelihood_ratio
+        gives the test with the boundary law."""
+        tests = self._coefficient_tests()
+        return None if tests is None else self._vector(np.array([_p_value(t) for t in tests]), "pvalues")
+
+    def table(self, robust: bool = False) -> pd.DataFrame:
+        """The parameter table: estimate, standard error, t-statistic and p-value
+        (robust=True: from the sandwich covariance)."""
+        se = self._errors(robust)
+        tests = self._coefficient_tests(robust)
+        nan = np.full(self._theta.size, np.nan)
+        return pd.DataFrame({
+            "estimate": self._theta,
+            "std_error": nan if se is None else se,
+            "t_value": nan if tests is None else [t["statistic"] for t in tests],
+            "p_value": nan if tests is None else [_p_value(t) for t in tests],
+        }, index=pd.Index(self.param_names, name="parameter"))
+
+    # Innovations and diagnostics
+    # --------------------------------------------------------------------- #
+    @property
+    def innovations(self) -> "Distribution":
+        """The fitted standardized innovation distribution."""
+        from ._distribution import Distribution
+
+        law = self._native()[0].innovation_density(self._theta)
+        name = self.density.signature if self.density is not None else "Normal"
+        return Distribution(law, name)
+
+    @property
+    def pit(self) -> Optional[Union[NDArray[np.float64], Any]]:
+        """Probability integral transforms of the standardized residuals under
+        the fitted innovation distribution."""
+        z = self.std_resid
+        return None if z is None else self.innovations.cdf(z)
+
+    def diagnostics(self, cells: int = 40, lags: int = 10, *, df_adjustment: Optional[int] = None) -> "_stats.Diagnostics":
+        """Specification tests on the scored sample: Ljung-Box, Li-Mak and
+        Engle-Ng sign bias on the standardized residuals; DGT, Ljung-Box on the
+        moments (u - 1/2)^r, Ljung-Box on the Normal scores and Berkowitz on the
+        PITs. `print()` the result for the report.
+
+        ``df_adjustment`` overrides the portmanteau degrees-of-freedom
+        adjustment; residual tests default to the model's dynamic mean
+        parameter count for estimated parameters, PIT tests to none."""
+        model, y, x = self._native()
+        estimated = self.parameter_source != "supplied"
+        estimator = api.Estimator.qmle if str(self.method).lower() == "qmle" else api.Estimator.mle
+        values = api.diagnostics(api.Jet(model, y, x), self._theta, int(cells), int(lags), df_adjustment,
+                                 estimator, estimated, 0.05)
+        values["shapes"] = self.shapes
+        distribution = self.density.signature if self.density is not None else "Normal"
+        return _stats.Diagnostics(values, distribution, self._index)
+
     # Pretty printer
     # --------------------------------------------------------------------- #
     def summary(self, robust: bool = False) -> Summary:
@@ -541,7 +599,7 @@ class EstimationResult:
         # Model info
         model_str = str(self.spec) if self.spec else "Unknown Model"
         lines.append(f"Model:       {model_str}")
-        density = self._native()[0].innovation_density(np.ascontiguousarray(self.params, dtype=np.float64))
+        density = self._native()[0].innovation_density(self._theta)
         shapes = {**density.named, **density.derived}
         if shapes:
             description = ", ".join(f"{settings.names.resolve(name)}={value:.6g}" for name,value in shapes.items())
@@ -561,7 +619,7 @@ class EstimationResult:
         conv_str = "Yes" if self.success else "No"
         time_str = f"{self.time_elapsed:.3f}s" if self.time_elapsed else "N/A"
         lines.append(f"{'No. Observations:':<20} {self.n_obs:<15} {'Success:':<15} {conv_str}")
-        lines.append(f"{'No. Parameters:':<20} {len(self.params):<15} {'Iterations:':<15} {self.n_iter}")
+        lines.append(f"{'No. Parameters:':<20} {self._theta.size:<15} {'Iterations:':<15} {self.n_iter}")
         lines.append(f"{'Time Elapsed:':<20} {time_str}")
         hold_back_line = self._format_hold_back_summary()
         if hold_back_line is not None:
@@ -582,8 +640,9 @@ class EstimationResult:
         lines.append("─" * WIDTH)
         
         # Select standard errors
-        se = self.std_errors_robust if (robust and self.std_errors_robust is not None) else self.std_errors
-        se_type = "Robust" if (robust and self.std_errors_robust is not None) else "MLE"
+        use_robust = robust and self._errors(robust=True) is not None
+        se = self._errors(robust=use_robust)
+        se_type = "Robust" if use_robust else "MLE"
         
         # Header
         lines.append(f"{'Parameter':<12} {'Coef':>12} {'Std Err':>12} {'t-stat':>10} {'P>|t|':>10}")
@@ -592,7 +651,7 @@ class EstimationResult:
         # Get parameter names
         param_names = self._get_param_names()
         
-        for i, (name, coef) in enumerate(zip(param_names, self.params)):
+        for i, (name, coef) in enumerate(zip(param_names, self._theta)):
             se_val = se[i] if (se is not None and i < len(se)) else None
             
             # Format coefficient
@@ -601,7 +660,7 @@ class EstimationResult:
             if se_val is not None and se_val > 0 and np.isfinite(se_val):
                 se_str = self._format_value(se_val)
                 coefficient = api.coefficient_test(float(coef), float(se_val),
-                                                   (self.fit_info.likelihood_n_obs or self.n_obs) - len(self.params))
+                                                   (self.fit_info.likelihood_n_obs or self.n_obs) - self._theta.size)
                 t_stat = coefficient["statistic"]
                 t_str = f"{t_stat:>10.3f}"
                 # Two-tailed p-value
@@ -677,7 +736,7 @@ class EstimationResult:
             return []
         lines: List[str] = []
         model, _, _ = self._native()
-        theta = np.ascontiguousarray(self.params, dtype=np.float64)
+        theta = self._theta
         persistence = model.persistence(theta)
         variance = model.unconditional_variance(theta)
         lines.append("")
@@ -705,16 +764,17 @@ class EstimationResult:
         
         if self.vol is not None:
             model, _, _ = self._native()
-            theta = np.ascontiguousarray(self.params, dtype=np.float64)
+            theta = self._theta
             if not model.feasible(theta):
                 add("the parameters are outside the model domain")
             elif abs(model.persistence(theta)) > 0.99:
                 add("persistence is very close to one")
 
-        if self.std_errors is not None and self.fit_info.inference_status != "restricted":
-            if np.any(~np.isfinite(self.std_errors)):
+        errors = self._errors()
+        if errors is not None and self.fit_info.inference_status != "restricted":
+            if np.any(~np.isfinite(errors)):
                 add("some standard errors could not be computed")
-            elif np.any(self.std_errors <= 0):
+            elif np.any(errors <= 0):
                 add("some standard errors are not positive")
 
         return warnings_list
@@ -737,7 +797,7 @@ class EstimationResult:
             'bic': self.bic,
             'hqic': self.hqic,
             'n_obs': self.n_obs,
-            'n_params': len(self.params),
+            'n_params': self._theta.size,
             'success': self.success,
             'n_iter': self.n_iter,
             'time_elapsed': self.time_elapsed,
@@ -745,113 +805,18 @@ class EstimationResult:
             'warnings': list(self.warnings),
         }
         
-        result_dict['parameters'] = dict(zip(self._get_param_names(), map(float, self.params)))
+        result_dict['parameters'] = dict(zip(self._get_param_names(), map(float, self._theta)))
         result_dict['shapes'] = self.shapes
         if self.vol is not None:
             result_dict['persistence'] = self.persistence
 
         # Add standard errors
-        if self.std_errors is not None:
-            result_dict['std_errors'] = self.std_errors.tolist()
-        if self.std_errors_robust is not None:
-            result_dict['std_errors_robust'] = self.std_errors_robust.tolist()
+        if self._errors() is not None:
+            result_dict['std_errors'] = self._errors().tolist()
+        if self._errors(robust=True) is not None:
+            result_dict['std_errors_robust'] = self._errors(robust=True).tolist()
         
         return result_dict
-    
-    # =========================================================================
-    # DIAGNOSTIC TESTS (DGT + Ljung-Box)
-    # =========================================================================
-    
-    def diagnostic_tests(
-        self,
-        n_cells: int = 40,
-        lags: int = 10,
-        alpha: float = 0.05,
-        print_results: bool = True,
-        *,
-        df_adjustment: Optional[int] = None,
-    ) -> Dict[str, Any]:
-        """Native residual and density diagnostics on the scored sample.
-
-        Includes PIT cell and moment Ljung-Box tests, residual and normal-PIT
-        portmanteau tests, Li-Mak squared-residual tests, Engle-Ng sign/size bias,
-        and a conditional-likelihood Berkowitz test.
-
-        ``df_adjustment`` overrides the portmanteau reference degrees of freedom.
-        Residual tests default to the model's dynamic mean parameter count for
-        estimated parameters and zero for supplied parameters. PIT tests default
-        to no count adjustment. Their reference p-values treat the density as
-        fixed, so in-sample use needs estimation-aware calibration rather than
-        a parameter-count subtraction. Li-Mak uses the full joint score-influence
-        sandwich and requires interior estimates and a finite fourth moment.
-        Unidentified tests include an explicit status and NaN p-value.
-        """
-        model, y, x = self._native()
-        estimated = self.parameter_source != "supplied"
-        estimator = api.Estimator.qmle if str(self.method).lower() == "qmle" else api.Estimator.mle
-        result = api.diagnostics(api.Jet(model, y, x), np.ascontiguousarray(self.params, dtype=np.float64),
-                                 n_cells, lags, df_adjustment, estimator, estimated, alpha)
-        result["shapes"] = self.shapes
-        result["distribution"] = self.density.signature if self.density is not None else "Normal"
-        if print_results:
-            self._print_diagnostic_tests(result)
-        return result
-
-    def _print_diagnostic_tests(self, results: Dict[str, Any]) -> None:
-        """Print nicely formatted diagnostic test results."""
-        WIDTH = 70
-        
-        # Title
-        print()
-        print("=" * WIDTH)
-        print(f"{'Model Diagnostic Tests':^{WIDTH}}")
-        print("=" * WIDTH)
-        
-        # Distribution info
-        shapes = ", ".join(f"{name}={value:.6g}" for name, value in results["shapes"].items())
-        dist_str = f"{results['distribution']} ({shapes})" if shapes else results["distribution"]
-        
-        print(f"Distribution:  {dist_str}")
-        print(f"Observations:  {results['n_obs']}")
-        print(f"Alpha:         {results['alpha']}")
-        
-        # DGT Test
-        print()
-        print("DGT Test (Diebold-Gunther-Tay)")
-        print("-" * WIDTH)
-        dgt = results["dgt"]
-        print(f"  {'Cells:':<12} {dgt['n_cells']:<10} {'df:':<12} {dgt['df']}")
-        print(f"  {'Chi2 stat:':<12} {dgt['chi2_stat']:<10.2f} {'p-value:':<12} {dgt['p_value']:.4f}")
-        reject_str = "Yes (reject uniformity)" if dgt["reject"] else "No (uniform PIT)"
-        print(f"  {'Reject H0:':<12} {reject_str}")
-        if dgt["status"] != "ok":
-            print(f"  {'Status:':<12} {dgt['status']}")
-        
-        # Ljung-Box Tests
-        print()
-        print("Ljung-Box Tests on PIT Moments")
-        print("-" * WIDTH)
-        print(f"  {'Moment':<10} {'Lags':>6} {'Q-stat':>12} {'p-value':>12} {'Reject':>10}")
-        print(f"  {'-'*10} {'-'*6} {'-'*12} {'-'*12} {'-'*10}")
-        
-        moment_labels = {1: "(u-0.5)^1", 2: "(u-0.5)^2", 3: "(u-0.5)^3", 4: "(u-0.5)^4"}
-        
-        for power in (1, 2, 3, 4):
-            lb = results["ljung_box"][power]
-            reject_str = "Yes" if lb["reject"] else "No"
-            print(f"  {moment_labels[power]:<10} {lb['lags']:>6} {lb['q_stat']:>12.2f} "
-                  f"{lb['p_value']:>12.4f} {reject_str:>10}")
-        
-        print()
-        print("Residual and density adequacy")
-        print("-" * WIDTH)
-        for label, test in (("Li-Mak", results["li_mak"]),
-                            ("Engle-Ng joint", results["sign_bias"]["joint"]),
-                            ("Berkowitz", results["berkowitz"])):
-            print(f"  {label:<24} {test['statistic']:>12.3f} {test['p_value']:>12.4f}  {test['status']}")
-        print("PIT p-values use a fixed-parameter reference distribution.")
-        print("=" * WIDTH)
-        print()
     
     # =========================================================================
     # REPRESENTATION
@@ -874,7 +839,7 @@ class EstimationResult:
         param_names = self._get_param_names()
         lines.append("")
         lines.append("Parameters:")
-        for name, val in zip(param_names, self.params):
+        for name, val in zip(param_names, self._theta):
             val_str = self._format_value(val)
             lines.append(f"  {name:<12} {val_str}")
         

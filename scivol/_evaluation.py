@@ -163,6 +163,8 @@ def parameters(spec: Any, model: "api.Model", params: Any) -> NDArray[np.float64
         if str(source) != str(spec):
             raise ValueError(f"The result is for {source}; this specification is {spec}.")
         params = params.params
+    if hasattr(params, "index") and hasattr(params, "to_dict") and not isinstance(params.index[0] if len(params) else 0, (int, np.integer)):
+        params = params.to_dict()  # a Series by parameter name
     if isinstance(params, Mapping):
         flat: dict[str, float] = {}
         for key, value in params.items():
@@ -414,6 +416,6 @@ def oos_losses(result: "EstimationResult", full_data: Any, *, full_x: Any, start
     first = skip + jet.first_scored
     if start < first or stop <= start:
         raise ValueError("The OOS slice must lie after the rows that condition the fit.")
-    values = api.predictive_losses(jet, np.ascontiguousarray(result.params),
+    values = api.predictive_losses(jet, result._theta,
                                    "log_score" if loss == "logscore" else loss)
     return np.ascontiguousarray(values[start-first:stop-first])

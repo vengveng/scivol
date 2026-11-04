@@ -435,7 +435,7 @@ def test_public_fits_recover_the_simulation(components):
     assert result.optimization_result.success, result.optimization_result.message
     assert len(result.sigma2) == len(result.resid) == len(result.data)
     for i, value in truth.items():
-        assert abs(result.params[i] - value) < 4.0 * result.std_errors[i], (i, result.params[i])
+        assert abs(result.params.iloc[i] - value) < 4.0 * result.std_errors.iloc[i], (i, result.params.iloc[i])
 
 
 def test_public_fit_keeps_the_index_aligned_with_the_scored_rows():
@@ -468,12 +468,12 @@ def test_mean_only_fits_recover_the_simulation():
         y[t] = 0.2 + 0.5 * y[t - 1] + e[t] + 0.3 * e[t - 1]
     normal = (ARMA(1, 1) + Normal()).fit(y)
     assert normal._get_param_names() == ["const", "ar[1]", "ma[1]", "sigma2"]
-    assert normal.params[3] == pytest.approx(np.mean(normal.resid ** 2), rel=1e-6)  # the sigma2 FOC
+    assert normal.params.iloc[3] == pytest.approx(np.mean(normal.resid ** 2), rel=1e-6)  # the sigma2 FOC
     t = (ARMA(1, 1) + StudentT()).fit(y)
     truth = [0.2, 0.5, 0.3, 0.25 * 5 / 3, 0.2]  # sigma2 = Var(0.5 t_5)
     for i, value in enumerate(truth):
-        assert abs(t.params[i] - value) < 4.0 * t.std_errors[i], (i, t.params[i])
-    assert t.shapes["eta"] == pytest.approx(t.params[-1])
+        assert abs(t.params.iloc[i] - value) < 4.0 * t.std_errors.iloc[i], (i, t.params.iloc[i])
+    assert t.shapes["eta"] == pytest.approx(t.params.iloc[-1])
     with pytest.raises(ValueError, match="p and q must be 0"):
         model_for(mean_spec(), "constant", "normal", 1, 1)
 
@@ -536,4 +536,4 @@ def test_har_fits_hold_the_stationarity_boundary_on_explosive_data():
         phases = result.fit_info.solver.split("+")
         assert phases[0] == "theta:trust" and phases[-1] == "theta:newton" and result.success
         assert result._native()[0].feasible(np.asarray(result.params))
-        assert sum(result.params[1:4]) == pytest.approx(1.0, abs=1e-6)  # at the unit-root boundary
+        assert sum(result.params.iloc[1:4]) == pytest.approx(1.0, abs=1e-6)  # at the unit-root boundary

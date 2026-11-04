@@ -87,7 +87,7 @@ Every row is scored, and the first uses $Q_0=\overline Q$. Early rows use only t
 | Domain | $a_i,b_j\ge0$ and $\sum_ia_i+\sum_jb_j<1$; $0\le\eta<1/2$ |
 | Copula | `distribution="gaussian"` (alias `"normal"`) or `"studentt"` (alias `"t"`) |
 
-`result.params.persistence` is the sum of the a and b coefficients, and for a Student-t copula `result.params.eta` gives the copula's $\eta$.
+`result.params` holds the estimates by these names, and `result.persistence` is the sum of the a and b coefficients. For a Student-t copula, `result.shapes` gives the copula's $\eta$ and $\nu=1/\eta$.
 
 ## Fitting from returns
 
@@ -105,7 +105,7 @@ from scivol import DCC
 
 eps = np.random.default_rng(17).standard_normal((800, 3))
 result = DCC().fit_from_residuals(eps)
-print(result.params.persistence, result.log_likelihood)
+print(result.persistence, result.log_likelihood)
 ```
 
 The marginals are taken to be Normal unless you describe them through `marginals`, one `InnovationDensity` per series; the [API page](../api.md#innovation-densities-for-dcc) shows how. Starting points work as in univariate fits: `starts` accepts the same values, the candidates are $(a,b)=(0.05,0.90)$ and $(0.02,0.80)$, and `theta0` or `initial_result` gives a single start. The default budget is 500 iterations at `accuracy=1e-10`. `result.starts`, `result.path` and `result.phases` record what ran.
@@ -125,7 +125,7 @@ from scivol import CCC
 
 constant = CCC().fit(returns)
 dynamic = DCC().fit(returns)
-print(constant.params.corr.round(4))
+print(constant.unconditional_corr.round(4))
 print(constant.log_likelihood, dynamic.log_likelihood)
 ```
 
