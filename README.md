@@ -28,6 +28,8 @@ Conditional correlations among five of those stocks from a DCC model; the line i
 
 **Estimation you can check.** Each likelihood and its derivatives are tested against an automatic-differentiation reference. A fit is reported as successful only when the first-order conditions hold in the model's parameter domain; otherwise the estimate comes back with a status that says why. Standard errors are reported where ordinary likelihood inference applies. Several starting points are tried by default, because volatility likelihoods often have more than one local maximum.
 
+**Forecasts and risk.** Exact multi-step variance forecasts where they exist, one-step value at risk and expected shortfall from the fitted density, news impact curves, and Kupiec, Christoffersen and dynamic quantile backtests.
+
 **Speed.** On 500 liquid US stocks and ten models, a fit took a median 1–6 ms, 4.9 times faster than `arch` and 53 times faster than `rugarch` per fit, while missing its own likelihood maximum less often than either; DCC fits were 20–50 times faster than `rmgarch`. See [the benchmarks](https://github.com/vengveng/scivol/blob/main/docs/benchmarks.md) for the method and its limits.
 
 ## Installation

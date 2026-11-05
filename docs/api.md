@@ -84,6 +84,7 @@ The first five evaluate the model at given parameters: the log-likelihood, its g
 | `summary(robust=False)` | the estimation report, as a string that displays as text in notebooks |
 | `table(robust=False)` | DataFrame of estimates, standard errors, t-statistics and p-values |
 | `forecast(horizon=10, *, x=None, simulations=10000, seed=0)` | `ForecastResult` |
+| `news_impact(e, *, variance=None)` | the next conditional variance at each latest residual in `e`; see [news impact curves](models/volatility.md#news-impact-curves) |
 | `diagnostics(cells=40, lags=10, *, df_adjustment=None)` | `Diagnostics`, the battery of specification tests, printed as a report; see [diagnostics](diagnostics.md) |
 | `filter()` | `FilteredState` at the estimates |
 | `bootstrap(replications=499, *, m=None, seed=0, n_jobs=None)` | `BootstrapResult`, the m-out-of-n parametric bootstrap; see [inference](inference.md#standard-errors-at-a-boundary) |
@@ -93,7 +94,7 @@ The first five evaluate the model at given parameters: the log-likelihood, its g
 
 A `FixedResult`, returned by `spec.fix`, has the same attributes and methods, with `method="FIXED"`, `parameter_source="supplied"` and no covariance matrix.
 
-`FilteredState` holds the scored `data`, `mean`, `residuals`, `sigma2`, `std_resid` and `log_likelihood` at given parameters, plus the `score` and `hessian` of the log-likelihood when requested. `ForecastResult` has `mean`, `variance`, `residual_variance` (alias `sigma2`), `volatility` and `residual_volatility`, and the methods `quantile(level)` and `var(level)`. `SimulationResult` has `data`, `mean`, `residuals`, `sigma2` and `innovations`. `BootstrapResult` has `param_names`, `estimate`, `draws`, `m`, `n`, `replications`, `failures`, `std_errors` and `intervals(level=0.95)`. Each has a `to_dict()` method.
+`FilteredState` holds the scored `data`, `mean`, `residuals`, `sigma2`, `std_resid` and `log_likelihood` at given parameters, plus the `score` and `hessian` of the log-likelihood when requested. `ForecastResult` has `mean`, `variance`, `residual_variance` (alias `sigma2`), `volatility` and `residual_volatility`, and the methods `quantile(level)`, `var(level)` and `es(level)`. `SimulationResult` has `data`, `mean`, `residuals`, `sigma2` and `innovations`. `BootstrapResult` has `param_names`, `estimate`, `draws`, `m`, `n`, `replications`, `failures`, `std_errors` and `intervals(level=0.95)`. Each has a `to_dict()` method.
 
 ## Statistical tests
 
@@ -107,6 +108,9 @@ stats.sign_bias(z, e=None)                       # or sign_bias(result)
 stats.dgt(pit, cells=40)
 stats.berkowitz(pit)
 stats.diebold_mariano(loss_a, loss_b, horizon=1, bandwidth=None)
+stats.kupiec(returns, var, level)
+stats.christoffersen(returns, var, level)
+stats.dynamic_quantile(returns, var, level, lags=4)
 stats.model_confidence_set(losses, *, confidence=0.90, block_length=None, draws=4999,
                            statistic="max", seed=None)          -> ConfidenceSetResult
 stats.li_mak(result, lags=10)
@@ -127,6 +131,7 @@ stats.likelihood_ratio(restricted, unrestricted, *, level=0.05, max_steps=8)
 | `name`, `shapes` | the density and its shapes by name, including fixed and derived ones |
 | `pdf(z)`, `logpdf(z)`, `cdf(z)`, `sf(z)` | density, log density, and the lower and upper tail probabilities |
 | `ppf(u)`, `isf(u)` | the quantile function and its upper-tail counterpart |
+| `tail_mean(u)` | $E[Z\mid Z\le$ `ppf(u)`$]$, minus the expected shortfall at level `u` |
 | `moment(k)` | $E[Z^k]$: `inf` for an even moment that diverges, NaN for an odd one that does not exist |
 | `mean`, `variance`, `skewness`, `kurtosis` | 0, 1, $E[Z^3]$ and $E[Z^4]$ |
 | `rvs(size=None, *, seed=None)` | random draws |
@@ -216,7 +221,7 @@ ConfidenceSet(reduction=GeneralToSpecific(), holdout=0.2, confidence=0.90,
 
 `BatchFitResult` maps series names to `EstimationResult` objects, and has `results`, `failures` (a mapping to `BatchFitFailure` records), `succeeded`, `failed`, `warnings`, `warning_summary`, `elapsed` and `to_dataframe()`. `BatchFitFailure` has the fields `series`, `error_type`, `message`, `elapsed` and `timed_out`.
 
-`RollingFitResult` is a sequence of `RollingFitWindow(start, stop, label, batch)`, and `RollingDCCResult` a sequence of `RollingDCCWindow(start, stop, label, result)`. `start` and `stop` delimit the rows of the window, with `stop` exclusive, and `label` is the index label of its last row.
+`RollingFitResult` is a sequence of `RollingFitWindow(start, stop, label, batch)`, whose `result` is the window's fit when the data are one series, and `RollingDCCResult` a sequence of `RollingDCCWindow(start, stop, label, result)`. `start` and `stop` delimit the rows of the window, with `stop` exclusive, and `label` is the index label of its last row.
 
 ## Errors
 

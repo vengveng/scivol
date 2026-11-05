@@ -155,6 +155,47 @@ Diebold-Mariano: statistic=-6.34343, df=1499, p_value=2.968e-10
 
 A negative Diebold-Mariano statistic means the first forecast has the smaller losses. The test uses a Bartlett ([Newey and West, 1987](references.md#newey-west-1987)) long-run variance with bandwidth $\lfloor n^{1/3}\rfloor$ by default, at least `horizon - 1`, the small-sample correction of [Harvey, Leybourne and Newbold (1997)](references.md#harvey-leybourne-newbold-1997) and a Student-t reference with $n-1$ degrees of freedom. The model confidence set resamples the loss matrix by a circular block bootstrap with `draws` resamples (4999 by default) drawn from `seed`, and returns the forecasts kept, those eliminated in order, and each forecast's step-down p-value; `statistic="R"` selects the range statistic in place of the maximum.
 
+## Backtesting value at risk
+
+A value-at-risk forecast at level $p$ is violated when the return falls below minus the forecast. `stats.kupiec`, `stats.christoffersen` and `stats.dynamic_quantile` test a series of such forecasts, taking the realized returns, the forecasts as positive losses, as `ForecastResult.var` gives them, and the level. The example refits two models on a moving window of 1,000 observations, forecasts the 1% value at risk one day ahead, and tests the 500 forecasts against the returns that followed. The data come from a GJR-GARCH model with skewed t innovations:
+
+```python
+import numpy as np
+from scivol import GARCH, GJRGARCH, Normal, SkewT, stats
+
+y = (GJRGARCH(1, 1) + SkewT()).simulate(1500, [0.05, 0.03, 0.1, 0.88, 0.12, -0.15], seed=11).data
+
+for spec in (GJRGARCH(1, 1) + SkewT(), GARCH(1, 1) + Normal()):
+    rolling = spec.fit_rolling(y[:-1], window=1000, step=1)
+    var = np.array([w.result.forecast(1).var(0.01)[0] for w in rolling])
+    realized = y[1000:]
+    print(spec)
+    print(stats.kupiec(realized, var, 0.01))
+    print(stats.christoffersen(realized, var, 0.01))
+    print(stats.dynamic_quantile(realized, var, 0.01))
+```
+
+```text
+GJR-GARCH(1,1)+SkewT
+Kupiec(0.01): statistic=0.943116, df=1, p_value=0.3315
+Christoffersen(0.01): statistic=0.971354, df=2, p_value=0.6153
+DQ(4): statistic=2.60509, df=6, p_value=0.8565
+GARCH(1,1)+Normal
+Kupiec(0.01): statistic=3.91362, df=1, p_value=0.0479
+Christoffersen(0.01): statistic=5.68516, df=2, p_value=0.05828
+DQ(4): statistic=15.121, df=6, p_value=0.01934
+```
+
+The window ending at row $t-1$ forecasts row $t$, so the forecasts line up with `y[1000:]`. The model that generated the data has 3 violations in 500 forecasts, close to the expected 5. The Gaussian GARCH model, whose thin tails understate the losses, has 10, and the Kupiec and dynamic quantile tests reject it at the 5% level.
+
+| Function | Test |
+| --- | --- |
+| `kupiec(returns, var, level)` | The violation rate equals `level`: the likelihood ratio of the observed rate against `level`, $\chi^2_1$ ([Kupiec, 1995](references.md#kupiec-1995)); reports `violations` and `observations` |
+| `christoffersen(returns, var, level)` | Conditional coverage: the violations, as a first-order Markov chain, are independent with probability `level`, $\chi^2_2$, conditional on the first row ([Christoffersen, 1998](references.md#christoffersen-1998)); `independence` holds the test of independence alone, $\chi^2_1$, and `transitions` the counts `n00`, `n01`, `n10` and `n11` |
+| `dynamic_quantile(returns, var, level, lags=4)` | The demeaned violations $I_t-p$ are unpredictable from an intercept, their `lags` lags and the forecast itself: the Wald statistic of that regression, $\chi^2_{\text{lags}+2}$ ([Engle and Manganelli, 2004](references.md#engle-manganelli-2004)), on the rows after the first `lags` |
+
+The Markov chain's alternative needs a violation and a non-violation that are each followed by another row. Without one, for example in a sample with no violations before its last row, both Christoffersen tests report `not_estimable`, and the Kupiec test still tests the rate. The dynamic quantile regression is singular when its regressors are constant, for example without any violations, and it then reports `not_estimable` too. The tests take the forecasts as given and do not correct for their estimation.
+
 ## Status values
 
 | Status | Meaning |

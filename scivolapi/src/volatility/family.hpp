@@ -143,6 +143,11 @@ public:
     // Exact variance forecasts for out.size() <= exact_variance_horizon() rows.
     virtual void variance_forecast(const Layout& layout, const double* theta, const FilteredPaths& filtered,
                                    std::span<double> out) const = 0;
+    // The news impact curve (Engle and Ng 1993): the next variance at each
+    // latest residual e[k], with the lagged variances at `variance` and the
+    // earlier residuals' terms at their expectation given it.
+    virtual void news_impact(const Layout& layout, const double* theta, double variance,
+                             std::span<const double> e, std::span<double> out) const = 0;
 
     // The volatility block's immediate restrictions.
     virtual void restrictions(const Layout& layout, RestrictionBuilder& out) const = 0;

@@ -67,6 +67,10 @@ The papers and books cited throughout these pages, in alphabetical order by auth
 
 - Carbon, Michel, and Francq, Christian (2011). "Portmanteau goodness-of-fit test for asymmetric power GARCH models." *Austrian Journal of Statistics*, **40**(1&2), 55–64. DOI: [10.17713/ajs.v40i1&2.197](https://doi.org/10.17713/ajs.v40i1&2.197). [Original issue paper](https://www.stat.tugraz.at/AJS/ausg111%2B2/111%2B2Francq.pdf). The journal website's later upload date is 2016; the issue and original paper are dated 2011.
 
+<a id="christoffersen-1998"></a>
+
+- Christoffersen, Peter F. (1998). "Evaluating interval forecasts." *International Economic Review*, **39**(4), 841–862. DOI: [10.2307/2527341](https://doi.org/10.2307/2527341).
+
 <a id="corsi-2009"></a>
 
 - Corsi, Fulvio (2009). "A simple approximate long-memory model of realized volatility." *Journal of Financial Econometrics*, **7**(2), 174–196. DOI: [10.1093/jjfinec/nbp001](https://doi.org/10.1093/jjfinec/nbp001).
@@ -98,6 +102,10 @@ The papers and books cited throughout these pages, in alphabetical order by auth
 <a id="engle-bollerslev-1986"></a>
 
 - Engle, Robert F., and Bollerslev, Tim (1986). "Modelling the persistence of conditional variances." *Econometric Reviews*, **5**(1), 1–50. DOI: [10.1080/07474938608800095](https://doi.org/10.1080/07474938608800095).
+
+<a id="engle-manganelli-2004"></a>
+
+- Engle, Robert F., and Manganelli, Simone (2004). "CAViaR: Conditional autoregressive value at risk by regression quantiles." *Journal of Business & Economic Statistics*, **22**(4), 367–381. DOI: [10.1198/073500104000000370](https://doi.org/10.1198/073500104000000370).
 
 <a id="engle-ng-1993"></a>
 
@@ -144,6 +152,10 @@ The papers and books cited throughout these pages, in alphabetical order by auth
 
 - Kraft, Dieter (1988). *A software package for sequential quadratic programming*. DFVLR-FB **88-28**, Deutsche Forschungs- und Versuchsanstalt für Luft- und Raumfahrt, Oberpfaffenhofen. 34 pp.
 
+
+<a id="kupiec-1995"></a>
+
+- Kupiec, Paul H. (1995). "Techniques for verifying the accuracy of risk measurement models." *Journal of Derivatives*, **3**(2), 73–84. DOI: [10.3905/jod.1995.407942](https://doi.org/10.3905/jod.1995.407942).
 
 <a id="lawson-hanson-1995"></a>
 

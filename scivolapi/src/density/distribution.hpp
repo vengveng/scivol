@@ -30,6 +30,12 @@ namespace scivolapi::detail {
 [[nodiscard]] ExpectationStatus quantiles(DensityKind, const double* shape, const double* u,
                                          std::size_t n, double* out) noexcept;
 
+// The lower tail means E[z | z <= F^-1(u)] at n probabilities, the expected
+// shortfall of the standardized law with its sign: closed forms for the
+// Normal, Student-t, skewed t and GED, tail quadrature for the GH family.
+[[nodiscard]] ExpectationStatus tail_means(DensityKind, const double* shape, const double* u,
+                                          std::size_t n, double* out) noexcept;
+
 // Fixed probabilities; only requested derivatives are accessed.
 [[nodiscard]] ExpectationStatus student_quantiles(const StudentProbabilities&, double eta, int order,
                                                  StudentQuantileCache&) noexcept;

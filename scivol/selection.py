@@ -150,8 +150,7 @@ class SelectionResult:
                      **c.information_criteria, success=c.certified,
                      adequacy=c.diagnostics.get("status", "not_evaluated"),
                      terminal=c.key in terminals, confidence_set=c.key in confidence,
-                     failure_reason=c.failure_reason, encompassing=dict(c.encompassing),
-                     key=c.key) for c in self.candidates]
+                     failure_reason=c.failure_reason) for c in self.candidates]
         try:
             import pandas as pd
         except ImportError:

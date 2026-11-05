@@ -179,6 +179,8 @@ def test_forecasts_and_simulations_run_at_the_start(volatility, density):
         assert np.all(np.isfinite(out["residual_variance"][:exact])) and np.all(out["residual_variance"] > 0)
     simulated = api.simulate_series(model, theta, z, None)
     assert np.all(np.isfinite(simulated["y"]))
+    impact = np.asarray(model.news_impact(theta, np.linspace(-4.0, 4.0, 9)))
+    assert np.all(np.isfinite(impact)) and np.all(impact > 0)
 
 
 @pytest.mark.parametrize("density", DENSITIES)
@@ -213,3 +215,6 @@ def test_density_functions_and_moments_agree(density):
     lower, _ = api.distribution(kind, shape, z)
     assert lower[0] == pytest.approx(quad(f, -np.inf, -1.3)[0], rel=1e-8)
     np.testing.assert_allclose(api.quantiles(kind, shape, np.ascontiguousarray(lower), False), z, rtol=1e-9)
+    q = api.quantiles(kind, shape, np.array([0.05]), False)[0]
+    tail = quad(lambda z: z * f(z), -np.inf, q, limit=400, epsabs=0.0, epsrel=1e-12)[0] / 0.05
+    assert api.tail_means(kind, shape, np.array([0.05]))[0] == pytest.approx(tail, rel=1e-9)

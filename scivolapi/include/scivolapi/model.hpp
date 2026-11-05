@@ -233,6 +233,14 @@ public:
     // exponential-moment product). Infinity means a divergent moment; NaN means
     // unavailable, nonstationary, invalid, or not representable in double precision.
     [[nodiscard]] double unconditional_variance(std::span<const double> theta) const;
+    // The news impact curve (Engle and Ng 1993): the next variance at each
+    // latest residual, with the lagged variances at `variance` and the earlier
+    // residuals' terms at their expectation given it. NaN `variance`: the
+    // stationary level of the recursion's state, from which a simulation
+    // starts (E[h] for GARCH and GJR, exp(E log h) for EGARCH, (E sigma^delta)^(2/delta)
+    // for APARCH); throws std::domain_error when theta is nonstationary.
+    [[nodiscard]] std::vector<double> news_impact(std::span<const double> theta, std::span<const double> residuals,
+                                                  double variance = std::numeric_limits<double>::quiet_NaN()) const;
     // Stationary E[y] = intercept/(1-sum AR-sum HAR). NaN for an unstable
     // implied AR polynomial or exogenous regressors whose means are unknown.
     [[nodiscard]] double unconditional_mean(std::span<const double> theta) const;

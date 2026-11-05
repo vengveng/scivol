@@ -199,7 +199,7 @@ print(StudentT().distribution(eta=0.3).kurtosis)
 inf
 ```
 
-The methods are `pdf`, `logpdf`, `cdf`, `sf`, `ppf`, `isf`, `moment(k)` and `rvs`, and the moments `mean`, `variance`, `skewness` and `kurtosis` (not excess kurtosis); the [API page](../api.md#innovation-distributions) lists them.
+The methods are `pdf`, `logpdf`, `cdf`, `sf`, `ppf`, `isf`, `tail_mean(u)` (the mean below the quantile `ppf(u)`, minus the expected shortfall), `moment(k)` and `rvs`, and the moments `mean`, `variance`, `skewness` and `kurtosis` (not excess kurtosis); the [API page](../api.md#innovation-distributions) lists them.
 
 ## Quantiles and forecasts
 

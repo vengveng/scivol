@@ -122,6 +122,16 @@ class RollingFitWindow:
     label: Any
     batch: BatchFitResult
 
+    @property
+    def result(self) -> "EstimationResult":
+        """The window's fit when `data` is one series."""
+        if len(self.batch.results) + len(self.batch.failures) != 1:
+            raise ValueError("this window holds several series; select one from window.batch by name")
+        if self.batch.failures:
+            failure = next(iter(self.batch.failures.values()))
+            raise ValueError(f"the fit of window {self.start}:{self.stop} failed: {failure.message}")
+        return next(iter(self.batch.results.values()))
+
 
 @dataclass(frozen=True)
 class RollingFitResult(Sequence[RollingFitWindow]):

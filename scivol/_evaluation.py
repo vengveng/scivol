@@ -115,7 +115,28 @@ class ForecastResult(Mapping[str, NDArray[np.float64]]):
         return out[:, 0] if levels.ndim == 0 else out
 
     def var(self, level: float | NDArray[np.float64]) -> NDArray[np.float64]:
+        """Value at risk, -quantile(level): a positive number for a loss on a return series."""
         return -self.quantile(level)
+
+    def es(self, level: float | NDArray[np.float64]) -> NDArray[np.float64]:
+        """Expected shortfall, -E[y | y <= quantile(level)]: the average loss beyond the
+        value at risk. Exact one step ahead; the mean of the simulated paths below their
+        quantile afterwards."""
+        levels = np.asarray(level, dtype=np.float64)
+        flat = np.atleast_1d(levels)
+        if np.any((flat <= 0.0) | (flat >= 1.0)):
+            raise ValueError("Expected shortfall levels must lie strictly between 0 and 1.")
+        out = np.empty((len(self.mean), flat.size))
+        out[0] = api.location_scale_tail_means(float(self.mean[0]), float(self.residual_variance[0]),
+                                               self.density, np.ascontiguousarray(flat))
+        if len(self.mean) > 1:
+            paths = self.simulated_paths()
+            for horizon in range(1, len(self.mean)):
+                column = paths[:, horizon]
+                for j, cutoff in enumerate(np.quantile(column, flat)):
+                    out[horizon, j] = column[column <= cutoff].mean()
+        out = -out
+        return out[:, 0] if levels.ndim == 0 else out
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -305,11 +326,41 @@ class _SuppliedParameters:
         self.message = "Parameters supplied by user."
 
 
+def domain_violations(model: "api.Model", theta: NDArray[np.float64]) -> list[str]:
+    """The conditions of the model's domain that theta violates, as the model names them."""
+    names = model.parameter_names
+    lower, upper = model.bounds()
+    open_lower, open_upper = model.open_bounds()
+
+    def shown(bound: float, strict: bool) -> float:
+        # An open bound at zero is held as the smallest positive double.
+        return 0.0 if strict and abs(bound) <= np.finfo(np.float64).tiny else bound
+
+    out = []
+    for i, value in enumerate(theta):
+        if np.isfinite(lower[i]) and (value < lower[i] or (open_lower[i] and value == lower[i])):
+            out.append(f"{names[i]} {'>' if open_lower[i] else '>='} {shown(lower[i], open_lower[i]):g} "
+                       f"(it is {value:g})")
+        if np.isfinite(upper[i]) and (value > upper[i] or (open_upper[i] and value == upper[i])):
+            out.append(f"{names[i]} {'<' if open_upper[i] else '<='} {shown(upper[i], open_upper[i]):g} "
+                       f"(it is {value:g})")
+    if not out and model.constraint_names:
+        values = np.asarray(model.constraints(np.ascontiguousarray(theta))[0])
+        for name, value, strict in zip(model.constraint_names, values, model.open_constraints()):
+            if value < 0.0 or (strict and value == 0.0):
+                out.append(name)
+    return out
+
+
 def state(spec: Any, model: "api.Model", jet: "api.Jet", y: NDArray[np.float64],
           theta: NDArray[np.float64]) -> FilteredState:
     """Paths, log-likelihood, score and Hessian of the log-likelihood on the scored rows."""
     out = jet.theta(theta, api.VALUE | api.GRADIENT | api.HESSIAN | api.PATHS)
     if not out["valid"] & api.PATHS:
+        violated = domain_violations(model, theta)
+        if violated:
+            raise ValueError("The parameters lie outside the model's domain, which requires "
+                             + "; ".join(violated) + ".")
         raise ValueError(f"The model cannot be filtered at these parameters ({out['status']}).")
     scored = y[jet.first_scored:]
     distribution = density_name(spec)

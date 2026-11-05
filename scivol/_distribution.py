@@ -92,6 +92,11 @@ class Distribution:
         """The upper quantile function, the inverse of sf, accurate for small u."""
         return self._apply(u, lambda v: np.asarray(api.quantiles(self._law.density, self._law.shape, v, True)))
 
+    def tail_mean(self, u: Any) -> Any:
+        """E[Z | Z <= ppf(u)], the mean of the lower tail of probability u; its negative is
+        the expected shortfall at level u."""
+        return self._apply(u, lambda v: np.asarray(api.tail_means(self._law.density, self._law.shape, v)))
+
     def rvs(self, size: Any = None, *, seed: Any = None) -> Any:
         """Random draws, by the quantile function at uniforms from `seed`."""
         u = np.random.default_rng(seed).random(size)

@@ -226,7 +226,9 @@ double gh_log_pdf(const Point& p, double x) noexcept
 // Integrate a tail in units of its endpoint decay length. The rational half-line
 // map is split at the GH centre and its scale, so a narrow core cannot be missed.
 // Scaling by the endpoint density preserves relative accuracy in extreme tails.
-bool integrated_tail(const Point& p, double z, bool upper, double& logarithm) noexcept
+// With `moment`, the log of the tail's first moment about z, the integral of
+// |x - z| f(x) over the tail.
+bool integrated_tail(const Point& p, double z, bool upper, double& logarithm, bool moment = false) noexcept
 {
     const double direction = upper ? 1.0 : -1.0;
     double scale;
@@ -261,7 +263,7 @@ bool integrated_tail(const Point& p, double z, bool upper, double& logarithm) no
         const double difference = p.law == Law::student
             ? -0.5*(1.0+p.eta)*ratio*log1p_ratio(p.eta*ratio,0).value
             : log_pdf(p,x)-reference;
-        return std::exp(difference+std::log(scale)-2.0*std::log1p(-t));
+        return std::exp(difference+std::log(scale)-2.0*std::log1p(-t)+(moment ? std::log(distance) : 0.0));
     };
     CompensatedSum coarse;
     for (std::size_t i = 1; i < count; ++i)
@@ -275,7 +277,7 @@ bool integrated_tail(const Point& p, double z, bool upper, double& logarithm) no
     }
     if (!(sum.total() > 0.0)) return false;
     logarithm = reference+std::log(sum.total());
-    return logarithm <= 4e-13;
+    return moment ? std::isfinite(logarithm) : logarithm <= 4e-13;
 }
 
 bool student_beta_log_tail(double nu, double scale, double log_beta, double x,
@@ -556,6 +558,46 @@ bool invert(const Point& p, double probability, bool upper, double& value) noexc
     return false;
 }
 
+// The lower partial expectation L(q) = integral of x f(x) up to q, for
+// q = F^-1(u). Every law has mean zero, so L(q) is also minus the integral
+// beyond q; the GH quadrature integrates whichever tail has the smaller mass.
+bool partial_expectation(const Point& p, double u, double q, double& value) noexcept
+{
+    switch (p.law) {
+    case Law::normal:
+        value = -std::exp(-0.5*q*q-0.5*log_2pi); return true;
+    case Law::student: {
+        // Hansen's skewed t is the standardized t of w = (b q + a)/(1 -+ lambda)
+        // on each side of -a/b, and the standardized t's partial expectation
+        // is -((1 - 2 eta) + eta w^2)/(1 - eta) g(w), since its derivative is w g(w).
+        const double n = std::fma(p.b,q,p.a), weight = n < 0.0 ? 1.0-p.lam : 1.0+p.lam, w = n/weight;
+        const double scale = std::exp(log_pdf(p,q)+std::log(((1.0-2.0*p.eta)+p.eta*w*w)/(1.0-p.eta))
+                                      +2.0*std::log(weight/p.b));
+        value = n < 0.0 ? -scale-p.a*u/p.b : -scale+p.a*(1.0-u)/p.b;
+        return std::isfinite(value);
+    }
+    case Law::ged: {
+        // Integral of |x| f(x) beyond |q|: s Gamma(2/nu)/(2 Gamma(1/nu)) Q(2/nu, (|q|/s)^nu).
+        const double a = 2.0/p.nu, log_ratio = std::log(std::abs(q))-p.kappa;
+        double l;
+        if (!log_gamma_q(a,std::exp(p.nu*log_ratio),2.0*log_ratio,
+                         log_gamma(a),log_gamma_one_plus(a),l)) return false;
+        value = -std::exp(p.kappa+log_gamma(a)-log_two-log_gamma(1.0/p.nu)+l);
+        return std::isfinite(value);
+    }
+    case Law::gh: {
+        // Lower side: L = q u - M, M the lower tail's first moment about q;
+        // upper side: L = -(q (1 - u) + M) with the upper tail's moment.
+        const bool upper = u > 0.5;
+        double l;
+        if (!integrated_tail(p,q,upper,l,true)) return false;
+        value = upper ? -(q*(1.0-u)+std::exp(l)) : q*u-std::exp(l);
+        return std::isfinite(value);
+    }
+    }
+    return false;
+}
+
 constexpr double nodes8[] = {.18343464249564980494,.52553240991632898582,.79666647741362673959,.96028985649753623168};
 constexpr double weights8[] = {.36268378337836198297,.31370664587788728734,.22238103445337447054,.10122853629037625915};
 
@@ -776,6 +818,20 @@ ExpectationStatus quantiles(DensityKind kind, const double* shape, const double*
         double result;
         if (!invert(p,u[i],false,result)) return Status::numerical_failure;
         out[i] = result;
+    }
+    return Status::ok;
+}
+
+ExpectationStatus tail_means(DensityKind kind, const double* shape, const double* u,
+                             std::size_t n, double* out) noexcept
+{
+    Point p;
+    if ((n && (!u || !out)) || !prepare(kind,shape,p)) return Status::numerical_failure;
+    for (std::size_t i = 0; i < n; ++i) if (!valid_probability(u[i])) return Status::numerical_failure;
+    for (std::size_t i = 0; i < n; ++i) {
+        double q, partial;
+        if (!invert(p,u[i],false,q) || !partial_expectation(p,u[i],q,partial)) return Status::numerical_failure;
+        out[i] = partial/u[i];
     }
     return Status::ok;
 }

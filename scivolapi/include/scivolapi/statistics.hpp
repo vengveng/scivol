@@ -158,6 +158,34 @@ Diagnostics diagnostics(Jet&, std::span<const double> theta, std::size_t cells, 
                          std::size_t df_adjustment, Estimator = Estimator::mle, bool estimated = true,
                          std::size_t pit_df_adjustment = 0);
 
+// Value-at-risk backtests. `var` holds the forecasts as positive losses, so
+// row t violates when returns[t] < -var[t]; `level` is the VaR's tail
+// probability (0.01 for a 1% VaR).
+struct Coverage {
+    TestStatistic test; // Kupiec's (1995) LR_uc, chi-square(1)
+    std::size_t violations = 0, observations = 0;
+};
+Coverage kupiec(std::span<const double> returns, std::span<const double> var, double level);
+
+struct ConditionalCoverage {
+    // Christoffersen's (1998) LR_cc, chi-square(2), and LR_ind, chi-square(1),
+    // of the violations' first-order Markov chain conditional on the first row.
+    // A chain that never leaves (or never enters) violation does not identify
+    // the alternative: both tests are not_estimable.
+    TestStatistic test, independence;
+    std::array<std::size_t, 4> transitions{}; // n00, n01, n10, n11
+};
+ConditionalCoverage christoffersen(std::span<const double> returns, std::span<const double> var, double level);
+
+struct DynamicQuantile {
+    // Engle and Manganelli's (2004) DQ test: regressing Hit_t = I_t - level
+    // on an intercept, `lags` lagged hits and var[t]; chi-square(lags + 2).
+    TestStatistic test;
+    std::size_t rows = 0;
+};
+DynamicQuantile dynamic_quantile(std::span<const double> returns, std::span<const double> var, double level,
+                                 std::size_t lags = 4);
+
 struct DieboldMariano {
     TestStatistic test; // Student t_(n-1), two-sided, after HLN correction
     double long_run_variance = std::numeric_limits<double>::quiet_NaN();
@@ -189,5 +217,8 @@ struct InformationCriteria { double aic, bic, hqic; };
 InformationCriteria information_criteria(double log_likelihood, std::size_t parameters, std::size_t rows);
 std::vector<double> location_scale_quantiles(double mean, double variance, const InnovationDensity&,
                                              std::span<const double> probabilities);
+// E[y | y <= q_u] for y = mean + sqrt(variance) z, at each probability u.
+std::vector<double> location_scale_tail_means(double mean, double variance, const InnovationDensity&,
+                                              std::span<const double> probabilities);
 
 } // namespace scivolapi

@@ -60,6 +60,12 @@ public:
         for (double& v : out) v = theta[l.volatility];
     }
 
+    void news_impact(const Layout& l, const double* theta, double, std::span<const double>,
+                     std::span<double> out) const override
+    {
+        for (double& v : out) v = theta[l.volatility];
+    }
+
     void restrictions(const Layout&, RestrictionBuilder&) const override {}
     bool identified(const Layout&, const double*) const override { return true; }
 };

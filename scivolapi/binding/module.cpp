@@ -403,6 +403,9 @@ NB_MODULE(_scivolapi, m)
         .def("persistence", [](const Model& m, const Vector& theta) { return m.persistence(view(theta)); }, "theta"_a)
         .def("unconditional_variance", [](const Model& m, const Vector& theta) { return m.unconditional_variance(view(theta)); }, "theta"_a)
         .def("unconditional_mean", [](const Model& m, const Vector& theta) { return m.unconditional_mean(view(theta)); }, "theta"_a)
+        .def("news_impact", [](const Model& m, const Vector& theta, const Vector& residuals, double variance) {
+            return owned_vector(m.news_impact(view(theta), view(residuals), variance));
+        }, "theta"_a, "residuals"_a, "variance"_a = std::numeric_limits<double>::quiet_NaN())
         .def("innovation_power_moment", [](const Model& m, const Vector& theta, double gamma, double power) {
             return m.innovation_power_moment(view(theta), gamma, power);
         }, "theta"_a, "gamma"_a, "power"_a)
@@ -688,6 +691,16 @@ NB_MODULE(_scivolapi, m)
           },
           "density"_a, "shape"_a, "u"_a, "upper"_a = false,
           "Quantiles of the standardized density at lower-tail (or, with upper, upper-tail) probabilities.");
+    m.def("tail_means",
+          [](DensityKind kind, const std::vector<double>& shape, const Vector& u) {
+              const std::size_t n = u.shape(0);
+              std::vector<double> out(n);
+              if (detail::tail_means(kind, shape.empty() ? nullptr : shape.data(), u.data(), n, out.data())
+                  != detail::ExpectationStatus::ok)
+                  throw std::domain_error("a tail mean could not be computed accurately");
+              return owned_vector(std::move(out));
+          },
+          "density"_a, "shape"_a, "u"_a, "E[z | z <= F^-1(u)] of the standardized density.");
     nb::class_<ModelCapabilities>(m, "ModelCapabilities")
         .def_ro("chart_covers_domain", &ModelCapabilities::chart_covers_domain)
         .def_ro("density_free_recursion", &ModelCapabilities::density_free_recursion)
@@ -1007,6 +1020,28 @@ NB_MODULE(_scivolapi, m)
         out["bandwidth"] = test.bandwidth;
         return out;
     }, "loss_a"_a, "loss_b"_a, "horizon"_a = 1, "bandwidth"_a = -1);
+    m.def("kupiec", [](const Vector& returns, const Vector& var, double level) {
+        const Coverage test = kupiec(view(returns), view(var), level);
+        nb::dict out = test_dictionary(test.test);
+        out["violations"] = test.violations;
+        out["observations"] = test.observations;
+        return out;
+    }, "returns"_a, "var"_a, "level"_a);
+    m.def("christoffersen", [](const Vector& returns, const Vector& var, double level) {
+        const ConditionalCoverage test = christoffersen(view(returns), view(var), level);
+        nb::dict out = test_dictionary(test.test), transitions;
+        out["independence"] = test_dictionary(test.independence);
+        const char* names[] = {"n00", "n01", "n10", "n11"};
+        for (std::size_t i = 0; i < 4; ++i) transitions[names[i]] = test.transitions[i];
+        out["transitions"] = transitions;
+        return out;
+    }, "returns"_a, "var"_a, "level"_a);
+    m.def("dynamic_quantile", [](const Vector& returns, const Vector& var, double level, std::size_t lags) {
+        const DynamicQuantile test = dynamic_quantile(view(returns), view(var), level, lags);
+        nb::dict out = test_dictionary(test.test);
+        out["rows"] = test.rows;
+        return out;
+    }, "returns"_a, "var"_a, "level"_a, "lags"_a = 4);
     m.def("mcs_block_length", &mcs_block_length, "rows"_a, "requested"_a = -1);
     m.def("model_confidence_set", [](const Matrix& losses, const Matrix& uniforms, std::size_t block_length,
                                     double alpha, const std::string& statistic) {
@@ -1028,4 +1063,7 @@ NB_MODULE(_scivolapi, m)
     m.def("location_scale_quantiles", [](double mean, double variance, const InnovationDensity& law, const Vector& u) {
         return owned_vector(location_scale_quantiles(mean, variance, law, view(u)));
     });
+    m.def("location_scale_tail_means", [](double mean, double variance, const InnovationDensity& law, const Vector& u) {
+        return owned_vector(location_scale_tail_means(mean, variance, law, view(u)));
+    }, "mean"_a, "variance"_a, "law"_a, "probabilities"_a);
 }

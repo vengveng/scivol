@@ -713,6 +713,90 @@ Adequacy adequacy(Jet& jet, std::span<const double> theta, double level, Estimat
     return out;
 }
 
+namespace {
+
+std::vector<unsigned char> violations(std::span<const double> returns, std::span<const double> var, double level)
+{
+    require(returns.size() == var.size() && returns.size() >= 2, "VaR backtests need returns and forecasts of equal length");
+    require(level > 0.0 && level < 1.0, "the VaR level must lie strictly between 0 and 1");
+    finite(returns);
+    finite(var);
+    std::vector<unsigned char> hits(returns.size());
+    for (std::size_t t = 0; t < returns.size(); ++t) hits[t] = returns[t] < -var[t];
+    return hits;
+}
+
+// count * log(probability), zero when the count is zero.
+double weighted_log(double count, double probability)
+{
+    return count == 0.0 ? 0.0 : count * std::log(probability);
+}
+
+double bernoulli_log_likelihood(double zeros, double ones, double probability)
+{
+    return weighted_log(zeros, 1.0 - probability) + weighted_log(ones, probability);
+}
+
+double fitted_bernoulli(double zeros, double ones)
+{
+    return bernoulli_log_likelihood(zeros, ones, ones / (zeros + ones));
+}
+
+} // namespace
+
+Coverage kupiec(std::span<const double> returns, std::span<const double> var, double level)
+{
+    const auto hits = violations(returns, var, level);
+    Coverage out;
+    out.observations = hits.size();
+    out.violations = std::size_t(std::count(hits.begin(), hits.end(), 1));
+    const double ones = double(out.violations), zeros = double(out.observations) - ones;
+    const double statistic = 2.0 * (fitted_bernoulli(zeros, ones) - bernoulli_log_likelihood(zeros, ones, level));
+    out.test = chi_test(std::max(statistic, 0.0), 1);
+    return out;
+}
+
+ConditionalCoverage christoffersen(std::span<const double> returns, std::span<const double> var, double level)
+{
+    const auto hits = violations(returns, var, level);
+    ConditionalCoverage out;
+    for (std::size_t t = 1; t < hits.size(); ++t) ++out.transitions[2 * hits[t - 1] + hits[t]];
+    out.test.df = 2;
+    out.independence.df = 1;
+    const auto [n00, n01, n10, n11] = out.transitions;
+    if (n00 + n01 == 0 || n10 + n11 == 0) return out;
+    const double markov = fitted_bernoulli(double(n00), double(n01)) + fitted_bernoulli(double(n10), double(n11));
+    const double zeros = double(n00 + n10), ones = double(n01 + n11);
+    out.independence = chi_test(std::max(2.0 * (markov - fitted_bernoulli(zeros, ones)), 0.0), 1);
+    out.test = chi_test(std::max(2.0 * (markov - bernoulli_log_likelihood(zeros, ones, level)), 0.0), 2);
+    return out;
+}
+
+DynamicQuantile dynamic_quantile(std::span<const double> returns, std::span<const double> var, double level,
+                                 std::size_t lags)
+{
+    const auto hits = violations(returns, var, level);
+    require(lags > 0 && hits.size() > lags + 3, "the DQ test needs positive lags and more rows than lags + 3");
+    const std::size_t columns = lags + 1;
+    DynamicQuantile out;
+    out.rows = hits.size() - lags;
+    out.test.df = lags + 2;
+    std::vector<double> response(out.rows), design(out.rows * columns);
+    for (std::size_t r = 0; r < out.rows; ++r) {
+        const std::size_t t = r + lags;
+        response[r] = hits[t] - level;
+        for (std::size_t k = 1; k <= lags; ++k) design[r * columns + k - 1] = hits[t - k] - level;
+        design[r * columns + lags] = var[t];
+    }
+    const Regression fit = regress(response, design, columns);
+    if (!fit.valid) return out;
+    // Hit'X(X'X)^-1 X'Hit is the explained sum of squares about zero.
+    double squares = 0.0;
+    for (double h : response) squares += h * h;
+    out.test = chi_test(std::max(squares - fit.sse, 0.0) / (level * (1.0 - level)), lags + 2);
+    return out;
+}
+
 DieboldMariano diebold_mariano(std::span<const double> loss_a, std::span<const double> loss_b,
                                std::size_t horizon, int bandwidth)
 {
@@ -908,6 +992,20 @@ std::vector<double> location_scale_quantiles(double mean, double variance, const
     std::vector<double> out(probabilities.size());
     if (detail::quantiles(law.density, law.shape.data(), probabilities.data(), probabilities.size(), out.data())
         != detail::ExpectationStatus::ok) throw std::range_error("innovation quantiles could not be evaluated accurately");
+    const double sigma = std::sqrt(variance);
+    for (double& x : out) x = std::fma(sigma, x, mean);
+    finite(out);
+    return out;
+}
+
+std::vector<double> location_scale_tail_means(double mean, double variance, const InnovationDensity& law,
+                                              std::span<const double> probabilities)
+{
+    require(std::isfinite(mean) && std::isfinite(variance) && variance > 0.0,
+            "tail means require finite location and positive finite variance");
+    std::vector<double> out(probabilities.size());
+    if (detail::tail_means(law.density, law.shape.data(), probabilities.data(), probabilities.size(), out.data())
+        != detail::ExpectationStatus::ok) throw std::range_error("innovation tail means could not be evaluated accurately");
     const double sigma = std::sqrt(variance);
     for (double& x : out) x = std::fma(sigma, x, mean);
     finite(out);

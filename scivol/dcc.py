@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
@@ -98,6 +99,15 @@ def _prepare_univariate_results(
     return np.ascontiguousarray(np.column_stack(std_resid_cols), dtype=np.float64), fitted
 
 
+@contextmanager
+def _naming_series(columns: Optional[List[Any]], i: int) -> Iterator[None]:
+    """Prefix a marginal's error with the series it belongs to."""
+    try:
+        yield
+    except ValueError as error:
+        raise ValueError(f"series {columns[i] if columns is not None else i}: {error}") from error
+
+
 def _resolve_per_series_inputs(
     x: Any,
     n_series: int,
@@ -109,23 +119,20 @@ def _resolve_per_series_inputs(
         return [None] * n_series
 
     if isinstance(x, Mapping):
+        # Series without regressors may be left out of the mapping.
         resolved: List[Any] = []
-        missing: List[str] = []
+        used: set = set()
         for i in range(n_series):
-            keys: List[Any] = []
-            if columns is not None:
-                keys.append(columns[i])
+            keys: List[Any] = [columns[i]] if columns is not None else []
             keys.extend((i, str(i)))
-            found = False
-            for key in keys:
-                if key in x:
-                    resolved.append(x[key])
-                    found = True
-                    break
-            if not found:
-                missing.append(str(columns[i] if columns is not None else i))
-        if missing:
-            raise KeyError(f"{label} mapping is missing entries for series {missing}.")
+            key = next((k for k in keys if k in x), None)
+            resolved.append(None if key is None else x[key])
+            if key is not None:
+                used.add(key)
+        unknown = [str(k) for k in x if k not in used]
+        if unknown:
+            names = [str(c) for c in columns] if columns is not None else [str(i) for i in range(n_series)]
+            raise KeyError(f"{label} mapping names unknown series {unknown}; the series are {names}.")
         return resolved
 
     if isinstance(x, (list, tuple)):
@@ -146,7 +153,10 @@ def _stack_marginal_forecasts(
     columns: Optional[List[Any]],
 ) -> Tuple[List["ForecastResult"], NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
     per_series_x = _resolve_per_series_inputs(x, len(results), columns, label="x")
-    forecasts = [result.forecast(horizon=horizon, x=per_series_x[i]) for i, result in enumerate(results)]
+    forecasts = []
+    for i, result in enumerate(results):
+        with _naming_series(columns, i):
+            forecasts.append(result.forecast(horizon=horizon, x=per_series_x[i]))
     mean = np.column_stack([np.asarray(fc.mean, dtype=np.float64) for fc in forecasts])
     variance = np.column_stack([np.asarray(fc.variance, dtype=np.float64) for fc in forecasts])
     residual_variance = np.column_stack([np.asarray(fc.residual_variance, dtype=np.float64) for fc in forecasts])
@@ -429,8 +439,11 @@ class _CorrelationResultMixin:
             z = np.ascontiguousarray(correlation["innovation"][:, :, i])
             future_x = None if future[i] is None else np.ascontiguousarray(
                 np.asarray(future[i], dtype=np.float64).reshape(horizon, -1))
-            out = api.simulate(marginal._native_model, marginal._theta, marginal._native_y, z,
-                               marginal._native_x, future_x)
+            with _naming_series(self._columns, i):
+                if marginal._native_x is not None and future_x is None:
+                    raise ValueError(f"the marginal model has regressors; pass their {horizon} future rows in x")
+                out = api.simulate(marginal._native_model, marginal._theta, marginal._native_y, z,
+                                   marginal._native_x, future_x)
             for key in columns:
                 columns[key][:, :, i] = out[key]
         columns["innovation"] = correlation["innovation"]

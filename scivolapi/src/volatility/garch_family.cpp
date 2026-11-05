@@ -190,6 +190,27 @@ public:
                         out);
     }
 
+    // h = omega + (alpha_1 + gamma_1 1(e < 0)) e^2 + sum_{i>1} (alpha_i + kappa gamma_i) v + sum beta_j v.
+    void news_impact(const Layout& l, const double* theta, double v, std::span<const double> e,
+                     std::span<double> out) const override
+    {
+        double kappa = 0.0;
+        if (Leverage && l.p > 1) {
+            MomentResult m;
+            if (!negative_second_moment(l.density, l.shape_count ? theta + l.shapes : nullptr, 0, m))
+                throw std::domain_error("the density's negative second moment is not available at theta");
+            kappa = m.value;
+        }
+        const double* block = theta + l.volatility;
+        double level = block[0];
+        for (std::size_t i = 1; i < l.p; ++i) level += (block[1 + i] + (Leverage ? kappa * block[1 + l.p + i] : 0.0)) * v;
+        for (std::size_t j = 0; j < l.q; ++j) level += block[beta(l.p) + j] * v;
+        for (std::size_t k = 0; k < e.size(); ++k) {
+            const double loading = l.p ? block[1] + (Leverage && e[k] < 0.0 ? block[1 + l.p] : 0.0) : 0.0;
+            out[k] = level + loading * e[k] * e[k];
+        }
+    }
+
     void restrictions(const Layout& l, RestrictionBuilder& out) const override
     {
         using T = RestrictionType;

@@ -229,6 +229,33 @@ class EstimationResult:
         """Exact stationary E[h], infinity if divergent, NaN if unavailable."""
         return self._native()[0].unconditional_variance(self._theta)
 
+    def news_impact(self, residuals: Any, *, variance: Optional[float] = None) -> Any:
+        """The news impact curve (Engle and Ng 1993): the next conditional variance
+        at each value of the latest residual, with the lagged variances held at
+        `variance` and the earlier residuals' terms at their expectation given it.
+        By default the lagged variances are at the stationary level of the
+        recursion (E[h] for GARCH and GJR-GARCH, exp(E log h) for EGARCH and
+        (E sigma^delta)^(2/delta) for APARCH), which needs a stationary estimate.
+        Takes a scalar, an array or a Series and returns the same kind."""
+        model = self._native()[0]
+        reference = np.nan if variance is None else float(variance)
+
+        def curve(values: NDArray[np.float64]) -> NDArray[np.float64]:
+            try:
+                return np.asarray(model.news_impact(self._theta, values, reference))
+            except ValueError as error:
+                if variance is None and "nonstationary" in str(error):
+                    raise ValueError("the estimate is nonstationary, so it has no stationary variance level; "
+                                     "pass the lagged variance as variance=") from error
+                raise
+
+        if isinstance(residuals, pd.Series):
+            return pd.Series(curve(np.ascontiguousarray(residuals.to_numpy(dtype=np.float64))),
+                             index=residuals.index, name="news_impact")
+        values = np.asarray(residuals, dtype=np.float64)
+        out = curve(np.ascontiguousarray(values.ravel())).reshape(values.shape)
+        return float(out) if out.ndim == 0 else out
+
     @property
     def unconditional_mean(self) -> float:
         """Stationary E[y], unavailable when exogenous means are unknown."""

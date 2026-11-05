@@ -359,6 +359,23 @@ public:
         }
     }
 
+    // log h = omega + alpha_1 (|z| - m) + gamma_1 z + sum beta_j log v, z = e / sqrt(v);
+    // the earlier shocks' terms have expectation zero.
+    void news_impact(const Layout& l, const double* theta, double v, std::span<const double> e,
+                     std::span<double> out) const override
+    {
+        MomentResult moment;
+        if (!absolute_moment(l.density, l.shape_count ? theta + l.shapes : nullptr, 0, moment))
+            throw std::domain_error("the density's absolute moment is not available at theta");
+        double level = theta[l.volatility];
+        for (std::size_t j = 0; j < l.q; ++j) level += theta[beta_index(l) + j] * std::log(v);
+        const double alpha = l.p ? theta[l.volatility + 1] : 0.0, gamma = l.p ? theta[l.volatility + 1 + l.p] : 0.0;
+        for (std::size_t k = 0; k < e.size(); ++k) {
+            const double z = e[k] / std::sqrt(v);
+            out[k] = std::exp(level + alpha * (std::abs(z) - moment.value) + gamma * z);
+        }
+    }
+
     void restrictions(const Layout& l, RestrictionBuilder& out) const override
     {
         using T = RestrictionType;

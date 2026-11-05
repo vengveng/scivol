@@ -174,6 +174,26 @@ public:
         out[0] = filtered.next_variance;
     }
 
+    // s = omega + alpha_1 (|e| - gamma_1 e)^delta + sum_{i>1} alpha_i E(|z| - gamma_i z)^delta s_v
+    //     + sum beta_j s_v,  s_v = v^(delta/2),  h = s^(2/delta).
+    void news_impact(const Layout& l, const double* theta, double v, std::span<const double> e,
+                     std::span<double> out) const override
+    {
+        const double d = theta[delta(l)], level_v = std::pow(v, 0.5 * d);
+        double level = theta[l.volatility];
+        for (std::size_t i = 1; i < l.p; ++i) {
+            MomentResult m;
+            if (!power_moment(l.density, l.shape_count ? theta + l.shapes : nullptr, theta[gamma(l) + i], d, 0, m))
+                throw std::domain_error("the density's power moment is not available at theta");
+            level += theta[alpha(l) + i] * m.value * level_v;
+        }
+        for (std::size_t j = 0; j < l.q; ++j) level += theta[beta(l) + j] * level_v;
+        for (std::size_t k = 0; k < e.size(); ++k) {
+            const double shock = l.p ? theta[alpha(l)] * std::pow(std::abs(e[k]) - theta[gamma(l)] * e[k], d) : 0.0;
+            out[k] = std::pow(level + shock, 2.0 / d);
+        }
+    }
+
     void restrictions(const Layout& l, RestrictionBuilder& out) const override
     {
         using T = RestrictionType;

@@ -43,7 +43,7 @@ evidence. Do not wrap builds or tests in tracking scripts.
   asking the family: a `VolatilityFamily` (`src/volatility/family.hpp`, one
   `<name>_family.cpp` each, next to the recursion class) declares its block,
   charts, simplex weights, constraints, starts, scaling, moments, forecasts,
-  simulation seed, restrictions and identification; a `DensityFamily`
+  news impact curve, simulation seed, restrictions and identification; a `DensityFamily`
   (`src/density/family.hpp`, one `<name>_family.cpp` each) its shape domain,
   derived shapes, tail index, residual kinks, nested restrictions, moments,
   exponential moment, distribution functions' law and its likelihood loops,

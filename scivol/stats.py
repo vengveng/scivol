@@ -2,7 +2,8 @@
 
 Tests of any series (`jarque_bera`, `ljung_box`, `arch_lm`), of probability
 integral transforms (`dgt`, `berkowitz`), of forecast losses
-(`diebold_mariano`, `model_confidence_set`) and of fitted models (`li_mak`,
+(`diebold_mariano`, `model_confidence_set`), of value-at-risk forecasts
+(`kupiec`, `christoffersen`, `dynamic_quantile`) and of fitted models (`li_mak`,
 `absolute_li_mak`, `sign_bias`, `absolute_sign_bias`, `wald`,
 `likelihood_ratio`). Each test returns a `TestResult`; the statistics and
 their reference distributions are computed by the native library.
@@ -26,7 +27,7 @@ if TYPE_CHECKING:
 __all__ = [
     "TestResult", "Diagnostics", "ConfidenceSetResult",
     "jarque_bera", "ljung_box", "arch_lm", "dgt", "berkowitz", "sign_bias",
-    "diebold_mariano", "model_confidence_set",
+    "diebold_mariano", "model_confidence_set", "kupiec", "christoffersen", "dynamic_quantile",
     "li_mak", "absolute_li_mak", "absolute_sign_bias", "wald", "likelihood_ratio",
 ]
 
@@ -232,6 +233,52 @@ def model_confidence_set(losses: Any, *, confidence: float = 0.90, block_length:
                                eliminated=tuple(labels[i] for i in out["eliminated"]),
                                p_values=pd.Series(np.asarray(out["p_values"]), index=labels, name="p_value"),
                                confidence=confidence, block_length=length, statistic=statistic)
+
+
+# =============================================================================
+# TESTS OF VALUE-AT-RISK FORECASTS
+# =============================================================================
+
+def _backtest_inputs(returns: Any, var: Any, level: float) -> tuple[NDArray[np.float64], NDArray[np.float64], float]:
+    r, v = _series(returns, "returns"), _series(var, "var")
+    if r.size != v.size:
+        raise ValueError(f"returns and var must have the same length ({r.size} and {v.size})")
+    level = float(level)
+    if not 0.0 < level < 1.0:
+        raise ValueError("level is the VaR's tail probability and must lie strictly between 0 and 1")
+    return r, v, level
+
+
+def kupiec(returns: Any, var: Any, level: float) -> TestResult:
+    """Kupiec's (1995) proportion-of-failures test that the VaR forecasts `var`
+    (positive losses, as `ForecastResult.var` gives them) are violated, returns[t]
+    < -var[t], with probability `level`: the likelihood ratio of the observed
+    violation rate against `level`, chi-square(1). `violations` and
+    `observations` are in the details."""
+    return _from_native(f"Kupiec({level:g})", api.kupiec(*_backtest_inputs(returns, var, level)))
+
+
+def christoffersen(returns: Any, var: Any, level: float) -> TestResult:
+    """Christoffersen's (1998) conditional coverage test of VaR forecasts: the
+    violations form a first-order Markov chain, tested against independent
+    violations with probability `level`, chi-square(2), conditional on the first
+    row. `independence` holds the test of independence alone, chi-square(1), and
+    `transitions` the counts n00, n01, n10 and n11. Without a violation followed
+    by another row (or without a non-violation) the alternative is not
+    identified, and both tests have the status "not_estimable"."""
+    values = api.christoffersen(*_backtest_inputs(returns, var, level))
+    result = _from_native(f"Christoffersen({level:g})", values, drop=("independence",))
+    result.details["independence"] = _from_native(f"Christoffersen independence({level:g})", values["independence"])
+    return result
+
+
+def dynamic_quantile(returns: Any, var: Any, level: float, lags: int = 4) -> TestResult:
+    """Engle and Manganelli's (2004) dynamic quantile test of VaR forecasts:
+    regressing the demeaned violations I_t - level on an intercept, `lags` of
+    their own lags and var[t], the joint test that every coefficient is zero,
+    chi-square(lags + 2). The regression uses the rows after the first `lags`
+    (`rows` in the details)."""
+    return _from_native(f"DQ({lags})", api.dynamic_quantile(*_backtest_inputs(returns, var, level), int(lags)))
 
 
 # =============================================================================

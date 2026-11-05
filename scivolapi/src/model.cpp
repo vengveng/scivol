@@ -522,6 +522,22 @@ double Model::unconditional_variance(std::span<const double> theta) const
     return layout.family->unconditional_variance(*this, layout, theta);
 }
 
+std::vector<double> Model::news_impact(std::span<const double> theta, std::span<const double> residuals,
+                                       double variance) const
+{
+    check_size(theta, dimension());
+    if (!evaluable(theta)) throw std::invalid_argument("the news impact curve needs parameters inside the domain");
+    for (double e : residuals)
+        if (!std::isfinite(e)) throw std::invalid_argument("the news impact curve needs finite residuals");
+    const Layout layout(spec_);
+    if (std::isnan(variance)) variance = layout.family->simulation_seed(layout, theta.data());
+    if (!(variance > 0.0) || !std::isfinite(variance))
+        throw std::invalid_argument("the lagged variance of the news impact curve must be positive and finite");
+    std::vector<double> out(residuals.size());
+    layout.family->news_impact(layout, theta.data(), variance, residuals, out);
+    return out;
+}
+
 double Model::unconditional_mean(std::span<const double> theta) const
 {
     check_size(theta, dimension());

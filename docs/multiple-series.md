@@ -50,7 +50,7 @@ Calling `.fit()` on a multi-column input is a shortcut for `fit_many(..., on_err
 ```python
 rolling = (GARCH(1, 1) + StudentT()).fit_rolling(returns[:, 0], window=1000, step=250)
 for w in rolling:
-    print(w.start, w.stop, w.label, w.batch["0"].params.round(4).to_numpy())
+    print(w.start, w.stop, w.label, w.result.params.round(4).to_numpy())
 ```
 
 ```text
@@ -61,7 +61,7 @@ for w in rolling:
 1000 2000 1999 [0.151  0.1027 0.7942 0.0353]
 ```
 
-Each window covers the rows `start` to `stop - 1`, and `label` is the index label, or position, of its last row. Windows end at `window`, `window + step`, and so on through the sample; `expanding=True` starts every window at the first row. The result is a `RollingFitResult`, a sequence of `RollingFitWindow(start, stop, label, batch)`, where `batch` is a `BatchFitResult` over the columns of `data`. Windows run in order, and the columns within a window in parallel.
+Each window covers the rows `start` to `stop - 1`, and `label` is the index label, or position, of its last row. Windows end at `window`, `window + step`, and so on through the sample; `expanding=True` starts every window at the first row. The result is a `RollingFitResult`, a sequence of `RollingFitWindow(start, stop, label, batch)`, where `batch` is a `BatchFitResult` over the columns of `data`, keyed like `fit_many`: by column name, by the name of a pandas Series, or by position. When `data` is one series, `w.result` is its fit. Windows run in order, and the columns within a window in parallel.
 
 Each fit starts from the same series' estimate in the previous window, and `initial_results` gives starting values for the first window. Other options work as in `fit_many`. A regressor array `x` must have one row per observation of `data`, and each window uses its own rows:
 

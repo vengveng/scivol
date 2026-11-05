@@ -101,6 +101,25 @@ $$
 
 The condition on $P$ makes $E[\sigma_t^\delta]$ finite. With Student-t or skewed-t innovations the power moment additionally requires $\delta\eta<1$. At general $\delta$ the persistence condition says nothing exact about $E[h_t]$, so `unconditional_variance` is reported only at $\delta=2$, where the recursion is a variance recursion, and is NaN otherwise. One-step variance forecasts are exact; later horizons average simulated paths.
 
+## News impact curves
+
+The news impact curve of [Engle and Ng (1993)](../references.md#engle-ng-1993) shows how the next variance responds to the latest residual $e_t$ when everything else is at its usual level. `result.news_impact(e)` evaluates it, continuing the example at the top of the page:
+
+```python
+import numpy as np
+
+shocks = np.array([-3.0, -1.5, 0.0, 1.5, 3.0])
+print(gjr.news_impact(shocks).round(3))
+print(egarch.news_impact(shocks).round(3))
+```
+
+```text
+[1.913 1.221 0.991 1.088 1.381]
+[1.592 1.171 0.861 1.031 1.235]
+```
+
+Both models respond more to negative residuals than to positive ones of the same size. Every lagged variance is held at a level $v$, and the earlier residuals enter through their expectation given it: $e^2$ as $v$ and $e^2I(e<0)$ as $\kappa v$ in GJR-GARCH, $(|e|-\gamma_ie)^\delta$ as $v^{\delta/2}E[(|z|-\gamma_iz)^\delta]$ in APARCH, and the EGARCH shock terms as zero. The EGARCH residual is standardized as $z=e/\sqrt v$. By default $v$ is the stationary level of the recursion, the one a simulation starts from: $E[h_t]$ for GARCH and GJR-GARCH, $\exp(E\log h_t)$ for EGARCH and $(E\sigma_t^\delta)^{2/\delta}$ for APARCH. The EGARCH curve is lower at zero here because $\exp(E\log h_t)$ is below $E[h_t]$. `news_impact(e, variance=v)` holds the lagged variances at a given $v$ instead, which a nonstationary estimate needs, since it has no stationary level.
+
 ## Declaring stationarity
 
 The `stationarity` argument is part of the model, because it sets which parameter values the likelihood is maximized over:
