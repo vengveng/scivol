@@ -1,5 +1,6 @@
 #include "density/distribution.hpp"
 #include "density/domain.hpp"
+#include "density/family.hpp"
 
 #include <algorithm>
 #include <array>

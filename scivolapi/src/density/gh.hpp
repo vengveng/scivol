@@ -145,6 +145,8 @@ struct GeneralizedHyperbolic {
     static constexpr std::size_t shapes = 3;
     static constexpr bool order_varies = true;
     static constexpr bool has_delta = true;
+    // The GIG index lambda.
+    static double index(const double* s) noexcept { return s[2]; }
     template<int Order = 2>
     static bool point(const double* s, GhPoint<3, Order>& out) noexcept
     {
@@ -159,6 +161,7 @@ struct FixedIndexGh {
     static constexpr bool order_varies = false;
     static constexpr bool has_delta = true;
     static constexpr bool fixed_nig = TwiceLambda == -1;
+    static double index(const double*) noexcept { return 0.5 * TwiceLambda; }
     template<int Order = 2>
     static bool point(const double* s, GhPoint<2, Order>& out) noexcept
     {
@@ -182,6 +185,7 @@ struct VarianceGamma {
     static constexpr std::size_t shapes = 2;
     static constexpr bool order_varies = true;
     static constexpr bool has_delta = false;
+    static double index(const double* s) noexcept { return s[1]; }
     template<int Order = 2>
     static bool point(const double* s, GhPoint<2, Order>& out) noexcept
     {

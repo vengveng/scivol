@@ -8,6 +8,7 @@
 #include "correlation/work.hpp"
 #include "density/distribution.hpp"
 #include "density/domain.hpp"
+#include "density/family.hpp"
 
 namespace scivolapi {
 

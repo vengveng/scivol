@@ -10,7 +10,6 @@ endif()
 
 file(GLOB SCIVOLAPI_OPTIMIZE_SOURCES CONFIGURE_DEPENDS src/optimize/*.cpp src/optimize/*.c)
 file(GLOB SCIVOLAPI_MATH_SOURCES CONFIGURE_DEPENDS src/math/*.cpp src/density/*.cpp)
-file(GLOB SCIVOLAPI_JET_SOURCES CONFIGURE_DEPENDS src/jet_*.cpp)
 file(GLOB SCIVOLAPI_FAMILY_SOURCES CONFIGURE_DEPENDS src/volatility/*.cpp)
 add_library(scivolapi
     src/model.cpp
@@ -18,7 +17,6 @@ add_library(scivolapi
     src/restriction_test.cpp
     src/cone_projection.cpp
     src/jet.cpp
-    ${SCIVOLAPI_JET_SOURCES}
     ${SCIVOLAPI_FAMILY_SOURCES}
     src/fit.cpp
     src/finalize.cpp

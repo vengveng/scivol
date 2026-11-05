@@ -1,10 +1,9 @@
 #pragma once
 
+#include "family.hpp"
 #include "moments.hpp"
 
 namespace scivolapi::detail::moment_detail {
-
-enum class Moment { negative_second, absolute, power };
 
 template<class Density>
 bool evaluate(Moment moment, const double* shape, double gamma, double delta, int order, MomentResult& out) noexcept
@@ -18,10 +17,5 @@ bool evaluate(Moment moment, const double* shape, double gamma, double delta, in
                                                : negative_second_moment<Density>(shape, order, d);
     return ok && store(d, order, out);
 }
-
-bool gh(Moment, const double*, double, double, int, MomentResult&) noexcept;
-bool nig(Moment, const double*, double, double, int, MomentResult&) noexcept;
-bool hyperbolic(Moment, const double*, double, double, int, MomentResult&) noexcept;
-bool vg(Moment, const double*, double, double, int, MomentResult&) noexcept;
 
 }  // namespace scivolapi::detail::moment_detail

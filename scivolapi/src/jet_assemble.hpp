@@ -429,54 +429,12 @@ Kernel kernel_with(const ModelSpec& spec) noexcept
     return spec.mean.width() ? kernel_runtime<Density, true>(spec) : kernel_runtime<Density, false>(spec);
 }
 
-// One definition each in the density's translation unit (jet_<density>.cpp).
-Kernel kernel_branches_normal(const ModelSpec&);
-Kernel kernel_branches_student_t(const ModelSpec&);
-Kernel kernel_branches_skew_t(const ModelSpec&);
-Kernel kernel_branches_ged(const ModelSpec&);
-Kernel kernel_branches_generalized_hyperbolic(const ModelSpec&);
-Kernel kernel_branches_nig(const ModelSpec&);
-Kernel kernel_branches_hyperbolic(const ModelSpec&);
-Kernel kernel_branches_variance_gamma(const ModelSpec&);
-Kernel kernel_normal(const ModelSpec&);
-Kernel kernel_student_t(const ModelSpec&);
-Kernel kernel_skew_t(const ModelSpec&);
-Kernel kernel_ged(const ModelSpec&);
-Kernel kernel_generalized_hyperbolic(const ModelSpec&);
-Kernel kernel_nig(const ModelSpec&);
-Kernel kernel_hyperbolic(const ModelSpec&);
-Kernel kernel_variance_gamma(const ModelSpec&);
-
-// The loop for a model, chosen once per evaluation.
-inline Kernel kernel_for(const ModelSpec& spec) noexcept
-{
-    switch (spec.density) {
-    case DensityKind::normal: return kernel_normal(spec);
-    case DensityKind::student_t: return kernel_student_t(spec);
-    case DensityKind::skew_t: return kernel_skew_t(spec);
-    case DensityKind::ged: return kernel_ged(spec);
-    case DensityKind::generalized_hyperbolic: return kernel_generalized_hyperbolic(spec);
-    case DensityKind::nig: return kernel_nig(spec);
-    case DensityKind::hyperbolic: return kernel_hyperbolic(spec);
-    case DensityKind::variance_gamma: return kernel_variance_gamma(spec);
-    }
-    return {};
-}
-
-// The same with explicit residual-kink branches (diagnostics of kink points).
+// The loop for a model, chosen once per evaluation, and the same with explicit
+// residual-kink branches (diagnostics of kink points).
+inline Kernel kernel_for(const ModelSpec& spec) noexcept { return density_family(spec.density).kernel(spec, false); }
 inline Kernel kernel_for_branches(const ModelSpec& spec) noexcept
 {
-    switch (spec.density) {
-    case DensityKind::normal: return kernel_branches_normal(spec);
-    case DensityKind::student_t: return kernel_branches_student_t(spec);
-    case DensityKind::skew_t: return kernel_branches_skew_t(spec);
-    case DensityKind::ged: return kernel_branches_ged(spec);
-    case DensityKind::generalized_hyperbolic: return kernel_branches_generalized_hyperbolic(spec);
-    case DensityKind::nig: return kernel_branches_nig(spec);
-    case DensityKind::hyperbolic: return kernel_branches_hyperbolic(spec);
-    case DensityKind::variance_gamma: return kernel_branches_variance_gamma(spec);
-    }
-    return {};
+    return density_family(spec.density).kernel(spec, true);
 }
 
 }  // namespace scivolapi::detail

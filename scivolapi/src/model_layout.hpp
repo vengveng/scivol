@@ -9,6 +9,7 @@
 #include <scivolapi/model.hpp>
 
 #include "density/domain.hpp"
+#include "density/family.hpp"
 #include "density/moments.hpp"
 #include "map/charts.hpp"
 #include "volatility/family.hpp"

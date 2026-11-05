@@ -1,5 +1,6 @@
 #include "density/exponential_moment.hpp"
 #include "density/domain.hpp"
+#include "density/family.hpp"
 #include "density/ged.hpp"
 #include "density/gh.hpp"
 

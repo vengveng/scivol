@@ -1,6 +1,5 @@
-#include "moments_dispatch.hpp"
 #include "family.hpp"
-#include "skew_t.hpp"
+#include "moments.hpp"
 
 #include <cmath>
 #include <limits>
@@ -10,18 +9,8 @@ namespace {
 bool dispatch(DensityKind kind, moment_detail::Moment moment, const double* shape, double gamma, double delta,
               int order, MomentResult& out) noexcept
 {
-    using namespace moment_detail;
-    switch (kind) {
-    case DensityKind::normal: return evaluate<NormalDensity>(moment, shape, gamma, delta, order, out);
-    case DensityKind::student_t: return evaluate<StudentTDensity>(moment, shape, gamma, delta, order, out);
-    case DensityKind::skew_t: return evaluate<SkewTDensity>(moment, shape, gamma, delta, order, out);
-    case DensityKind::ged: return evaluate<GedDensity>(moment, shape, gamma, delta, order, out);
-    case DensityKind::generalized_hyperbolic: return gh(moment, shape, gamma, delta, order, out);
-    case DensityKind::nig: return nig(moment, shape, gamma, delta, order, out);
-    case DensityKind::hyperbolic: return hyperbolic(moment, shape, gamma, delta, order, out);
-    case DensityKind::variance_gamma: return vg(moment, shape, gamma, delta, order, out);
-    }
-    return false;
+    const DensityFamily* family = find_density_family(kind);
+    return family && family->moment(moment, shape, gamma, delta, order, out);
 }
 }  // namespace
 

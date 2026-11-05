@@ -44,9 +44,12 @@ evidence. Do not wrap builds or tests in tracking scripts.
   `<name>_family.cpp` each, next to the recursion class) declares its block,
   charts, simplex weights, constraints, starts, scaling, moments, forecasts,
   simulation seed, restrictions and identification; a `DensityFamily`
-  (`src/density/family.hpp`) its derived shapes, tail index, residual kinks
-  and nested restrictions; `src/volatility/recursions.hpp` is the one list
-  through which the jet and path runner instantiate recursion classes. Model,
+  (`src/density/family.hpp`, one `<name>_family.cpp` each) its shape domain,
+  derived shapes, tail index, residual kinks, nested restrictions, moments,
+  exponential moment, distribution functions' law and its likelihood loops,
+  which its own translation unit instantiates; `src/volatility/recursions.hpp`
+  is the one list through which the jet and path runner instantiate recursion
+  classes. Model,
   Layout, restrictions and simulation never test a kind. Switches over a kind
   have no `default:` and `-Werror=switch` rejects a missing case.
 - `scivol/` is the thin Python layer: components and compositions, `_fit.py`
@@ -331,11 +334,15 @@ Volatility family:
    runtime paths, near-boundary points), a DGP recovery test, MODELS.md and
    the docs page.
 
-Density: the density class (`src/density/<name>.hpp`, the concept in
-`density.hpp`), its shape domain (`domain.hpp`), moments, exponential moment
-and distribution functions (the switches in `moments.cpp`,
-`exponential_moment.cpp`, `distribution.cpp`), its `DensityFamily` in
-`density/family.cpp`, a `jet_<name>.cpp` translation unit with its entry in
-`kernel_for` and `path_runner_for`, the `DensityKind` value and binding name,
-a `DensityComponent` subclass, and the same oracle, DGP and documentation
-updates.
+Density:
+1. The density class in `src/density/<name>.hpp` (the concept in
+   `density.hpp`) and its shape domain in `domain.hpp`.
+2. Its `DensityFamily` in `src/density/<name>_family.cpp`, derived from
+   `DensityFamilyOf<Density>` (the likelihood loops and moments): shape
+   domain, exponential-moment method and distribution law (the methods in
+   `exponential_moment_methods.hpp` and `distribution_point.hpp`), and any
+   derived shapes, tail index, kinks and restrictions. Register it in
+   `families.hpp` and `find_density_family()`.
+3. The `DensityKind` value and its binding name in `module.cpp`.
+4. A `DensityComponent` subclass, and the same oracle, DGP and documentation
+   updates.

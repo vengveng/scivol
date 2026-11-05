@@ -9,6 +9,7 @@
 #include "correlation/density.hpp"
 #include "correlation/copula.hpp"
 #include "density/domain.hpp"
+#include "density/family.hpp"
 #include "correlation/recursion.hpp"
 #include "correlation/work.hpp"
 

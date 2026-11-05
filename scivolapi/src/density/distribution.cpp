@@ -1,9 +1,7 @@
 #include "distribution.hpp"
 
-#include "domain.hpp"
-#include "ged.hpp"
-#include "gh.hpp"
-#include "skew_t.hpp"
+#include "distribution_point.hpp"
+#include "family.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,120 +15,22 @@ constexpr double log_two = 0.69314718055994530941723212145818;
 constexpr double inv_sqrt_two = 0.70710678118654752440084436210485;
 constexpr double eps = std::numeric_limits<double>::epsilon();
 
-// The formula families the distribution functions implement. Each density
-// maps to one in prepare(); the functions switch on it, so a new family is a
-// compile error wherever it is not handled.
-enum class Law { normal, student, ged, gh };
-
-struct Point {
-    DensityKind kind{};
-    Law law{};
-    double eta{}, nu{}, tail_scale{}, constant{}, a{}, b{1.0}, lam{}, kappa{}, log_beta{}, log_gamma_one{};
-    double alpha{}, minus{}, plus{}, delta{}, d2{}, mu{}, index{};
-    double concentration{}, root_rate{}, exponent_offset{};
-};
+using distribution_detail::Law;
+using distribution_detail::Point;
+using distribution_detail::log_gamma_one_plus;
 
 double gh_log_slope(const Point&, double) noexcept;
 
-template<class Member>
-bool prepare_gh(const double* shape, Point& out) noexcept
-{
-    typename GhFamilyDensity<Member>::Prepared p;
-    if (!GhFamilyDensity<Member>::prepare(shape, 0, p)) return false;
-    out.alpha = p.alpha; out.minus = p.minus; out.plus = p.plus;
-    out.delta = std::sqrt(p.d2); out.d2 = p.d2; out.mu = p.mu;
-    out.index = p.nu; out.constant = p.constant.value;
-    if constexpr (Member::has_delta) {
-        // Scaled K values cancel their common exp(-zeta) before forming a
-        // ratio. In the constant, collect (nu-lambda) log(alpha^2) first.
-        // This is the same standardization as gh_detail::standardize, with
-        // no subtraction of the large common Bessel exponent or log powers.
-        const double rho = shape[0], zeta = shape[1];
-        const double lambda = Member::order_varies ? shape[2] : p.nu+0.5;
-        bessel::LogK k0, k1, gap;
-        if (!bessel::log_k_scaled(lambda,zeta,bessel::value_only,k0)
-            || !bessel::log_k_scaled(lambda+1.0,zeta,bessel::value_only,k1)
-            || !bessel::log_ratio_gap(lambda,zeta,bessel::value_only,gap)) return false;
-        const double rho2 = (1.0-rho)*(1.0+rho);
-        const double kappa = std::exp(k1.value-k0.value)/zeta;
-        const double alpha2 = zeta*zeta*kappa*(1.0+rho*rho*zeta*std::exp(gap.value)/rho2)/rho2;
-        out.alpha = std::sqrt(alpha2);
-        out.minus = out.alpha*(1.0-rho); out.plus = out.alpha*(1.0+rho);
-        out.d2 = zeta*zeta/(alpha2*rho2); out.delta = std::sqrt(out.d2);
-        out.mu = -out.alpha*rho*out.d2*kappa;
-        out.constant = -std::log(out.alpha)-lambda*std::log(rho2)+lambda*std::log(zeta)
-            +0.5*log_2pi+k0.value;
-        out.concentration = zeta;
-        out.root_rate = out.alpha*std::sqrt(rho2);
-        out.exponent_offset = (rho*zeta/std::sqrt(rho2))*std::expm1(k1.value-k0.value);
-    }
-    return out.minus > 0.0 && out.plus > 0.0 && std::isfinite(out.constant);
-}
-
-double log_gamma_one_plus(double a) noexcept
-{
-    if (a >= 0.125) return a < 50.0 ? std::log(std::tgamma(1.0+a)) : log_gamma(a+1.0);
-    constexpr double coefficients[] = {
-        0.8224670334241132,0.40068563438653143,0.27058080842778454,0.20738555102867398,
-        0.16955717699740819,0.14404989676884611,0.12550966952474304,0.11133426586956469,
-        0.10009945751278181,0.090954017145829041,0.083353840546109004,0.076932516411352195,
-        0.07143294629536133,0.066668705882420465,0.062500955141213038,0.058823978658684585,
-        0.055555767627403614,0.052631679379616658,0.050000047698101693};
-    double series = coefficients[18];
-    for (int k = 17; k >= 0; --k) series = coefficients[k]-a*series;
-    return a*(-0.57721566490153286060651209008240+a*series);
-}
-
 bool prepare(DensityKind kind, const double* shape, Point& p) noexcept
 {
-    if (!known_density(kind)) return false;
-    const auto domains = shape_domains(kind);
+    const DensityFamily* family = find_density_family(kind);
+    if (!family) return false;
+    const auto domains = family->shapes();
     if (!domains.empty() && !shape) return false;
     for (std::size_t i = 0; i < domains.size(); ++i)
         if (!domains[i].contains(shape[i]))
             return false;
-    p.kind = kind;
-    switch (kind) {
-    case DensityKind::normal: p.law = Law::normal; return true;
-    case DensityKind::student_t:
-    case DensityKind::skew_t: {
-        p.law = Law::student;
-        p.eta = shape[0];
-        p.constant = t_log_normalizer(p.eta, 0).value;
-        if (p.eta >= 1.0/512.0) {
-            p.nu = 1.0/p.eta;
-            p.tail_scale = (1.0-2.0*p.eta)/p.eta;
-            p.log_beta = 0.5 * 1.1447298858494001741434273513531 - half_step(0.5*p.nu).d0;
-        }
-        if (kind == DensityKind::skew_t) {
-            SkewTDensity::Prepared s;
-            if (!SkewTDensity::prepare(shape, 0, s)) return false;
-            p.a = s.a; p.b = s.b; p.lam = s.lambda;
-        }
-        return std::isfinite(p.constant) && std::isfinite(p.log_beta);
-    }
-    case DensityKind::ged: {
-        p.law = Law::ged;
-        GedDensity::Prepared s;
-        if (!GedDensity::prepare(shape, 0, s)) return false;
-        p.nu = s.nu; p.kappa = s.kappa; p.constant = s.constant.value;
-        p.log_beta = log_gamma(1.0/p.nu);
-        p.log_gamma_one = log_gamma_one_plus(1.0/p.nu);
-        if (1.0/p.nu < 50.0) {
-            const double g1 = std::tgamma(1.0/p.nu), g3 = std::tgamma(3.0/p.nu);
-            const double scale = std::sqrt(g1/g3);
-            if (!(scale > 0.0) || !std::isfinite(scale)) return false;
-            p.kappa = std::log(scale); p.log_beta = std::log(g1);
-            p.constant = -std::log(p.nu)+log_two+p.kappa+p.log_beta;
-        }
-        return std::isfinite(p.kappa) && std::isfinite(p.constant);
-    }
-    case DensityKind::generalized_hyperbolic: p.law = Law::gh; return prepare_gh<GeneralizedHyperbolic>(shape, p);
-    case DensityKind::nig: p.law = Law::gh; return prepare_gh<NormalInverseGaussian>(shape, p);
-    case DensityKind::hyperbolic: p.law = Law::gh; return prepare_gh<Hyperbolic>(shape, p);
-    case DensityKind::variance_gamma: p.law = Law::gh; return prepare_gh<VarianceGamma>(shape, p);
-    }
-    return false;
+    return family->distribution_point(shape, p);
 }
 
 double log_normal_tail(double x) noexcept
@@ -410,7 +310,7 @@ bool student_log_tail(const Point& p, double x, double& result, double* area = n
         return true;
     }
     if (p.eta < 1.0/512.0) {
-        Point t = p; t.kind = DensityKind::student_t; t.law = Law::student; t.a = 0.0; t.b = 1.0; t.lam = 0.0;
+        Point t = p; t.law = Law::student; t.a = 0.0; t.b = 1.0; t.lam = 0.0;
         if (!integrated_tail(t,x,true,result)) return false;
         if (area) {
             if (x > 1.0) *area = 0.5-std::exp(result);
@@ -870,7 +770,7 @@ ExpectationStatus quantiles(DensityKind kind, const double* shape, const double*
     Point p;
     if ((n && (!u || !out)) || !prepare(kind,shape,p)) return Status::numerical_failure;
     for (std::size_t i = 0; i < n; ++i) if (!valid_probability(u[i])) return Status::numerical_failure;
-    if (n >= 512 && gh_family(kind))
+    if (n >= 512 && p.law == Law::gh)
         return invert_many(p,u,n,out) ? Status::ok : Status::numerical_failure;
     for (std::size_t i = 0; i < n; ++i) {
         double result;

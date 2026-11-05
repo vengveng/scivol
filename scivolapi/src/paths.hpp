@@ -6,6 +6,7 @@
 
 #include <scivolapi/model.hpp>
 
+#include "density/family.hpp"
 #include "mean/regressors.hpp"
 #include "model_layout.hpp"
 #include "volatility/recursions.hpp"
@@ -103,8 +104,6 @@ PathStatus run_paths(const PathInput& in, PathBuffers& b)
     return PathStatus::ok;
 }
 
-using PathRunner = PathStatus (*)(const PathInput&, PathBuffers&);
-
 template<class Density>
 PathRunner path_runner_with(VolatilityKind kind) noexcept
 {
@@ -113,28 +112,9 @@ PathRunner path_runner_with(VolatilityKind kind) noexcept
     });
 }
 
-PathRunner path_runner_normal(VolatilityKind);
-PathRunner path_runner_student_t(VolatilityKind);
-PathRunner path_runner_skew_t(VolatilityKind);
-PathRunner path_runner_ged(VolatilityKind);
-PathRunner path_runner_generalized_hyperbolic(VolatilityKind);
-PathRunner path_runner_nig(VolatilityKind);
-PathRunner path_runner_hyperbolic(VolatilityKind);
-PathRunner path_runner_variance_gamma(VolatilityKind);
-
 inline PathRunner path_runner_for(const ModelSpec& spec) noexcept
 {
-    switch (spec.density) {
-    case DensityKind::normal: return path_runner_normal(spec.volatility);
-    case DensityKind::student_t: return path_runner_student_t(spec.volatility);
-    case DensityKind::skew_t: return path_runner_skew_t(spec.volatility);
-    case DensityKind::ged: return path_runner_ged(spec.volatility);
-    case DensityKind::generalized_hyperbolic: return path_runner_generalized_hyperbolic(spec.volatility);
-    case DensityKind::nig: return path_runner_nig(spec.volatility);
-    case DensityKind::hyperbolic: return path_runner_hyperbolic(spec.volatility);
-    case DensityKind::variance_gamma: return path_runner_variance_gamma(spec.volatility);
-    }
-    return nullptr;  // unreachable: the switch covers every density
+    return density_family(spec.density).path_runner(spec.volatility);
 }
 
 }  // namespace scivolapi::detail
