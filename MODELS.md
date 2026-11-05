@@ -302,8 +302,10 @@ Correlation targeting uses `Qbar = x'x / T`, `Q_0 = Qbar`, and the recursion
 An explicit target stays fixed. For a Student-t copula, the estimated target,
 shocks and scores depend on eta; the likelihood gradient and Hessian include
 all these derivatives. Domain: `a, b >= 0`, `sum a + sum b < 1`, `0 <= eta < 1/2`.
-The correlation stage's standard errors treat the marginal estimates and their
-probabilities as given. They include the estimated target's eta dependence.
+The correlation stage's standard errors treat the marginal estimates, their
+probabilities and the target as given. They include the estimated target's eta
+dependence. The full two-step correction moved them by 1-4% on simulated
+DCC-GARCH panels and by -8% to +6% on stock panels (localdev/dcc_se).
 `fit_from_residuals` accepts one `InnovationDensity` per series through
 `marginals`; its default is Normal marginals. `CCC` uses Gaussian scores and
 `R = Qbar` normalized to a correlation matrix.

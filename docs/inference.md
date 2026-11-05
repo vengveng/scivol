@@ -159,7 +159,7 @@ For a QMLE fit, the first-order check covers both steps: the Gaussian step and t
 
 ## DCC standard errors
 
-The standard errors of a DCC or CCC fit come from the correlation stage. They include the dependence of the target $\overline Q$ on the copula's $\eta$, but treat the marginal models as known, so they do not reflect the estimation error of the first stage. `result.inference` gives the status of the correlation stage, using the names above. As in univariate results, `params`, the standard errors and the matrices `hessian`, `opg`, `cov_matrix` and `cov_robust` are indexed by parameter name.
+The standard errors of a DCC or CCC fit come from the correlation stage. They include the dependence of the target $\overline Q$ on the copula's $\eta$, but treat the marginal estimates and $\overline Q$ as known, so they leave out the estimation error of both. The two-step covariance of [Engle (2002)](references.md#engle-2002) adds it, and it changes little here. On simulated DCC-GARCH series with Normal marginals (3 and 5 series, 1,000 and 2,000 rows), it changed the standard errors of `a[1]` and `b[1]` by 1–4%. On panels of 3 to 10 daily stock returns, it changed the robust standard errors by −8% to +6%, while the robust standard errors themselves were 1.0 to 2.7 times the Hessian ones. `result.inference` gives the status of the correlation stage, using the names above. As in univariate results, `params`, the standard errors and the matrices `hessian`, `opg`, `cov_matrix` and `cov_robust` are indexed by parameter name.
 
 ## Limitations
 
