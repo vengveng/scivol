@@ -354,7 +354,9 @@ def likelihood_ratio(restricted: "EstimationResult", unrestricted: "EstimationRe
     """Likelihood-ratio test of a model against a larger model that nests it.
 
     The restriction is found among the larger model's nested restrictions (any
-    chain of them up to `max_steps`), and its reference law follows from the
+    chain of them up to `max_steps`), together with the parameters the smaller
+    fit holds fixed (fit(fixed=...)); the larger fit estimates all its
+    parameters. Its reference law follows from the
     restriction: chi-square for interior equalities; for parameters fixed at a
     bound of the domain (the Student-t's eta = 0, a lag's coefficient at zero),
     the chi-bar-square mixture or the cone projection law. `law`, `weights`
@@ -381,8 +383,14 @@ def likelihood_ratio(restricted: "EstimationResult", unrestricted: "EstimationRe
     if restricted.fit_info.effective_hold_back > unrestricted.fit_info.effective_hold_back:
         raise ValueError("the restricted model scores fewer rows than the larger model; fit both with the same "
                          "hold_back")
-    restriction = _restriction_path(parent, child, max_steps)
-    if restriction is None:
+    if unrestricted.fixed:
+        raise ValueError("likelihood_ratio needs the larger model's fit to estimate all its parameters")
+    restriction = (api.Restriction.identity(parent.spec) if child.key == parent.key
+                   else _restriction_path(parent, child, max_steps))
+    if restriction is not None and restricted.fixed:
+        held = restricted.fixed
+        restriction = restriction.fixing(np.array([held.get(n, np.nan) for n in child.parameter_names]))
+    if restriction is None or not restriction.types:
         raise ValueError(f"{restricted.spec} is not a restriction of {unrestricted.spec}")
     # Both models are fitted on one comparison plan (the larger model's rows),
     # from their estimates; on the same rows this reproduces the ordinary fits.
@@ -393,6 +401,8 @@ def likelihood_ratio(restricted: "EstimationResult", unrestricted: "EstimationRe
     for result, model in ((unrestricted, parent), (restricted, child)):
         options = api.FitOptions()
         options.start = [float(v) for v in result._theta]
+        if result.fixed:
+            options.fixed = [result.fixed.get(n, np.nan) for n in model.parameter_names]
         fits.append(fit_spec_on_plan(result.spec, plan, options=options, regressors=model.spec.mean.exog))
     test = api.restriction_test(parent, child, restriction, fits[0], fits[1], plan, float(level))
     status = "ok" if test.status == api.LRStatus.ok else test.status.name

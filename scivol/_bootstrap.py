@@ -133,7 +133,7 @@ def bootstrap(result: "EstimationResult", replications: int = 499, *, m: Optiona
             series = api.simulate(model, theta, y, np.ascontiguousarray(z[:, :size]), x, future)["y"][0]
             try:
                 rows = None if future is None else Regressors(future, names, True)
-                refit = result.spec.fit(series, x=rows, method=method, initial_params=theta)
+                refit = result.spec.fit(series, x=rows, method=method, initial_params=theta, fixed=result.fixed or None)
                 estimates.append(refit._theta if refit.success else None)
             except Exception:  # noqa: BLE001 - a failed refit is counted, not raised
                 estimates.append(None)

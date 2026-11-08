@@ -255,10 +255,19 @@ bool Model::evaluable(std::span<const double> theta) const
 
 // The declared domain: stationary AR (and HAR), invertible MA, the family's
 // stable blocks and constraint rows, and the persistence condition it declares.
-bool Model::feasible(std::span<const double> theta) const
+bool Model::feasible(std::span<const double> theta, std::span<const char> fixed) const
 {
     if (!evaluable(theta)) return false;
     const Layout layout(spec_);
+    require(fixed.empty() || fixed.size() == dimension(), "the fixed mask has the wrong length");
+    for (std::size_t k = 0; k < dimension(); ++k) {
+        if (!layout.scalar_entry[k]) continue;
+        const bool closure = !fixed.empty() && fixed[k];
+        const double lower = layout.domain_lower[k], upper = layout.domain_upper[k];
+        if (std::isfinite(lower) && !(closure || layout.domain_closed_lower[k] ? theta[k] >= lower : theta[k] > lower))
+            return false;
+        if (std::isfinite(upper) && !(closure ? theta[k] <= upper : theta[k] < upper)) return false;
+    }
     for (std::size_t b = 0; b < layout.stable_blocks; ++b) {
         double coefficients[StableChart::max_order], kappa[StableChart::max_order];
         layout.stable_coefficients(theta.data(), b, coefficients);
@@ -348,9 +357,10 @@ std::vector<double> Model::closed_face_normals(std::span<const double> theta) co
     return normals;
 }
 
-bool Model::at_open_bound(std::span<const double> theta) const
+bool Model::at_open_bound(std::span<const double> theta, std::span<const char> fixed) const
 {
     check_size(theta, dimension());
+    const auto estimated = [&](std::size_t j) { return fixed.empty() || !fixed[j]; };
     // A saturated chart stops within roundoff of a nonzero open endpoint (the
     // optimizer's 64 eps feasibility allowance). Zero endpoints are reached
     // only at the smallest normal number, so small positive estimates in data
@@ -361,13 +371,14 @@ bool Model::at_open_bound(std::span<const double> theta) const
     };
     const Layout layout(spec_);
     for (std::size_t j = 0; j < dimension(); ++j) {
-        if (!layout.scalar_entry[j]) continue;
+        if (!layout.scalar_entry[j] || !estimated(j)) continue;
         const auto& chart = layout.scalar(j);
         if ((!chart.closed_lower && at(theta[j], chart.lower_bound())) || at(theta[j], chart.upper_bound()))
             return true;
     }
     for (std::size_t b = 0; b < layout.stable_blocks; ++b)
-        if (layout.stable[b].count == 1 && at(std::abs(theta[layout.stable[b].at]), detail::StableChart::bound()))
+        if (layout.stable[b].count == 1 && estimated(layout.stable[b].at)
+            && at(std::abs(theta[layout.stable[b].at]), detail::StableChart::bound()))
             return true;
     return false;
 }

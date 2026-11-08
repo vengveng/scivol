@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <sstream>
 #include <stdexcept>
 
 #include <scivolapi/jet.hpp>
@@ -130,9 +131,61 @@ std::vector<Restriction> Model::restrictions() const
     return out;
 }
 
+Restriction Restriction::identity(const ModelSpec& spec)
+{
+    const std::size_t d = Model(spec).dimension();
+    Restriction r;
+    r.parent = r.child = spec;
+    r.offset.assign(d, 0.0);
+    r.embedding.assign(d * d, 0.0);
+    for (std::size_t i = 0; i < d; ++i) r.embedding[i * d + i] = 1.0;
+    r.condition = "Identified minimal recursion and regular parent Fisher information.";
+    return r;
+}
+
+Restriction Restriction::fixing(std::span<const double> values) const
+{
+    const Model p(parent), c(child);
+    const std::size_t d = p.dimension(), k = c.dimension();
+    if (values.size() != k) throw std::invalid_argument("fixed values need the child's dimension");
+    if (!child_fixed.empty()) throw std::invalid_argument("the restriction already fixes child entries");
+    std::vector<double> lower(k), upper(k);
+    std::vector<char> open_lower(k), open_upper(k);
+    c.bounds(lower, upper);
+    c.open_bounds(open_lower, open_upper);
+    const auto number = [](double v) {
+        std::ostringstream text;
+        text << v;
+        return text.str();
+    };
+    Restriction out = *this;
+    out.child_fixed.assign(values.begin(), values.end());
+    for (std::size_t j = 0; j < k; ++j) {
+        if (std::isnan(values[j])) continue;
+        const std::string& name = c.parameter_names()[j];
+        out.name += (out.name.empty() ? "" : ";") + ("fixed " + name + "=" + number(values[j]));
+        double null = values[j];
+        for (std::size_t a = 0; a < d; ++a) {
+            out.directions.push_back(embedding[a * k + j]);
+            null += embedding[a * k + j] * offset[a];
+        }
+        out.null_values.push_back(null);
+        const bool below = std::isfinite(lower[j]) && values[j] <= lower[j];
+        const bool above = std::isfinite(upper[j]) && values[j] >= upper[j];
+        if ((below && open_lower[j]) || (above && open_upper[j])) {
+            out.identification = Identification::unidentified_under_null;
+            out.condition = name + " fixed on an excluded boundary of its domain has no regular likelihood-ratio law.";
+        }
+        out.types.push_back(below || above ? RestrictionType::closed_boundary : RestrictionType::interior_equality);
+    }
+    return out;
+}
+
 Restriction Restriction::then(const Restriction& next) const
 {
     if (!(child == next.parent)) throw std::invalid_argument("Restriction path does not connect.");
+    if (!child_fixed.empty() || !next.child_fixed.empty())
+        throw std::invalid_argument("compose restrictions before fixing child entries");
     const std::size_t d = Model(parent).dimension(), k = Model(child).dimension(), c = Model(next.child).dimension();
     // Current restrictions select orthonormal coordinate columns. Reject a
     // future nonlinear/nonorthonormal map until it supplies its own pullback.

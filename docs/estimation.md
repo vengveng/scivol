@@ -30,6 +30,7 @@ result = spec.fit(y, method="mle", coordinates="automatic", starts="auto", maxit
 | `hold_back` | `0` | Number of initial observations used only as lags, not scored |
 | `scale` | `None` | A multiplier applied to the data before fitting, such as 100 for percent returns |
 | `boundary` | `"withhold"` | Standard errors at an estimate where closed bounds or constraints bind: `"withhold"` or `"restricted"`; see [inference](inference.md#standard-errors-at-a-boundary) |
+| `fixed` | `None` | Parameters held at given values, by name; see [fixing parameters](#fixing-parameters) |
 
 Unknown options raise a `TypeError`.
 
@@ -38,6 +39,53 @@ Unknown options raise a `TypeError`.
 `method="mle"` estimates all parameters jointly under the chosen density. At an interior estimate, the covariance is the inverse observed information, and a sandwich (robust) covariance is reported alongside it.
 
 `method="qmle"` estimates the mean and volatility parameters by Gaussian quasi-maximum likelihood ([Bollerslev and Wooldridge, 1992](references.md#bollerslev-wooldridge-1992)), which remains consistent when the innovation density is misspecified, provided the conditional mean and variance are correctly specified. With the Normal density, that is the whole fit, and the covariance is the sandwich. With a shaped density, the shape parameters are then estimated by maximum likelihood with the mean and volatility parameters held at their Gaussian estimates, and the covariance is the two-step sandwich of the stacked score equations. This is a staged estimator, labeled `"QMLE"` in results, not a joint fit of the final density. EGARCH centres $|z|$ with the density's $E|z|$, so its Gaussian stage fits the same model with $\omega$ shifted by $\sum_i\alpha_i(E|z|-\sqrt{2/\pi})$. The shape stage keeps the Gaussian variance path, and the reported $\omega$ carries the shift.
+
+## Fixing parameters
+
+`fixed` holds some parameters at given values and estimates the others. Its keys are the names in `result.params`. The example fits a GARCH(2,1) model whose second shock coefficient is zero, which makes it a GARCH(1,1), with $\eta=0.2$, a Student-t with five degrees of freedom:
+
+```python
+from scivol import GARCH, StudentT
+
+y = (GARCH(1, 1) + StudentT()).simulate(3000, [0.05, 0.08, 0.88, 0.15], seed=4).data
+
+spec = GARCH(2, 1) + StudentT()
+result = spec.fit(y, fixed={"alpha[2]": 0.0, "eta": 0.2})
+print(result.table().round(4))
+print(result.n_estimated, result.fixed)
+```
+
+```text
+           estimate  std_error  t_value  p_value
+parameter                                       
+omega        0.0804     0.0232   3.4664   0.0005
+alpha[1]     0.0681     0.0138   4.9304   0.0000
+alpha[2]     0.0000        NaN      NaN      NaN
+beta[1]      0.8755     0.0256  34.1625   0.0000
+eta          0.2000        NaN      NaN      NaN
+3 {'alpha[2]': 0.0, 'eta': 0.2}
+```
+
+The fixed values are part of the model being fitted. The estimate is a maximum over the other parameters, and the first-order check covers only those. The covariance is the inverse information of the estimated parameters, with zero rows and columns and NaN standard errors for the fixed ones. The information criteria count only the estimated parameters, so the fit above has the BIC of a GARCH(1,1) with $\eta$ fixed. A fixed value at a bound, such as `alpha[2]` at zero, is not a binding bound of the estimate, and ordinary standard errors apply to the other parameters.
+
+A fixed value may lie on the boundary of its domain where the likelihood is still defined. With $\omega=0$ the GARCH variance $h_t=\alpha e_{t-1}^2+\beta h_{t-1}$ stays positive, and with `stationarity="integrated"` the fit is an exponentially weighted moving average, $\alpha+\beta=1$:
+
+```python
+ewma = GARCH(1, 1, stationarity="integrated").fit(y, fixed={"omega": 0.0})
+print(ewma.params.round(4))
+```
+
+```text
+parameter
+omega       0.0000
+alpha[1]    0.0386
+beta[1]     0.9614
+Name: params, dtype: float64
+```
+
+With $\omega=0$ and persistence below one the variance decays towards zero, so under the default `stationarity="covariance"` such a fit ends at the excluded boundary `persistence < 1`.
+
+A value outside the closure of its bound raises an error that names the bound (`omega is fixed at -1, below its bound omega >= 0`), as do values that leave no point of the domain, such as $\alpha+\beta\ge1$ under covariance stationarity. Fixed fits are solved in theta coordinates, so `coordinates="z"` raises. With `method="qmle"`, the mean and volatility parameters of GARCH, GJR-GARCH and APARCH can be fixed; the shape parameters cannot, because the staged estimator fits them in its second step, and neither can EGARCH's, whose Gaussian stage works in parameters shifted by the density's $E|z|$. `fit_many`, `fit_rolling` and the bootstrap's refits keep the fixed values, and [`stats.likelihood_ratio`](inference.md#testing-parameters) tests them.
 
 ## Coordinate paths
 

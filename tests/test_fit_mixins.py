@@ -26,6 +26,7 @@ class DummyResult:  # simple stand-in for EstimationResult
         self.kwargs = kwargs
         self.fit_info = FitMetadata()
         self.params = np.zeros(api.Model(native_spec(spec)).dimension)
+        self.n_estimated = len(self.params)
         self._index = None
         self._name = None
 

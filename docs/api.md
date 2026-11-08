@@ -32,7 +32,7 @@ These methods exist on every component and `CompositeSpec`.
 ```text
 spec.fit(data, *, x=None, hold_back=0, scale=None, method="mle",
          coordinates="automatic", maxiter=1000, accuracy=1e-10,
-         initial_params=None, starts="auto", boundary="withhold", n_jobs=None,
+         initial_params=None, starts="auto", boundary="withhold", fixed=None, n_jobs=None,
          show_progress=None)
 ```
 
@@ -66,7 +66,8 @@ The first five evaluate the model at given parameters: the log-likelihood, its g
 | --- | --- |
 | `params` | estimates, a pandas Series indexed by parameter name, in mean, volatility, density order |
 | `success`, `warnings` | whether the fit passed its first-order check, and what failed if not |
-| `log_likelihood`, `aic`, `bic`, `hqic` | fit statistics |
+| `log_likelihood`, `aic`, `bic`, `hqic` | fit statistics; the criteria count the estimated parameters |
+| `fixed`, `n_estimated` | the parameters the fit held at given values, by name (`fit(fixed=...)`), and the number it estimated |
 | `std_errors`, `std_errors_robust`, `tvalues`, `pvalues` | Series by parameter name; see [inference](inference.md) |
 | `cov_matrix`, `cov_robust`, `hessian`, `opg` | DataFrames with the parameter names on both axes |
 | `sigma2`, `resid`, `std_resid`, `conditional_mean` | fitted paths over the scored sample, as pandas Series when the data had an index |

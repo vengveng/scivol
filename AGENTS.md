@@ -201,8 +201,9 @@ result = spec.fit(data, method="qmle")        # robust (sandwich) SEs
   give a `Distribution`.
 - `fit()` estimation options: `method` (`"mle"`, `"qmle"`), `coordinates`
   (`"automatic"`, `"z"`, `"theta"`), `maxiter`, `accuracy`, `initial_params`,
-  `starts` (`"auto"`, a number of model candidate starts, or explicit vectors).
-  Unknown options raise.
+  `starts` (`"auto"`, a number of model candidate starts, or explicit vectors),
+  `boundary`, `fixed` (parameters held at given values, by name; the one way
+  to fix a parameter). Unknown options raise.
 - QMLE: Gaussian quasi-likelihood for mean and volatility with sandwich
   covariance `H^-1 OPG H^-1`; with a shaped density, a staged shape fit and the
   two-step sandwich of the stacked scores.

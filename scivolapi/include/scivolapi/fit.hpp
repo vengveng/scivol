@@ -59,6 +59,13 @@ struct FitOptions {
     std::vector<std::vector<double>> starts;
     int start_count = 0;
     Boundary boundary = Boundary::withhold;
+    // Entries held at given values (the model's dimension, NaN for the entries
+    // to estimate; empty: none). The fit estimates the others; a fixed value
+    // need only lie in the closure of its bound (omega = 0) where the
+    // likelihood is defined. Fixed fits are solved in theta coordinates, and a
+    // staged qmle fit fixes neither the shapes nor, where the recursion uses the
+    // density (EGARCH), any entry.
+    std::vector<double> fixed;
 };
 
 // The race probe's length (FitOptions::start_count = 0).
@@ -144,6 +151,10 @@ struct FitResult {
 
     std::vector<FitPhase> phases;  // every start's, those after the first labelled "start k: "
     std::vector<FitStart> starts;
+    // 1 for the entries held at given values (FitOptions::fixed), empty for none;
+    // their rows and columns of the covariances are zero and their standard
+    // errors NaN.
+    std::vector<char> fixed;
     std::vector<std::string> warnings;
 };
 

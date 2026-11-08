@@ -172,6 +172,7 @@ def fit_spec(
     initial_params: Optional[NDArray[np.float64]] = None,
     starts: Any = "auto",
     boundary: str = "withhold",
+    fixed: Any = None,
     index: Any = None,
     name: Optional[str] = None,
     **unknown: Any,
@@ -195,10 +196,18 @@ def fit_spec(
     bounds or constraints bind: "withhold" (none, the default) or "restricted"
     (those of the model restricted to the binding faces, the conditions held as
     equalities; parameters the faces fix get NaN).
+
+    `fixed` holds parameters at given values, a mapping by parameter name
+    ({"eta": 0.2, "alpha[2]": 0.0}): the fit estimates the others, and the
+    fixed ones are part of the model (no standard errors, not counted by the
+    information criteria). A fixed value may lie on the boundary of its domain
+    (omega = 0) where the likelihood is defined. Fixed fits are solved in theta
+    coordinates.
     """
     if unknown:
         raise TypeError(f"fit() got unexpected keyword argument(s) {', '.join(map(repr, unknown))}; its estimation "
-                        "options are method, coordinates, maxiter, accuracy, initial_params, starts and boundary")
+                        "options are method, coordinates, maxiter, accuracy, initial_params, starts, boundary "
+                        "and fixed")
     if boundary not in ("withhold", "restricted"):
         raise ValueError("boundary must be 'withhold' or 'restricted'")
     sample = prepare_sample(spec, data, x, hold_back, scale)
@@ -217,6 +226,9 @@ def fit_spec(
     options.maximum_iterations = int(maxiter)
     options.accuracy = float(accuracy)
     options.boundary = getattr(api.Boundary, boundary)
+    held = fixed_values(model, fixed)
+    if held:
+        options.fixed = [held.get(name, np.nan) for name in model.parameter_names]
     if initial_params is not None:  # parameters, or a previous result to warm start from
         source = getattr(initial_params, "spec", None)
         if source is not None and str(source) != str(spec):
@@ -234,6 +246,27 @@ def fit_spec(
     return present_fit(spec, sample, native_result, maxiter=maxiter,
                        warm_started=initial_params is not None, elapsed=elapsed,
                        index=index, name=name)
+
+
+def fixed_values(model: api.Model, fixed: Any) -> dict[str, float]:
+    """`fixed` as {parameter name: value}, checked against the model's names."""
+    if fixed is None:
+        return {}
+    if hasattr(fixed, "to_dict"):  # a Series by parameter name
+        fixed = fixed.to_dict()
+    if not hasattr(fixed, "items"):
+        raise TypeError("fixed must map parameter names to values, as in fixed={\"eta\": 0.2}")
+    names = list(model.parameter_names)
+    unknown = [str(k) for k in fixed if k not in names]
+    if unknown:
+        raise ValueError(f"fixed names unknown parameters {', '.join(unknown)}; the parameters are {', '.join(names)}.")
+    out = {}
+    for name, value in fixed.items():
+        value = float(value)
+        if not np.isfinite(value):
+            raise ValueError(f"the fixed value of {name} must be finite")
+        out[name] = value
+    return out
 
 
 def spec_from_native(definition: api.ModelSpec):
@@ -338,6 +371,7 @@ def present_fit(spec, sample: PreparedSample, native_result: api.FitResult, *,
         method="QMLE" if qmle else "MLE",
         index=None if index is None else index[first:],
         name=name,
+        fixed={n: float(theta[i]) for i, (n, held) in enumerate(zip(model.parameter_names, native_result.fixed)) if held},
     )
     result._resid = np.array(native_result.residual)
     result._native_fit = native_result

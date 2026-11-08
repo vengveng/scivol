@@ -11,6 +11,7 @@
 #include "finalize.hpp"
 #include "fit_phases.hpp"
 #include "fit_problem.hpp"
+#include "fixed_model.hpp"
 #include "optimize/optimizer.hpp"
 #include "optimize/projection.hpp"
 
@@ -260,23 +261,13 @@ std::vector<std::vector<double>> explicit_starts(const ModelT& model, const FitO
     return out;
 }
 
-FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const double> x,
-                  const FitOptions& options, const ComparisonPlan* plan = nullptr)
+// One maximum-likelihood fit from prepared samples: the starts, each start's
+// coordinate path and the finalizer, on any model with the Model interface
+// (Model, or a FixedModel holding some entries at given values).
+template<class ModelT, class JetT>
+FitResult solve_mle(const ModelT& model, JetT& unit_jet, JetT& data_jet, const Sample& unit_sample,
+                    const Sample& data_sample, double scale, const FitOptions& options)
 {
-    // Exact internal scaling of y (not x) to unit second moment; the finalizer
-    // reports in data units.
-    const Sample data_sample = plan ? model.prepare(*plan) : model.prepare(y, x);
-    const double scale = std::sqrt(data_sample.variance_seed);
-    std::vector<double> unit_y;
-    if (!plan) {
-        unit_y.assign(y.begin(), y.end());
-        for (double& v : unit_y) v /= scale;
-    }
-    const std::optional<ComparisonPlan> unit_plan = plan ? std::optional(plan->rescaled(1.0 / scale)) : std::nullopt;
-    const Sample unit_sample = unit_plan ? model.prepare(*unit_plan) : model.prepare(unit_y, x);
-    Jet unit_jet(model, unit_sample);
-    Jet data_jet(model, data_sample);
-
     const std::vector<double> inside = model.start(unit_sample);
     if (options.start_count < 0) throw std::invalid_argument("start_count must be 0 (automatic) or positive");
     std::vector<std::vector<double>> starts = explicit_starts(model, options, [&](const std::vector<double>& theta) {
@@ -358,6 +349,101 @@ FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const
         [&](const FitResult& result) { return result.estimate_available && model.on_persistence_face(result.theta); });
 }
 
+
+// A fixed fit's result over the full theta: the fixed entries at their values
+// (in the data's units, exactly as given), the likelihood's gradient, Hessian
+// and outer products over every entry, and covariances with zero rows and
+// columns (NaN standard errors) for the fixed entries.
+FitResult lift_fixed(const Model& model, const detail::FixedModel& fixed, Jet& data_jet,
+                     std::span<const double> data_values, FitResult r)
+{
+    const std::size_t d = model.dimension(), k = fixed.dimension(), n = data_jet.sample().scored();
+    const auto& free = fixed.free();
+    const auto full = [&](std::span<const double> u) {
+        std::vector<double> theta(data_values.begin(), data_values.end());
+        for (std::size_t a = 0; a < k; ++a) theta[free[a]] = u[a];
+        return theta;
+    };
+    const auto embed = [&](const std::vector<double>& c) {
+        if (c.empty()) return c;
+        std::vector<double> out(d * d, 0.0);
+        for (std::size_t a = 0; a < k; ++a)
+            for (std::size_t b = 0; b < k; ++b) out[free[a] * d + free[b]] = c[a * k + b];
+        return out;
+    };
+    const auto errors = [&](const std::vector<double>& se) {
+        if (se.empty()) return se;
+        std::vector<double> out(d, std::numeric_limits<double>::quiet_NaN());
+        for (std::size_t a = 0; a < k; ++a) out[free[a]] = se[a];
+        return out;
+    };
+    r.names = model.parameter_names();
+    r.fixed = fixed.mask();
+    for (FitStart& s : r.starts) s.theta = full(s.theta);
+    if (r.theta.size() != k) return r;
+    r.theta = full(r.theta);
+    std::vector<double> normals;
+    for (std::size_t j = 0; j * k < r.binding_normals.size(); ++j) {
+        normals.resize(normals.size() + d, 0.0);
+        for (std::size_t a = 0; a < k; ++a) normals[normals.size() - d + free[a]] = r.binding_normals[j * k + a];
+    }
+    r.binding_normals = std::move(normals);
+    r.covariance = embed(r.covariance);
+    r.robust_covariance = embed(r.robust_covariance);
+    r.std_errors = errors(r.std_errors);
+    r.robust_std_errors = errors(r.robust_std_errors);
+    if (r.gradient.empty() && r.hessian.empty() && r.opg.empty()) return r;
+    std::vector<double> g(d), h(d * d), s(n * d);
+    JetOutput out;
+    out.gradient = g;
+    out.hessian = h;
+    out.scores = s;
+    const JetResult reported = data_jet.theta(r.theta, value | gradient | hessian | scores, out);
+    if (!r.gradient.empty()) r.gradient = (reported.valid & gradient) ? g : std::vector<double>{};
+    if (!r.hessian.empty()) r.hessian = (reported.valid & hessian) ? h : std::vector<double>{};
+    if (!r.opg.empty()) r.opg = (reported.valid & scores) ? outer_products(s, n, d) : std::vector<double>{};
+    return r;
+}
+
+FitResult fit_mle(const Model& model, std::span<const double> y, std::span<const double> x,
+                  const FitOptions& options, const ComparisonPlan* plan = nullptr)
+{
+    // Exact internal scaling of y (not x) to unit second moment; the finalizer
+    // reports in data units.
+    const Sample data_sample = plan ? model.prepare(*plan) : model.prepare(y, x);
+    const double scale = std::sqrt(data_sample.variance_seed);
+    std::vector<double> unit_y;
+    if (!plan) {
+        unit_y.assign(y.begin(), y.end());
+        for (double& v : unit_y) v /= scale;
+    }
+    const std::optional<ComparisonPlan> unit_plan = plan ? std::optional(plan->rescaled(1.0 / scale)) : std::nullopt;
+    const Sample unit_sample = unit_plan ? model.prepare(*unit_plan) : model.prepare(unit_y, x);
+    if (options.fixed.empty()) {
+        Jet unit_jet(model, unit_sample);
+        Jet data_jet(model, data_sample);
+        return solve_mle(model, unit_jet, data_jet, unit_sample, data_sample, scale, options);
+    }
+    // The fixed entries in the unit-scaled solve's units and in the data's.
+    std::vector<double> unit_values(model.dimension());
+    model.rescale(options.fixed, 1.0 / scale, unit_values);
+    for (std::size_t i = 0; i < unit_values.size(); ++i)
+        if (std::isnan(options.fixed[i])) unit_values[i] = std::numeric_limits<double>::quiet_NaN();
+    const detail::FixedModel fixed(model, unit_values);
+    detail::FixedJet unit_jet(fixed, unit_sample, unit_values);
+    detail::FixedJet data_jet(fixed, data_sample, options.fixed);
+    {  // the fixed values must leave the likelihood defined
+        JetOutput out;
+        if (unit_jet.theta(fixed.start(unit_sample), value, out).status != Status::ok)
+            throw std::invalid_argument("the likelihood cannot be evaluated with these fixed values");
+    }
+    FitOptions free_options = options;
+    if (!options.start.empty()) free_options.start = fixed.restrict(options.start);
+    for (auto& start : free_options.starts) start = fixed.restrict(start);
+    FitResult r = solve_mle(fixed, unit_jet, data_jet, unit_sample, data_sample, scale, free_options);
+    return lift_fixed(model, fixed, data_jet.base(), options.fixed, std::move(r));
+}
+
 // Second stage of a staged qmle fit: the shapes by maximum likelihood with the
 // mean and variance parameters held at the Gaussian estimate `first`, then the
 // two-step sandwich. The stage works in u = (a, s), the Gaussian model's
@@ -415,6 +501,10 @@ FitResult fit_shapes(const Model& model, const Model& gaussian, std::span<const 
     r.kink_point = first.kink_point;
     r.active_kink_rows = first.active_kink_rows;
     r.warnings = first.warnings;
+    if (!first.fixed.empty()) {
+        r.fixed = first.fixed;
+        r.fixed.resize(d, 0);
+    }
     r.phases = std::move(phases);
     r.termination = first.termination != Termination::converged ? first.termination
                                                                  : r.phases.at(best.phase).termination;
@@ -513,6 +603,8 @@ FitResult fit_shapes(const Model& model, const Model& gaussian, std::span<const 
             }
         r.robust_covariance = sandwich(jacobian, sandwich(a, r.opg, d), d);
         r.robust_std_errors = standard_errors(r.robust_covariance, d);
+        for (std::size_t i = 0; i < first.fixed.size(); ++i)
+            if (first.fixed[i]) r.robust_std_errors[i] = std::numeric_limits<double>::quiet_NaN();
         r.covariance = r.robust_covariance;
         r.std_errors = r.robust_std_errors;
     } else if (r.stationary) {
@@ -532,7 +624,24 @@ FitResult fit_qmle(const Model& model, std::span<const double> y, std::span<cons
     ModelSpec gaussian_spec = spec;
     gaussian_spec.density = DensityKind::normal;
     const Model gaussian(gaussian_spec);
-    FitResult first = fit_mle(gaussian, y, x, options, plan);
+    FitOptions gaussian_options = options;
+    if (!options.fixed.empty() && spec.density != DensityKind::normal) {
+        const std::size_t k1 = gaussian.dimension();
+        bool any = false;
+        for (std::size_t i = 0; i < options.fixed.size(); ++i) {
+            if (std::isnan(options.fixed[i])) continue;
+            if (i >= k1)
+                throw std::invalid_argument("qmle fits the shapes in a second stage with the others held at the Gaussian"
+                                            " estimate, so it cannot fix them; use maximum likelihood");
+            any = true;
+        }
+        if (any && !model.capabilities().density_free_recursion)
+            throw std::invalid_argument("this recursion's qmle maps its parameters through the density's moments, so"
+                                        " they cannot be fixed; use maximum likelihood");
+        gaussian_options.fixed.resize(k1);
+        if (!any) gaussian_options.fixed.clear();
+    }
+    FitResult first = fit_mle(gaussian, y, x, gaussian_options, plan);
     first.estimator = Estimator::qmle;
     if (spec.density != DensityKind::normal) return fit_shapes(model, gaussian, y, x, options, std::move(first), plan);
     first.covariance = first.robust_covariance;
@@ -548,12 +657,25 @@ void apply_boundary(const Model& model, const FitOptions& options, FitResult& r)
     if (options.boundary == Boundary::restricted && !staged) detail::restrict_inference(r);
 }
 
+// A fixed fit's declaration: one entry per parameter, solved in theta.
+void check_fixed(const Model& model, const FitOptions& options)
+{
+    if (options.fixed.empty()) return;
+    if (options.fixed.size() != model.dimension())
+        throw std::invalid_argument("fixed values need one entry per parameter (NaN for those to estimate)");
+    if (options.coordinates == Coordinates::z)
+        throw std::invalid_argument("a fit with fixed parameters is solved in theta coordinates; coordinates='z' is"
+                                    " not available");
+    const detail::FixedModel declared(model, options.fixed);  // checks the values in the data's units
+}
+
 }  // namespace
 
 FitResult fit(const Model& model, std::span<const double> y, std::span<const double> x, const FitOptions& options)
 {
     if (!(options.accuracy > 0.0) || options.maximum_iterations < 1)
         throw std::invalid_argument("accuracy must be positive and maximum_iterations at least 1");
+    check_fixed(model, options);
     FitResult r = options.estimator == Estimator::qmle ? fit_qmle(model, y, x, options) : fit_mle(model, y, x, options);
     apply_boundary(model, options, r);
     return r;
@@ -563,6 +685,7 @@ FitResult fit(const Model& model, const ComparisonPlan& plan, const FitOptions& 
 {
     if (!(options.accuracy > 0.0) || !std::isfinite(options.accuracy) || options.maximum_iterations < 1)
         throw std::invalid_argument("accuracy must be finite and positive and maximum_iterations at least 1");
+    check_fixed(model, options);
     FitResult r = options.estimator == Estimator::qmle
         ? fit_qmle(model, plan.y(), {}, options, &plan) : fit_mle(model, plan.y(), {}, options, &plan);
     apply_boundary(model, options, r);

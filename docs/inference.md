@@ -92,6 +92,26 @@ Symmetry, $\lambda=0$, lies inside the domain, so its likelihood-ratio statistic
 
 Both fits must be maximum-likelihood fits to the same data. The two models are refitted from their estimates on the rows the larger model scores, so a model with fewer mean lags is compared on the same sample; on the same rows this reproduces the original fits.
 
+The smaller fit may also hold parameters at given values ([fixing parameters](estimation.md#fixing-parameters)); each fixed value is then one more tested restriction, interior or at a closed bound, and the larger fit estimates all of its parameters:
+
+```python
+from scivol import GARCH
+
+y = (GARCH(1, 1) + StudentT()).simulate(3000, [0.05, 0.08, 0.88, 0.15], seed=4).data
+spec = GARCH(1, 1) + StudentT()
+print(stats.likelihood_ratio(spec.fit(y, fixed={"eta": 0.2}), spec.fit(y)))
+wide = GARCH(2, 1) + StudentT()
+lr = stats.likelihood_ratio(wide.fit(y, fixed={"alpha[2]": 0.0}), wide.fit(y))
+print(lr, lr.law, lr.weights)
+```
+
+```text
+LR(fixed eta=0.2): statistic=18.2165, df=1, p_value=1.972e-05
+LR(fixed alpha[2]=0): statistic=0, p_value=1 chi_bar_square (0.5, 0.5)
+```
+
+Fixing `alpha[2]` at zero is the same restriction as dropping the lag, and gives the same test. A value fixed on an excluded bound, such as $\omega=0$, has no regular law, and the test reports the status `unsupported`.
+
 ## Inference status
 
 Ordinary standard errors require an estimate in the interior of the parameter space, at a point where the likelihood is smooth, with a well-conditioned Hessian. `result.fit_info.inference_status` says whether that holds:

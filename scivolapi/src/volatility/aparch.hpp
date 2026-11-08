@@ -56,7 +56,7 @@ public:
     {
         for (std::size_t k = 0; k < own(); ++k)
             if (!std::isfinite(theta[k])) return false;
-        if (!(theta[0] > 0.0) || !(theta[delta_index()] > 0.0)) return false;
+        if (!(theta[0] >= 0.0) || !(theta[delta_index()] > 0.0)) return false;  // omega = 0: while sigma stays positive
         for (std::size_t i = 1; i <= p(); ++i)
             if (!(theta[i] >= 0.0) || !(std::abs(theta[p() + i]) < 1.0)) return false;
         for (std::size_t j = 0; j < q(); ++j)

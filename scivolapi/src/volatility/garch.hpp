@@ -58,7 +58,7 @@ public:
     // alpha_i + gamma_i >= 0 (gamma itself may be negative).
     [[nodiscard]] bool evaluable(const double* theta) const noexcept
     {
-        if (!(theta[0] > 0.0) || !std::isfinite(theta[0])) return false;
+        if (!(theta[0] >= 0.0) || !std::isfinite(theta[0])) return false;  // omega = 0: defined while h stays positive
         for (std::size_t k = 1; k < own(); ++k) {
             if (!std::isfinite(theta[k])) return false;
             const bool leverage = Leverage && k > p() && k <= 2 * p();

@@ -71,6 +71,10 @@ struct Layout {
     std::span<const ShapeDomain> shape_domain;
     std::array<ScalarChart, max_dimension> chart{};
     std::array<bool, max_dimension> scalar_entry{};
+    // A scalar entry's declared domain (the chart's bounds are representational
+    // margins inside it): lower < theta < upper, lower <= theta where closed.
+    std::array<double, max_dimension> domain_lower{}, domain_upper{};
+    std::array<bool, max_dimension> domain_closed_lower{};
 
     explicit Layout(const ModelSpec& spec) noexcept
         : family(&volatility_family(spec.volatility)), density(spec.density), stationarity(spec.stationarity),
@@ -103,6 +107,9 @@ struct Layout {
     {
         chart[index] = ScalarChart::for_domain(lower, upper, closed);
         scalar_entry[index] = true;
+        domain_lower[index] = lower;
+        domain_upper[index] = upper;
+        domain_closed_lower[index] = closed;
     }
     void simplex_at(std::size_t from, std::size_t count, bool nonnegative = true) noexcept
     {

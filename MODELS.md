@@ -34,6 +34,16 @@ most 8 for `p`, `q` and the AR and MA parts; HAR windows at most 256.
 For APARCH with StudentT or SkewT, the power moment also requires
 `delta * eta < 1`; this constraint is inactive at `eta = 0`.
 
+The likelihood is defined on a wider region than the domain where it is
+estimated: GARCH, GJR-GARCH and APARCH are defined at `omega = 0` while the
+variance stays positive. `FitOptions::fixed` holds entries at given values in
+the closure of their bounds (`omega = 0` included); the fit runs on the free
+entries in theta coordinates (a `FixedModel` and `FixedJet` in
+`src/fixed_model.hpp` lift them into the full theta), and the result reports
+every entry, with zero covariance rows and NaN standard errors for the fixed
+ones. `Restriction::fixing` adds a fixed child entry to a restriction as one
+more tested direction for `restriction_test`.
+
 The volatility domains above are the default `stationarity="covariance"`.
 Each volatility component can declare another:
 

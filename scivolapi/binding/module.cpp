@@ -381,7 +381,11 @@ NB_MODULE(_scivolapi, m)
         .def_prop_ro("dimension", &Model::dimension)
         .def_prop_ro("parameter_names", &Model::parameter_names)
         .def_prop_ro("residual_degrees_of_freedom", &Model::residual_degrees_of_freedom)
-        .def("feasible", [](const Model& m, const Vector& theta) { return m.feasible(view(theta)); })
+        .def("feasible", [](const Model& m, const Vector& theta, std::optional<std::vector<bool>> fixed) {
+            std::vector<char> mask;
+            if (fixed) mask.assign(fixed->begin(), fixed->end());
+            return m.feasible(view(theta), mask);
+        }, "theta"_a, "fixed"_a = nb::none())
         .def("at_open_bound", [](const Model& m, const Vector& theta) { return m.at_open_bound(view(theta)); })
         .def_prop_ro("constraint_names", &Model::constraint_names)
         .def("open_constraints", [](const Model& m) {
@@ -475,7 +479,8 @@ NB_MODULE(_scivolapi, m)
         .def_rw("start", &FitOptions::start)
         .def_rw("starts", &FitOptions::starts)
         .def_rw("start_count", &FitOptions::start_count)
-        .def_rw("boundary", &FitOptions::boundary);
+        .def_rw("boundary", &FitOptions::boundary)
+        .def_rw("fixed", &FitOptions::fixed);
     m.attr("PROBE_ITERATIONS") = probe_iterations;
     nb::class_<FitStart>(m, "FitStart")
         .def_ro("theta", &FitStart::theta)
@@ -529,6 +534,7 @@ NB_MODULE(_scivolapi, m)
         .def_ro("success", &FitResult::success)
         .def_ro("phases", &FitResult::phases)
         .def_ro("starts", &FitResult::starts)
+        .def_prop_ro("fixed", [](const FitResult& r) { return std::vector<bool>(r.fixed.begin(), r.fixed.end()); })
         .def_ro("warnings", &FitResult::warnings);
 
     m.def("fit", [](const Model& model, const Vector& y, const FitOptions& options, const std::optional<Matrix>& x) {
@@ -807,6 +813,9 @@ NB_MODULE(_scivolapi, m)
         .def_ro("embedding", &Restriction::embedding)
         .def_ro("directions", &Restriction::directions)
         .def_ro("null_values", &Restriction::null_values)
+        .def_ro("child_fixed", &Restriction::child_fixed)
+        .def_static("identity", &Restriction::identity, "spec"_a)
+        .def("fixing", [](const Restriction& r, const Vector& values) { return r.fixing(view(values)); }, "values"_a)
         .def("then", &Restriction::then)
         .def("embed", [](const Restriction& r, const Vector& t) -> nb::object {
             auto result = r.embed(view(t));

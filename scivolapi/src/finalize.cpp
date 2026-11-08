@@ -11,6 +11,7 @@
 #include <type_traits>
 
 #include "fit_problem.hpp"
+#include "fixed_model.hpp"
 #include "optimize/open_bounds.hpp"
 #include "optimize/projection.hpp"
 #include "optimize/kinks.hpp"
@@ -50,7 +51,8 @@ void name_open_bounds(const optimize::Problem& p, std::span<const double> x, std
 
 // The binding closed bounds and constraints as conditions, with their inward
 // normals at the reported (data-unit) theta.
-void record_binding(const Model& model, FitResult& r, const optimize::ActiveSet& active)
+template<class ModelT>
+void record_binding(const ModelT& model, FitResult& r, const optimize::ActiveSet& active)
 {
     const std::size_t d = r.theta.size();
     std::vector<double> lower(d), upper(d);
@@ -172,7 +174,7 @@ FitResult finalize(const ModelT& model, JetT& unit_jet, JetT& data_jet, double d
                    const Candidate& selected, std::vector<FitPhase> phases, double accuracy,
                    std::span<const double> reported_theta)
 {
-    constexpr bool univariate = std::is_same_v<ModelT, Model>;
+    constexpr bool univariate = !std::is_same_v<ModelT, CorrelationModel>;
     const std::size_t d = model.dimension();
     const std::size_t n = scored_rows(data_jet.sample());  // paths cover the scored rows
     FitResult r;
@@ -393,6 +395,13 @@ void restrict_inference(FitResult& r)
         auto u = orthogonalize({r.binding_normals.begin() + k * d, r.binding_normals.begin() + (k + 1) * d});
         if (!u.empty()) span.push_back(std::move(u));
     }
+    for (std::size_t j = 0; j < r.fixed.size(); ++j)  // fixed entries are no directions of the estimate
+        if (r.fixed[j]) {
+            std::vector<double> axis(d, 0.0);
+            axis[j] = 1.0;
+            auto u = orthogonalize(std::move(axis));
+            if (!u.empty()) span.push_back(std::move(u));
+        }
     for (std::size_t j = 0; j < d && span.size() + free.size() < d; ++j) {
         std::vector<double> axis(d, 0.0);
         axis[j] = 1.0;
@@ -442,6 +451,8 @@ void restrict_inference(FitResult& r)
 
 template FitResult finalize<Model, Jet>(const Model&, Jet&, Jet&, double, const Candidate&, std::vector<FitPhase>,
                                         double, std::span<const double>);
+template FitResult finalize<FixedModel, FixedJet>(const FixedModel&, FixedJet&, FixedJet&, double, const Candidate&,
+                                                  std::vector<FitPhase>, double, std::span<const double>);
 template FitResult finalize<CorrelationModel, CorrelationJet>(const CorrelationModel&, CorrelationJet&,
                                                               CorrelationJet&, double, const Candidate&,
                                                               std::vector<FitPhase>, double, std::span<const double>);

@@ -280,6 +280,10 @@ LRResult restriction_test(const Model& parent, const Model& child, const Restric
 {
     LRResult out;
     const std::size_t d = parent.dimension(), c = child.dimension();
+    // The child's estimated entries (those it does not hold fixed).
+    const auto estimated = [&](std::size_t j) { return r.child_fixed.empty() || std::isnan(r.child_fixed[j]); };
+    std::size_t free = 0;
+    for (std::size_t j = 0; j < c; ++j) free += estimated(j);
     if (!(level > 0.0 && level < 1.0) || !(tolerance > 0.0 && tolerance <= 1e-6)
         || !std::isfinite(tolerance) || !maximum_cells)
         return invalid(out, LRStatus::invalid_argument, "Invalid decision level, accuracy, or cubature budget.");
@@ -288,9 +292,16 @@ LRResult restriction_test(const Model& parent, const Model& child, const Restric
         || !pf.comparison || pf.comparison != cf.comparison || pf.scored != cf.scored
         || pf.observations != cf.observations || pf.theta.size() != d || cf.theta.size() != c)
         return invalid(out, LRStatus::incompatible, "Fits must use their declared models and the same comparison plan.");
-    if (r.types.empty() || r.types.size() != d - c || r.directions.size() != r.types.size() * d
+    if (r.types.empty() || r.types.size() != d - free || r.directions.size() != r.types.size() * d
         || r.null_values.size() != r.types.size())
         return invalid(out, LRStatus::invalid_argument, "The restriction has inconsistent dimensions.");
+    for (std::size_t j = 0; j < c; ++j) {
+        const bool held = !cf.fixed.empty() && cf.fixed[j];
+        if (held == estimated(j) || (held && cf.theta[j] != r.child_fixed[j]))
+            return invalid(out, LRStatus::incompatible, "The child fit must hold exactly the restriction's fixed entries.");
+    }
+    if (std::any_of(pf.fixed.begin(), pf.fixed.end(), [](char held) { return held != 0; }))
+        return invalid(out, LRStatus::unsupported, "The larger model's fit must estimate all its parameters.");
     out.statistic = 2.0 * (pf.log_likelihood - cf.log_likelihood);
     if (r.identification == Identification::unidentified_under_null)
         return invalid(out, LRStatus::unsupported, r.condition);
@@ -323,6 +334,7 @@ LRResult restriction_test(const Model& parent, const Model& child, const Restric
         // A parent face is retained when it varies along the child embedding.
         bool retained = false;
         for (std::size_t j = 0; j < c; ++j) {
+            if (!estimated(j)) continue;
             double v = 0;
             for (std::size_t a = 0; a < d; ++a) v += normals[i*d+a]*r.embedding[a*c+j];
             retained = retained || v != 0;

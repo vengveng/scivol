@@ -143,6 +143,7 @@ class EstimationResult:
         index: Optional[Any] = None,
         name: Optional[str] = None,
         parameter_source: str = "estimated",
+        fixed: Optional[Dict[str, float]] = None,
     ) -> None:
 
         self.spec: CompositeSpec = spec
@@ -153,6 +154,8 @@ class EstimationResult:
         # Estimation method
         self.method: str = method
         self.parameter_source: str = parameter_source
+        # Parameters held at given values in the fit (fit(fixed=...)), by name.
+        self._fixed: Dict[str, float] = dict(fixed or {})
         
         # Conditional variances
         self._sigma2: Optional[NDArray[np.float64]] = sigma2
@@ -261,22 +264,42 @@ class EstimationResult:
         """Stationary E[y], unavailable when exogenous means are unknown."""
         return self._native()[0].unconditional_mean(self._theta)
 
+    @property
+    def fixed(self) -> Dict[str, float]:
+        """The parameters the fit held at given values (fit(fixed=...)), by name."""
+        return dict(self._fixed)
+
+    def _in_domain(self) -> bool:
+        """Whether the estimate lies in the model's domain; fixed entries need
+        only lie in the closure of their bounds."""
+        model = self._native()[0]
+        return bool(model.feasible(self._theta, [name in self._fixed for name in self.param_names]))
+
+    @property
+    def n_estimated(self) -> int:
+        """The number of estimated parameters: all of them but the fixed ones."""
+        return self._theta.size - len(self._fixed)
+
     # Information criteria
     # --------------------------------------------------------------------- #
+    def _criteria(self) -> Any:
+        return api.information_criteria(self.log_likelihood, self.n_estimated,
+                                        self.fit_info.likelihood_n_obs or self.n_obs)
+
     @property
     def aic(self) -> float:
-        return api.information_criteria(self.log_likelihood, self._theta.size,
-                                        self.fit_info.likelihood_n_obs or self.n_obs)[0]
+        """Akaike's criterion, counting the estimated parameters."""
+        return self._criteria()[0]
 
     @property
     def bic(self) -> float:
-        return api.information_criteria(self.log_likelihood, self._theta.size,
-                                        self.fit_info.likelihood_n_obs or self.n_obs)[1]
+        """Schwarz's criterion, counting the estimated parameters."""
+        return self._criteria()[1]
 
     @property
     def hqic(self) -> float:
-        return api.information_criteria(self.log_likelihood, self._theta.size,
-                                        self.fit_info.likelihood_n_obs or self.n_obs)[2]
+        """Hannan and Quinn's criterion, counting the estimated parameters."""
+        return self._criteria()[2]
 
     # Component shorthands
     # --------------------------------------------------------------------- #
@@ -511,7 +534,8 @@ class EstimationResult:
 
     @property
     def std_errors(self) -> Optional[pd.Series]:
-        """Standard errors; NaN for a parameter a binding face fixes (fit(boundary="restricted"))."""
+        """Standard errors; NaN for a fixed parameter (fit(fixed=...)) and for one a
+        binding face fixes (fit(boundary="restricted"))."""
         return self._vector(self._errors(), "std_errors")
 
     @property
@@ -533,7 +557,7 @@ class EstimationResult:
         se = self._errors(robust)
         if se is None:
             return None
-        df = (self.fit_info.likelihood_n_obs or self.n_obs) - self._theta.size
+        df = (self.fit_info.likelihood_n_obs or self.n_obs) - self.n_estimated
         nan = {"statistic": np.nan, "p_value": np.nan, "status": "not_estimable"}
         return [api.coefficient_test(float(c), float(e), df) if np.isfinite(e) and e > 0 else nan
                 for c, e in zip(self._theta, se)]
@@ -650,7 +674,8 @@ class EstimationResult:
         conv_str = "Yes" if self.success else "No"
         time_str = f"{self.time_elapsed:.3f}s" if self.time_elapsed else "N/A"
         lines.append(f"{'No. Observations:':<20} {self.n_obs:<15} {'Success:':<15} {conv_str}")
-        lines.append(f"{'No. Parameters:':<20} {self._theta.size:<15} {'Iterations:':<15} {self.n_iter}")
+        count = f"{self.n_estimated} (+{len(self._fixed)} fixed)" if self._fixed else str(self._theta.size)
+        lines.append(f"{'No. Parameters:':<20} {count:<15} {'Iterations:':<15} {self.n_iter}")
         lines.append(f"{'Time Elapsed:':<20} {time_str}")
         hold_back_line = self._format_hold_back_summary()
         if hold_back_line is not None:
@@ -688,10 +713,12 @@ class EstimationResult:
             # Format coefficient
             coef_str = self._format_value(coef)
             
-            if se_val is not None and se_val > 0 and np.isfinite(se_val):
+            if name in self._fixed:
+                se_str, t_str, p_str = f"{'fixed':>12}", f"{'':>10}", f"{'':>10}"
+            elif se_val is not None and se_val > 0 and np.isfinite(se_val):
                 se_str = self._format_value(se_val)
                 coefficient = api.coefficient_test(float(coef), float(se_val),
-                                                   (self.fit_info.likelihood_n_obs or self.n_obs) - self._theta.size)
+                                                   (self.fit_info.likelihood_n_obs or self.n_obs) - self.n_estimated)
                 t_stat = coefficient["statistic"]
                 t_str = f"{t_stat:>10.3f}"
                 # Two-tailed p-value
@@ -774,7 +801,7 @@ class EstimationResult:
         lines.append(f"{'Model Properties':^{width}}")
         lines.append("─" * width)
         lines.append(f"{'Persistence:':<35} {persistence:.6f}")
-        lines.append(f"{'In model domain:':<35} {'Yes' if model.feasible(theta) else 'No'}")
+        lines.append(f"{'In model domain:':<35} {'Yes' if self._in_domain() else 'No'}")
         lines.append(f"{'Unconditional Variance:':<35} {variance:.6e}")
         lines.append(f"{'Unconditional Volatility:':<35} {np.sqrt(variance):.6f}")
         if 0.0 < abs(persistence) < 1.0:
@@ -796,14 +823,15 @@ class EstimationResult:
         if self.vol is not None:
             model, _, _ = self._native()
             theta = self._theta
-            if not model.feasible(theta):
+            if not self._in_domain():
                 add("the parameters are outside the model domain")
             elif abs(model.persistence(theta)) > 0.99:
                 add("persistence is very close to one")
 
         errors = self._errors()
         if errors is not None and self.fit_info.inference_status != "restricted":
-            if np.any(~np.isfinite(errors)):
+            estimated = np.array([name not in self._fixed for name in self.param_names])
+            if np.any(~np.isfinite(errors[estimated])):
                 add("some standard errors could not be computed")
             elif np.any(errors <= 0):
                 add("some standard errors are not positive")
@@ -829,6 +857,8 @@ class EstimationResult:
             'hqic': self.hqic,
             'n_obs': self.n_obs,
             'n_params': self._theta.size,
+            'n_estimated': self.n_estimated,
+            'fixed': self.fixed,
             'success': self.success,
             'n_iter': self.n_iter,
             'time_elapsed': self.time_elapsed,

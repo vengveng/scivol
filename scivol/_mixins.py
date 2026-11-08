@@ -35,7 +35,7 @@ class FitsMixin:
         spec = validate_spec(self.spec)
         result = fit_spec(spec, values, x=x, hold_back=hold_back, scale=scale,
                           method=method, index=index, name=name, **options)
-        warning = small_sample_warning(len(result.params), len(result.data))
+        warning = small_sample_warning(result.n_estimated, len(result.data))
         if warning:
             result.fit_info.add_warning(warning)
         return result

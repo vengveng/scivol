@@ -104,7 +104,19 @@ struct Restriction {
     Identification identification = Identification::conditional;
     std::string condition;
     std::vector<double> offset, embedding, directions, null_values;
+    // Child entries held at given values in the child's fit (NaN: estimated;
+    // empty: none). Each is one more tested direction: the child is the
+    // child model with these entries fixed.
+    std::vector<double> child_fixed;
 
+    // The model restricted to itself (no tested direction).
+    [[nodiscard]] static Restriction identity(const ModelSpec& spec);
+    // This restriction with the child's entries `values` (NaN: estimated)
+    // also held fixed: a closed-boundary direction where a value is on a
+    // closed bound of its domain, an interior one inside it. A value on an
+    // excluded bound (omega = 0) has no regular law: the identification is
+    // then unidentified_under_null.
+    [[nodiscard]] Restriction fixing(std::span<const double> values) const;
     [[nodiscard]] Restriction then(const Restriction& next) const;
     [[nodiscard]] std::optional<std::vector<double>> embed(std::span<const double> theta) const;
     [[nodiscard]] std::optional<std::vector<double>> map_start(std::span<const double> theta) const;
@@ -179,8 +191,10 @@ public:
     // tangent coordinates belong to the model, not to its consumers.
     [[nodiscard]] std::vector<Restriction> restrictions() const;
 
-    // Theoretical domain.
-    [[nodiscard]] bool feasible(std::span<const double> theta) const;
+    // Theoretical domain. Entries flagged in `fixed` (held at given values in a
+    // fit) need only lie in the closure of their bounds (omega = 0 where the
+    // likelihood is defined there).
+    [[nodiscard]] bool feasible(std::span<const double> theta, std::span<const char> fixed = {}) const;
     // Where the likelihood itself is defined (may be wider than the domain).
     [[nodiscard]] bool evaluable(std::span<const double> theta) const;
     // Lower/upper bounds on theta (NaN = unbounded) and inequality constraints
@@ -271,7 +285,8 @@ public:
     // A representational endpoint of an open scalar/stability bound is not
     // an attained interior estimate. Ordinary information-based diagnostic
     // laws are unavailable there, even if an optimizer reports convergence.
-    [[nodiscard]] bool at_open_bound(std::span<const double> theta) const;
+    // Entries flagged in `fixed` are not estimates and are skipped.
+    [[nodiscard]] bool at_open_bound(std::span<const double> theta, std::span<const char> fixed = {}) const;
     [[nodiscard]] bool constant_variance() const noexcept;
     // E[(|z|-gamma*z)^power]; NaN if the moment does not exist or cannot be evaluated.
     [[nodiscard]] double innovation_power_moment(std::span<const double> theta, double gamma, double power) const;

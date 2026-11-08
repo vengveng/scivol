@@ -162,8 +162,8 @@ def test_dcc_regressors_name_only_the_series_that_have_them():
 
 def test_parameters_outside_the_domain_are_named():
     y = GARCH().simulate(500, [0.1, 0.1, 0.8], seed=1).data
-    with pytest.raises(ValueError, match=r"omega > 0 \(it is 0\)"):
-        GARCH().fix(y, [0.0, 0.08, 0.9])
+    with pytest.raises(ValueError, match=r"omega > 0 \(it is -0.1\)"):
+        GARCH().fix(y, [-0.1, 0.08, 0.9])
     with pytest.raises(ValueError, match=r"eta < 0.5"):
         (GARCH() + StudentT()).fix(y, [0.1, 0.1, 0.8, 0.6])
 
