@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from .base import Component
-from .mean import ARMA, ARX, HARX
+from .mean import ARMA, HAR
 from .vol import APARCH, EGARCH, GARCH, GJRGARCH
 from .density import (
     GED,
@@ -16,8 +16,7 @@ from .density import (
 )
 
 __all__: list[str] = [
-    "ARX",
-    "HARX",
+    "HAR",
     "Component",
     "ARMA",
     "APARCH",

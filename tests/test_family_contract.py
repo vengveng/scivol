@@ -18,6 +18,7 @@ from scivol import _scivolapi as api
 from scivol._fit import native_spec, spec_from_native
 from scivol.components.density import DensityComponent
 from scivol.components.vol import VolatilityComponent
+from scivol.spec import CompositeSpec
 
 VOLATILITIES = list(api.VolatilityKind.__members__)
 DENSITIES = list(api.DensityKind.__members__)
@@ -41,7 +42,7 @@ def native(mean: str, volatility: str, density: str, stationarity: str = "covari
     if mean == "arma":
         spec.mean.constant, spec.mean.ar, spec.mean.ma = True, 1, 1
     elif mean == "arx":
-        spec.mean.constant, spec.mean.ar, spec.mean.exog = True, 1, 1
+        spec.mean.constant, spec.mean.ar, spec.mean.exog = True, 1, ["x[1]"]
     spec.volatility = getattr(api.VolatilityKind, volatility)
     spec.p, spec.q = (0, 0) if volatility == "constant" else (p, q)
     spec.stationarity = getattr(api.Stationarity, stationarity)
@@ -112,7 +113,7 @@ def test_model_declares_a_consistent_domain(mean, volatility, density, stationar
     assert model.constant_variance == (volatility == "constant")
 
     # The Python components round-trip through the native description.
-    assert native_spec(spec_from_native(spec), spec.mean.exog) == spec
+    assert native_spec(CompositeSpec(*spec_from_native(spec).components), spec.mean.exog) == spec
 
 
 @pytest.mark.parametrize("mean,volatility,density,stationarity", CASES)
@@ -150,7 +151,7 @@ def test_derivatives_are_wired_to_the_likelihood(volatility, density):
 def test_restrictions_embed_exactly(volatility, density):
     parent = model_or_skip(native("arx", volatility, density, p=2 if volatility != "constant" else 1))
     first = max(parent.spec.mean.conditioning, 1)
-    plan = api.ComparisonPlan(Y, first, X, None)
+    plan = api.ComparisonPlan(Y, first, X, ["x[1]"])
     for r in parent.restrictions():
         child = api.Model(r.child)
         theta = np.asarray(child.start(plan))

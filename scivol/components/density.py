@@ -3,7 +3,7 @@
 a native density; the native model defines its shapes and their domain."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Sequence
 
 from .. import _scivolapi as api
 from ..roles import Role
@@ -21,9 +21,8 @@ class DensityComponent(Component):
     def signature(self) -> str:
         return type(self).__name__
 
-    def declare(self, native: api.ModelSpec, exog: int) -> bool:
+    def declare(self, native: api.ModelSpec, regressors: Sequence[str]) -> None:
         native.density = getattr(api.DensityKind, self.kind)
-        return True
 
     def distribution(self, **shapes: float) -> "Distribution":
         """The standardized distribution at the given shapes, by name, as in

@@ -388,12 +388,12 @@ def likelihood_ratio(restricted: "EstimationResult", unrestricted: "EstimationRe
     # from their estimates; on the same rows this reproduces the ordinary fits.
     from ._fit import fit_spec_on_plan
 
-    plan = api.ComparisonPlan(y, parent.spec.mean.conditioning, x, None)
+    plan = api.ComparisonPlan(y, parent.spec.mean.conditioning, x, list(parent.spec.mean.exog) if x is not None else None)
     fits = []
     for result, model in ((unrestricted, parent), (restricted, child)):
         options = api.FitOptions()
         options.start = [float(v) for v in result._theta]
-        fits.append(fit_spec_on_plan(result.spec, plan, options=options, exog=model.spec.mean.exog))
+        fits.append(fit_spec_on_plan(result.spec, plan, options=options, regressors=model.spec.mean.exog))
     test = api.restriction_test(parent, child, restriction, fits[0], fits[1], plan, float(level))
     status = "ok" if test.status == api.LRStatus.ok else test.status.name
     law = test.law.name

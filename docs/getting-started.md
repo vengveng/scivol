@@ -100,15 +100,15 @@ Components combine with `+`, in any order:
 
 ```python
 import numpy as np
-from scivol import ARMA, ARX, GJRGARCH
+from scivol import ARMA, GJRGARCH
 
-ar_gjr = (ARMA(1, 0) + GJRGARCH(1, 1) + StudentT()).fit(y)
+ar_gjr = (ARMA(1) + GJRGARCH(1, 1) + StudentT()).fit(y)
 
 x = np.random.default_rng(17).normal(size=(len(y), 2))
-with_regressors = (ARX(1) + GARCH()).fit(y, x=x)
+with_regressors = (ARMA(1) + GARCH()).fit(y, x=x)
 ```
 
-ARX regressors enter contemporaneously, so `x` has one row per observation of `y`. The mean and volatility parameters are estimated jointly. [Mean models](models/mean.md) gives the conventions.
+Regressors are passed with the data, so the same specification fits with or without them. They enter contemporaneously, so `x` has one row per observation of `y`, and a DataFrame's column names become the coefficients' names. The mean and volatility parameters are estimated jointly. [Mean models](models/mean.md) gives the conventions.
 
 ## Forecasting and simulating
 

@@ -84,21 +84,6 @@ def validate_scale(scale: Optional[float]) -> float:
     return scale_float
 
 
-def validate_regressors(x: Any, n_obs: int) -> np.ndarray:
-    arr = np.asarray(x, dtype=np.float64)
-    if arr.ndim == 1:
-        arr = arr[:, None]
-    if arr.ndim != 2:
-        raise ValueError("Regressors must be a 2-D array")
-    if arr.shape[0] != n_obs:
-        raise ValueError(
-            f"Regressors must have the same number of rows as data. Got {arr.shape[0]} and {n_obs}."
-        )
-    if np.isnan(arr).any() or np.isinf(arr).any():
-        raise ValueError("Regressors contain NaN or infinite values")
-    return np.ascontiguousarray(arr, dtype=np.float64)
-
-
 def small_sample_warning(n_params: int, n_obs: int) -> Optional[str]:
     """A warning when the sample looks too small for the number of parameters:
     fewer than five observations per parameter."""

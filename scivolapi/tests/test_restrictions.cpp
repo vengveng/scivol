@@ -16,7 +16,7 @@ int main()
     ModelSpec s;
     s.mean.constant = true;
     s.mean.ar = 2;
-    s.mean.exog = 2;
+    s.mean.exog = {"x1", "x2"};
     s.volatility = VolatilityKind::gjr;
     s.p = 2;
     s.density = DensityKind::skew_t;
@@ -27,7 +27,7 @@ int main()
         x[2 * t] = std::cos(0.7 * t);
         x[2 * t + 1] = std::sin(0.3 * t);
     }
-    const ComparisonPlan plan(y, 8, x, 2, 1.7);
+    const ComparisonPlan plan(y, 8, x, {"x1", "x2"}, 1.7);
     const Sample sample = parent.prepare(plan);
     CHECK(sample.first_scored == 8 && sample.scored() == 92 && sample.variance_seed == 1.7);
     auto edges = parent.restrictions();

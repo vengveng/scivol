@@ -16,7 +16,7 @@ Test Coverage:
 - ARMA(1,1) + GARCH(1,1) + Normal (when API supports it)
 
 EGARCH coverage follows the shipped public tensor, including the vol-only GED
-surface, the shipped ARMA+EGARCH densities, and the shipped ARX/HARX standalone
+surface, the shipped ARMA+EGARCH densities, and the shipped ARMA/HAR standalone
 and linked EGARCH families.
 
 Each test:
@@ -837,7 +837,7 @@ def simulate_meanx_surface(
     burn: int = 300,
     n_exog: int = 1,
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """Simulate any shipped ARX/HARX public surface with exogenous regressors."""
+    """Simulate any shipped ARMA/HAR public surface with exogenous regressors."""
     rng = np.random.default_rng(seed + 1000)
     x_full = np.ascontiguousarray(rng.standard_normal((n + burn, n_exog)), dtype=np.float64)
     sim = spec.simulate(n, np.ascontiguousarray(params, dtype=np.float64), burn=burn, seed=seed, x=x_full)
@@ -2324,14 +2324,14 @@ class TestARMAEGARCHHigherOrder:
 
 
 # -----------------------------------------------------------------------------
-# Tests: ARX/HARX standalone and linked EGARCH shipped surfaces
+# Tests: ARMA/HAR standalone and linked EGARCH shipped surfaces
 # -----------------------------------------------------------------------------
 
 class TestARXHARXStandalone:
     def test_arx_normal_parameter_recovery(self) -> None:
-        from scivol import ARX, Normal
+        from scivol import ARMA, Normal
 
-        spec = ARX(1) + Normal()
+        spec = ARMA(1) + Normal()
         params = TRUE_PARAMS["arx_normal"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3101)
 
@@ -2341,9 +2341,9 @@ class TestARXHARXStandalone:
         np.testing.assert_allclose(result.params, params, atol=0.18, rtol=0.0)
 
     def test_harx_normal_parameter_recovery(self) -> None:
-        from scivol import HARX, Normal
+        from scivol import HAR, Normal
 
-        spec = HARX((1, 5)) + Normal()
+        spec = HAR((1, 5)) + Normal()
         params = TRUE_PARAMS["harx_normal"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3102)
 
@@ -2353,9 +2353,9 @@ class TestARXHARXStandalone:
         np.testing.assert_allclose(result.params, params, atol=0.20, rtol=0.0)
 
     def test_arx_studentt_estimation_runs(self) -> None:
-        from scivol import ARX, StudentT
+        from scivol import ARMA, StudentT
 
-        spec = ARX(1) + StudentT()
+        spec = ARMA(1) + StudentT()
         params = TRUE_PARAMS["arx_studentt"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3103)
 
@@ -2366,9 +2366,9 @@ class TestARXHARXStandalone:
         assert np.all(np.isfinite(result.params))
 
     def test_harx_skewt_estimation_runs(self) -> None:
-        from scivol import HARX, SkewT
+        from scivol import HAR, SkewT
 
-        spec = HARX((1, 5)) + SkewT()
+        spec = HAR((1, 5)) + SkewT()
         params = TRUE_PARAMS["harx_skewt"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3104)
 
@@ -2379,9 +2379,9 @@ class TestARXHARXStandalone:
         assert np.all(np.isfinite(result.params))
 
     def test_arx_ged_estimation_runs(self) -> None:
-        from scivol import ARX, GED
+        from scivol import ARMA, GED
 
-        spec = ARX(1) + GED()
+        spec = ARMA(1) + GED()
         params = TRUE_PARAMS["arx_ged"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3105)
 
@@ -2394,9 +2394,9 @@ class TestARXHARXStandalone:
 
 class TestARXHARXEGARCH:
     def test_arx_egarch_normal_parameter_recovery(self) -> None:
-        from scivol import ARX, EGARCH, Normal
+        from scivol import ARMA, EGARCH, Normal
 
-        spec = ARX(1) + EGARCH(1, 1) + Normal()
+        spec = ARMA(1) + EGARCH(1, 1) + Normal()
         params = TRUE_PARAMS["arx_egarch_normal"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3201)
 
@@ -2407,9 +2407,9 @@ class TestARXHARXEGARCH:
         assert result.params.iloc[6] == pytest.approx(params[6], abs=0.10)
 
     def test_arx_egarch_studentt_estimation_runs(self) -> None:
-        from scivol import ARX, EGARCH, StudentT
+        from scivol import ARMA, EGARCH, StudentT
 
-        spec = ARX(1) + EGARCH(1, 1) + StudentT()
+        spec = ARMA(1) + EGARCH(1, 1) + StudentT()
         params = TRUE_PARAMS["arx_egarch_studentt"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3202)
 
@@ -2420,9 +2420,9 @@ class TestARXHARXEGARCH:
         assert np.all(np.isfinite(result.params))
 
     def test_harx_egarch_skewt_estimation_runs(self) -> None:
-        from scivol import HARX, EGARCH, SkewT
+        from scivol import HAR, EGARCH, SkewT
 
-        spec = HARX((1, 5)) + EGARCH(2, 1) + SkewT()
+        spec = HAR((1, 5)) + EGARCH(2, 1) + SkewT()
         params = TRUE_PARAMS["harx_egarch_skewt"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3203)
 
@@ -2433,9 +2433,9 @@ class TestARXHARXEGARCH:
         assert np.all(np.isfinite(result.params))
 
     def test_arx_egarch_ged_estimation_runs(self) -> None:
-        from scivol import ARX, EGARCH, GED
+        from scivol import ARMA, EGARCH, GED
 
-        spec = ARX(1) + EGARCH(1, 1) + GED()
+        spec = ARMA(1) + EGARCH(1, 1) + GED()
         params = TRUE_PARAMS["arx_egarch_ged"]["params"]
         data, x = simulate_meanx_surface(spec, params, MEANX_OBS, seed=3204)
 
@@ -2761,9 +2761,9 @@ class TestDCCStudentT:
 
 
 @pytest.mark.parametrize("density", range(8))
-@pytest.mark.parametrize("family", ("ARMA", "ARX", "HARX"))
+@pytest.mark.parametrize("family", ("ARMA", "ARMAX", "HAR"))
 def test_standalone_mean_tensor_recovery(family, density):
-    from scivol import (ARMA, ARX, GED, HARX, GeneralizedHyperbolic, Hyperbolic, Normal, NormalInverseGaussian,
+    from scivol import (ARMA, GED, HAR, GeneralizedHyperbolic, Hyperbolic, Normal, NormalInverseGaussian,
                         SkewT, StudentT, VarianceGamma)
 
     densities = (Normal, StudentT, SkewT, GED, GeneralizedHyperbolic, NormalInverseGaussian, Hyperbolic,
@@ -2792,30 +2792,29 @@ def test_standalone_mean_tensor_recovery(family, density):
         shape = [0.12, 1.8, 0.4] if density == 4 else [0.12, 1.8]
         lam = 0.4 if density == 4 else -0.5 if density == 5 else 1.0
         innovations = standardized_gh_rvs(rng, n, 0.12, 1.8, lam)
-    mean = {"ARMA": ARMA(2, 1), "ARX": ARX(2), "HARX": HARX([1, 5])}[family]
+    mean = {"ARMA": ARMA(2, 1), "ARMAX": ARMA(2, 1), "HAR": HAR([1, 5], q=1)}[family]
     x = None if family == "ARMA" else rng.normal(size=(n, 1))
-    coefficients = (
-        np.array([0.2, 0.45, -0.12, 0.35])
-        if family == "ARMA"
-        else np.array([0.2, 0.3, 0.15, 0.4])
-    )
+    # const, then ar[1], ar[2] or har[1], har[5], then x[1], then ma[1]
+    coefficients = {"ARMA": np.array([0.2, 0.45, -0.12, 0.35]), "ARMAX": np.array([0.2, 0.3, 0.15, 0.4, 0.3]),
+                    "HAR": np.array([0.2, 0.3, 0.15, 0.4, 0.3])}[family]
     errors = np.sqrt(1.2) * innovations
     data = np.zeros(n)
     for t in range(5, n):
         if family == "ARMA":
             state = [1.0, data[t - 1], data[t - 2], errors[t - 1]]
-        elif family == "ARX":
-            state = [1.0, data[t - 1], data[t - 2], x[t, 0]]
+        elif family == "ARMAX":
+            state = [1.0, data[t - 1], data[t - 2], x[t, 0], errors[t - 1]]
         else:
-            state = [1.0, data[t - 1], np.mean(data[t - 5 : t]), x[t, 0]]
+            state = [1.0, data[t - 1], np.mean(data[t - 5 : t]), x[t, 0], errors[t - 1]]
         data[t] = np.dot(coefficients, state) + errors[t]
     data = data[200:]
     x = None if x is None else x[200:]
     spec = mean + densities[density]()
     result = spec.fit(data, x=x)
     assert result.success, result.convergence_message
-    np.testing.assert_allclose(result.params.iloc[:4], coefficients, atol=0.12, rtol=0)
-    assert abs(result.params.iloc[4] - 1.2) < 0.25  # sigma2
+    k = len(coefficients)
+    np.testing.assert_allclose(result.params.iloc[:k], coefficients, atol=0.12, rtol=0)
+    assert abs(result.params.iloc[k] - 1.2) < 0.25  # sigma2
     truth = np.r_[coefficients, 1.2, shape]
     assert result.log_likelihood >= spec.loglikelihood(data, truth, x=x) - 1e-6
 
@@ -2852,11 +2851,11 @@ def test_aparch_zero_beta_start_has_an_interior_mle():
 
 
 def test_automatic_path_leaves_a_degenerate_aparch_warm_start():
-    from scivol import APARCH, ARX, GJRGARCH, Normal
+    from scivol import APARCH, ARMA, GJRGARCH, Normal
 
     y = (GJRGARCH()+Normal()).simulate(3000, [.1, .05, .08, .8], seed=102).data
     theta = [.018522, .6868, 4.7e-34, -.096, 49.8]
-    model = ARX(1, constant=False)+APARCH(1, 0)+Normal()
+    model = ARMA(1, constant=False)+APARCH(1, 0)+Normal()
     fitted = model.fit(y, initial_params=theta)
     assert fitted.success, fitted.warnings
     assert fitted.log_likelihood > -4193
@@ -2868,9 +2867,9 @@ def test_automatic_path_leaves_a_degenerate_aparch_warm_start():
 
 @pytest.mark.parametrize("seed", [2, 18])
 def test_arx_egarch_dgp_has_a_reproducible_stationarity_certificate(seed):
-    from scivol import ARX, EGARCH, Normal
+    from scivol import ARMA, EGARCH, Normal
 
-    spec = ARX(1, constant=False)+EGARCH(1, 1)+Normal()
+    spec = ARMA(1, constant=False)+EGARCH(1, 1)+Normal()
     truth = np.array([.2, -.1, .15, -.06, .85])
     y = spec.simulate(3000, truth, seed=seed).data
     fitted = spec.fit(y)

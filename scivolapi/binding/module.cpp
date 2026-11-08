@@ -171,8 +171,8 @@ nb::dict simulation_dict(Simulation s)
 std::span<const double> view(const Matrix& m) { return {m.data(), m.shape(0) * m.shape(1)}; }
 
 // Pickle state of a specification (Models are rebuilt from it).
-using SpecState = std::tuple<bool, std::size_t, std::vector<std::size_t>, std::size_t, std::size_t, int, std::size_t,
-                             std::size_t, int, int>;
+using SpecState = std::tuple<bool, std::size_t, std::vector<std::size_t>, std::vector<std::string>, std::size_t, int,
+                             std::size_t, std::size_t, int, int>;
 
 SpecState spec_state(const ModelSpec& s)
 {
@@ -773,12 +773,16 @@ NB_MODULE(_scivolapi, m)
 
     nb::class_<ComparisonPlan>(m, "ComparisonPlan")
         .def("__init__", [](ComparisonPlan* self, const Vector& y, std::size_t first,
-                            const std::optional<Matrix>& x, std::optional<double> seed) {
+                            const std::optional<Matrix>& x, std::optional<std::vector<std::string>> names,
+                            std::optional<double> seed) {
             const auto rows = exogenous(x);
             if (x && x->shape(0) != y.shape(0)) throw std::invalid_argument("comparison x and y must have equal rows");
-            new (self) ComparisonPlan(view(y), first, rows, x ? x->shape(1) : 0,
+            if (x && (!names || names->size() != x->shape(1)))
+                throw std::invalid_argument("the comparison needs one name per regressor column");
+            new (self) ComparisonPlan(view(y), first, rows, x ? std::move(*names) : std::vector<std::string>{},
                                      seed.value_or(std::numeric_limits<double>::quiet_NaN()));
-        }, "y"_a, "first_scored"_a, "x"_a = nb::none(), "variance_seed"_a = nb::none())
+        }, "y"_a, "first_scored"_a, "x"_a = nb::none(), "names"_a = nb::none(), "variance_seed"_a = nb::none())
+        .def_prop_ro("names", &ComparisonPlan::names)
         .def_prop_ro("first_scored", &ComparisonPlan::first_scored)
         .def_prop_ro("variance_seed", &ComparisonPlan::variance_seed)
         .def_prop_ro("columns", &ComparisonPlan::columns)
@@ -821,7 +825,7 @@ NB_MODULE(_scivolapi, m)
     model_binding.def_prop_ro("key", [](const Model& m) {
             const auto& s = m.spec();
             return nb::make_tuple(s.mean.constant, s.mean.ar, nb::tuple(nb::cast(s.mean.har)),
-                                  s.mean.exog, s.mean.ma, static_cast<int>(s.volatility), s.p, s.q,
+                                  nb::tuple(nb::cast(s.mean.exog)), s.mean.ma, static_cast<int>(s.volatility), s.p, s.q,
                                   static_cast<int>(s.density), static_cast<int>(s.stationarity));
         })
         .def_prop_ro("constant_variance", &Model::constant_variance)
@@ -830,9 +834,12 @@ NB_MODULE(_scivolapi, m)
             nb::list out;
             nb::dict kw;
             kw["constant"] = s.mean.constant;
-            if (s.mean.ma) out.append(nb::make_tuple("ARMA", nb::make_tuple(s.mean.ar, s.mean.ma), kw));
-            else if (!s.mean.har.empty()) out.append(nb::make_tuple("HARX", nb::make_tuple(s.mean.har), kw));
-            else if (s.mean.width()) out.append(nb::make_tuple("ARX", nb::make_tuple(s.mean.ar), kw));
+            if (!s.mean.har.empty()) {
+                kw["q"] = s.mean.ma;
+                out.append(nb::make_tuple("HAR", nb::make_tuple(s.mean.har), kw));
+            } else if (s.mean.width()) {
+                out.append(nb::make_tuple("ARMA", nb::make_tuple(s.mean.ar, s.mean.ma), kw));
+            }
             if (const char* vol = detail::volatility_family(s.volatility).component()) {
                 nb::dict settings;
                 if (s.stationarity == Stationarity::integrated) settings["stationarity"] = "integrated";

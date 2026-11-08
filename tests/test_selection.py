@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from scivol import (APARCH, ARMA, ARX, Auto, ConfidenceSet, EGARCH, GARCH, Role,
+from scivol import (APARCH, ARMA, Auto, ConfidenceSet, EGARCH, GARCH, Role,
                     GJRGARCH, GeneralToSpecific, InformationCriterion, Normal,
                     Search, SkewT, StudentT)
 from scivol import _scivolapi as api
@@ -25,7 +25,7 @@ def test_templates_declare_generators_and_native_closure():
     for cls in [GARCH, GJRGARCH, EGARCH, APARCH]:
         part = cls.up_to(2, 1)
         assert (part.p, part.q) == (2, 1)
-    assert ARX.up_to(2).lags == 2
+    assert ARMA.up_to(2).p == 2
     assert (ARMA.up_to(2, 1).p, ARMA.up_to(2, 1).q) == (2, 1)
     with pytest.raises(TypeError):
         GARCH(auto=True)
@@ -34,9 +34,9 @@ def test_templates_declare_generators_and_native_closure():
 
 
 def test_residual_kink_mles_are_certified_and_their_lr_tests_use_the_ordinary_law():
-    y = (ARX(1, constant=False)+GARCH()+Normal()).simulate(
+    y = (ARMA(1, constant=False)+GARCH()+Normal()).simulate(
         3000, [.2, .1, .1, .8], seed=104).data
-    parent = api.Model(native_spec(ARX(1, constant=False)+EGARCH()+StudentT()))
+    parent = api.Model(native_spec(ARMA(1, constant=False)+EGARCH()+StudentT()))
     restriction = next(r for r in parent.restrictions() if r.name == 'density.normal')
     child = api.Model(restriction.child)
     plan = api.ComparisonPlan(y, 1)
@@ -135,11 +135,11 @@ def test_closure_false_fits_only_listed_candidates(garch_data):
 
 def test_common_plan_survives_mean_and_regressor_reductions(garch_data):
     x = np.random.default_rng(7).normal(size=(len(garch_data), 2))
-    result = Search(mean=[ARX(2)], volatility=[GARCH()], density=[Normal()],
+    result = Search(mean=[ARMA(2)], volatility=[GARCH()], density=[Normal()],
                     constant_variance=False).fit(garch_data, x,
                     procedure=InformationCriterion('bic', adequacy=False, max_fits=96), n_jobs=2)
     assert {c.fit.scored for c in result.candidates if c.fit is not None} == {len(garch_data)-2}
-    assert result.selected._native()[0].spec.mean.exog <= 2
+    assert set(result.selected._native()[0].spec.mean.exog) <= {"x[1]", "x[2]"}
     assert len(result.selected.params) == result.selected._native()[0].dimension
 
 
@@ -155,7 +155,7 @@ def test_constant_root_is_independent_and_encompassing_unavailable(garch_data):
 
 
 def test_native_composition_preserves_likelihood_and_derivatives(garch_data):
-    parent = api.Model(native_spec(ARX(1)+GJRGARCH()+SkewT()))
+    parent = api.Model(native_spec(ARMA(1,0)+GJRGARCH()+SkewT()))
     a = next(r for r in parent.restrictions() if r.name == 'volatility.symmetry')
     middle = api.Model(a.child)
     b = next(r for r in middle.restrictions() if r.name == 'density.symmetry')
@@ -197,7 +197,7 @@ def test_auto_garch_normal_dgp():
     assert result.status == 'selected', result.summary()
     volatility = result.selected_model.get_component(Role.VOLATILITY)
     assert type(volatility) is GARCH and (volatility.p, volatility.q) == (1, 1), result.summary()
-    law = result.selected._native()[0].innovation_density(result.selected.params)
+    law = result.selected._native()[0].innovation_density(result.selected.params.to_numpy())
     assert law.density == api.DensityKind.normal or (law.density == api.DensityKind.student_t and law.shape[0] == 0), result.summary()
 
 
@@ -216,7 +216,7 @@ def test_student_dgp_keeps_tail_parameter():
     y = (GARCH()+StudentT()).simulate(5000, [.1, .15, .7, 1/6], seed=51).data
     result = search(constant_variance=False).fit(y)
     assert result.status == 'selected', result.summary()
-    law = result.selected._native()[0].innovation_density(result.selected.params)
+    law = result.selected._native()[0].innovation_density(result.selected.params.to_numpy())
     assert law.density in (api.DensityKind.student_t, api.DensityKind.skew_t)
     assert law.shape[0] > 0
 
@@ -224,9 +224,9 @@ def test_student_dgp_keeps_tail_parameter():
 @pytest.mark.slow
 @pytest.mark.parametrize('phi', [0., .3])
 def test_mean_dgp_keeps_only_real_ar_term(phi):
-    y = (ARX(1, constant=False)+GARCH()+Normal()).simulate(
+    y = (ARMA(1, constant=False)+GARCH()+Normal()).simulate(
         4000, [phi, .1, .15, .7], seed=92).data
-    result = Search(mean=[ARX(1, constant=False)], volatility=[GJRGARCH()],
+    result = Search(mean=[ARMA(1, constant=False)], volatility=[GJRGARCH()],
                     density=[SkewT()], constant_variance=False).fit(y)
     assert result.status == 'selected', result.summary()
     assert result.selected._native()[0].spec.mean.ar == int(phi != 0), result.summary()
@@ -273,7 +273,7 @@ def test_selected_model_supports_threaded_batches(garch_data):
 
 
 def test_budget_includes_full_sample_deployment_refit(garch_data):
-    result = Search(mean=[ARX(2)], volatility=[GARCH()], density=[Normal()],
+    result = Search(mean=[ARMA(2)], volatility=[GARCH()], density=[Normal()],
                     constant_variance=False).fit(garch_data,
                     procedure=InformationCriterion('bic', adequacy=False, max_fits=8))
     assert result.fit_counts['optimizer_invocations'] <= 8
@@ -311,7 +311,7 @@ def test_auto_boundary_tests_and_kink_certification():
     assert str(result.selected_model) == 'GARCH(1,1)+Normal'
     assert not any(t['decision'] in ('retained_boundary', 'singular_information') for t in result.tests)
     kink = next(c for c in result.candidates
-                if str(c.specification) == 'ARX(1,constant=False)+EGARCH(1,1)+Normal')
+                if str(c.specification) == 'ARMA(1,0,constant=False)+EGARCH(1,1)+Normal')
     assert kink.fit.success and kink.fit.kink_point
     assert kink.fit.termination == api.Termination.converged
     assert kink.fit.active_kink_rows == [1569]
@@ -334,7 +334,7 @@ def test_auto_boundary_tests_and_kink_certification():
     assert jet.theta(right, api.GRADIENT)['gradient'][0] > 0
 
 
-@pytest.mark.parametrize('template', [ARX.up_to(1), ARMA.up_to(1, 0)])
+@pytest.mark.parametrize('template', [ARMA.up_to(1), ARMA.up_to(1, 0)])
 def test_mean_widening_refits_roots_then_reduces_on_common_sample(template):
     y = np.random.default_rng(680).normal(size=5000)
     for t in range(2, len(y)):
@@ -356,7 +356,7 @@ def test_mean_widening_cap_budget_and_nonmean_rejections(garch_data):
     y = np.random.default_rng(680).normal(size=5000)
     for t in range(2, len(y)):
         y[t] += .35*y[t-2]
-    search = Search(mean=[ARX.up_to(1)], density=[Normal()])
+    search = Search(mean=[ARMA.up_to(1)], density=[Normal()])
     capped = search.fit(y, procedure=GeneralToSpecific(max_mean_order=1))
     assert capped.status == 'mean_order_cap_reached' and capped.selected is None
     assert not capped.widenings
@@ -374,19 +374,19 @@ def test_mean_widening_cap_budget_and_nonmean_rejections(garch_data):
 
 
 def test_mean_widening_template_preserves_structure_and_nested_lag_restrictions():
-    arx = ARX(2, constant=False)
+    arx = ARMA(2, constant=False)
     wider = arx.widen(5)
-    assert wider.lags == 3 and not wider.constant
+    assert wider.p == 3 and not wider.constant
     arma = ARMA(2, 1, constant=False).widen(5)
     assert (arma.p, arma.q, arma.constant) == (3, 1, False)
     assert arx.widen(2) is None and Normal().widen(5) is None
-    parent = api.Model(native_spec(wider.spec, 2))
+    parent = api.Model(native_spec(wider.spec, ["x[1]", "x[2]"]))
     edge = next(r for r in parent.restrictions() if r.name == 'mean.ar')
     child = api.Model(edge.child)
-    assert child.spec.mean.ar == 2 and child.spec.mean.exog == 2
+    assert child.spec.mean.ar == 2 and child.spec.mean.exog == ["x[1]", "x[2]"]
     # Mean coefficients, two exogenous coefficients, then sigma2.
     theta = child.start(api.ComparisonPlan(np.random.default_rng(8).normal(size=100), 3,
-                                         np.random.default_rng(9).normal(size=(100, 2))))
+                                         np.random.default_rng(9).normal(size=(100, 2)), ["x[1]", "x[2]"]))
     embedded = edge.embed(theta)
     assert embedded[2] == 0
     np.testing.assert_array_equal(edge.map_start(embedded), theta)
@@ -403,7 +403,7 @@ def test_parent_refits_terminate_and_never_lower_the_parent():
     from scivol import EGARCH, GJRGARCH, SkewT
 
     y = (EGARCH(1, 1) + Normal()).simulate(1000, [0.0, 0.15, -0.08, 0.95], seed=1_000_003 * 4 + 7919 * 1000 + 10).data
-    search_space = Search(mean=[ARX.up_to(1)], volatility=[GJRGARCH.up_to(1, 1), EGARCH.up_to(1, 1)],
+    search_space = Search(mean=[ARMA.up_to(1)], volatility=[GJRGARCH.up_to(1, 1), EGARCH.up_to(1, 1)],
                           density=[SkewT()], constant_variance=True)
     result = search_space.fit(y, n_jobs=1)
     assert result.search_complete and result.status == "selected"

@@ -18,7 +18,6 @@ from tests.test_scivolapi_mean import mean_spec, model_for
     ({}, [.4], .4),
     (dict(ar=2, ma=1), [.4, 1.2, -.4, .6], 2.0),
     (dict(har=(1, 5)), [.4, .2, .3], .8),
-    (dict(ar=1, har=(5,)), [.4, .2, .3], .8),
     (dict(ar=2), [.4, .5, .6], np.nan),
     (dict(exog=1), [.4, .2], np.nan),
 ])

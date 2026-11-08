@@ -7,12 +7,12 @@ scivol selects among volatility models in three ways: a general-to-specific sear
 `Search` takes lists of mean, volatility and density components. `up_to` declares a largest model, and the search reaches the smaller ones by restricting it:
 
 ```python
-from scivol import ARX, GJRGARCH, EGARCH, SkewT, Search, GeneralToSpecific
+from scivol import ARMA, GJRGARCH, EGARCH, SkewT, Search, GeneralToSpecific
 
 true_model = GJRGARCH(1, 1) + SkewT()
 y = true_model.simulate(2000, [0.05, 0.03, 0.1, 0.88, 0.12, -0.15], seed=11).data
 
-search = Search(mean=[ARX.up_to(1)],
+search = Search(mean=[ARMA.up_to(1)],
                 volatility=[GJRGARCH.up_to(1, 1), EGARCH.up_to(1, 1)],
                 density=[SkewT()])
 selection = search.fit(y, procedure=GeneralToSpecific())
@@ -24,7 +24,7 @@ Selection: selected; selected: GJR-GARCH(1,1)+SkewT
 Search complete: True; terminals: 2; optimizer invocations: 38
 ```
 
-The search starts from the two largest models, ARX(1) with GJR-GARCH(1,1) and with EGARCH(1,1), and from a constant-variance model, then removes terms while the data allow it. It ends at two models, and selects the one that generated the data:
+The search starts from the two largest models, an AR(1) mean with GJR-GARCH(1,1) and with EGARCH(1,1), and from a constant-variance model, then removes terms while the data allow it. It ends at two models, and selects the one that generated the data:
 
 ```python
 table = selection.table()
@@ -65,7 +65,7 @@ If every starting model fails the adequacy checks, and each fails the residual L
 
 ### Automatic selection
 
-`Auto(max_mean_order=5, procedure=None).fit(y, x=None)` searches a fixed set of models: an ARX(1) mean, with regressors if you pass `x`, combined with GJR-GARCH(1,1), EGARCH(1,1) and APARCH(1,1), each with skewed-t innovations, plus a constant-variance model, and the models nested in them. By default it runs the general-to-specific search, which may widen the mean up to `max_mean_order` lags. `Auto(procedure=InformationCriterion("bic", adequacy=True))` ranks the same search by BIC instead; [choosing a procedure](#choosing-a-procedure) compares the two. To change the models, use `Search` directly.
+`Auto(max_mean_order=5, procedure=None).fit(y, x=None)` searches a fixed set of models: an `ARMA(1)` mean, with regressors if you pass `x`, combined with GJR-GARCH(1,1), EGARCH(1,1) and APARCH(1,1), each with skewed-t innovations, plus a constant-variance model, and the models nested in them. By default it runs the general-to-specific search, which may widen the mean up to `max_mean_order` lags. `Auto(procedure=InformationCriterion("bic", adequacy=True))` ranks the same search by BIC instead; [choosing a procedure](#choosing-a-procedure) compares the two. To change the models, use `Search` directly.
 
 ## Restriction tests
 
@@ -73,7 +73,7 @@ The likelihood-ratio statistic for a parent model with log-likelihood $\ell_P$ a
 
 | Restriction | Reference distribution |
 | --- | --- |
-| Drop the intercept, the last AR, MA or regressor coefficient, or one HAR window | chi-square |
+| Drop the intercept, the last AR or MA coefficient, any one regressor, or any one HAR window | chi-square |
 | GARCH: drop the last shock or variance lag | chi-bar-square (the coefficient is on its bound under the null) |
 | GJR-GARCH: drop the last shock lag | chi-bar-square, for the two sign responses `alpha` and `alpha + gamma` |
 | GJR-GARCH: drop the last variance lag | chi-bar-square |

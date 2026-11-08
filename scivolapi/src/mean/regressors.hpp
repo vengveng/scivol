@@ -19,7 +19,8 @@ inline void regressor_row(const MeanSpec& mean, const double* y, const double* x
         for (std::size_t i = 1; i <= w; ++i) total += y[t - i];
         *row++ = total / static_cast<double>(w);
     }
-    for (std::size_t i = 0; i < mean.exog; ++i) *row++ = x[t * mean.exog + i];
+    const std::size_t k = mean.exog.size();
+    for (std::size_t i = 0; i < k; ++i) *row++ = x[t * k + i];
 }
 
 }  // namespace scivolapi::detail

@@ -36,16 +36,21 @@ enum class DensityKind {
 //   y_t = r_t' b + sum_{j<=ma} theta_j e_{t-j} + e_t,
 // with the regressor row r_t = [1 (if constant), y_{t-1..t-ar}, HAR averages
 // mean(y_{t-1..t-w}) for each window w, exogenous x_t (contemporaneous)].
+// The autoregressive part is either AR lags or HAR windows (AR(p) is HAR(1..p)).
+// Exogenous regressors are named; their coefficients carry the names.
 // No entries: the residuals are the data.
 struct MeanSpec {
     bool constant = false;
     std::size_t ar = 0;
-    std::vector<std::size_t> har;  // HAR windows, strictly increasing
-    std::size_t exog = 0;
+    std::vector<std::size_t> har;   // HAR windows, strictly increasing
+    std::vector<std::string> exog;  // exogenous regressor names, in column order
     std::size_t ma = 0;
     bool operator==(const MeanSpec&) const = default;
 
-    [[nodiscard]] std::size_t regressors() const noexcept { return (constant ? 1u : 0u) + ar + har.size() + exog; }
+    [[nodiscard]] std::size_t regressors() const noexcept
+    {
+        return (constant ? 1u : 0u) + ar + har.size() + exog.size();
+    }
     [[nodiscard]] std::size_t width() const noexcept { return regressors() + ma; }
     // Rows that only supply lags: the largest y lag a regressor uses.
     [[nodiscard]] std::size_t conditioning() const noexcept
@@ -113,16 +118,18 @@ struct Restriction {
     [[nodiscard]] bool identified(std::span<const double> child_theta) const;
 };
 
-// Owns one comparison's input span and exogenous columns. Children retain the
-// leading columns. All recursions begin at first_scored with this fixed seed.
+// Owns one comparison's input span and named exogenous columns (rows x
+// columns, row-major). Each model takes the columns its regressors name. All
+// recursions begin at first_scored with this fixed seed.
 class ComparisonPlan {
 public:
     ComparisonPlan(std::span<const double> y, std::size_t first_scored,
-                   std::span<const double> x = {}, std::size_t columns = 0,
+                   std::span<const double> x = {}, std::vector<std::string> names = {},
                    double variance_seed = std::numeric_limits<double>::quiet_NaN());
     [[nodiscard]] std::span<const double> y() const noexcept { return y_; }
     [[nodiscard]] std::span<const double> x() const noexcept { return x_; }
-    [[nodiscard]] std::size_t columns() const noexcept { return columns_; }
+    [[nodiscard]] std::size_t columns() const noexcept { return names_.size(); }
+    [[nodiscard]] const std::vector<std::string>& names() const noexcept { return names_; }
     [[nodiscard]] std::size_t first_scored() const noexcept { return first_; }
     [[nodiscard]] double variance_seed() const noexcept { return seed_; }
     [[nodiscard]] const std::shared_ptr<const void>& identity() const noexcept { return identity_; }
@@ -130,7 +137,8 @@ public:
 
 private:
     std::vector<double> y_, x_;
-    std::size_t columns_, first_;
+    std::vector<std::string> names_;
+    std::size_t first_;
     double seed_;
     std::shared_ptr<const void> identity_ = std::make_shared<const unsigned char>(0);
 };

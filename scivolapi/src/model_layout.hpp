@@ -83,7 +83,7 @@ struct Layout {
         ar = spec.mean.constant ? 1u : 0u;
         har = ar + spec.mean.ar;
         exog = har + spec.mean.har.size();
-        ma = exog + spec.mean.exog;
+        ma = exog + spec.mean.exog.size();
         volatility = mean;
         shapes = volatility + family->size(spec);
         dimension = shapes + shape_count;

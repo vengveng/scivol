@@ -63,14 +63,14 @@ for w in rolling:
 
 Each window covers the rows `start` to `stop - 1`, and `label` is the index label, or position, of its last row. Windows end at `window`, `window + step`, and so on through the sample; `expanding=True` starts every window at the first row. The result is a `RollingFitResult`, a sequence of `RollingFitWindow(start, stop, label, batch)`, where `batch` is a `BatchFitResult` over the columns of `data`, keyed like `fit_many`: by column name, by the name of a pandas Series, or by position. When `data` is one series, `w.result` is its fit. Windows run in order, and the columns within a window in parallel.
 
-Each fit starts from the same series' estimate in the previous window, and `initial_results` gives starting values for the first window. Other options work as in `fit_many`. A regressor array `x` must have one row per observation of `data`, and each window uses its own rows:
+Each fit starts from the same series' estimate in the previous window, and `initial_results` gives starting values for the first window. Other options work as in `fit_many`. Regressors `x` must have one row per observation of `data`, and each window uses its own rows:
 
 ```python
-from scivol import ARX
+from scivol import ARMA
 
 y = np.random.default_rng(0).standard_normal(1000)
 x = np.random.default_rng(1).standard_normal((1000, 2))
-rolling_arx = (ARX(1) + GARCH()).fit_rolling(y, window=800, step=100, x=x)
+rolling_arx = (ARMA(1) + GARCH()).fit_rolling(y, window=800, step=100, x=x)
 ```
 
 ## Rolling DCC

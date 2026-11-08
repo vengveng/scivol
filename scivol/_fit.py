@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -37,19 +37,17 @@ class NativeOptimizationResult:
     njev: int
 
 
-def native_spec(spec: Any, exog: int = 0) -> Optional[api.ModelSpec]:
-    """The native specification of a composition for `exog` regressor columns,
-    or None when the combination is not available. Each component declares its
-    own part; without a volatility component the variance is constant."""
+def native_spec(spec: Any, regressors: Sequence[str] = ()) -> api.ModelSpec:
+    """The native specification of a composition whose mean takes the regressors
+    `regressors` (their names). Each component declares its own part; without a
+    volatility component the variance is constant. A model whose regressors are
+    already named (a search candidate) is its own definition."""
     if hasattr(spec, "_native_definition"):
         return spec._native_definition
     native = api.ModelSpec()
     native.volatility, native.p, native.q = api.VolatilityKind.constant, 0, 0
-    if exog and spec.get_component(Role.MEAN) is None:
-        return None  # regressors enter through the mean
     for component in spec.components:
-        if not component.declare(native, exog):
-            return None
+        component.declare(native, regressors if component.role is Role.MEAN else ())
     return native
 
 
@@ -69,37 +67,36 @@ class PreparedSample:
 
 def fit_spec_on_plan(spec: Any, plan: api.ComparisonPlan, *,
                      options: Optional[api.FitOptions] = None,
-                     exog: Optional[int] = None) -> api.FitResult:
+                     regressors: Optional[Sequence[str]] = None) -> api.FitResult:
     """Fit a candidate on an immutable native comparison plan.
 
-    Returns the native fit for restriction testing. ``exog`` selects the number
-    of leading plan columns retained by this candidate, defaulting to all.
-    Single-fit sample preparation and result presentation are unchanged.
+    Returns the native fit for restriction testing. ``regressors`` names the
+    plan columns this candidate takes, defaulting to all of them.
     """
-    native = native_spec(spec, plan.columns if exog is None else exog)
-    if native is None:
-        raise NotImplementedError(f"{spec} cannot be estimated: unsupported component combination")
+    native = native_spec(spec, plan.names if regressors is None else regressors)
     return api.fit(api.Model(native), plan, api.FitOptions() if options is None else options)
 
 
 def prepare_sample(spec: Any, data: Any, x: Any = None, hold_back: int = 0,
                    scale: Optional[float] = None) -> PreparedSample:
-    from ._validation import validate_data, validate_hold_back, validate_regressors, validate_scale
+    from ._regressors import mean_regressors
+    from ._validation import validate_data, validate_hold_back, validate_scale
 
     y = validate_data(np.asarray(data, dtype=np.float64))
     held = validate_hold_back(hold_back)
     if held >= len(y):
         raise ValueError("hold_back leaves no observations to estimate on")
     scale_factor = validate_scale(scale)
-    x_all = None if x is None else validate_regressors(x, len(y))
-    if hasattr(spec, "_native_definition") and x_all is not None:
-        columns = spec._native_definition.mean.exog
-        if x_all.shape[1] < columns:
-            raise ValueError("not enough exogenous columns for this specification")
-        x_all = np.ascontiguousarray(x_all[:, :columns]) if columns else None
-    native = native_spec(spec, 0 if x_all is None else x_all.shape[1])
-    if native is None:
-        raise NotImplementedError(f"{spec} cannot be estimated: unsupported component combination")
+    regressors = mean_regressors(spec, x, len(y))
+    definition = getattr(spec, "_native_definition", None)
+    if definition is None:
+        names = () if regressors is None else regressors.names
+    else:
+        names = tuple(definition.mean.exog)
+        if names and regressors is None:
+            raise ValueError(f"the model's mean has the regressors {', '.join(names)}; pass them as x.")
+    x_all = None if regressors is None else regressors.select(names)
+    native = native_spec(spec, names)
     skip = max(held - native.mean.conditioning, 0)  # rows before the lag rows of the first scored row
     return PreparedSample(
         native=native,

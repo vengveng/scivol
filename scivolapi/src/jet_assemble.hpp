@@ -411,7 +411,7 @@ template<class Density>
 Kernel kernel_with(const ModelSpec& spec) noexcept
 {
     if (spec.p == 1 && spec.q == 1 && spec.mean.constant && spec.mean.ar == 1 && spec.mean.ma == 1
-        && spec.mean.har.empty() && spec.mean.exog == 0) {
+        && spec.mean.har.empty() && spec.mean.exog.empty()) {
         const Kernel arma = with_recursions(spec.volatility, [&]<class F>() -> Kernel {
             if constexpr (F::arma11)
                 return kernel<ArmaxMean<2, 1>, typename F::template Recursion<Density, true, 1, 1, 3>, Density>(spec);

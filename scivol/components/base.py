@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Sequence, Union
 
 from .. import _scivolapi as api
 from .._mixins import FitsMixin
@@ -27,9 +27,9 @@ class Component(FitsMixin, ABC):
     def signature(self) -> str: ...
 
     @abstractmethod
-    def declare(self, native: api.ModelSpec, exog: int) -> bool:
-        """Write this component into `native` for `exog` regressor columns; False
-        when the combination is not available."""
+    def declare(self, native: api.ModelSpec, regressors: Sequence[str]) -> None:
+        """Write this component into `native`, with the names of the regressors
+        its layer receives (none for a layer without regressors)."""
 
     @property
     def autoregressive_order(self) -> int | None:
@@ -82,7 +82,7 @@ def native_check(component: Component) -> None:
     """Raise ValueError when the native model rejects the component's declaration."""
     native = api.ModelSpec()
     native.volatility, native.p, native.q = api.VolatilityKind.constant, 0, 0
-    component.declare(native, 0)
+    component.declare(native, ())
     try:
         api.Model(native)
     except ValueError as exc:

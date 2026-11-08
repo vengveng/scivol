@@ -117,6 +117,9 @@ Model::Model(const ModelSpec& spec) : spec_(spec)
     for (std::size_t k = 0; k < mean.har.size(); ++k)
         require(mean.har[k] >= 1 && mean.har[k] <= max_har_window && (k == 0 || mean.har[k] > mean.har[k - 1]),
                 "HAR windows must be strictly increasing, between 1 and 256");
+    require(mean.ar == 0 || mean.har.empty(),
+            "the mean has either AR lags or HAR windows; AR(p) is HAR(1, ..., p)");
+    for (const std::string& name : mean.exog) require(!name.empty(), "regressor names must not be empty");
     require(mean.width() <= Layout::max_mean, "the mean has more than 32 coefficients");
 
     const Layout layout(spec);
@@ -124,10 +127,15 @@ Model::Model(const ModelSpec& spec) : spec_(spec)
     if (mean.constant) names_[0] = "const";
     for (std::size_t i = 0; i < mean.ar; ++i) names_[layout.ar + i] = indexed("ar", i + 1);
     for (std::size_t k = 0; k < mean.har.size(); ++k) names_[layout.har + k] = indexed("har", mean.har[k]);
-    for (std::size_t i = 0; i < mean.exog; ++i) names_[layout.exog + i] = indexed("exog", i + 1);
+    std::copy(mean.exog.begin(), mean.exog.end(), names_.begin() + static_cast<std::ptrdiff_t>(layout.exog));
     for (std::size_t j = 0; j < mean.ma; ++j) names_[layout.ma + j] = indexed("ma", j + 1);
     family.names(spec, names_.data() + layout.volatility);
     for (std::size_t i = 0; i < layout.shape_count; ++i) names_[layout.shapes + i] = layout.shape_domain[i].name;
+    for (std::size_t i = 0; i < mean.exog.size(); ++i)
+        for (std::size_t j = 0; j < names_.size(); ++j)
+            if (j != layout.exog + i && names_[j] == mean.exog[i])
+                throw std::invalid_argument("the regressor name '" + mean.exog[i]
+                                            + "' is also the name of another parameter; rename the regressor");
 
     // Constraint rows c(theta) >= 0 beyond the bounds:
     //   stable blocks of order >= 2   1 - kappa_k^2 >= 0, kappa the reflection coefficients
@@ -160,7 +168,7 @@ Sample Model::prepare(std::span<const double> y, std::span<const double> x) cons
     const MeanSpec& mean = spec_.mean;
     const std::size_t c = mean.conditioning(), k = mean.regressors();
     require(y.size() >= c + 2, "at least two observations beyond the mean's lags are required");
-    require(x.size() == y.size() * mean.exog, "exogenous regressors must have one row per observation");
+    require(x.size() == y.size() * mean.exog.size(), "exogenous regressors must have one row per observation");
     double sum = 0.0;
     for (double v : y) {
         require(std::isfinite(v), "observations must be finite");
@@ -179,12 +187,16 @@ Sample Model::prepare(std::span<const double> y, std::span<const double> x) cons
 }
 
 ComparisonPlan::ComparisonPlan(std::span<const double> y, std::size_t first_scored,
-                               std::span<const double> x, std::size_t columns, double variance_seed)
-    : y_(y.begin(), y.end()), x_(x.begin(), x.end()), columns_(columns), first_(first_scored), seed_(variance_seed)
+                               std::span<const double> x, std::vector<std::string> names, double variance_seed)
+    : y_(y.begin(), y.end()), x_(x.begin(), x.end()), names_(std::move(names)), first_(first_scored),
+      seed_(variance_seed)
 {
+    const std::size_t columns = names_.size();
     require(first_ < y.size() && y.size() - first_ >= 2, "the comparison needs at least two scored observations");
     require(columns == 0 || y.size() <= std::numeric_limits<std::size_t>::max() / columns,
             "the comparison design size overflows");
+    for (std::size_t i = 0; i < columns; ++i)
+        for (std::size_t j = 0; j < i; ++j) require(names_[i] != names_[j], "the comparison's regressor names must be distinct");
     require(x.size() == y.size() * columns, "the comparison design must have one row per observation");
     double sum = 0.0;
     for (double v : y) {
@@ -201,14 +213,20 @@ ComparisonPlan ComparisonPlan::rescaled(double factor) const
     require(std::isfinite(factor) && factor > 0.0, "the scale factor must be positive and finite");
     std::vector<double> y = y_;
     for (double& v : y) v *= factor;
-    return ComparisonPlan(y, first_, x_, columns_, seed_ * factor * factor);
+    return ComparisonPlan(y, first_, x_, names_, seed_ * factor * factor);
 }
 
 Sample Model::prepare(const ComparisonPlan& plan) const
 {
     const MeanSpec& mean = spec_.mean;
     require(mean.conditioning() <= plan.first_scored(), "the model's lags exceed the comparison conditioning");
-    require(mean.exog <= plan.columns(), "the model needs more exogenous columns than the comparison has");
+    std::vector<std::size_t> column(mean.exog.size());
+    for (std::size_t j = 0; j < mean.exog.size(); ++j) {
+        const auto found = std::find(plan.names().begin(), plan.names().end(), mean.exog[j]);
+        if (found == plan.names().end())
+            throw std::invalid_argument("the comparison has no regressor named '" + mean.exog[j] + "'");
+        column[j] = static_cast<std::size_t>(found - plan.names().begin());
+    }
     const auto y = plan.y();
     const std::size_t c = plan.first_scored(), k = mean.regressors();
     Sample sample{y, plan.variance_seed(), c, {}};
@@ -216,12 +234,12 @@ Sample Model::prepare(const ComparisonPlan& plan) const
             "the comparison regressor size overflows");
     sample.design.resize(sample.scored() * k);
     MeanSpec endogenous = mean;
-    endogenous.exog = 0;
+    endogenous.exog.clear();
+    const std::size_t m = column.size();
     for (std::size_t t = c; t < y.size(); ++t) {
         double* row = k ? sample.design.data() + (t - c) * k : nullptr;
         detail::regressor_row(endogenous, y.data(), nullptr, t, row);
-        for (std::size_t j = 0; j < mean.exog; ++j)
-            row[k - mean.exog + j] = plan.x()[t * plan.columns() + j];
+        for (std::size_t j = 0; j < m; ++j) row[k - m + j] = plan.x()[t * plan.columns() + column[j]];
     }
     return sample;
 }
@@ -466,7 +484,7 @@ void Model::rescale(std::span<const double> theta, double factor, std::span<doub
     std::copy(theta.begin(), theta.end(), scaled.begin());
     const Layout layout(spec_);
     if (spec_.mean.constant) scaled[0] = theta[0] * factor;
-    for (std::size_t i = 0; i < spec_.mean.exog; ++i) scaled[layout.exog + i] = theta[layout.exog + i] * factor;
+    for (std::size_t i = 0; i < spec_.mean.exog.size(); ++i) scaled[layout.exog + i] = theta[layout.exog + i] * factor;
     layout.family->rescale(layout, theta.data(), factor, scaled.data());
 }
 
@@ -544,7 +562,7 @@ double Model::unconditional_mean(std::span<const double> theta) const
     const MeanSpec& mean = spec_.mean;
     const double nan = std::numeric_limits<double>::quiet_NaN();
     if (!evaluable(theta)) return nan;
-    if (mean.exog != 0) return nan;
+    if (!mean.exog.empty()) return nan;
     const Layout layout(spec_);
     const std::size_t order = std::max(mean.ar, mean.har.empty() ? 0 : mean.har.back());
     std::vector<double> coefficients(order, 0.0);

@@ -114,10 +114,10 @@ std::vector<Restriction> Model::restrictions() const
         --c.mean.ma;
         builder.add(c, "mean.ma", l.ma + c.mean.ma, T::interior_equality);
     }
-    c = spec_;
-    if (c.mean.exog) {
-        --c.mean.exog;
-        builder.add(c, "mean.exog", l.exog + c.mean.exog, T::interior_equality);
+    for (std::size_t i = 0; i < spec_.mean.exog.size(); ++i) {
+        c = spec_;
+        c.mean.exog.erase(c.mean.exog.begin() + static_cast<std::ptrdiff_t>(i));
+        builder.add(c, "mean." + spec_.mean.exog[i], l.exog + i, T::interior_equality);
     }
     for (std::size_t i = 0; i < spec_.mean.har.size(); ++i) {
         c = spec_;

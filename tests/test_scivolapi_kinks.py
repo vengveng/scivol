@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from scivol import ARX, EGARCH, GARCH, Normal, _scivolapi as api
+from scivol import ARMA, EGARCH, GARCH, Normal, _scivolapi as api
 from scivol._fit import native_spec
 from tests._oracle import _jax_modules
 
@@ -113,7 +113,7 @@ def test_egarch_residual_faces_match_one_sided_jax(constant, ar, ma, p, q, activ
 
 
 def test_roundoff_rule_is_not_an_identification_or_smoothing_width():
-    spec=ARX(0)+EGARCH()+Normal()
+    spec=ARMA(0,0)+EGARCH()+Normal()
     model=api.Model(native_spec(spec))
     y=np.array([.125,.8,-.4,1.2,-.7])
     theta=np.array([.125,-.1,.15,-.04,.8])
@@ -174,7 +174,7 @@ def test_subunit_power_cusps_report_unbounded_one_sided_slopes(family):
 
 
 def test_unused_last_residual_and_zero_arch_coefficient_are_not_kinks():
-    model=api.Model(native_spec(ARX(0)+EGARCH()+Normal()))
+    model=api.Model(native_spec(ARMA(0,0)+EGARCH()+Normal()))
     y=np.array([.8,-.4,1.2,-.7,.125])
     theta=np.array([.125,-.1,.15,-.04,.8])
     assert api.Jet(model,y).theta(theta,api.KINKS)['kink_rows']==[]

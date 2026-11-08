@@ -17,21 +17,21 @@ import numpy as np
 from numpy.testing import assert_allclose, assert_array_less
 
 from scivol import (
-    ARMA, ARX, HARX, APARCH, EGARCH, GARCH, GJRGARCH, Normal, StudentT, SkewT,
+    ARMA, HAR, APARCH, EGARCH, GARCH, GJRGARCH, Normal, StudentT, SkewT,
 )
 
 
-@pytest.mark.parametrize("mean,volatility,density", [
-    (None, EGARCH, Normal), (ARX, GARCH, StudentT), (HARX, GJRGARCH, SkewT), (None, APARCH, StudentT),
-    (ARMA, APARCH, Normal), (ARX, EGARCH, Normal),
+@pytest.mark.parametrize("mean,volatility,density,regressors", [
+    (None, EGARCH, Normal, False), (ARMA(1, 1), GARCH, StudentT, False), (HAR([1, 3]), GJRGARCH, SkewT, True),
+    (None, APARCH, StudentT, False), (ARMA(1, 1), APARCH, Normal, True), (ARMA(1), EGARCH, Normal, True),
 ])
-def test_qmle_covers_every_mean_and_volatility(mean, volatility, density):
+def test_qmle_covers_every_mean_and_volatility(mean, volatility, density, regressors):
     spec = volatility(1, 1) + density()
     if mean is not None:
-        spec = mean(*{ARMA: (1, 1), ARX: (1,), HARX: ([1, 3],)}[mean]) + spec
+        spec = mean + spec
     rng = np.random.default_rng(2785)
     data, x = generate_garch_data(1500, 0.05, 0.08, 0.88, seed=2785), rng.normal(size=(1500, 2))
-    result = spec.fit(data, x=x if mean in (ARX, HARX) else None, method="qmle")
+    result = spec.fit(data, x=x if regressors else None, method="qmle")
     assert result.method == "QMLE" and np.all(np.isfinite(result.params))
 
 

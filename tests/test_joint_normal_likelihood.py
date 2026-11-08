@@ -3,10 +3,10 @@
 import numpy as np
 import pytest
 
-from scivol import ARX, HARX, GARCH, GJRGARCH, EGARCH, Normal
+from scivol import ARMA, HAR, GARCH, GJRGARCH, EGARCH, Normal
 
 
-@pytest.mark.parametrize("mean_factory", (lambda: ARX(1), lambda: HARX((1, 3))))
+@pytest.mark.parametrize("mean_factory", (lambda: ARMA(1), lambda: HAR((1, 3))))
 @pytest.mark.parametrize("vol_factory", (GARCH, GJRGARCH, EGARCH))
 @pytest.mark.parametrize("p,q", ((1, 1), (3, 2)))
 def test_joint_normal_likelihood_is_normalized(mean_factory, vol_factory, p, q):
@@ -16,7 +16,7 @@ def test_joint_normal_likelihood_is_normalized(mean_factory, vol_factory, p, q):
     mean = mean_factory()
     volatility = vol_factory(p, q)
     spec = mean + volatility + Normal()
-    mean_parameters = np.full(len(mean.horizons) + 2 if isinstance(mean, HARX) else 3, 0.04)
+    mean_parameters = np.full(len(mean.windows) + 2 if isinstance(mean, HAR) else 3, 0.04)
     if vol_factory is EGARCH:
         vol_parameters = np.r_[
             -0.1, np.full(p, 0.08 / p), np.full(p, -0.02 / p), np.full(q, 0.8 / q)
@@ -42,7 +42,7 @@ def test_joint_normal_fit_reports_normalized_information_criteria(vol_factory):
     rng = np.random.default_rng(591)
     data = rng.normal(size=300)
     x = rng.normal(size=(len(data), 1))
-    result = (ARX(1) + vol_factory(1, 1) + Normal()).fit(data, x=x)
+    result = (ARMA(1) + vol_factory(1, 1) + Normal()).fit(data, x=x)
     expected = -0.5 * np.sum(
         np.log(2.0 * np.pi) + np.log(result.sigma2) + result.resid**2 / result.sigma2
     )

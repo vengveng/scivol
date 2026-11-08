@@ -15,7 +15,7 @@ import time
 
 import numpy as np
 
-from scivol import (APARCH, ARMA, ARX, EGARCH, GARCH, GED, GJRGARCH, HARX, NormalInverseGaussian, Normal, SkewT,
+from scivol import (APARCH, ARMA, EGARCH, GARCH, GED, GJRGARCH, HAR, NormalInverseGaussian, Normal, SkewT,
                     StudentT)
 
 
@@ -41,9 +41,9 @@ PANEL = [
     ("APARCH(1,1)+StudentT", lambda: APARCH(1, 1) + StudentT(), False),
     ("GARCH(1,1)+NIG", lambda: GARCH(1, 1) + NormalInverseGaussian(), False),
     ("ARMA(1,1)+GARCH(1,1)+Normal", lambda: ARMA(1, 1) + GARCH(1, 1) + Normal(), False),
-    ("ARX(1)+EGARCH(1,1)+Normal", lambda: ARX(1) + EGARCH(1, 1) + Normal(), False),
-    ("ARX(1)+GJR(1,1)+StudentT", lambda: ARX(1) + GJRGARCH(1, 1) + StudentT(), True),
-    ("HARX(1,5,22)+GARCH(1,1)+Normal", lambda: HARX([1, 5, 22]) + GARCH(1, 1) + Normal(), True),
+    ("ARMA(1,0)+EGARCH(1,1)+Normal", lambda: ARMA(1) + EGARCH(1, 1) + Normal(), False),
+    ("ARMA(1,0)+GJR(1,1)+StudentT", lambda: ARMA(1) + GJRGARCH(1, 1) + StudentT(), True),
+    ("HAR(1,5,22)+GARCH(1,1)+Normal", lambda: HAR([1, 5, 22]) + GARCH(1, 1) + Normal(), True),
 ]
 
 

@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 from scipy import stats as sps
 
-from scivol import ARX, DCC, GARCH, GJRGARCH, SkewT, StudentT, stats
+from scivol import ARMA, DCC, GARCH, GJRGARCH, SkewT, StudentT, stats
 
 
 @pytest.fixture(scope="module")
@@ -106,7 +106,7 @@ def test_likelihood_ratio_uses_the_restrictions_law(fits):
 
 
 def test_likelihood_ratio_compares_mean_lags_on_one_sample(data, fits):
-    ar = (ARX(1) + GARCH(1, 1)).fit(data)
+    ar = (ARMA(1) + GARCH(1, 1)).fit(data)
     test = stats.likelihood_ratio(fits["normal"], ar)
     assert test.df == 2 and test.restricted_log_likelihood != fits["normal"].log_likelihood
     assert test.statistic == pytest.approx(2 * (test.log_likelihood - test.restricted_log_likelihood), rel=1e-9)

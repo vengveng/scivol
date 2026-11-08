@@ -3,7 +3,7 @@
 model defines its parameters, domain, starts, forecasts and restrictions."""
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, Sequence
 
 from .. import _scivolapi as api
 from ..roles import Role
@@ -42,11 +42,10 @@ class VolatilityComponent(Component):
         suffix = "" if self.stationarity == "covariance" else f",{self.stationarity}"
         return f"{self.label}({self.p},{self.q}{suffix})"
 
-    def declare(self, native: api.ModelSpec, exog: int) -> bool:
+    def declare(self, native: api.ModelSpec, regressors: Sequence[str]) -> None:
         native.volatility = getattr(api.VolatilityKind, self.kind)
         native.p, native.q = self.p, self.q
         native.stationarity = getattr(api.Stationarity, self.stationarity)
-        return True
 
 
 class GARCH(VolatilityComponent):

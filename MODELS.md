@@ -13,9 +13,8 @@ the bounds and constraints (theta coordinates) and by the coordinate charts
 
 | Component | Parameters | Domain |
 |---|---|---|
-| `ARMA(p, q)` | `const, ar[1..p], ma[1..q]` | stationary AR, invertible MA |
-| `ARX(k)` | `const, ar[1..k], exog[1..]` | stationary AR |
-| `HARX(windows)` | `const, har[w]..., exog[1..]` | stationary implied AR polynomial |
+| `ARMA(p, q)` | `const, ar[1..p], <regressors>, ma[1..q]` | stationary AR, invertible MA |
+| `HAR(windows, q)` | `const, har[w]..., <regressors>, ma[1..q]` | stationary implied AR polynomial, invertible MA |
 | none (mean only) | `sigma2` | `sigma2 > 0` |
 | `GARCH(p, q)` | `omega, alpha[1..p], beta[1..q]` | `omega > 0`, `alpha, beta >= 0`, `sum alpha + sum beta < 1` |
 | `GJRGARCH(p, q)` | `omega, alpha, gamma, beta` | `omega > 0`, `alpha >= 0`, `alpha + gamma >= 0`, `beta >= 0`, `sum alpha + kappa sum gamma + sum beta < 1` with `kappa = E[z^2 1(z<0)]` |
@@ -63,8 +62,9 @@ needs a stationary theta to start from.
 
 ### Comparison samples and native restrictions
 
-`ComparisonPlan(y, first_scored, x, variance_seed)` owns the input observations
-and exogenous columns for one comparison. Build it once using the largest mean
+`ComparisonPlan(y, first_scored, x, names, variance_seed)` owns the input
+observations and the named exogenous columns for one comparison; each candidate
+takes the columns its regressors name. Build it once using the largest mean
 lag in the search, or a larger declared hold-back. Every candidate scores exactly
 `y[first_scored:]`. Earlier rows supply mean regressors only; they do not advance
 the residual or volatility recursion. All dynamic candidates start those
@@ -90,7 +90,7 @@ outside the relevant domain. Warm starts do not fix the retained parameters.
 
 | Parent | Immediate restriction | Tested directions |
 |---|---|---|
-| Any mean | Drop intercept, last AR, last MA, last exogenous column, or one HAR window | Interior equalities |
+| Any mean | Drop intercept, last AR, last MA, any one regressor, or any one HAR window | Interior equalities |
 | GARCH | Drop last shock or last variance lag | Closed nonnegative boundaries |
 | GJR | Drop last shock pair | Two closed boundaries, `c+ = alpha`, `c- = alpha + gamma` |
 | GJR | Drop last variance lag | Closed nonnegative boundary |
@@ -407,8 +407,7 @@ Genuine singular conditional information elsewhere remains explicit.
 
 When every diagnostically evaluated root rejects, each with a residual
 Ljung-Box rejection after Holm, GETS asks each mean generator to `widen` its
-AR order by one. ARX preserves its intercept and exogenous columns; ARMA
-preserves its MA order. Uncertified roots supply no diagnostic evidence, and an
+AR order by one, preserving its intercept, MA order and regressors. Uncertified roots supply no diagnostic evidence, and an
 adequate or unresolved evaluated root prevents widening. Volatility and density
 failures alone never trigger widening, and neither does a mean failure in some
 roots while another root fails only its volatility or density checks. Each wider root is refitted and counts

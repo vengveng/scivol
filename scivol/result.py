@@ -412,11 +412,10 @@ class EstimationResult:
         if getattr(self, "_native_model", None) is None:
             from . import _scivolapi as api
             from ._fit import native_spec
+            from ._regressors import default_names
 
             x = getattr(self, "_fit_x", None)
-            native = native_spec(self.spec, 0 if x is None else x.shape[1])
-            if native is None:
-                raise ValueError(f"{self.spec} has no native model")
+            native = native_spec(self.spec, () if x is None else default_names(x.shape[1]))
             self.attach_sample(api.Model(native), np.ascontiguousarray(self.data, dtype=np.float64), x, 0)
         return self._native_model, self._native_y, self._native_x
 
@@ -434,8 +433,10 @@ class EstimationResult:
         ----------
         horizon : int
             Number of steps ahead (default 10).
-        x : array, optional
-            Exogenous regressors of the horizon (horizon x k) for ARX/HARX means.
+        x : array, DataFrame or mapping, optional
+            The regressors' rows over the horizon (horizon x k), when the mean has
+            regressors: a DataFrame's columns are matched by name, an array's by
+            position.
         """
         from ._evaluation import forecast
 
@@ -626,6 +627,9 @@ class EstimationResult:
         # Model info
         model_str = str(self.spec) if self.spec else "Unknown Model"
         lines.append(f"Model:       {model_str}")
+        regressors = list(self._native()[0].spec.mean.exog)
+        if regressors:
+            lines.append(f"Regressors:  {', '.join(regressors)} (mean)")
         density = self._native()[0].innovation_density(self._theta)
         shapes = {**density.named, **density.derived}
         if shapes:

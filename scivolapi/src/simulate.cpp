@@ -43,7 +43,7 @@ Run run(const Model& model, std::span<const double> theta, std::vector<double> y
     const std::size_t observed = y.size() - lags, rows = observed + horizon;
     require(theta.size() == model.dimension() && finite(theta), "theta must be finite with the model's dimension");
     require(z.size() == paths * horizon && finite(z), "z must hold paths x horizon finite innovations");
-    require(x.size() == (lags + rows) * spec.mean.exog, "exogenous regressors must cover every row of the horizon");
+    require(x.size() == (lags + rows) * spec.mean.exog.size(), "exogenous regressors must cover every row of the horizon");
     require(model.evaluable(theta), "theta is outside the region where the model is defined");
 
     Run r;
@@ -118,7 +118,7 @@ Simulation simulate_series(const Model& model, std::span<const double> theta, st
     const Layout layout(spec);
     require(theta.size() == model.dimension() && model.feasible(theta), "theta must lie in the model's domain");
     require(paths > 0 && z.size() % paths == 0, "z must hold paths x horizon innovations");
-    const std::size_t horizon = z.size() / paths, exog = spec.mean.exog, lags = spec.mean.conditioning();
+    const std::size_t horizon = z.size() / paths, exog = spec.mean.exog.size(), lags = spec.mean.conditioning();
     require(x.size() == horizon * exog, "exogenous regressors must cover every row of the horizon");
 
     // Unconditional mean: (c + xbar' b) / (1 - sum of the AR polynomial).

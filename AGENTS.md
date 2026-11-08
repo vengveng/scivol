@@ -1,8 +1,8 @@
 # scivol Guide for AI Agents
 
-**Last updated:** 2026-11-01
+**Last updated:** 2026-11-08
 
-scivol fits univariate and multivariate volatility models (ARMA/ARX mean, GARCH,
+scivol fits univariate and multivariate volatility models (ARMA/HAR mean with regressors, GARCH,
 GJR-GARCH, EGARCH, APARCH, DCC; Normal, Student-t, Skew-t, GED, GH, NIG,
 Hyperbolic, Variance-Gamma densities). **The goal is the fastest correct volatility
 library available.** Correct means exact likelihoods and exact derivatives; fast
@@ -171,7 +171,7 @@ kernel.
 Component composition with a universal `.fit()`:
 
 ```python
-from scivol import ARMA, ARX, GARCH, GJRGARCH, SkewT, StudentT
+from scivol import ARMA, GARCH, GJRGARCH, SkewT, StudentT
 
 spec = GARCH(1, 1)                            # Normal() added automatically
 spec = ARMA(1, 1) + GJRGARCH(1, 1) + StudentT()
@@ -183,8 +183,14 @@ result = spec.fit(data, method="qmle")        # robust (sandwich) SEs
   Canonical order is mean, volatility, density.
 - `+` builds a `CompositeSpec`; it is the only composition operator.
 - Components are declarations: they implement `role`, `signature` and
-  `declare(native_spec, exog)`, are validated by the native model at
-  construction and hold no fitted state. Parameter names, sizes, domains,
+  `declare(native_spec, regressors)`, are validated by the native model at
+  construction and hold no fitted state.
+- Regressors are data: `fit(y, x=X)`, where `x` is one block (a DataFrame,
+  named Series or array) or a mapping from layer (`"mean"`, `"volatility"`) to
+  a block; a bare block goes to the only layer that takes regressors. Columns
+  name the coefficients (`x[1]`, ... for an array). The native model carries the
+  names; models whose names are fixed (fitted, search candidates) take columns
+  by name. `scivol/_regressors.py` is the one place that routes them. Parameter names, sizes, domains,
   bounds and starts belong to the native model; results read them from it
   (`param_names`, `persistence`, `shapes`). Estimates, standard errors,
   t- and p-values are pandas Series by parameter name; covariance matrices
@@ -209,7 +215,7 @@ Selection is separate from component estimation:
 ```python
 from scivol import Search, Auto, GeneralToSpecific, InformationCriterion
 
-search = Search(mean=[ARX.up_to(1)], volatility=[GJRGARCH.up_to(1, 1)],
+search = Search(mean=[ARMA.up_to(1)], volatility=[GJRGARCH.up_to(1, 1)],
                 density=[SkewT()], constant_variance=True)
 selection = search.fit(data, procedure=GeneralToSpecific(), n_jobs=2)
 ranked = search.fit(data, procedure=InformationCriterion("bic", adequacy=False))

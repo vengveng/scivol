@@ -71,10 +71,10 @@ def test_egarch_candidates_cover_an_alternating_log_variance():
     # Without volatility dynamics, EGARCH's weakly identified beta can have a
     # separate, higher maximum at negative beta, which only the fourth
     # candidate (beta -0.9) reaches.
-    from scivol import ARX, EGARCH, SkewT
+    from scivol import ARMA, EGARCH, SkewT
 
     y = np.random.default_rng(1_000_003 * 6 + 7919 * 1000 + 3).standard_normal(1000)
-    spec = ARX(1) + EGARCH() + SkewT()
+    spec = ARMA(1) + EGARCH() + SkewT()
     result, positive = spec.fit(y), spec.fit(y, starts=3)
     assert [s["theta"][5] for s in result.fit_info.starts] == pytest.approx([0.9, 0.98, 0.995, -0.9])
     assert result.params["beta[1]"] < -0.9 < 0.8 < positive.params["beta[1]"]

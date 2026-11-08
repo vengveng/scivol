@@ -24,7 +24,7 @@ Conditional correlations among five of those stocks from a DCC model; the line i
   <img alt="Average conditional correlation among five US stocks, 2015 to 2024, rising from about 0.3 to nearly 0.6 in March 2020" src="https://raw.githubusercontent.com/vengveng/scivol/main/docs/images/dcc-correlation-light.svg">
 </picture>
 
-**Models.** ARMA, ARX and HARX means; GARCH, GJR-GARCH, EGARCH and APARCH volatility; Normal, Student-t, Hansen's skewed t, GED, generalized hyperbolic, NIG, hyperbolic and variance-gamma innovations; DCC with Gaussian or Student-t copulas. Every combination is one model with one likelihood.
+**Models.** ARMA and HAR means with optional regressors; GARCH, GJR-GARCH, EGARCH and APARCH volatility; Normal, Student-t, Hansen's skewed t, GED, generalized hyperbolic, NIG, hyperbolic and variance-gamma innovations; DCC with Gaussian or Student-t copulas. Every combination is one model with one likelihood.
 
 **Estimation you can check.** Each likelihood and its derivatives are tested against an automatic-differentiation reference. A fit is reported as successful only when the first-order conditions hold in the model's parameter domain; otherwise the estimate comes back with a status that says why. Standard errors are reported where ordinary likelihood inference applies. Several starting points are tried by default, because volatility likelihoods often have more than one local maximum.
 

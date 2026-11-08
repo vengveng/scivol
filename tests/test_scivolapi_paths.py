@@ -41,7 +41,7 @@ def setup(data, mean, volatility, density, p, q):
     model = model_for(mean, volatility, density, p, q)
     theta = np.array(mean_point(mean) + volatility_point(volatility, p, q, density))
     assert model.feasible(theta)
-    rows = np.ascontiguousarray(x[:, : mean.exog]) if mean.exog else None
+    rows = np.ascontiguousarray(x[:, : len(mean.exog)]) if len(mean.exog) else None
     return model, theta, mean, y, rows
 
 
@@ -55,7 +55,7 @@ def extend(y, rows, model, theta, value, row):
 @pytest.mark.parametrize("mean,volatility,density,p,q", CASES)
 def test_one_step_forecast_is_the_likelihood_recursion(data, mean, volatility, density, p, q):
     model, theta, mean, y, rows = setup(data, mean, volatility, density, p, q)
-    future = np.ones((1, mean.exog)) * 0.7 if mean.exog else None
+    future = np.ones((1, len(mean.exog))) * 0.7 if len(mean.exog) else None
     f = api.forecast(model, theta, y, 1, rows, future)
     value = np.sqrt(np.mean(y * y))  # appending it leaves mean(y^2), the variance seed, unchanged
     out = extend(y, rows, model, theta, value, None if future is None else future[0])
@@ -73,7 +73,7 @@ def test_a_continuation_is_the_likelihood_recursion(data, mean, volatility, dens
     """
     model, theta, mean, y, rows = setup(data, mean, volatility, density, p, q)
     horizon = 4
-    future = np.random.default_rng(0).standard_normal((horizon, mean.exog)) if mean.exog else None
+    future = np.random.default_rng(0).standard_normal((horizon, len(mean.exog))) if len(mean.exog) else None
     z = np.array([[0.3, -1.2, 2.0, -0.4]])
     s = api.simulate(model, theta, y, z, rows, future)
     np.testing.assert_allclose(s["residual"], np.sqrt(s["variance"]) * z, rtol=1e-15)
@@ -226,10 +226,10 @@ def test_parameter_mapping_accepts_only_native_shape_names(data, density):
 
 
 def test_a_fitted_result_filters_and_forecasts_natively(data):
-    from scivol import ARX, GJRGARCH, StudentT
+    from scivol import ARMA, GJRGARCH, StudentT
 
     y, x = data
-    spec = ARX(lags=2) + GJRGARCH(1, 1) + StudentT()
+    spec = ARMA(2) + GJRGARCH(1, 1) + StudentT()
     result = spec.fit(y, x=x)
     state = result.filter()
     np.testing.assert_allclose(state.residuals, result.resid, rtol=1e-14)
@@ -243,7 +243,7 @@ def test_a_fitted_result_filters_and_forecasts_natively(data):
     np.testing.assert_array_equal(fc.residual_variance, out["residual_variance"])
     assert fc.distribution == "StudentT" and fc.shapes["eta"] == pytest.approx(result.params.iloc[-1])
     assert fc.quantile(0.05).shape == (5,)
-    with pytest.raises(ValueError, match="exogenous"):
+    with pytest.raises(ValueError, match=r"need the regressors x\[1\]"):
         result.forecast(5)
 
 

@@ -31,7 +31,8 @@ SHAPES = {
 
 def mean_spec(constant=True, ar=0, har=(), exog=0, ma=0) -> "api.MeanSpec":
     spec = api.MeanSpec()
-    spec.constant, spec.ar, spec.har, spec.exog, spec.ma = constant, ar, list(har), exog, ma
+    spec.constant, spec.ar, spec.har, spec.ma = constant, ar, list(har), ma
+    spec.exog = [f"x[{i}]" for i in range(1, exog + 1)]
     return spec
 
 
@@ -48,7 +49,7 @@ def mean_point(mean) -> list[float]:
     point = [0.05] if mean.constant else []
     point += [0.3, -0.1, 0.05, 0.02][: mean.ar]
     point += [0.2, 0.1, 0.05][: len(mean.har)]
-    point += [0.5, -0.3, 0.2][: mean.exog]
+    point += [0.5, -0.3, 0.2][: len(mean.exog)]
     point += [0.25, -0.1, 0.05][: mean.ma]
     return point
 
@@ -89,7 +90,7 @@ def design(y, x, mean):
         row = [1.0] if mean.constant else []
         row += [y[t - i] for i in range(1, mean.ar + 1)]
         row += [np.mean(y[t - w:t]) for w in mean.har]
-        row += list(x[t, : mean.exog])
+        row += list(x[t, : len(mean.exog)])
         rows.append(row)
     return lags, np.array(rows).reshape(len(y) - lags, -1)
 
@@ -207,7 +208,7 @@ def check_against_oracle(data, mean, volatility, density, p=1, q=1, tolerance=1e
     theta = np.array(mean_point(mean) + volatility_point(volatility, p, q, density))
     assert model.feasible(theta)
     value, gradient, hessian = oracle(theta, y, x, mean, volatility, p, q, density)
-    out = api.Jet(model, y, np.ascontiguousarray(x[:, : mean.exog]) if mean.exog else None).theta(theta, 7)
+    out = api.Jet(model, y, np.ascontiguousarray(x[:, : len(mean.exog)]) if len(mean.exog) else None).theta(theta, 7)
     assert out["status"] == "ok"
     assert out["value"] == pytest.approx(value, rel=tolerance)
     assert_close(out["gradient"], gradient, tolerance)
@@ -221,7 +222,7 @@ CASES = [  # (mean, volatility, density, p, q)
     (dict(har=(1, 5)), "aparch", "ged", 1, 1),
     (dict(ma=2), "garch", "skew_t", 2, 1),
     (dict(constant=False, ar=1, ma=1), "egarch", "normal", 1, 2),
-    (dict(ar=1, har=(3,), exog=1, ma=1), "gjr", "ged", 1, 2),
+    (dict(har=(1, 3), exog=1, ma=1), "gjr", "ged", 1, 2),
     (dict(ma=1), "aparch", "student_t", 2, 1),
     (dict(), "garch", "nig", 1, 1),
     (dict(ar=1, ma=1), "egarch", "student_t", 2, 1),
@@ -260,7 +261,7 @@ def test_every_sparse_request_equals_the_full_request(data):
 
 def test_scored_rows_start_after_the_largest_lag(data):
     y, x = data
-    mean = mean_spec(ar=2, har=(1, 5))
+    mean = mean_spec(har=(1, 5))
     jet = api.Jet(model_for(mean), y)
     assert jet.first_scored == 5
     theta = np.array(mean_point(mean) + volatility_point("garch", 1, 1, "normal"))
@@ -309,6 +310,21 @@ def test_z_jet_includes_the_reflection_charts(data):
     out = jet.z(z, api.GRADIENT | api.HESSIAN)
     assert_close(out["gradient"], jac.T @ full["gradient"], 1e-12)
     assert_close(out["hessian"], jac.T @ full["hessian"] @ jac + curvature, 1e-11)
+
+
+def test_a_mean_has_ar_lags_or_har_windows_not_both():
+    with pytest.raises(ValueError, match="either AR lags or HAR windows"):
+        model_for(mean_spec(ar=1, har=(5,)))
+
+
+def test_regressor_names_are_the_coefficient_names_and_must_be_distinct():
+    mean = mean_spec(ar=1)
+    mean.exog = ["monday", "vix"]
+    assert model_for(mean).parameter_names[:4] == ["const", "ar[1]", "monday", "vix"]
+    for names in (["omega", "vix"], ["vix", "vix"], [""]):
+        mean.exog = names
+        with pytest.raises(ValueError):
+            model_for(mean)
 
 
 def test_domain_is_stationary_ar_and_har_with_invertible_ma():
@@ -419,8 +435,8 @@ def test_arma_garch_fit_recovers_the_parameters():
 
 @pytest.mark.parametrize("components", ["arma", "arx", "harx"])
 def test_public_fits_recover_the_simulation(components):
-    """ARMA(1,1)-GARCH(1,1) data; ARX and HARX nest its AR part, with an irrelevant regressor."""
-    from scivol import ARMA, ARX, GARCH, HARX
+    """ARMA(1,1)-GARCH(1,1) data; ARMA and HAR nest its AR part, with an irrelevant regressor."""
+    from scivol import ARMA, GARCH, HAR
 
     rng = np.random.default_rng(23)
     y = simulate_arma_garch(2500, 29)
@@ -428,9 +444,9 @@ def test_public_fits_recover_the_simulation(components):
     if components == "arma":
         spec, kwargs, truth = ARMA(1, 1) + GARCH(1, 1), {}, {0: 0.05, 1: 0.4, 2: 0.2, 4: 0.08, 5: 0.88}
     elif components == "arx":
-        spec, kwargs, truth = ARX(1) + GARCH(1, 1), {"x": x}, {2: 0.0, 5: 0.88}
+        spec, kwargs, truth = ARMA(1) + GARCH(1, 1), {"x": x}, {2: 0.0, 5: 0.88}
     else:
-        spec, kwargs, truth = HARX([1, 5]) + GARCH(1, 1), {"x": x}, {3: 0.0, 6: 0.88}
+        spec, kwargs, truth = HAR([1, 5]) + GARCH(1, 1), {"x": x}, {3: 0.0, 6: 0.88}
     result = spec.fit(y, **kwargs)
     assert result.optimization_result.success, result.optimization_result.message
     assert len(result.sigma2) == len(result.resid) == len(result.data)
@@ -440,14 +456,14 @@ def test_public_fits_recover_the_simulation(components):
 
 def test_public_fit_keeps_the_index_aligned_with_the_scored_rows():
     import pandas as pd
-    from scivol import ARX, GARCH
+    from scivol import ARMA, GARCH
 
     y = simulate_arma_garch(800, 31)
     series = pd.Series(y, index=pd.date_range("2020-01-01", periods=len(y), freq="D"))
-    result = (ARX(3) + GARCH(1, 1)).fit(series, hold_back=10)  # held rows supply the lags
+    result = (ARMA(3) + GARCH(1, 1)).fit(series, hold_back=10)  # held rows supply the lags
     assert len(result.sigma2) == len(y) - 10
     assert result.sigma2.index[0] == series.index[10]
-    short = (ARX(3) + GARCH(1, 1)).fit(series)
+    short = (ARMA(3) + GARCH(1, 1)).fit(series)
     assert short.sigma2.index[0] == series.index[3]
 
 
@@ -507,14 +523,14 @@ def test_har_stationarity_constraints_are_the_reflection_coefficients(windows, a
 
 
 def test_har_fits_stay_stationary_on_a_near_unit_root():
-    from scivol import GARCH, HARX, Normal
+    from scivol import GARCH, HAR, Normal
 
     rng = np.random.default_rng(4)
     n = 1500
     y = np.cumsum(0.1 * rng.standard_normal(n)) * 0.2 + rng.standard_normal(n)
     y = y - y.mean()
     x = rng.standard_normal((n, 1))
-    spec = HARX([1, 5, 22]) + GARCH(1, 1) + Normal()
+    spec = HAR([1, 5, 22]) + GARCH(1, 1) + Normal()
     for coordinates in ("theta", "automatic"):
         result = spec.fit(y, x=x, coordinates=coordinates)
         assert result.success, (coordinates, result.fit_info.warnings)
@@ -522,7 +538,7 @@ def test_har_fits_stay_stationary_on_a_near_unit_root():
 
 
 def test_har_fits_hold_the_stationarity_boundary_on_explosive_data():
-    from scivol import GARCH, HARX, Normal
+    from scivol import GARCH, HAR, Normal
 
     rng = np.random.default_rng(1)
     n = 600
@@ -531,7 +547,7 @@ def test_har_fits_hold_the_stationarity_boundary_on_explosive_data():
         y[t] = 1.004 * y[t - 1] + rng.standard_normal()
     x = rng.standard_normal((n, 1))
     for coordinates in ("theta", "automatic"):  # automatic is the theta path for HAR means
-        result = (HARX([1, 5, 22]) + GARCH(1, 1) + Normal()).fit(y, x=x, coordinates=coordinates)
+        result = (HAR([1, 5, 22]) + GARCH(1, 1) + Normal()).fit(y, x=x, coordinates=coordinates)
         # At the sharp unit-root face the trust region may hand over to SLSQP.
         phases = result.fit_info.solver.split("+")
         assert phases[0] == "theta:trust" and phases[-1] == "theta:newton" and result.success

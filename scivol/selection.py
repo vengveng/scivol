@@ -15,8 +15,9 @@ from . import _scivolapi as api
 from ._summary import Summary
 from ._fit import (_COORDINATES, PreparedSample, native_spec, present_fit,
                    spec_from_native)
-from ._validation import validate_data, validate_hold_back, validate_regressors
-from .components import ARX, APARCH, EGARCH, GJRGARCH, Normal, SkewT
+from ._regressors import Regressors, block, layers
+from ._validation import validate_data, validate_hold_back
+from .components import ARMA, APARCH, EGARCH, GJRGARCH, Normal, SkewT
 from .result import EstimationResult
 from .roles import Role
 from .spec import CompositeSpec
@@ -207,7 +208,12 @@ class Search:
         workers = min(4, os.cpu_count() or 1) if n_jobs in (None, -1) else n_jobs
         _validate_budget(workers, "n_jobs")
         y = np.ascontiguousarray(validate_data(y))
-        x = None if x is None else validate_regressors(x, len(y))
+        entries = layers(x)
+        if "volatility" in entries:
+            raise ValueError("the volatility candidates take no regressors.")
+        x = block(entries.get("mean", entries.get(None)), len(y))
+        if x is not None and all(mean is None for mean in self.mean):
+            raise ValueError("x was passed, but the search has no mean candidates to take the regressors.")
         options = dict(method=method, coordinates=coordinates, maxiter=maxiter, accuracy=accuracy)
         if isinstance(procedure, ConfidenceSet):
             return self._predict(y, x, procedure, workers, hold_back, options)
@@ -216,22 +222,16 @@ class Search:
         engine.deploy(result)
         return result
 
-    def _definitions(self, columns):
+    def _definitions(self, regressors):
         volatilities = self.volatility + ((None,) if self.constant_variance else ())
-        definitions = []
-        for mean, vol, density in product(self.mean, volatilities, self.density):
-            parts = [part for part in (mean, vol, density) if part is not None]
-            definition = native_spec(CompositeSpec(*parts), columns)
-            if definition is None:
-                raise ValueError("unsupported search component combination")
-            definitions.append(definition)
-        return definitions
+        return [native_spec(CompositeSpec(*[part for part in (mean, vol, density) if part is not None]), regressors)
+                for mean, vol, density in product(self.mean, volatilities, self.density)]
 
     def _predict(self, y, x, procedure, workers, hold_back, options):
         first = int(len(y)*(1-procedure.holdout))
         if len(y)-first < 500:
             raise ValueError("ConfidenceSet requires at least 500 holdout observations")
-        engine = _Reduction(self, y[:first], None if x is None else x[:first],
+        engine = _Reduction(self, y[:first], None if x is None else x.rows(0, first),
                             procedure.reduction, workers, hold_back, options)
         result = engine.run()
         frozen = result.terminals
@@ -290,7 +290,7 @@ class Search:
             stop = min(start+procedure.refit_every, len(y))
             if start != first:
                 train = api.ComparisonPlan(y[:start], training_plan.first_scored,
-                                          None if x is None else x[:start],
+                                          None if x is None else x.values[:start], training_plan.names,
                                           variance_seed=training_plan.variance_seed)
                 counts["predictive_refits"] = counts.get("predictive_refits", 0) + 1
                 counts["optimizer_invocations"] += 1
@@ -300,7 +300,7 @@ class Search:
                     raise RuntimeError("uncertified predictive refit")
                 theta = np.array(fitted.theta)
             plan = api.ComparisonPlan(y[:stop], training_plan.first_scored,
-                                      None if x is None else x[:stop],
+                                      None if x is None else x.values[:stop], training_plan.names,
                                       variance_seed=training_plan.variance_seed)
             values = api.predictive_losses(api.Jet(candidate.model, plan), theta, procedure.loss)
             losses.extend(values[start-training_plan.first_scored:stop-training_plan.first_scored])
@@ -324,7 +324,7 @@ class Auto:
 
     def fit(self, y, x=None, **options):
         procedure = self.procedure or GeneralToSpecific(max_mean_order=self.max_mean_order)
-        return Search(mean=[ARX.up_to(1)], volatility=[GJRGARCH.up_to(1, 1),
+        return Search(mean=[ARMA.up_to(1)], volatility=[GJRGARCH.up_to(1, 1),
                       EGARCH.up_to(1, 1), APARCH.up_to(1, 1)], density=[SkewT()]).fit(
                           y, x, procedure=procedure, **options)
 
@@ -341,7 +341,7 @@ def _options(values, start=None):
 
 
 class _Reduction:
-    def __init__(self, search, y: NDArray[np.float64], x: NDArray[np.float64] | None,
+    def __init__(self, search, y: NDArray[np.float64], x: "Regressors | None",
                  procedure, workers: int, hold_back: int, options: dict):
         self.search, self.y, self.x = search, y, x
         self.procedure, self.workers, self.options = procedure, workers, options
@@ -360,7 +360,7 @@ class _Reduction:
 
     def _declare(self, search):
         declared = []
-        for definition in search._definitions(0 if self.x is None else self.x.shape[1]):
+        for definition in search._definitions(() if self.x is None else self.x.names):
             model = api.Model(definition)
             declared.append(model.key)
             self._compile(model)
@@ -372,7 +372,8 @@ class _Reduction:
         descendants = {child for key in declared for child in self._reachable(key)}
         self.roots = tuple(sorted(set(declared)-descendants))
         first = max(self.hold_back, *(self.nodes[k].model.spec.mean.conditioning for k in declared))
-        self.plan = api.ComparisonPlan(self.y, first, self.x)
+        self.plan = api.ComparisonPlan(self.y, first, None if self.x is None else self.x.values,
+                                       None if self.x is None else list(self.x.names))
         self.first = first
 
     def _compile(self, model):
@@ -711,8 +712,7 @@ class _Reduction:
         # Identical full-sample plan fits use the ordinary result presenter.
         # Otherwise deployment is an explicit normal full-sample refit.
         if node.model.spec.mean.conditioning == self.first:
-            columns = node.model.spec.mean.exog
-            x = None if not columns else np.ascontiguousarray(self.x[:, :columns])
+            x = None if self.x is None else self.x.select(node.model.spec.mean.exog)
             sample = PreparedSample(node.model.spec, self.y, x, 0, self.first, len(self.y), 1.0)
             result.selected = present_fit(node.specification, sample, node.fit,
                 maxiter=self.options["maxiter"], warm_started=node.warm_started, elapsed=node.elapsed)

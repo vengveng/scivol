@@ -89,16 +89,16 @@ ValueError: the EGARCH variance forecast 2 steps ahead does not exist: E exp(a|z
 
 ## Regressors
 
-A model with regressors needs their future values. For an ARX or HARX model with $k$ regressors, pass `x` with shape `(horizon, k)`, or a one-dimensional array when $k=1$. The values are taken as known.
+A model with regressors needs their future values, which are taken as known. Pass `x` with one row per step: a DataFrame is matched to the fitted regressors by column name, and an array of the same width is taken by position, so a model with $k$ regressors takes an array of shape `(horizon, k)`, or a one-dimensional array when $k=1$.
 
 ```python
 import numpy as np
-from scivol import ARX, GARCH
+from scivol import ARMA, GARCH
 
 rng = np.random.default_rng(17)
 y = rng.standard_normal(800)
 x = rng.standard_normal((800, 2))
-result = (ARX(1) + GARCH()).fit(y, x=x)
+result = (ARMA(1) + GARCH()).fit(y, x=x)
 forecast = result.forecast(5, x=np.zeros((5, 2)))
 ```
 

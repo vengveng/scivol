@@ -237,15 +237,21 @@ def innovations(density: "api.InnovationDensity", paths: int, horizon: int, seed
     return np.ascontiguousarray(api.quantiles(density.density, density.shape, u).reshape(paths, horizon))
 
 
-def regressors(x: Any, rows: int, columns: Optional[int] = None) -> Optional[NDArray[np.float64]]:
-    if x is None:
+def model_regressors(spec: Any, model: "api.Model", x: Any, rows: int, *,
+                     purpose: str) -> Optional[NDArray[np.float64]]:
+    """The rows of the regressors `model` names, taken from `x` by name (or an
+    unnamed array of exactly the model's width, in order)."""
+    from ._regressors import mean_regressors
+
+    names = tuple(model.spec.mean.exog)
+    supplied = mean_regressors(spec, x, rows)
+    if not names:
+        if supplied is not None and not hasattr(spec, "_native_definition"):
+            raise ValueError("x was passed, but the model has no regressors.")
         return None
-    array = np.asarray(x, dtype=np.float64)
-    if array.ndim == 1:
-        array = array[:, None]
-    if array.shape[0] != rows or (columns is not None and array.shape[1] != columns):
-        raise ValueError(f"x must have shape ({rows}, {columns if columns is not None else 'k'}).")
-    return np.ascontiguousarray(array)
+    if supplied is None:
+        raise ValueError(f"{purpose} need the regressors {', '.join(names)}: x with shape ({rows}, {len(names)}).")
+    return supplied.select(names)
 
 
 # --------------------------------------------------------------------------- #
@@ -392,10 +398,7 @@ def forecast(spec: Any, model: "api.Model", theta: NDArray[np.float64], y: NDArr
     """
     if horizon <= 0:
         raise ValueError("horizon must be positive")
-    columns = 0 if x is None else x.shape[1]
-    future = regressors(future_x, horizon, columns) if columns else None
-    if columns and future is None:
-        raise ValueError(f"Forecasts need the exogenous regressors of the horizon: x with shape ({horizon}, {columns}).")
+    future = model_regressors(spec, model, future_x, horizon, purpose="Forecasts")
     distribution = density_name(spec)
     density = model.innovation_density(theta)
     def draws() -> NDArray[np.float64]:
@@ -423,18 +426,22 @@ def forecast(spec: Any, model: "api.Model", theta: NDArray[np.float64], y: NDArr
 
 def simulate(spec: Any, n_obs: int, params: Any, *, burn: int = 500, seed: Any = None,
              x: Any = None) -> SimulationResult:
-    """A series of n_obs rows after `burn` discarded rows, started at the stationary values."""
+    """A series of n_obs rows after `burn` discarded rows, started at the stationary
+    values. Regressors cover all n_obs + burn rows."""
     from ._fit import native_spec
+    from ._regressors import mean_regressors
 
     if n_obs <= 0:
         raise ValueError("n_obs must be positive")
     burn = max(int(burn), 0)
     total = n_obs + burn
-    rows = regressors(x, total)
-    native = native_spec(spec, 0 if rows is None else rows.shape[1])
-    if native is None:
-        raise NotImplementedError(f"{spec} cannot be simulated: unsupported component combination")
-    model = api.Model(native)
+    definition = getattr(spec, "_native_definition", None)
+    if definition is None:
+        supplied = mean_regressors(spec, x, total)
+        model = api.Model(native_spec(spec, () if supplied is None else supplied.names))
+    else:
+        model = api.Model(definition)
+    rows = model_regressors(spec, model, x, total, purpose="Simulations")
     theta = parameters(spec, model, params)
     if not model.feasible(theta):
         raise ValueError("theta is outside the model's domain")
@@ -460,10 +467,13 @@ def oos_losses(result: "EstimationResult", full_data: Any, *, full_x: Any, start
     scale = float(result.fit_info.scale or 1.0)
     model = result._native_model
     y = np.ascontiguousarray(np.asarray(full_data, dtype=np.float64)[skip:stop] * scale)
-    x = None if full_x is None else regressors(np.asarray(full_x, dtype=np.float64)[skip:stop], len(y))
+    from ._regressors import rows
+
+    x = model_regressors(result.spec, model, rows(full_x, skip, stop), len(y), purpose="Losses")
+    names = list(model.spec.mean.exog) if x is not None else None
     conditioning = model.spec.mean.conditioning
     seed = float(np.mean(np.square(result._native_y)))
-    jet = api.Jet(model, api.ComparisonPlan(y, conditioning, x, variance_seed=seed))
+    jet = api.Jet(model, api.ComparisonPlan(y, conditioning, x, names, variance_seed=seed))
     first = skip + jet.first_scored
     if start < first or stop <= start:
         raise ValueError("The OOS slice must lie after the rows that condition the fit.")

@@ -10,7 +10,7 @@ import pytest
 from numpy.testing import assert_allclose
 from scipy.stats import chi2
 
-from scivol import ARX, GARCH
+from scivol import ARMA, GARCH
 from scivol import _scivolapi as api
 from scivol._fit import fit_spec_on_plan
 
@@ -22,7 +22,7 @@ def model(volatility="garch", p=1, q=1, density="normal", *, ar=0, ma=0,
     s.p, s.q = p, q
     s.density = getattr(api.DensityKind, density)
     s.mean.constant, s.mean.ar, s.mean.ma = constant, ar, ma
-    s.mean.har, s.mean.exog = list(har), exog
+    s.mean.har, s.mean.exog = list(har), [f"x[{i}]" for i in range(1, exog + 1)]
     return api.Model(s)
 
 
@@ -43,12 +43,13 @@ def garch_data(n=2000, seed=17):
 
 @pytest.mark.parametrize("kind", ["garch", "gjr", "egarch", "aparch", "constant"])
 @pytest.mark.parametrize("density", ["normal", "student_t", "skew_t", "ged"])
-def test_children_are_exact_likelihood_restrictions(kind, density):
+@pytest.mark.parametrize("mean", [dict(ar=2), dict(har=(1, 5))])
+def test_children_are_exact_likelihood_restrictions(kind, density, mean):
     rng = np.random.default_rng(32)
     y, x = rng.normal(size=100), rng.normal(size=(100, 2))
     p = q = 0 if kind == "constant" else 2
-    parent = model(kind, p, q, density, ar=2, ma=1, constant=True, har=(1, 5), exog=2)
-    plan = api.ComparisonPlan(y, 10, x, variance_seed=1.73)
+    parent = model(kind, p, q, density, ma=1, constant=True, exog=2, **mean)
+    plan = api.ComparisonPlan(y, 10, x, ["x[1]", "x[2]"], variance_seed=1.73)
     for r in parent.restrictions():
         child = api.Model(r.child)
         theta = child.start(plan)
@@ -69,10 +70,10 @@ def test_children_are_exact_likelihood_restrictions(kind, density):
         assert pjet.variance_seed == cjet.variance_seed == 1.73
 
 
-def test_common_plan_seed_rows_and_exogenous_prefix():
+def test_common_plan_seed_rows_and_named_regressor_columns():
     y = np.random.default_rng(5).normal(size=100)
     x = np.random.default_rng(6).normal(size=(100, 2))
-    plan = api.ComparisonPlan(y, 12, x)
+    plan = api.ComparisonPlan(y, 12, x, ["x[1]", "x[2]"])
     a, b = model(ar=2, exog=2), model(ar=0, exog=1)
     assert api.Jet(a, plan).variance_seed == api.Jet(b, plan).variance_seed
     assert api.Jet(a, plan).first_scored == api.Jet(b, plan).first_scored == 12
@@ -83,8 +84,19 @@ def test_common_plan_seed_rows_and_exogenous_prefix():
     with pytest.raises(ValueError):
         api.Jet(model(ar=8), api.ComparisonPlan(y, 2))
     with pytest.raises(ValueError):
-        api.ComparisonPlan(y, 12, x[:-1])
-    fitted = fit_spec_on_plan(ARX(0) + GARCH(1, 1), plan, exog=1)
+        api.ComparisonPlan(y, 12, x[:-1], ["x[1]", "x[2]"])
+    with pytest.raises(ValueError, match="one name per regressor column"):
+        api.ComparisonPlan(y, 12, x)
+    second = model(exog=0)
+    second_spec = api.ModelSpec()
+    second_spec.volatility, second_spec.p, second_spec.q = api.VolatilityKind.garch, 1, 1
+    second_spec.mean.exog = ["x[2]"]
+    rows = api.Jet(api.Model(second_spec), plan).theta(np.array([0.5, 0.1, 0.1, 0.8]), api.PATHS)["residual"]
+    assert_allclose(rows, y[12:] - 0.5 * x[12:, 1], rtol=1e-15)
+    second_spec.mean.exog = ["x[3]"]
+    with pytest.raises(ValueError, match="no regressor named 'x\\[3\\]'"):
+        api.Jet(api.Model(second_spec), plan)
+    fitted = fit_spec_on_plan(ARMA(0) + GARCH(1, 1), plan, regressors=["x[1]"])
     assert fitted.scored == 88 and fitted.observations == 100
     cv = model("constant", 0, 0)
     out = api.Jet(cv, plan).theta(np.array([2.0]), api.PATHS)

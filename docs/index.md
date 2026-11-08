@@ -18,7 +18,7 @@ The likelihoods, their analytical gradients and Hessians, the optimizer, inferen
 
 | Part of the model | Components |
 | --- | --- |
-| Conditional mean | ARMA, ARX (with exogenous regressors), HARX, or zero mean |
+| Conditional mean | ARMA or HAR, each with optional regressors, or zero mean |
 | Conditional variance | GARCH, GJR-GARCH, EGARCH, APARCH, or constant variance |
 | Innovation density | Normal, Student-t, Hansen's skewed t, GED, generalized hyperbolic, NIG, hyperbolic, variance-gamma |
 | Correlation | DCC with a Gaussian or Student-t copula; CCC |

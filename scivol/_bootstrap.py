@@ -20,6 +20,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from . import _scivolapi as api
+from ._regressors import Regressors
 from ._evaluation import innovations
 
 if TYPE_CHECKING:
@@ -119,6 +120,7 @@ def bootstrap(result: "EstimationResult", replications: int = 499, *, m: Optiona
     density = model.innovation_density(theta)
     seeds = np.random.default_rng(seed).integers(0, 2**63, size=replications)
     method = str(result.method).lower()
+    names = tuple(model.spec.mean.exog)
 
     # Each replication draws its innovations once; every m on the grid uses
     # their first m (common random numbers across the grid). Regressors are
@@ -130,7 +132,8 @@ def bootstrap(result: "EstimationResult", replications: int = 499, *, m: Optiona
             future = None if x is None else np.ascontiguousarray(x[:size])
             series = api.simulate(model, theta, y, np.ascontiguousarray(z[:, :size]), x, future)["y"][0]
             try:
-                refit = result.spec.fit(series, x=future, method=method, initial_params=theta)
+                rows = None if future is None else Regressors(future, names, True)
+                refit = result.spec.fit(series, x=rows, method=method, initial_params=theta)
                 estimates.append(refit._theta if refit.success else None)
             except Exception:  # noqa: BLE001 - a failed refit is counted, not raised
                 estimates.append(None)

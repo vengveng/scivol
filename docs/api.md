@@ -6,9 +6,8 @@ This page lists the public names of the `scivol` package with their signatures. 
 
 | Constructor | Role | Parameters |
 | --- | --- | --- |
-| `ARMA(p, q, constant=True)` | mean | AR and MA orders 0 to 8 |
-| `ARX(lags=0, constant=True)` | mean | AR order 0 to 8; the number of regressors comes from `x` |
-| `HARX(horizons, constant=True)` | mean | increasing window lengths from 1 to 256 |
+| `ARMA(p=0, q=0, constant=True)` | mean | AR and MA orders 0 to 8; regressors come from `x` |
+| `HAR(windows, q=0, constant=True)` | mean | increasing window lengths from 1 to 256, MA order 0 to 8; regressors come from `x` |
 | `GARCH(p=1, q=1, stationarity="covariance")` | volatility | shock and variance orders 0 to 8 |
 | `GJRGARCH(p=1, q=1, stationarity="covariance")` | volatility | as GARCH |
 | `EGARCH(p=1, q=1, stationarity="covariance")` | volatility | as GARCH |
@@ -22,7 +21,7 @@ This page lists the public names of the `scivol` package with their signatures. 
 | `Hyperbolic()` | density | `rho`, `zeta` |
 | `VarianceGamma()` | density | `rho`, `lambda` |
 
-`stationarity` is `"covariance"`, `"integrated"` or `"none"`; EGARCH has no `"integrated"`. The equations, parameter names and domains are on the pages for [mean](models/mean.md), [volatility](models/volatility.md) and [density](models/densities.md) models. For model selection, `ARMA.up_to(p, q)`, `ARX.up_to(k)` and the `up_to(p, q, stationarity="covariance")` method of each volatility class declare a largest model; see [model selection](selection.md#declaring-the-candidates).
+`stationarity` is `"covariance"`, `"integrated"` or `"none"`; EGARCH has no `"integrated"`. The equations, parameter names and domains are on the pages for [mean](models/mean.md), [volatility](models/volatility.md) and [density](models/densities.md) models. For model selection, `ARMA.up_to(p, q=0)` and the `up_to(p, q, stationarity="covariance")` method of each volatility class declare a largest model; see [model selection](selection.md#declaring-the-candidates).
 
 `a + b` combines components into a `CompositeSpec`, in any order of terms. A specification has at most one component per role. Without a density it uses `Normal()`, without a volatility component it has constant variance, and without a mean it has zero mean. Every component also works as a specification on its own, so `GARCH(1, 1).fit(y)` fits GARCH with Normal innovations. `Component` is the base class of all components.
 
@@ -37,7 +36,7 @@ spec.fit(data, *, x=None, hold_back=0, scale=None, method="mle",
          show_progress=None)
 ```
 
-Fits the model and returns an `EstimationResult`. For a multi-column input it fits each column and returns a dictionary of results. [Estimation](estimation.md#fit-options) describes the options; unknown options raise a `TypeError`.
+Fits the model and returns an `EstimationResult`. For a multi-column input it fits each column and returns a dictionary of results. [Estimation](estimation.md#fit-options) describes the options; unknown options raise a `TypeError`. `x` holds the mean's regressors: a DataFrame, a named Series or an array, or a mapping `{"mean": ...}`; their names become the coefficients' names ([regressors](models/mean.md#regressors)). Every method below that takes `x` takes it in the same forms.
 
 ```text
 spec.fit_many(data, *, initial_results=None, n_jobs=None, timeout=None,

@@ -64,7 +64,7 @@ def test_row_scores_match_the_oracle_and_sum_to_the_gradient(data, mean, volatil
     mean = mean_spec(**mean)
     model = model_for(mean, volatility, density, p, q)
     theta = np.array(mean_point(mean) + volatility_point(volatility, p, q, density))
-    jet = api.Jet(model, y, np.ascontiguousarray(x[:, : mean.exog]) if mean.exog else None)
+    jet = api.Jet(model, y, np.ascontiguousarray(x[:, : len(mean.exog)]) if len(mean.exog) else None)
     out = jet.theta(theta, api.GRADIENT | api.SCORES)
     assert out["status"] == "ok"
     assert out["scores"].shape == (len(y) - jet.first_scored, model.dimension)

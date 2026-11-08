@@ -21,6 +21,7 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from . import _scivolapi as api
+from ._evaluation import model_regressors
 from ._summary import Summary
 from .components import GARCH, Normal
 
@@ -437,11 +438,9 @@ class _CorrelationResultMixin:
         columns = {key: np.empty((paths, horizon, self.N)) for key in ("y", "mean", "residual", "variance")}
         for i, marginal in enumerate(marginals):
             z = np.ascontiguousarray(correlation["innovation"][:, :, i])
-            future_x = None if future[i] is None else np.ascontiguousarray(
-                np.asarray(future[i], dtype=np.float64).reshape(horizon, -1))
             with _naming_series(self._columns, i):
-                if marginal._native_x is not None and future_x is None:
-                    raise ValueError(f"the marginal model has regressors; pass their {horizon} future rows in x")
+                future_x = model_regressors(marginal.spec, marginal._native_model, future[i], horizon,
+                                            purpose="Simulations")
                 out = api.simulate(marginal._native_model, marginal._theta, marginal._native_y, z,
                                    marginal._native_x, future_x)
             for key in columns:

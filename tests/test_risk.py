@@ -9,7 +9,7 @@ from scipy import integrate
 from scipy import stats as sps
 from scipy.special import xlogy
 
-from scivol import (APARCH, ARX, DCC, EGARCH, GARCH, GED, GJRGARCH, GeneralizedHyperbolic, Hyperbolic, Normal,
+from scivol import (APARCH, ARMA, DCC, EGARCH, GARCH, GED, GJRGARCH, GeneralizedHyperbolic, Hyperbolic, Normal,
                     NormalInverseGaussian, SkewT, StudentT, VarianceGamma, stats)
 
 LAWS = [
@@ -66,7 +66,7 @@ def test_tail_means_close_forms():
 
 def test_expected_shortfall_of_a_forecast():
     y = (GARCH() + StudentT()).simulate(1500, [0.05, 0.08, 0.9, 0.15], seed=4).data
-    result = (ARX(1) + GARCH() + StudentT()).fit(y)
+    result = (ARMA(1) + GARCH() + StudentT()).fit(y)
     forecast = result.forecast(3, simulations=20000, seed=1)
     law = result.innovations
     sigma = np.sqrt(forecast.residual_variance[0])
@@ -148,15 +148,15 @@ def test_dcc_regressors_name_only_the_series_that_have_them():
     rng = np.random.default_rng(5)
     returns = pd.DataFrame(rng.standard_normal((600, 3)), columns=["a", "b", "c"])
     x = rng.standard_normal((600, 1))
-    marginals = [GARCH().fit(returns["a"]), GARCH().fit(returns["b"]), (ARX(0) + GARCH()).fit(returns["c"], x=x)]
+    marginals = [GARCH().fit(returns["a"]), GARCH().fit(returns["b"]), (ARMA(0) + GARCH()).fit(returns["c"], x=x)]
     result = DCC().fit(returns, univariate_results=marginals)
     forecast = result.forecast(2, x={"c": np.zeros((2, 1))}, simulations=200, seed=1)
     assert forecast.mean.shape == (2, 3)
     with pytest.raises(KeyError, match="unknown series"):
         result.forecast(2, x={"d": np.zeros((2, 1))}, simulations=200, seed=1)
-    with pytest.raises(ValueError, match="series c: Forecasts need the exogenous regressors"):
+    with pytest.raises(ValueError, match=r"series c: Forecasts need the regressors x\[1\]"):
         result.forecast(2, simulations=200, seed=1)
-    with pytest.raises(ValueError, match="series c: the marginal model has regressors"):
+    with pytest.raises(ValueError, match=r"series c: Simulations need the regressors x\[1\]"):
         result.simulate(3)
 
 
